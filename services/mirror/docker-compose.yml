@@ -1,0 +1,14 @@
+services:
+  blind-peer:
+    build: .
+    restart: unless-stopped
+    environment:
+      # size to your disk; MB
+      MAX_STORAGE: 20000
+    volumes:
+      # persistent — the mirror's public key is derived from data here.
+      # never wipe this or the key (and every app's `mirrors` entry) changes.
+      - blind-peer-data:/data
+
+volumes:
+  blind-peer-data:

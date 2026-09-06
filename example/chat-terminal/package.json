@@ -1,0 +1,23 @@
+{
+  "name": "chat-terminal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CLI chat reference app using cero",
+  "main": "index.js",
+  "bin": {
+    "chat-terminal": "./index.js"
+  },
+  "scripts": {
+    "dev": "node index.js",
+    "test": "brittle-node test/*.test.js"
+  },
+  "dependencies": {
+    "@cero-base/cero": "*",
+    "chat-backend": "*"
+  },
+  "devDependencies": {
+    "@hyperswarm/testnet": "^3.1.4",
+    "brittle": "^4.1.1"
+  }
+}

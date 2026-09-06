@@ -1,0 +1,45 @@
+{
+  "name": "chat-mobile",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "React Native / Expo chat reference app using cero",
+  "main": "index.js",
+  "scripts": {
+    "build": "bare-pack worklets/main.js --host ios-arm64-simulator --linked --defer debug -o worklets/app.bundle.mjs",
+    "build:device": "bare-pack worklets/main.js --host ios-arm64 --linked --defer debug -o worklets/app.bundle.mjs",
+    "start": "EXPO_NO_METRO_WORKSPACE_ROOT=1 expo start -d",
+    "ios": "expo run:ios",
+    "android": "expo run:android"
+  },
+  "imports": {
+    "fs": {
+      "bare": "bare-fs",
+      "default": "fs"
+    },
+    "path": {
+      "bare": "bare-path",
+      "default": "path"
+    },
+    "os": {
+      "bare": "bare-os",
+      "default": "os"
+    }
+  },
+  "dependencies": {
+    "@cero-base/cero": "*",
+    "bare-fs": "^4.8.1",
+    "bare-os": "^3.9.3",
+    "bare-path": "^3.1.2",
+    "chat-backend": "*",
+    "expo": "~57.0.20",
+    "expo-clipboard": "~57.0.1",
+    "expo-file-system": "~57.0.6",
+    "react": "19.2.8",
+    "react-native": "0.87.1",
+    "react-native-bare-kit": "^0.15.0"
+  },
+  "devDependencies": {
+    "bare-pack": "^2.2.2"
+  }
+}

@@ -1,0 +1,12 @@
+dist/
+example/*/dist/
+example/*/spec/
+example/chat-mobile/worklets/app.bundle.mjs
+example/chat-mobile/uniwind-types.d.ts
+example/chat-mobile/ios/
+example/chat-mobile/android/
+packages/*/types/
+packages/*/test/fixtures/spec/
+packages/core/spec/
+coverage/
+example/

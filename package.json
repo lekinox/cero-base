@@ -1,0 +1,44 @@
+{
+  "name": "cero-base",
+  "version": "2.0.0",
+  "type": "module",
+  "private": true,
+  "description": "p2p helper",
+  "workspaces": [
+    "packages/*",
+    "example/*"
+  ],
+  "scripts": {
+    "format": "prettier . --write",
+    "lint": "prettier . --check && lunte",
+    "build": "npm run build -w chat-backend && npm run build -w chat-mobile",
+    "build:desktop": "npm run build -w chat-backend",
+    "build:mobile": "npm run build -w chat-backend && npm run build -w chat-mobile",
+    "pretest": "test -x node_modules/.bin/bare || npm rebuild bare",
+    "test": "turbo test --filter='./packages/*'",
+    "test:core": "npm test -w @cero-base/core",
+    "test:cero": "npm test -w @cero-base/cero",
+    "dev:desktop": "npm run build:desktop && cd example/chat-desktop && npm run dev --",
+    "dev:mobile": "npm run build:mobile && cd example/chat-mobile && npm run ios",
+    "release": "node scripts/release.js",
+    "release:dry": "node scripts/release.js --dry-run",
+    "smoke": "node scripts/smoke-install.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lekinox/cero-base.git"
+  },
+  "author": "lekinox",
+  "license": "Apache-2.0",
+  "packageManager": "npm@11.19.1",
+  "devDependencies": {
+    "bare": "^1.31.2",
+    "bare-bluetooth": "^0.3.0",
+    "lunte": "^1.8.4",
+    "prettier-config-holepunch": "^2.0.0",
+    "turbo": "^2"
+  },
+  "overrides": {
+    "autobee-encryption": "0.1.3"
+  }
+}

@@ -1,0 +1,300 @@
+{
+  "version": 2,
+  "schema": [
+    {
+      "name": "invite-body",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 4,
+      "fields": [
+        {
+          "name": "version",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "publicKey",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "role",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "expires",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "data",
+          "required": false,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "blind",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "invite",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 4,
+      "fields": [
+        {
+          "name": "version",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "publicKey",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "role",
+          "required": true,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "expires",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "data",
+          "required": false,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "blind",
+          "required": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "sig",
+          "required": true,
+          "type": "fixed64",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "confirm",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 1,
+      "fields": [
+        {
+          "name": "status",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "reason",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "key",
+          "required": false,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "encryptionKey",
+          "required": false,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "extra",
+          "required": false,
+          "type": "buffer",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "rows",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 0,
+      "fields": [
+        {
+          "name": "data",
+          "required": false,
+          "array": true,
+          "type": "buffer",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "query",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 0,
+      "fields": [
+        {
+          "name": "gt",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "gte",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "lt",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "lte",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "reverse",
+          "required": false,
+          "type": "bool",
+          "version": 1
+        },
+        {
+          "name": "data",
+          "required": false,
+          "type": "json",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "create",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 0,
+      "fields": [
+        {
+          "name": "id",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "role",
+          "required": false,
+          "type": "string",
+          "version": 1
+        },
+        {
+          "name": "noAccept",
+          "required": false,
+          "type": "bool",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "blob-id",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "coreKey",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "blockOffset",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "blockLength",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "byteOffset",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "byteLength",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "type",
+          "required": true,
+          "type": "string",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "changes",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 0,
+      "fields": [
+        {
+          "name": "prev",
+          "required": false,
+          "array": true,
+          "type": "buffer",
+          "version": 2
+        },
+        {
+          "name": "next",
+          "required": false,
+          "array": true,
+          "type": "buffer",
+          "version": 2
+        }
+      ]
+    }
+  ]
+}

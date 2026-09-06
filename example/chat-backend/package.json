@@ -1,0 +1,35 @@
+{
+  "name": "chat-backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared cero schema + Chat helper for the chat examples",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./schema": "./schema.js",
+    "./spec": "./spec/index.js",
+    "./client": "./client.js",
+    "./server": "./server.js"
+  },
+  "imports": {
+    "os": {
+      "bare": "bare-os",
+      "default": "os"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf spec && node build.js",
+    "prepare": "node build.js",
+    "pretest": "node build.js",
+    "test": "brittle-node test/*.test.js"
+  },
+  "dependencies": {
+    "@cero-base/cero": "*",
+    "bare-os": "^3.9.3"
+  },
+  "devDependencies": {
+    "@hyperswarm/testnet": "^3.1.4",
+    "brittle": "^4.1.1"
+  }
+}

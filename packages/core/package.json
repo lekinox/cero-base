@@ -1,0 +1,188 @@
+{
+  "name": "@cero-base/core",
+  "version": "2.0.0",
+  "description": "cero p2p primitives — identity, storage, network, database, blobs, rpc, pairing.",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lekinox/cero-base.git",
+    "directory": "packages/core"
+  },
+  "main": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "files": [
+    "src",
+    "types",
+    "README.md",
+    "LICENSE",
+    "!**/CLAUDE.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./identity": {
+      "types": "./types/identity/index.d.ts",
+      "default": "./src/identity/index.js"
+    },
+    "./storage": {
+      "types": "./types/storage/index.d.ts",
+      "default": "./src/storage/index.js"
+    },
+    "./network": {
+      "types": "./types/network/index.d.ts",
+      "default": "./src/network/index.js"
+    },
+    "./database": {
+      "types": "./types/database/index.d.ts",
+      "default": "./src/database/index.js"
+    },
+    "./database/encryption": {
+      "types": "./types/database/encryption.d.ts",
+      "default": "./src/database/encryption.js"
+    },
+    "./blobs": {
+      "types": "./types/blobs/index.d.ts",
+      "default": "./src/blobs/index.js"
+    },
+    "./blobs/codec": {
+      "types": "./types/blobs/codec.d.ts",
+      "default": "./src/blobs/codec.js"
+    },
+    "./blobs/server": {
+      "types": "./types/blobs/server.d.ts",
+      "default": "./src/blobs/server.js"
+    },
+    "./rpc": {
+      "types": "./types/rpc/index.d.ts",
+      "default": "./src/rpc/index.js"
+    },
+    "./pairing": {
+      "types": "./types/pairing/index.d.ts",
+      "default": "./src/pairing/index.js"
+    },
+    "./invite": {
+      "types": "./types/pairing/invite.d.ts",
+      "default": "./src/pairing/invite.js"
+    },
+    "./schema": {
+      "types": "./types/lib/schema.d.ts",
+      "default": "./src/lib/schema.js"
+    },
+    "./utils": {
+      "types": "./types/lib/utils.d.ts",
+      "default": "./src/lib/utils.js"
+    },
+    "./errors": {
+      "types": "./types/lib/errors.d.ts",
+      "default": "./src/lib/errors.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "invite": [
+        "types/pairing/invite.d.ts"
+      ],
+      "schema": [
+        "types/lib/schema.d.ts"
+      ],
+      "utils": [
+        "types/lib/utils.d.ts"
+      ],
+      "errors": [
+        "types/lib/errors.d.ts"
+      ],
+      "*": [
+        "types/*/index.d.ts"
+      ]
+    }
+  },
+  "imports": {
+    "fs": {
+      "bare": "bare-fs",
+      "default": "fs"
+    },
+    "path": {
+      "bare": "bare-path",
+      "default": "path"
+    },
+    "crypto": {
+      "bare": "bare-crypto",
+      "default": "crypto"
+    },
+    "events": {
+      "bare": "bare-events",
+      "default": "events"
+    },
+    "process": {
+      "bare": "bare-process",
+      "default": "process"
+    }
+  },
+  "scripts": {
+    "build": "node schema/build.js",
+    "build:test": "rm -rf test/fixtures/spec && node test/fixtures/build.js",
+    "build:types": "rm -rf types && tsc -p .",
+    "pretest": "npm run build:test",
+    "prepublishOnly": "npm run build:types",
+    "test": "npm run test:bare",
+    "test:bare": "brittle-bare $(find test -name '*.test.js' | sort)",
+    "pretest:bare": "npm run build:test",
+    "test:node": "brittle-node $(find test -name '*.test.js' | sort)"
+  },
+  "dependencies": {
+    "@hyperswarm/secret-stream": "^6.9.1",
+    "autobee": "^2.0.1",
+    "autobee-encryption": "0.1.3",
+    "b4a": "^1.8.1",
+    "bare-crypto": "^1.15.3",
+    "bare-fs": "^4.8.1",
+    "bare-path": "^3.1.2",
+    "bip39-mnemonic": "^2.5.0",
+    "blind-pairing": "^2.3.1",
+    "blind-peering": "^2.7.0",
+    "compact-encoding": "^3.4.0",
+    "corestore": "^7.12.3",
+    "framed-stream": "^1.0.1",
+    "hrpc": "^4.3.1",
+    "hyperblobs": "^2.12.1",
+    "hypercore": "^11.35.4",
+    "hypercore-blob-server": "^1.15.0",
+    "hypercore-crypto": "^3.7.0",
+    "hypercore-id-encoding": "^1.3.0",
+    "hypercore-storage": "^3.2.1",
+    "hyperdb": "^6.9.0",
+    "hyperdispatch": "^1.6.0",
+    "hyperschema": "^1.23.0",
+    "hyperswarm": "^4.17.0",
+    "keet-identity-key": "^3.2.0",
+    "protomux": "^3.11.0",
+    "protomux-wakeup": "^2.9.0",
+    "ready-resource": "^1.2.0",
+    "safety-catch": "^1.0.3",
+    "sodium-universal": "^5.0.1",
+    "streamx": "^2.28.1",
+    "z32": "^1.1.0"
+  },
+  "devDependencies": {
+    "@hyperswarm/testnet": "^3.1.4",
+    "bare-abort-controller": "^1.1.2",
+    "bare-events": "^2.9.2",
+    "bare-fetch": "^3.2.1",
+    "bare-process": "^4.5.1",
+    "bare-url": "^2.5.4",
+    "blind-peer": "^3.14.1",
+    "brittle": "^4.1.1",
+    "typescript": "^7.0.2",
+    "which-runtime": "^1.4.0"
+  },
+  "license": "Apache-2.0"
+}

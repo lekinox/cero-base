@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Cero Chat",
+    "slug": "cero-chat-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "ios": {
+      "bundleIdentifier": "com.lekinox.cerochat2"
+    },
+    "android": {
+      "package": "com.lekinox.cerochat2"
+    }
+  }
+}

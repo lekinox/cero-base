@@ -1,0 +1,21 @@
+node_modules/
+*.tsbuildinfo
+*.log
+.turbo/
+.DS_Store
+.env*
+
+# generated, the build recreates them
+example/*/dist/
+example/*/spec/
+example/chat-mobile/worklets/app.bundle.mjs
+packages/*/test/fixtures/spec/
+packages/cero/test/fixtures/.build-*/
+
+# one lockfile, at the root
+packages/*/package-lock.json
+example/*/package-lock.json
+
+# local notes and tooling
+.claude
+.superpowers/

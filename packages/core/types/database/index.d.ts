@@ -1,0 +1,454 @@
+import ReadyResource from 'ready-resource';
+import { EpochAutobee, Keyring } from './encryption.js';
+import { Identity } from '../identity/index.js';
+import { Rotation } from './rotation.js';
+export type DatabaseOpts = {
+    /**
+     * Corestore (or compatible) used to materialize the autobee.
+     */
+    store: any;
+    /**
+     * Long-lived member identity used to sign writer changes.
+     */
+    identity: import('../identity/index.js').Identity;
+    /**
+     * Optional swarm; required for multi-writer replication.
+     */
+    network?: import('../network/index.js').Network;
+    /**
+     * Generated hyperdb + hyperdispatch spec.
+     */
+    spec: {
+        database: any;
+        dispatch: any;
+        meta?: {
+            ns?: string;
+            refs?: Record<string, {
+                kind?: string;
+                verb?: string;
+            }>;
+        };
+    };
+    /**
+     * Custom action handlers keyed by route name.
+     */
+    routes?: Record<string, Function>;
+    /**
+     * Corestore namespace; defaults to `cero`.
+     */
+    namespace?: string;
+    /**
+     * Optional encryption key; falls back to identity's key.
+     */
+    encryptionKey?: Uint8Array | null;
+    /**
+     * Rotation epochs to prime the keyring with (delivered at join).
+     */
+    epochs?: Array<{
+        epoch: number;
+        entropy: Uint8Array;
+    }> | null;
+    /**
+     * Existing autobee key to reopen.
+     */
+    key?: Uint8Array | null;
+    /**
+     * Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
+     */
+    passive?: boolean;
+    /**
+     * This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
+     */
+    keyPair?: import('../identity/index.js').KeyPair;
+    /**
+     * Called when a background after-hook or onApply callback fails, a malformed node is skipped, or the bee errors.
+     */
+    onerror?: (err: Error) => void;
+};
+export type SingleResult = {
+    data: any | null;
+};
+export type ListResult = {
+    data: any[];
+    total: number | null;
+    size: number;
+};
+export type Query = {
+    gt?: string;
+    gte?: string;
+    lt?: string;
+    lte?: string;
+    reverse?: boolean;
+    limit?: number;
+    search?: string;
+    fields?: string[];
+    total?: boolean;
+};
+export type Ref = {
+    kind: string;
+    verb: string;
+    name: string;
+};
+export type HookFn = (ctx: any) => any | Promise<any>;
+/**
+ * @typedef {object} DatabaseOpts
+ * @property {any} store                                              Corestore (or compatible) used to materialize the autobee.
+ * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
+ * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
+ * @property {{ database: any, dispatch: any, meta?: { ns?: string, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
+ * @property {Record<string, Function>} [routes]                      Custom action handlers keyed by route name.
+ * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
+ * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
+ * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
+ * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
+ * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
+ * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
+ * @property {(err: Error) => void} [onerror]                         Called when a background after-hook or onApply callback fails, a malformed node is skipped, or the bee errors.
+ *
+ * @typedef {{ data: any | null }} SingleResult
+ * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
+ * @typedef {{ gt?: string, gte?: string, lt?: string, lte?: string, reverse?: boolean, limit?: number, search?: string, fields?: string[], total?: boolean }} Query
+ * @typedef {{ kind: string, verb: string, name: string }} Ref
+ * @typedef {(ctx: any) => any | Promise<any>} HookFn
+ */
+/**
+ * Multi-writer database built on Autobee + HyperDB.
+ */
+export declare class Database extends ReadyResource {
+    store: any;
+    identity: Identity;
+    network: import("../index.js").Network;
+    spec: {
+        database: any;
+        dispatch: any;
+        meta?: {
+            ns?: string;
+            refs?: Record<string, {
+                kind?: string;
+                verb?: string;
+            }>;
+        };
+    };
+    meta: {
+        ns?: string;
+        refs?: Record<string, {
+            kind?: string;
+            verb?: string;
+        }>;
+    };
+    ns: string;
+    refs: Record<string, {
+        kind?: string;
+        verb?: string;
+    }>;
+    version: any;
+    behind: any;
+    routes: Record<string, Function>;
+    namespace: string;
+    encryptionKey: Uint8Array<ArrayBufferLike>;
+    keyring: Keyring;
+    rotation: Rotation;
+    key: Uint8Array<ArrayBufferLike>;
+    passive: boolean;
+    keyPair: import("../index.js").KeyPair;
+    _onerror: any;
+    bee: EpochAutobee;
+    dispatcher: {
+        dispatch: (value: Buffer, ctx: object) => Promise<void>;
+        apply: (nodes: Array<{
+            value: Buffer;
+            key: Buffer;
+        }>, view: object, host: object) => Promise<void>;
+    };
+    _discovery: import("../network/discovery.js").Discovery;
+    _txChain: any;
+    _before: Map<any, any>;
+    _after: Map<any, any>;
+    _updaters: Map<any, any>;
+    _observers: Set<any>;
+    _verbs: Map<any, any>;
+    _touched: Set<any>;
+    _seq: number;
+    txQueue: any;
+    /** @param {Partial<DatabaseOpts>} [opts] */
+    constructor(opts?: Partial<DatabaseOpts>);
+    /** @returns {Uint8Array | null} discovery key of the underlying bee */
+    get discoveryKey(): Uint8Array | null;
+    /** @returns {Uint8Array | null} this device's local writer key */
+    get writerKey(): Uint8Array | null;
+    /** @returns {boolean} whether the bee accepts local writes */
+    get writable(): boolean;
+    /** @returns {number} number of ops in the local writer */
+    get length(): number;
+    /** @returns {object | null} the materialized HyperDB view */
+    get view(): object | null;
+    _open(): Promise<void>;
+    _close(): Promise<void>;
+    /**
+     * Flip announce mode at runtime — passive stays reachable (server) but
+     * stops actively looking (client). Cheap; use it to demote idle rooms.
+     *
+     * @param {boolean} active
+     * @returns {Promise<void>}
+     */
+    setActive(active: boolean): Promise<void>;
+    /**
+     * Register a pre-op hook. Returning `false` from `fn` aborts the op.
+     *
+     * @param {string} op
+     * @param {HookFn} fn
+     * @returns {() => void} disposer
+     */
+    before(op: string, fn: HookFn): () => void;
+    /**
+     * Register a post-op hook, fired after the write succeeds.
+     *
+     * @param {string} op
+     * @param {HookFn} fn
+     * @returns {() => void} disposer
+     */
+    after(op: string, fn: HookFn): () => void;
+    /**
+     * Subscribe to local apply notifications. Fires whenever the view updates;
+     * pass `scope` (a ref name) to fire only when that ref was touched.
+     *
+     * @param {() => void} fn
+     * @param {string} [scope]
+     * @returns {() => void} disposer
+     */
+    onUpdate(fn: () => void, scope?: string): () => void;
+    /**
+     * Observe every applied op — local AND replicated (apply processes the merged log).
+     *
+     * @param {(event: { op: string, name: string, row: any, writerKey: any, seq: number }) => void} fn
+     * @returns {() => void} disposer
+     */
+    onApply(fn: (event: {
+        op: string;
+        name: string;
+        row: any;
+        writerKey: any;
+        seq: number;
+    }) => void): () => void;
+    /**
+     * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
+     *
+     * @param {string} name
+     * @param {Record<string, any>} row
+     * @returns {Promise<SingleResult | null>}
+     */
+    put(name: string, row: Record<string, any>): Promise<SingleResult | null>;
+    /**
+     * Upsert by merging with the existing row, preserving `createdAt`.
+     *
+     * @param {string} name
+     * @param {Record<string, any>} row
+     * @param {{ upsert?: boolean }} [opts]
+     * @returns {Promise<SingleResult | null>}
+     */
+    set(name: string, row: Record<string, any>, opts?: {
+        upsert?: boolean;
+    }): Promise<SingleResult | null>;
+    /**
+     * Delete by id (collection) or wipe the whole single-row table.
+     *
+     * @param {string} name
+     * @param {string} [id]
+     * @returns {Promise<void | null>}
+     */
+    del(name: string, id?: string): Promise<void | null>;
+    /**
+     * Dispatch a custom action route by name.
+     *
+     * @param {string} op
+     * @param {Record<string, any>} [data]
+     * @returns {Promise<void>}
+     */
+    call(op: string, data?: Record<string, any>): Promise<void>;
+    /**
+     * Rotate the encryption epoch: generate a fresh 32-byte secret, seal it to every current
+     * member's identity key, and announce it through the log.
+     *
+     * @returns {Promise<{ epoch: number }>}
+     */
+    rotate(): Promise<{
+        epoch: number;
+    }>;
+    /**
+     * Batch every write made through the transaction handle passed to `fn` into a single
+     * autobee append.
+     *
+     * @template T
+     * @param {(tx: Database) => Promise<T> | T} fn
+     * @returns {Promise<T>}
+     */
+    tx<T>(fn: (tx: Database) => Promise<T> | T): Promise<T>;
+    /**
+     * Encode and append dispatch ops. Buffers into the active `tx` queue if one
+     * is open.
+     *
+     * @param {Array<[string, any]>} ops
+     * @returns {Promise<void>}
+     */
+    write(ops: Array<[string, any]>): Promise<void>;
+    /**
+     * Read a row. With no `query`: list all (collection) or fetch the one
+     * record (single). With a string id: fetch that specific row.
+     *
+     * @param {string} name
+     * @param {string | Query} [query]
+     * @returns {Promise<SingleResult | ListResult>}
+     */
+    get(name: string, query?: string | Query): Promise<SingleResult | ListResult>;
+    /**
+     * Number of rows that match `query` (or total if omitted).
+     *
+     * @param {string} name
+     * @param {Query} [query]
+     * @returns {Promise<{ data: number }>}
+     */
+    count(name: string, query?: Query): Promise<{
+        data: number;
+    }>;
+    /**
+     * Live snapshot stream — re-emits the latest `get()` result on every
+     * underlying mutation. Destroy the stream to stop watching.
+     *
+     * @param {string} name
+     * @param {Query} [query]
+     * @returns {import('streamx').Readable}
+     */
+    watch(name: string, query?: Query): import('streamx').Readable;
+    /**
+     * Delta subscription: batches of `{ prev, next }` row pairs instead of full snapshots.
+     *
+     * @param {string} name
+     * @param {Query} [query]
+     * @returns {import('streamx').Readable}
+     */
+    changes(name: string, query?: Query): import('streamx').Readable;
+    /**
+     * Provision this device. Its writer core was minted when the database opened and this
+     * device is its only author, ever.
+     *
+     * @param {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number }} [opts]
+     * @returns {Promise<{ id: Uint8Array, writer: import('../identity/index.js').KeyPair }>}
+     */
+    bootstrap({ name, isMobile, recovering, timeout }?: {
+        name?: string | null;
+        isMobile?: boolean;
+        recovering?: boolean;
+        timeout?: number;
+    }): Promise<{
+        id: Uint8Array;
+        writer: import('../identity/index.js').KeyPair;
+    }>;
+    /**
+     * Claim writership on an existing room by signing our writer key with the member identity;
+     * the claim rides in the device core as an optimistic node.
+     *
+     * @returns {Promise<void>}
+     */
+    claim(): Promise<void>;
+    /**
+     * Resolve once the bee becomes writable, or reject after `timeout` ms.
+     *
+     * @param {{ timeout?: number }} [opts]
+     * @returns {Promise<void>}
+     */
+    whenWritable({ timeout }?: {
+        timeout?: number;
+    }): Promise<void>;
+    /**
+     * Add a peer's writer key to the indexer set.
+     *
+     * @param {Uint8Array} publicKey
+     * @returns {Promise<void>}
+     */
+    addWriter(publicKey: Uint8Array): Promise<void>;
+    /**
+     * Remove a peer's writer key from the indexer set.
+     *
+     * @param {Uint8Array} publicKey
+     * @returns {Promise<void>}
+     */
+    removeWriter(publicKey: Uint8Array): Promise<void>;
+    /**
+     * Throw if the handle is closing/closed or the bee isn't ready yet.
+     *
+     * @returns {void}
+     */
+    guard(): void;
+    /**
+     * Resolve a table name to its normalized `{ name, kind, verb }` ref.
+     *
+     * @param {string} name
+     * @returns {Ref}
+     */
+    ref(name: string): Ref;
+    /**
+     * Namespaced collection path for a ref.
+     *
+     * @param {Ref} ref
+     * @returns {string}
+     */
+    col(ref: Ref): string;
+    _preload(): Promise<void>;
+    _boot(): Promise<void>;
+    _replay(): Promise<boolean>;
+    _isTrusted(writer: any, view: any): Promise<any>;
+    _apply(nodes: any, view: any, host: any): Promise<void>;
+    _update(db: any): Promise<void>;
+    _joinSwarm(bee: any, discoveryKey: any): void;
+    _runBefore(op: any, ctx: any): Promise<boolean>;
+    _runAfter(op: any, ctx: any): Promise<void>;
+    _opOf(node: any): {
+        op: any;
+        name: any;
+        value: any;
+    };
+    _notify(nodes: any): void;
+    _merge(name: any, row: any, { upsert }?: {
+        upsert?: boolean;
+    }): Promise<{
+        op: any;
+        name: any;
+        row: any;
+    }>;
+    _prepare(name: any, row: any): Ref;
+    _append(op: any, name: any, stored: any, verb: any): Promise<{
+        op: any;
+        name: any;
+        row: any;
+    }>;
+    _done(op: any, ctx: any): Promise<{
+        data: any;
+    }>;
+    _onfuture(version: any): void;
+    _dryRun(encoded: any): Promise<any>;
+    _plan(name: any, query?: {}): {
+        path: string;
+        range: {
+            gte: {};
+            lte: {};
+        };
+        rest: {};
+        sorted: boolean;
+    } | {
+        path: string;
+        range: {};
+        rest: {};
+        sorted: boolean;
+    };
+    _total(path: any, range: any, rows: any, query: any): Promise<any>;
+    _optimistic(op: any, opts: any): Promise<void>;
+    _backfilled(timeout: any): Promise<void>;
+    _admission(writer: any, ts?: number): {
+        master: Uint8Array<ArrayBufferLike>;
+        writer: any;
+        sig: Uint8Array<ArrayBufferLike>;
+        ts: number;
+    };
+    _checkFields(name: any, row: any): void;
+    _admit(verb: any, hook: any, publicKey: any): Promise<void>;
+}

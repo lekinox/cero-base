@@ -1,0 +1,75 @@
+name: CI
+
+# Validation only — this pipeline never publishes. Releases stay manual:
+# run `npm run release <patch|minor|major>` locally (see scripts/release.js).
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Only the library packages + root tooling (turbo, prettier) — skips the
+      # heavy react-native/expo example apps, which CI does not need.
+      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root
+      - run: npm run lint
+
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Packs the three packages and installs them into an empty project, then
+      # imports each under plain Node — catches undeclared deps / bad import maps.
+      # No repo install needed; the script fetches deps from the registry.
+      - run: npm run smoke
+
+  bare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root
+      # Workspace-filtered `npm ci` installs the bare package but skips linking
+      # its bin; rebuild re-creates node_modules/.bin/bare.
+      - run: npm rebuild bare
+      # the three packages in parallel, each file in its own Bare process
+      - run: npm test
+
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root
+      # Committed .d.ts must match the JSDoc they're generated from.
+      - run: npm run build:types --workspaces --if-present
+      - run: git diff --exit-code -- packages/*/types

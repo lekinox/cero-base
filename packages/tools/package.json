@@ -1,0 +1,107 @@
+{
+  "name": "@cero-base/tools",
+  "version": "2.0.0",
+  "description": "Passive devtools for cero — observe data, events, and p2p/replication stats over a local out-of-band pipe.",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lekinox/cero-base.git",
+    "directory": "packages/tools"
+  },
+  "main": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "bin": {
+    "cero-tools": "./bin/cero-tools.js"
+  },
+  "imports": {
+    "net": {
+      "bare": "bare-net",
+      "default": "net"
+    },
+    "crypto": {
+      "bare": "bare-crypto",
+      "default": "crypto"
+    },
+    "process": {
+      "bare": "bare-process",
+      "default": "process"
+    },
+    "fs": {
+      "bare": "bare-fs",
+      "default": "fs"
+    },
+    "path": {
+      "bare": "bare-path",
+      "default": "path"
+    },
+    "url": {
+      "bare": "bare-url",
+      "default": "url"
+    }
+  },
+  "files": [
+    "src",
+    "types",
+    "bin",
+    "README.md",
+    "LICENSE",
+    "!**/CLAUDE.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./connect": {
+      "types": "./types/connect.d.ts",
+      "default": "./src/connect.js"
+    },
+    "./stats": {
+      "types": "./types/stats.d.ts",
+      "default": "./src/stats.js"
+    }
+  },
+  "scripts": {
+    "build:types": "rm -rf types && tsc -p .",
+    "prepublishOnly": "npm run build:types",
+    "test": "npm run test:bare",
+    "test:bare": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-bare",
+    "test:node": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-node"
+  },
+  "dependencies": {
+    "@cero-base/cero": "^2.0.0",
+    "b4a": "^1.8.1",
+    "bare-crypto": "^1.15.3",
+    "bare-net": "^2.3.3",
+    "bare-process": "^4.5.1",
+    "streamx": "^2.28.1"
+  },
+  "devDependencies": {
+    "@hyperswarm/testnet": "^3.1.4",
+    "bare-abort-controller": "^1.1.2",
+    "bare-fetch": "^3.2.1",
+    "bare-fs": "^4.8.1",
+    "bare-path": "^3.1.2",
+    "bare-url": "^2.5.4",
+    "brittle": "^4.1.1",
+    "typescript": "^7.0.2"
+  },
+  "license": "Apache-2.0",
+  "typesVersions": {
+    "*": {
+      "connect": [
+        "./types/connect.d.ts"
+      ],
+      "stats": [
+        "./types/stats.d.ts"
+      ]
+    }
+  }
+}
