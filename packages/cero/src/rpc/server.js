@@ -358,7 +358,7 @@ export class Server extends RPCServer {
   _refOf(id, name, local) {
     if (local) {
       const info = this.spec.meta.local?.refs?.[name]
-      if (!info || info.builtin) throw CeroError.UNKNOWN('local ref', name)
+      if (!info || info.internal) throw CeroError.UNKNOWN('local ref', name)
       const r = this.me.local?.[name]
       if (!r) throw CeroError.UNKNOWN('local ref', name)
       return { ref: r, codec: this.spec.local.codec }

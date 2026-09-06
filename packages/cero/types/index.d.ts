@@ -4,7 +4,7 @@ import { Local } from './local/index.js';
 import { put, set, get, del, count, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
 import { peek } from './lib/peek.js';
 import { t, schema } from './lib/spec.js';
-import { internal } from './lib/internal.js';
+import { registry } from './extensions/index.js';
 export { Handle, Ref, Local };
 export { put, set, get, del, count, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
 export { peek } from './lib/peek.js';
@@ -145,7 +145,7 @@ export declare namespace cero {
     export { schema };
     export { bind };
     export { define };
-    export { internal as _internal };
+    export { registry as _registry };
     export var use: (...exts: any[]) => void;
 }
 /**

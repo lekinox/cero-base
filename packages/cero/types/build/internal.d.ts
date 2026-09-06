@@ -1,4 +1,4 @@
-export declare const refs: {
+export declare const defs: {
     main: {
         members: {
             type: string;
@@ -34,63 +34,45 @@ export declare const refs: {
         };
     };
 };
-export declare function getHyperdbType(prim: any): any;
-export declare function builtinRefs(ns: any, scope: any): {
+export declare function fields(map: any): {
+    name: string;
+    type: any;
+    required: boolean;
+}[];
+export declare function types(scope: any, extend?: {}): {
+    name: string;
+    compact: boolean;
+    fields: {
+        name: string;
+        type: any;
+        required: boolean;
+    }[];
+}[];
+export declare function refs(ns: any, scope: any): {
     [k: string]: {
         kind: any;
         path: string[];
-        builtin: boolean;
+        internal: boolean;
         verb: any;
         schema: string;
     };
 };
-export declare function builtinTypes(scope: any, extend: any): {
-    name: string;
-    compact: boolean;
-    fields: {
-        name: string;
-        type: any;
-        required: boolean;
-    }[];
-}[];
-export declare function rpcTypes(): {
-    name: string;
-    compact: boolean;
-    fields: {
-        name: string;
-        type: any;
-        required: boolean;
-    }[];
-}[];
-export declare function builtinCollections(ns: any, scope: any): {
+export declare function collections(ns: any, scope: any): {
     name: string;
     schema: string;
     key: string[];
 }[];
-export declare function builtinDispatches(ns: any): {
+export declare function dispatches(ns: any): {
     name: string;
     requestType: string;
 }[];
-export declare function rotateDispatch(ns: any): {
-    name: string;
-    requestType: string;
-};
-export declare function rpcCommands(ns: any): ({
-    name: string;
+export declare function commands(ns: any): {
+    name: string | boolean;
     request: {
         name: string;
     };
     response: {
         name: string;
-        stream?: undefined;
+        stream: string | true;
     };
-} | {
-    name: string;
-    request: {
-        name: string;
-    };
-    response: {
-        name: string;
-        stream: boolean;
-    };
-})[];
+}[];

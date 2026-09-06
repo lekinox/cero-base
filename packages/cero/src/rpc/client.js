@@ -30,7 +30,7 @@ export { put, set, get, del, count, watch, changes, call, open, rotate, bind, de
  * @property {'single'|'collection'|'action'|'handle'} [kind]
  * @property {string} [schema]
  * @property {string} [type]
- * @property {boolean} [builtin]
+ * @property {boolean} [internal]
  *
  * @typedef {import('@cero-base/core/rpc').Spec & { meta: { ns?: string, refs: Record<string, RefInfo>, local?: { refs: Record<string, RefInfo> }, handles?: Record<string, Spec> }, handles: Record<string, Spec> }} Spec  Built cero spec (schema + rpc + per-handle child specs).
  *
@@ -126,7 +126,7 @@ const operators = {
 
   _resolveRow(name, info, row) {
     if (!row || typeof row !== 'object') return row
-    if (info?.builtin && info?.verb === 'file') {
+    if (info?.internal && info?.verb === 'file') {
       if (!row.id) return row
       try {
         const { type, blobId } = decodeId(row.id)
@@ -440,7 +440,7 @@ class LocalRefs {
     this.store = this
     this._local = true
     const refs = client.spec.meta.local?.refs || {}
-    const exposed = Object.fromEntries(Object.entries(refs).filter(([, info]) => !info.builtin))
+    const exposed = Object.fromEntries(Object.entries(refs).filter(([, info]) => !info.internal))
     Ref.attach(this, exposed)
   }
 

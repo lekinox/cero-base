@@ -1,7 +1,6 @@
 name: CI
 
-# Validation only — this pipeline never publishes. Releases stay manual:
-# run `npm run release <patch|minor|major>` locally (see scripts/release.js).
+# Validation only. Releases are manual: npm run release <patch|minor|major>.
 
 on:
   push:
@@ -10,6 +9,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: 1
+  DO_NOT_TRACK: 1
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,56 +23,56 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
-      # Only the library packages + root tooling (turbo, prettier) — skips the
-      # heavy react-native/expo example apps, which CI does not need.
-      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root
+      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root --ignore-scripts
       - run: npm run lint
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [bare, node]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root --ignore-scripts
+      - run: npm rebuild bare
+        if: matrix.runtime == 'bare'
+      - run: npm test
+        if: matrix.runtime == 'bare'
+      - run: npm run test:node
+        if: matrix.runtime == 'node'
 
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
-      # Packs the three packages and installs them into an empty project, then
-      # imports each under plain Node — catches undeclared deps / bad import maps.
-      # No repo install needed; the script fetches deps from the registry.
+      # packs the packages, installs the tarballs into an empty project and imports each one
       - run: npm run smoke
-
-  bare:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root
-      # Workspace-filtered `npm ci` installs the bare package but skips linking
-      # its bin; rebuild re-creates node_modules/.bin/bare.
-      - run: npm rebuild bare
-      # the three packages in parallel, each file in its own Bare process
-      - run: npm test
 
   types:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
-      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root
-      # Committed .d.ts must match the JSDoc they're generated from.
+      - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root --ignore-scripts
       - run: npm run build:types --workspaces --if-present
       - run: git diff --exit-code -- packages/*/types

@@ -7,7 +7,7 @@ export type RefInfo = {
     kind?: 'single' | 'collection' | 'action' | 'handle';
     schema?: string;
     type?: string;
-    builtin?: boolean;
+    internal?: boolean;
 };
 export type Spec = import('@cero-base/core/rpc').Spec & {
     meta: {

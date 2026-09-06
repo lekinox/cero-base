@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
+import { fields } from '../../src/build/internal.js'
 import { makeTestnet } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -79,7 +80,7 @@ test('build: meta records user + builtin refs', async (t) => {
   t.is(meta.refs.profile.kind, 'single')
   t.is(meta.refs.messages.kind, 'collection')
   t.is(meta.refs.team.kind, 'handle')
-  t.is(meta.refs.members.builtin, true)
+  t.is(meta.refs.members.internal, true)
   t.is(meta.local.refs.drafts.kind, 'collection')
   t.is(meta.handles.team.refs.messages.kind, 'collection')
   t.is(meta.handles.team.refs.promote.kind, 'action')
@@ -169,7 +170,7 @@ const fileSchema = schema({
 test('build: files is a builtin collection ref with an add-file dispatch', async (t) => {
   const specDir = await buildInto(t, 'files', fileSchema)
   const { meta } = await importSpec(specDir)
-  t.is(meta.refs.files.builtin, true, 'files is a builtin ref')
+  t.is(meta.refs.files.internal, true, 'files is an internal ref')
   t.is(meta.refs.files.kind, 'collection')
 
   const dispatch = await fs.readFile(join(specDir, 'main/dispatch/index.js'), 'utf-8')
@@ -208,4 +209,19 @@ test('build: incremental rebuild over an existing spec stays loadable', async (t
   const router = new spec.dispatch.Router()
   router.add('@cero/rotate-key', async () => {})
   t.pass('rebuild loads and rotate-key routes')
+})
+
+test('fields: bytes is a buffer column, file an id string, the rest map to themselves', (t) => {
+  t.alike(
+    fields({
+      raw: { prim: 'bytes' },
+      avatar: { prim: 'file' },
+      n: { prim: 'uint', required: true }
+    }),
+    [
+      { name: 'raw', type: 'buffer', required: false },
+      { name: 'avatar', type: 'string', required: false },
+      { name: 'n', type: 'uint', required: true }
+    ]
+  )
 })

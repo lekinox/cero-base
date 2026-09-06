@@ -31,7 +31,7 @@ import {
 import { peek } from './lib/peek.js'
 import { t, schema } from './lib/spec.js'
 import { FLUSH, TIMEOUT } from './lib/constants.js'
-import { internal } from './lib/internal.js'
+import { registry } from './extensions/index.js'
 
 export { Handle, Ref, Local }
 export {
@@ -197,7 +197,7 @@ export async function cero(dir, spec, opts = {}) {
       }
     }
 
-    for (const ext of internal.extensions) {
+    for (const ext of registry) {
       if (ext.bundled && opts.extensions === false) continue
       const off = await ext.setup?.(me)
       if (typeof off === 'function') me.once('close', off)
@@ -280,13 +280,13 @@ cero.schema = schema
 cero.bind = bind
 cero.define = define
 // test-only
-cero._internal = internal
+cero._registry = registry
 // a bare function is shorthand for { setup }; a named extension replaces one of the same name
 cero.use = (...exts) => {
   for (const e of exts.flat().map((e) => (typeof e === 'function' ? { setup: e } : e))) {
-    const i = e.name ? internal.extensions.findIndex((x) => x.name === e.name) : -1
-    if (i >= 0) internal.extensions[i] = e
-    else internal.extensions.push(e)
+    const i = e.name ? registry.findIndex((x) => x.name === e.name) : -1
+    if (i >= 0) registry[i] = e
+    else registry.push(e)
   }
 }
 

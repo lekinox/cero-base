@@ -17,6 +17,9 @@
       "persistent": true,
       "cache": false
     },
-    "lint": {}
+    "lint": {},
+    "test:node": {
+      "dependsOn": ["build:test"]
+    }
   }
 }

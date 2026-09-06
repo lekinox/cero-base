@@ -348,7 +348,7 @@ export function makeDispatcher({ spec, ns, routes, onerror, key, onepoch }) {
   add('del-handle', remove(handles))
 
   for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
-    if (info.builtin) continue
+    if (info.internal) continue
     if (info.kind === 'handle') continue
     if (info.kind === ACTION) {
       // an action with no local route diverges this peer from those that ran it: surface it

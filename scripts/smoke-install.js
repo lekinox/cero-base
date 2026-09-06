@@ -111,7 +111,7 @@ function installCheck() {
     )
 
     console.log('  installing tarballs (registry deps fetched)...')
-    npm(['install', '--no-audit', '--no-fund', ...tarballs], proj)
+    npm(['install', '--no-audit', '--no-fund', '--ignore-scripts', ...tarballs], proj)
 
     console.log('  importing every exports subpath under plain Node...')
     const subs = []

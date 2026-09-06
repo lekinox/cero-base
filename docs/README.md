@@ -1,10 +1,13 @@
 # cero
 
+> [!IMPORTANT]
+> This project is experimental. The API is subject to change and may break at any time.
+
 Next: [Quickstart](quickstart.md)
 
-cero means zero. Zero servers. Zero accounts. Zero sync code.
+A simple peer-to-peer SDK on top of the [Pear](https://pears.com) stack by [Holepunch](https://holepunch.to).
 
-You describe your data. cero stores it on the device, syncs it between your devices, and shares it with the people you invite.
+Describe your data. cero stores it on the device, syncs it across your devices and shares it with the people you invite. No server.
 
 ## See it
 
@@ -114,6 +117,10 @@ Follow one message:
 
 Every op carries the app version its spec was built at, so old and new builds coexist and an old build knows when to ask for an update.
 
+## Built on Pear
+
+Under the hood cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm), [blind-pairing](https://github.com/holepunchto/blind-pairing) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare), so the same code runs on desktop and mobile.
+
 ## Good to know
 
 - Offline is normal. Writes land locally first and sync when a peer is reachable, in either direction.
@@ -158,4 +165,3 @@ Read them in order the first time. Every page links to the previous and the next
 | ------------------------------ | ------------------------------------------------------ |
 | [core.md](core.md)             | The primitives under cero, opened by hand.             |
 | [encryption.md](encryption.md) | Epochs, and rotating a room's key when someone leaves. |
-| [tools.md](tools.md)           | Devtools: tap, stats, redact, loopback.                |

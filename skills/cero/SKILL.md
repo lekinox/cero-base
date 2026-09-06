@@ -11,9 +11,12 @@ description: >-
 
 # cero
 
-One function, a schema, and a handful of operators. cero stores data on the
+A simple peer-to-peer SDK on top of the Pear stack by Holepunch. One function, a
+schema, and a handful of operators. cero stores data on the
 device, syncs it between a user's devices, and shares it with the people they
 invite. No server, no accounts. Runs on Node and on Bare.
+
+Experimental: the API is subject to change and may break at any time.
 
 This file is the short version. The `references/` folder holds the full guides, one file per topic; the table at the end names the file for each task.
 
@@ -146,7 +149,7 @@ every transport. See [apps](references/apps.md).
 | Channels, mirrors, suspend, Bluetooth, app versions        | [network](references/network.md)       |
 | Every export and option                                    | [api reference](references/api.md)     |
 | Every error code                                           | [errors](references/errors.md)         |
-| The core primitives, encryption, devtools                  | [advanced](references/encryption.md)   |
+| Encryption epochs and key rotation                         | [encryption](references/encryption.md) |
 
 ## References in this skill
 

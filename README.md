@@ -1,16 +1,62 @@
 # cero
 
-cero means zero. Zero servers. Zero accounts. Zero sync code.
+> [!IMPORTANT]
+> This project is experimental. The API is subject to change and may break at any time.
 
-You describe your data. cero stores it on the device, syncs it between your devices, and shares it with the people you invite.
+A simple peer-to-peer SDK on top of the [Pear](https://pears.com) stack by [Holepunch](https://holepunch.to).
+
+Describe your data. cero stores it on the device, syncs it across your devices and shares it with the people you invite. No server.
+
+## Why cero
+
+- **Nothing to host.** Your app stores data on the device and syncs it peer to peer. No backend, no accounts.
+- **Schema in, API out.** Declare collections and fields; cero gives you `put`, `get`, `watch` and the rest.
+- **Sharing built in.** Shared spaces with invites and roles (owner, admin, member, reader), enforced by every peer.
+- **Encryption built in.** Per-space keys, rotated on removal, so a removed member cannot read what comes after.
+- **Recovery built in.** A twelve-word phrase restores the account on a new device, history included.
+- **Mirrors and Bluetooth.** Optional always-on peers for availability, and nearby sync with no internet.
+- **Ready for split apps.** Run the data in a worker and use the same API from the UI over RPC.
+- **Extensible.** Extensions, custom operators, and the underlying primitives one import away.
+- **Node and Bare, typed.** Desktop, mobile, tests and CLIs.
+
+## Quickstart
+
+```sh
+npm install @cero-base/cero
+```
+
+Describe your data:
 
 ```js
+// schema.js
 import { cero, t } from '@cero-base/cero'
+
+export const schema = cero.schema({
+  profile: t.single({ name: t.string }),
+  room: { messages: t.collection({ text: t.string }) }
+})
+```
+
+Build it, once:
+
+```js
+// build.js
+import { build } from '@cero-base/cero/build'
+import { schema } from './schema.js'
+
+await build('./spec', schema)
+```
+
+Use it:
+
+```js
+import { cero } from '@cero-base/cero'
 import { spec } from './spec/index.js'
 
 const me = await cero('./data', spec)
-const room = await cero.open(me.room, { name: 'general' })
+await cero.set(me.profile, { name: 'Alice' })
 
+const room = await cero.open(me.room, { name: 'general' })
 await cero.put(room.messages, { text: 'hi' })
 console.log(await room.invite()) // give this to a friend
 ```
@@ -22,21 +68,11 @@ const room = await cero.open(me.room, { invite })
 for await (const { data } of cero.watch(room.messages)) console.log(data)
 ```
 
-That is a working, encrypted, offline-first, peer-to-peer chat.
+That is a working, encrypted, offline-first, peer-to-peer chat. The [quickstart](docs/quickstart.md) walks through it, and a second device of your own.
 
-## How it works
+## Built on Pear
 
-**Everything is a handle. Handles contain refs. Refs contain rows.** `me` is you. A room is a child handle you open from `me` and share by invite. `room.messages` is a ref, and the same twelve operators work on every ref, in process or over RPC.
-
-```mermaid
-flowchart LR
-  App["your app"] --> Handle["handles<br/>me · room · room.messages"]
-  Handle --> DB["Database<br/>one encrypted log per device"]
-  DB --> Net["Network<br/>DHT · mirrors · Bluetooth"]
-  Net <--> Peers["your devices and the members you invited"]
-```
-
-Every write is an op in this device's own log. Peers replicate each other's logs and apply them in one deterministic order, so every device arrives at the same rows with no coordinator. [How it works](docs/README.md#how-it-works) has the longer version.
+Under the hood cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm), [blind-pairing](https://github.com/holepunchto/blind-pairing) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
 
 ## Docs
 
@@ -48,17 +84,11 @@ Start with the [quickstart](docs/quickstart.md), then follow the guides in order
 | [Guides](docs/README.md#guides)     | Schema, data, rooms, identity, apps, extensions, files, network. |
 | [Examples](docs/examples.md)        | A CLI, an Electron app and an Expo app.                          |
 | [API reference](docs/api.md)        | Every export on one page.                                        |
-| [Advanced](docs/README.md#advanced) | The core primitives, encryption, devtools.                       |
+| [Advanced](docs/README.md#advanced) | The core primitives and encryption.                              |
 
-## Packages
+## Related
 
-| Package                              | What it is                                                                                                        |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| [`@cero-base/cero`](packages/cero)   | The SDK: `cero(dir, spec)`, the operators, rooms and invites, extensions, RPC for split apps. Start here.         |
-| [`@cero-base/core`](packages/core)   | The primitives underneath: identity, database, network, pairing, storage, blobs. For when cero is too high level. |
-| [`@cero-base/tools`](packages/tools) | Devtools: a read-only tap into a running app's refs, ops and stats.                                               |
-
-Works on Node and on Bare. Ships TypeScript declarations generated from JSDoc.
+[`@cero-base/core`](packages/core) holds the primitives cero is built from: identity, database, network, pairing, storage and blobs. Reach for it when cero is too high level. See [Core primitives](docs/core.md).
 
 ## Develop
 
@@ -66,8 +96,6 @@ Works on Node and on Bare. Ships TypeScript declarations generated from JSDoc.
 npm install
 npm test
 ```
-
-Each package runs its tests under Bare with `brittle-bare`, one process per file. `npm run lint` runs prettier and lunte. `node scripts/release.js <patch|minor|major>` releases all three packages at one version.
 
 ## License
 

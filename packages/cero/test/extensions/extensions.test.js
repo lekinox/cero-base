@@ -71,7 +71,7 @@ const handleWideSchema = schema({
 })
 
 const reset = () => {
-  cero._internal.extensions.length = 0
+  cero._registry.length = 0
 }
 
 async function buildSpec(t, sub, sch = base) {
@@ -454,13 +454,13 @@ async function settled(fn, ms = 150) {
 }
 
 test('bundled extensions: double registration builds the identical spec', async (t) => {
-  const saved = [...cero._internal.extensions]
+  const saved = [...cero._registry]
   t.teardown(() => {
-    cero._internal.extensions.length = 0
-    cero._internal.extensions.push(...saved)
+    cero._registry.length = 0
+    cero._registry.push(...saved)
   })
-  cero._internal.extensions.length = 0
-  cero._internal.extensions.push(profileSync(), handleSync())
+  cero._registry.length = 0
+  cero._registry.push(profileSync(), handleSync())
 
   const readSchema = async (dir) =>
     JSON.parse(await fs.readFile(join(dir, 'main/schema/schema.json'), 'utf-8'))
@@ -468,7 +468,7 @@ test('bundled extensions: double registration builds the identical spec', async 
   const a = await t.tmp()
   await build(a, base)
   cero.use(profileSync(), handleSync()) // app registers the defaults again
-  t.is(cero._internal.extensions.length, 2, 'use() replaced by name, no doubling')
+  t.is(cero._registry.length, 2, 'use() replaced by name, no doubling')
   const b = await t.tmp()
   await build(b, base)
   t.alike(await readSchema(a), await readSchema(b), 'spec unchanged by the double use()')

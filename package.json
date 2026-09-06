@@ -16,6 +16,7 @@
     "build:mobile": "npm run build -w chat-backend && npm run build -w chat-mobile",
     "pretest": "test -x node_modules/.bin/bare || npm rebuild bare",
     "test": "turbo test --filter='./packages/*'",
+    "test:node": "turbo test:node --filter='./packages/*'",
     "test:core": "npm test -w @cero-base/core",
     "test:cero": "npm test -w @cero-base/cero",
     "dev:desktop": "npm run build:desktop && cd example/chat-desktop && npm run dev --",

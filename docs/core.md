@@ -6,7 +6,7 @@
 import { Identity, Network, Database } from '@cero-base/core'
 ```
 
-`@cero-base/cero` is a thin composition of six primitives from `@cero-base/core`. Reach for them when you want one piece on its own: just signed pairing, just a replicated database, just a swarm with wakeup.
+`@cero-base/cero` is a thin composition of six primitives from `@cero-base/core`, each a small wrapper over a [Pear](https://pears.com) module. Reach for them when you want one piece on its own: just signed pairing, just a replicated database, just a swarm with wakeup.
 
 ## On this page
 

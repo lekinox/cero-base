@@ -9,7 +9,7 @@ Read `docs/README.md` first, then `skills/cero/SKILL.md` for the short version o
 ```text
 packages/core    @cero-base/core   primitives: identity, database, network, pairing, storage, blobs, rpc
 packages/cero    @cero-base/cero   the SDK: cero(), operators, handles, extensions, serve/connect
-packages/tools   @cero-base/tools  devtools tap
+packages/tools   @cero-base/tools  devtools tap, not documented yet
 example/         chat-backend (shared spec), chat-terminal, chat-desktop (Electron), chat-mobile (Expo)
 docs/            the guides, one flat folder
 skills/cero      self-contained agent skill, copy it into a .claude folder
@@ -23,13 +23,14 @@ ESM everywhere. The three packages publish at one version, in lockstep.
 ```sh
 npm install
 npm test                  # the three packages in parallel under Bare, one file per process
+npm run test:node         # the same under Node
 npm run test:core         # one package
 npm run lint              # prettier + lunte
 npm run build:types --workspaces --if-present   # regenerate types/ from JSDoc, commit the result
 npm run release <patch|minor|major>             # tests, smoke, tag, publish, push
 ```
 
-A single file: `cd packages/core && npx brittle-bare test/database/database.test.js`. Node instead of Bare: `npm run test:node` in a package.
+A single file: `cd packages/core && npx brittle-bare test/database/database.test.js`, or `brittle-node` for Node.
 
 ## Rules
 

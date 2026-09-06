@@ -401,7 +401,11 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
   const late = await joinRoom('late')
   await sees(late.h, 'before')
   await sees(late.h, 'after')
-  t.is(late.h.store.keyring.seq, 1, 'join delivered the rotation epoch via confirm')
+  // the join itself may trigger a self-healing rotation, so epoch 1 is a lower bound
+  t.ok(
+    late.h.store.keyring.all().some((e) => e.epoch === 1),
+    'join delivered the rotation epoch via confirm'
+  )
 })
 
 test('Handle: files rotate with the room — cross-member reads, epoch cutoff, legacy passthrough', async (t) => {

@@ -39,7 +39,7 @@ function memoryTransport() {
 }
 
 const reset = () => {
-  cero._internal.extensions.length = 0
+  cero._registry.length = 0
 }
 
 const waitFor = (stream, pred) =>

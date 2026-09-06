@@ -1,8 +1,11 @@
 # @cero-base/cero
 
-cero means zero. Zero servers. Zero accounts. Zero sync code.
+> [!IMPORTANT]
+> This project is experimental. The API is subject to change and may break at any time.
 
-You describe your data. cero stores it on the device, syncs it between your devices, and shares it with the people you invite.
+A simple peer-to-peer SDK on top of the [Pear](https://pears.com) stack by [Holepunch](https://holepunch.to).
+
+Describe your data. cero stores it on the device, syncs it across your devices and shares it with the people you invite. No server.
 
 ```sh
 npm install @cero-base/cero
@@ -66,7 +69,7 @@ That is a working, encrypted, offline-first, peer-to-peer app. Your phrase, `me.
 | `@cero-base/cero/client`     | `connect(ipc, spec)`, `Client`, `restore` and the operators for a UI process |
 | `@cero-base/cero/extensions` | `profileSync`, `handleSync`                                                  |
 
-Works on Node and on Bare. Ships TypeScript declarations generated from JSDoc.
+Built on the [Pear](https://pears.com) stack by [Holepunch](https://holepunch.to): Hypercore, Autobee, HyperDB, Hyperblobs, Hyperswarm, blind-pairing, blind-peering and Bare. Runs on Node and Bare, with TypeScript declarations.
 
 ## License
 

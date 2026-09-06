@@ -1,6 +1,6 @@
 # Encryption
 
-[Docs](README.md) · Previous: [Core primitives](core.md) · Next: [Tools](tools.md)
+[Docs](README.md) · Previous: [Core primitives](core.md)
 
 ```js
 await cero.del(room.members, memberId) // they can no longer write
@@ -48,5 +48,4 @@ The removal lands before the new key, so a removed member always receives it: th
 
 ## Next
 
-- [Tools](tools.md) to watch epochs and replication from another process.
 - [Handles](handles.md) for the removal itself.

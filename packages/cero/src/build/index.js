@@ -9,18 +9,8 @@ import HRPCBuilder from 'hrpc'
 import { CeroError } from '@cero-base/core/errors'
 
 import { NS } from '../lib/constants.js'
-import { internal } from '../lib/internal.js'
-import {
-  refs,
-  builtinRefs,
-  builtinTypes,
-  builtinCollections,
-  builtinDispatches,
-  rotateDispatch,
-  rpcTypes,
-  rpcCommands,
-  getHyperdbType
-} from './builtins.js'
+import { registry } from '../extensions/index.js'
+import * as internal from './internal.js'
 
 /**
  * @typedef {import('@cero-base/core/schema').Schema} Schema
@@ -39,19 +29,17 @@ import {
  * @param {BuildOpts} [opts]
  * @returns {Promise<void>}
  */
-export { getHyperdbType } from './builtins.js'
-
 export async function build(specDir, schema, { ns = NS, extensions = true } = {}) {
   const raw = /** @type {SchemaDefs & { local?: SchemaDefs }} */ (schema?.defs || schema)
   if (!raw || typeof raw !== 'object') throw CeroError.REQUIRED('schema')
 
-  // t.extend entries by builtin type: app schema first, then each extension
+  // t.extend entries by internal type: app schema first, then each extension
   const extend = {}
   const defs = {}
   const collect = (entries, fromExt = false) => {
     for (const [k, v] of Object.entries(entries)) {
       if (v && v.kind === 'extend') {
-        const type = refs.main[k]?.type
+        const type = internal.defs.main[k]?.type
         if (!type) throw CeroError.INVALID(`'${k}' is not an extendable builtin`)
         // app schema wins on field conflicts, extensions only add new fields
         extend[type] = fromExt ? { ...v.fields, ...extend[type] } : { ...extend[type], ...v.fields }
@@ -61,7 +49,7 @@ export async function build(specDir, schema, { ns = NS, extensions = true } = {}
     }
   }
   collect(raw)
-  for (const ext of internal.extensions) {
+  for (const ext of registry) {
     if (ext.bundled && extensions === false) continue
     if (ext.schema) collect(ext.schema, true)
   }
@@ -133,7 +121,7 @@ function compile(root, ns, scope = 'main') {
     scope
   }
 
-  Object.assign(ctx.meta.refs, builtinRefs(ns, scope))
+  Object.assign(ctx.meta.refs, internal.refs(ns, scope))
 
   for (const [name, node] of Object.entries(root)) {
     if (node.kind === 'handle') {
@@ -161,13 +149,13 @@ function fileFieldNames(fields) {
 function register(name, node, ctx) {
   const fqn = `@${ctx.ns}/${name}`
   if (node.kind === 'action') {
-    ctx.types.push({ name, compact: false, fields: fieldsFor(node.fields) })
+    ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.dispatches.push({ name, requestType: fqn })
     ctx.meta.refs[name] = { kind: 'action', path: [name], schema: fqn }
     return
   }
   if (node.kind === 'single') {
-    ctx.types.push({ name, compact: false, fields: fieldsFor(node.fields) })
+    ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.collections.push({ name, schema: fqn, key: [] })
     ctx.dispatches.push({ name: `set-${name}`, requestType: fqn })
     ctx.dispatches.push({ name: `del-${name}`, requestType: `@${ctx.ns}/del-by-id` })
@@ -187,7 +175,7 @@ function register(name, node, ctx) {
         { name: 'index', type: 'uint', required: false },
         { name: 'createdAt', type: 'int', required: false },
         { name: 'updatedAt', type: 'int', required: false },
-        ...fieldsFor(node.fields)
+        ...internal.fields(node.fields)
       ]
     })
     ctx.collections.push({ name, schema: fqn, key: ['id'] })
@@ -218,14 +206,6 @@ function register(name, node, ctx) {
   }
 }
 
-function fieldsFor(fields) {
-  return Object.entries(fields).map(([name, marker]) => ({
-    name,
-    type: getHyperdbType(marker.prim),
-    required: marker.required === true
-  }))
-}
-
 // the contract version is the highest of the schema, db and dispatch versions
 async function contractVersion(mainDir) {
   const read = async (rel) => {
@@ -248,29 +228,30 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  for (const desc of builtinTypes('main', extend)) sns.register(desc)
+  for (const desc of internal.types('main', extend)) sns.register(desc)
   for (const desc of types) sns.register(desc)
-  if (rpc) for (const desc of rpcTypes()) sns.register(desc)
+  if (rpc) for (const desc of internal.types('rpc')) sns.register(desc)
   Hyperschema.toDisk(s, schemaDir, { esm: true })
 
   const db = HyperdbBuilder.from(schemaDir, dbDir)
   const dns = db.namespace(ns)
-  for (const desc of builtinCollections(ns, 'main')) dns.collections.register(desc)
+  for (const desc of internal.collections(ns, 'main')) dns.collections.register(desc)
   for (const desc of collections) dns.collections.register(desc)
   for (const desc of indexes) dns.indexes.register(desc)
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)
   const xns = d.namespace(ns)
-  for (const desc of builtinDispatches(ns)) xns.register(desc)
+  for (const desc of internal.dispatches(ns)) xns.register(desc)
   for (const desc of dispatches) xns.register(desc)
-  xns.register(rotateDispatch(ns))
+  // after the app's dispatches: hyperdispatch numbers routes positionally and persists them
+  xns.register({ name: 'rotate-key', requestType: `@${ns}/epoch` })
   Hyperdispatch.toDisk(d, dispatchDir, { esm: true })
 
   if (rpc) {
     const r = HRPCBuilder.from(schemaDir, rpcDir)
     const rns = r.namespace(ns)
-    for (const desc of rpcCommands(ns)) rns.register(desc)
+    for (const desc of internal.commands(ns)) rns.register(desc)
     HRPCBuilder.toDisk(r, rpcDir, { esm: true })
   }
 }
@@ -281,13 +262,13 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  for (const desc of builtinTypes('local')) sns.register(desc)
+  for (const desc of internal.types('local')) sns.register(desc)
   for (const desc of types) sns.register(desc)
   Hyperschema.toDisk(s, schemaDir, { esm: true })
 
   const db = HyperdbBuilder.from(schemaDir, dbDir)
   const dns = db.namespace(ns)
-  for (const desc of builtinCollections(ns, 'local')) dns.collections.register(desc)
+  for (const desc of internal.collections(ns, 'local')) dns.collections.register(desc)
   for (const desc of collections) dns.collections.register(desc)
   for (const desc of indexes) dns.indexes.register(desc)
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })

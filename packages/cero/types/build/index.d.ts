@@ -25,8 +25,4 @@ export type BuildOpts = {
  * @param {BuildOpts} [opts]
  * @returns {Promise<void>}
  */
-export { getHyperdbType } from './builtins.js';
-export declare function build(specDir: any, schema: any, { ns, extensions }?: {
-    extensions?: boolean;
-    ns?: string;
-}): Promise<void>;
+export declare function build(specDir: string, schema: SchemaInput, { ns, extensions }?: BuildOpts): Promise<void>;
