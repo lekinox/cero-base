@@ -158,13 +158,6 @@ test('rpc: recovery phrase is fetched on demand, not via init', async (t) => {
   t.is(phrase, me.identity.toPhrase(), 'matches the server identity phrase')
 })
 
-test('rpc: double init is rejected', async (t) => {
-  const { server, client } = await openPair(t)
-  const before = server.me.id // init already ran inside connect()
-  await t.exception(client.rpc.init({}), /already initialized|CONFLICT/)
-  t.is(server.me.id, before, 'root identity unchanged after a rejected re-init')
-})
-
 test('rpc: client exposes refs lifted from the spec', async (t) => {
   const { client } = await openPair(t)
   t.ok(client.messages, 'messages ref present')
@@ -349,6 +342,22 @@ test('rpc: put/get on a child handle round-trips via the wire', async (t) => {
   const { data: list } = await get(team.messages)
   t.is(list.length, 1)
   t.is(list[0].text, 'team msg')
+})
+
+test('rpc: a reloaded UI re-attaches, init answers again and the old watches end', async (t) => {
+  const { server, client } = await openPair(t)
+  const stale = watch(client.messages)
+  t.teardown(() => stale.destroy())
+  await waitUntil(() => server._watchStreams.size > 0)
+  const [served] = [...server._watchStreams.values()][0]
+
+  const again = await client.rpc.init({})
+  t.is(again.id, client.id, 'the same identity comes back')
+  t.ok(served.destroyed, 'the previous page’s watch ended on the worker')
+  t.is(server._watchStreams.size, 0)
+
+  await put(client.messages, { text: 'still served' })
+  t.is((await get(client.messages)).data[0].text, 'still served', 'the worker keeps serving')
 })
 
 test('rpc: setActive ranks the server handle, suspend and resume reach the root', async (t) => {

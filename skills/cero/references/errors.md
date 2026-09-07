@@ -23,7 +23,7 @@ survive a realm boundary. `err.name` is `'CeroError'`. The class is exported fro
 | `CLOSED`           | An operation ran on a closed resource: a `Database`, `Storage`, `Network`, `Pairing` or `Blobs`.                      |
 | `CHANNEL_MISMATCH` | A channel-stamped storage was reopened under a different channel, including none. The stored channel is not named.    |
 | `NOT_READY`        | An operation ran before `await resource.ready()`.                                                                     |
-| `CONFLICT`         | The operation raced an existing state, for example an RPC server asked to initialise twice.                           |
+| `CONFLICT`         | The operation raced an existing state.                                                                                |
 | `DESTROYED`        | An operation ran on a destroyed `Discovery`. Join again for a new one.                                                |
 | `UNKNOWN`          | A typed lookup failed: an unknown ref name, handle type or collection. Check it against the built spec.               |
 | `NOT_WRITABLE`     | A write, or `cero.rotate`, ran where this device is not a writer yet.                                                 |

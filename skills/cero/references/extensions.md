@@ -100,17 +100,17 @@ configured at runtime, a devtools tap with a live transport for instance:
 export const lastSeen = {
   schema: { members: t.extend({ seenAt: t.uint }) },
   setup: (me) =>
-    cero.after(me.room.messages, async ({ memberId }) => {
-      await cero.set(me.room.members, { id: memberId, seenAt: Date.now() }, { upsert: false })
-    })
+    cero.after(me.room.messages, ({ row, memberId, set }) =>
+      set('members', { id: memberId, seenAt: row.updatedAt })
+    )
 }
 ```
 
 `t.extend` adds fields to `members`, `devices`, `invites`, `handles` or `files`.
-Redeclaring a field the builtin already has fails at build time. `me.signal`
-aborts when the root closes, so a listener goes with it. `{ upsert: false }`
-updates a row that exists and never invents one. Read before you write: an
-unconditional write on every open is a new op in the room's log forever.
+Redeclaring a field the builtin already has fails at build time. The hook runs
+on every peer inside the message's transaction, so it writes through `ctx.set`
+and stamps the row's own time, never the clock. `me.signal` aborts when the root
+closes, so a listener registered with it goes with it.
 
 A `setup` that throws makes `cero()` reject and closes what it opened, so a
 retry in the same process works.

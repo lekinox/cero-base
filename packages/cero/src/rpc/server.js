@@ -89,7 +89,11 @@ export class Server extends RPCServer {
   /** Wire the `init` handler that lazily constructs the root cero handle. */
   _wireInit() {
     this.rpc.onInit(async () => {
-      if (this.me) throw CeroError.CONFLICT('already initialized')
+      // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end
+      if (this.me) {
+        for (const handle of this._watchStreams.keys()) this._endWatches(handle)
+        return this._identity()
+      }
       this.me = await cero(this.storage, this.spec, this.opts)
       this.handles.set(this.me.id, this.me)
       await this.me.fileServer.listen()
