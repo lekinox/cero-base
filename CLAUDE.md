@@ -7,7 +7,7 @@ Read `docs/README.md` first, then `skills/cero/SKILL.md` for the short version o
 ## Layout
 
 ```text
-packages/core    @cero-base/core   primitives: identity, database, network, pairing, storage, blobs, rpc
+packages/core    @cero-base/core   the seven primitives: identity, database, network, pairing, storage, blobs, rpc
 packages/cero    @cero-base/cero   the SDK: cero(), operators, handles, extensions, serve/connect
 packages/tools   @cero-base/tools  devtools tap, not documented yet
 example/         chat-backend (shared spec), chat-terminal, chat-desktop (Electron), chat-mobile (Expo)

@@ -6,7 +6,7 @@
 import { Identity, Network, Database } from '@cero-base/core'
 ```
 
-`@cero-base/cero` is a thin composition of six primitives from `@cero-base/core`, each a small wrapper over a [Pear](https://pears.com) module. Reach for them when you want one piece on its own: just signed pairing, just a replicated database, just a swarm with wakeup.
+`@cero-base/cero` is a thin composition of seven primitives from `@cero-base/core`, each a small wrapper over a [Pear](https://pears.com) module. Reach for them when you want one piece on its own: just signed pairing, just a replicated database, just a swarm with wakeup, just a typed channel to a worker.
 
 ## On this page
 
@@ -17,6 +17,7 @@ import { Identity, Network, Database } from '@cero-base/core'
 - [Pairing](#pairing)
 - [Storage](#storage)
 - [Blobs](#blobs)
+- [RPC](#rpc)
 - [How cero puts them together](#how-cero-puts-them-together)
 - [What you give up](#what-you-give-up)
 
@@ -31,6 +32,7 @@ import { Database } from '@cero-base/core/database'
 import { Pairing } from '@cero-base/core/pairing'
 import { Storage } from '@cero-base/core/storage'
 import { Blobs } from '@cero-base/core/blobs'
+import { RPCServer, RPCClient } from '@cero-base/core/rpc'
 ```
 
 ## Identity
@@ -141,13 +143,35 @@ blobs.createReadStream(id).pipe(res)
 
 `cero.put(handle.files, ...)` is this plus a `files` row and a local url.
 
+## RPC
+
+A typed channel over any duplex stream: hrpc on a length-framed pipe, the request and response types coming from the spec. One side serves, the other calls, and the pair is what separates a worker from a UI.
+
+```js
+import { RPCServer, RPCClient } from '@cero-base/core/rpc'
+
+class Server extends RPCServer {
+  async _open() {
+    await super._open()
+    this.rpc.onPing(async (m) => `pong:${m}`)
+  }
+}
+const server = new Server(ipc, spec)
+const client = new RPCClient(ipc2, spec)
+await server.ready()
+await client.ready()
+await client.rpc.ping('hi') // 'pong:hi'
+```
+
+`serve(ipc, spec)` and `connect(ipc, spec)` are this with cero's own handlers on one end and its operators on the other.
+
 ## How cero puts them together
 
-`cero(dir, spec)` opens a Corestore under `dir`, resolves or generates the `Identity`, starts one `Network`, and opens the root `Database` on `spec.main`. A `Storage` under `dir` holds the device's writer keypair and the `local` scope. Every child handle is another `Database` on `spec.handles.<type>` with its own `Blobs` and a `Pairing` on its key, sharing the root's network and identity. The operators are one-line wrappers around `Database` methods, plus the resolution of refs and files.
+`cero(dir, spec)` opens a Corestore under `dir`, resolves or generates the `Identity`, starts one `Network`, and opens the root `Database` on `spec.main`. A `Storage` under `dir` holds the device's writer keypair and the `local` scope. Every child handle is another `Database` on `spec.handles.<type>` with its own `Blobs` and a `Pairing` on its key, sharing the root's network and identity. The operators are one-line wrappers around `Database` methods, plus the resolution of refs and files. In a split app, `serve` puts all of that behind an `RPCServer` and `connect` speaks to it through an `RPCClient`.
 
 ## What you give up
 
-No refs, so collection names are strings. No handle list, no invites persisted as rows, no auto-accept, no extensions, no RPC, no file urls. You write the composition yourself, which is the point.
+No refs, so collection names are strings. No handle list, no invites persisted as rows, no auto-accept, no extensions, no operators over the channel, no file urls. You write the composition yourself, which is the point.
 
 ## Next
 

@@ -88,7 +88,7 @@ Start with the [quickstart](docs/quickstart.md), then follow the guides in order
 
 ## Related
 
-[`@cero-base/core`](packages/core) holds the primitives cero is built from: identity, database, network, pairing, storage and blobs. Reach for it when cero is too high level. See [Core primitives](docs/core.md).
+[`@cero-base/core`](packages/core) holds the seven primitives cero is built from: identity, database, network, pairing, storage, blobs and rpc. Reach for it when cero is too high level. See [Core primitives](docs/core.md).
 
 ## Develop
 

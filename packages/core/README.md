@@ -2,7 +2,7 @@
 
 The building blocks `cero` is made of. Use them when `cero` is too high-level — when you want just an autobee, just a swarm, or just signed pairing.
 
-Each subpath is a small, independent primitive. `ReadyResource`-shaped where it makes sense (`.ready()` + `.close()`).
+Seven primitives, one subpath each: identity, storage, network, database, blobs, pairing, rpc. `ReadyResource`-shaped where it makes sense (`.ready()` + `.close()`).
 
 ```js
 // Barrel import — everything in one place
