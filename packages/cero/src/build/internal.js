@@ -108,7 +108,10 @@ const COMMANDS = [
   ['close-handle', 'req-handle', 'res-ok'],
   ['leave', 'req-handle', 'res-ok'],
   ['changes', 'req-query', 'res-changes', true],
-  ['rotate', 'req-handle', 'res-epoch']
+  ['rotate', 'req-handle', 'res-epoch'],
+  ['set-active', 'req-set-active', 'res-ok'],
+  ['suspend', 'req-empty', 'res-ok'],
+  ['resume', 'req-empty', 'res-ok']
 ]
 
 export function commands(ns) {

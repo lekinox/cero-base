@@ -15,6 +15,7 @@ import c from 'compact-encoding'
 import { ACTIVE, PASSIVE } from '../lib/constants.js'
 import { CeroError } from '../lib/errors.js'
 import { Discovery } from './discovery.js'
+import { Presence } from './presence.js'
 
 export function channelTopic(topic, channel) {
   return channel ? hash([topic, b4a.from(channel)]) : topic
@@ -30,6 +31,7 @@ export function channelTopic(topic, channel) {
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+ * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
  * @typedef {{ replicate: (stream: any) => any }} Replicable
  */
@@ -48,7 +50,8 @@ export class Network extends ReadyResource {
     backoffs,
     channel,
     store,
-    mirrors
+    mirrors,
+    presence
   } = {}) {
     super()
     this.identity = identity || null
@@ -62,6 +65,7 @@ export class Network extends ReadyResource {
 
     this._swarm = null
     this.wakeup = new ProtomuxWakeup()
+    this.presence = new Presence(this, presence)
 
     this.info = null
     this._peerInfo = new Map()
@@ -137,6 +141,7 @@ export class Network extends ReadyResource {
     this._injected.clear()
 
     // stop discovery now, never await the DHT unannounce round-trips
+    this.presence.close()
     for (const d of [...this._discoveries]) d.destroy().catch(safetyCatch)
     this._discoveries.clear()
 

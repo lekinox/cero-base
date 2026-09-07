@@ -75,10 +75,6 @@ export type HandleOpts = {
      */
     keyPair?: KeyPair;
     /**
-     * Join discovery server-only; flip later with `setActive`.
-     */
-    passive?: boolean;
-    /**
      * When `false`, skips creating a `Pairing` session.
      */
     pair?: boolean;
@@ -148,7 +144,6 @@ export type CeroHandle = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {Array<{ epoch: number, entropy: Uint8Array }>} [epochs]  Rotation epochs delivered at join.
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
- * @property {boolean} [passive]               Join discovery server-only; flip later with `setActive`.
  * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
  *
  * @typedef {object} CreateChildOpts
@@ -294,14 +289,12 @@ export declare class Handle extends ReadyResource {
      */
     claim(): Promise<void>;
     /**
-     * Flip this handle's swarm announce mode — `setActive(false)` demotes an idle/background
-     * room to server-only (still reachable, stops searching); `setActive(true)` promotes it
-     * back on focus.
+     * `true` ranks this handle as just touched, `false` takes it out of the swarm until the
+     * next update lands in it.
      *
      * @param {boolean} active
-     * @returns {Promise<void>}
      */
-    setActive(active: boolean): Promise<void>;
+    setActive(active: boolean): void;
     /**
      * Mint a pairing invite for this handle.
      *

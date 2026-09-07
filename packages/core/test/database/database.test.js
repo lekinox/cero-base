@@ -56,12 +56,13 @@ async function enroll(db, identity, role = 'owner') {
 async function makeNetworked(t, testnet, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = opts.identity || (await Identity.generate())
-  const network = new Network({ bootstrap: testnet.bootstrap })
+  const { presence, ...rest } = opts
+  const network = new Network({ bootstrap: testnet.bootstrap, presence })
   await network.ready()
   const topic = opts.topic || identity.topic
   const discovery = network.join(topic)
   await discovery.flush()
-  const db = new Database({ store, identity, network, spec, ...opts })
+  const db = new Database({ store, identity, network, spec, ...rest })
   await db.ready()
   t.teardown(
     async () => {
@@ -2034,24 +2035,103 @@ test('a throwing after hook refuses the op', async (t) => {
   t.is(data.length, 0, 'the row never landed')
 })
 
-// idle rooms can demote to server-only discovery instead of holding an
-// eager active DHT walk forever.
-test('setActive: flips discovery between active and passive', async (t) => {
+// which databases swarm is ranked by their last update, not by being open
+test('presence: an update ranks a database, opening it does not', async (t) => {
   const testnet = await makeTestnet(t)
-  const network = new Network({ bootstrap: testnet.bootstrap })
-  await network.ready()
-  t.teardown(() => network.close().catch(() => {}), { order: 9 })
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.generate()
-  const db = new Database({ store, identity, network, spec, passive: true })
-  await db.ready()
-  t.teardown(() => db.close().catch(() => {}), { order: 5 })
+  const open = async (opts) => {
+    const db = new Database({ store, identity, spec, ...opts })
+    await db.ready()
+    t.teardown(() => db.close().catch(() => {}), { order: 5 })
+    return db
+  }
+  const keys = []
+  for (const name of ['a', 'b']) {
+    const db = await open({ namespace: name })
+    await db.bootstrap({ name })
+    await enroll(db, identity)
+    keys.push({ key: db.key, keyPair: db.keyPair, namespace: name })
+    await db.close()
+  }
 
-  t.is(db._discovery.mode, 'passive', 'opens passive when asked')
-  await db.setActive(true)
-  t.is(db._discovery.mode, 'active', 'promoted on focus')
-  await db.setActive(false)
-  t.is(db._discovery.mode, 'passive', 'demoted when idle')
+  const network = new Network({
+    bootstrap: testnet.bootstrap,
+    presence: { active: 1, announced: 0, idle: 50 }
+  })
+  await network.ready()
+  t.teardown(() => network.close().catch(() => {}), { order: 9 })
+  const mode = (db) => network.presence.mode(db.bee.discoveryKey)
+
+  const root = await open({ network, pinned: true })
+  const a = await open({ network, ...keys[0] })
+  const b = await open({ network, ...keys[1] })
+  t.is(mode(root), 'active', 'the root is pinned')
+  t.is(mode(a), 'active', 'the first opened holds the one slot')
+  t.is(mode(b), null, 'the boot replay did not rank b')
+
+  await b.put('messages', { text: 'hi' })
+  t.is(mode(b), 'active', 'a local update ranks b')
+  await waitFor(() => mode(a) === null)
+  t.pass('a left after idle')
+
+  b.setActive(false)
+  await waitFor(() => mode(b) === null)
+  b.setActive(true)
+  t.is(mode(b), 'active', 'setActive is a touch')
+  t.is(mode(root), 'active', 'the root never moved')
+})
+
+test('presence: a replicated update ranks the database it lands in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.generate()
+  const topic = randomTopic()
+
+  // x hosts two databases; y opens both but only shared searches
+  const x = await makeNetworked(t, testnet, { identity, topic, namespace: 'shared' })
+  await x.db.bootstrap({ name: 'x' })
+  await enroll(x.db, identity)
+  const quiet = new Database({
+    store: x.store,
+    identity,
+    network: x.network,
+    spec,
+    namespace: 'quiet'
+  })
+  await quiet.ready()
+  t.teardown(() => quiet.close().catch(() => {}), { order: 5 })
+  await quiet.bootstrap({ name: 'x' })
+  await enroll(quiet, identity)
+
+  const y = await makeNetworked(t, testnet, {
+    identity,
+    topic,
+    key: x.db.key,
+    namespace: 'shared',
+    presence: { active: 1, announced: 0, idle: 50 }
+  })
+  await y.db.bootstrap({ recovering: true })
+  const yQuiet = new Database({
+    store: y.store,
+    identity,
+    network: y.network,
+    spec,
+    key: quiet.key,
+    namespace: 'quiet'
+  })
+  await yQuiet.ready()
+  t.teardown(() => yQuiet.close().catch(() => {}), { order: 5 })
+  const mode = (db, net) => net.presence.mode(db.bee.discoveryKey)
+  t.is(mode(y.db, y.network), 'active')
+  t.is(mode(yQuiet, y.network), null, 'quiet never joined its topic on y')
+
+  await waitForConnection(x.network)
+  await waitForConnection(y.network)
+  await quiet.put('messages', { text: 'over the shared connection' })
+  await waitUntil(async () => (await yQuiet.get('messages')).data.length > 0)
+  t.is(mode(yQuiet, y.network), 'active', 'the replicated update ranked quiet')
+  await waitFor(() => mode(y.db, y.network) === null)
+  t.pass('shared slid out')
 })
 
 // ─── write-path integrity ─────────────────────────────────────────────────

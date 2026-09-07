@@ -136,8 +136,9 @@ await cero.open(me.room, { routes }) // no: functions do not serialize
 wraps in a handle: create, join by invite, or reopen by id. The server keeps the
 live handle in its map, and every later call carries its id. Nesting is refused,
 only the root may be a parent. A client handle carries the same operator surface
-plus `invite()`, `revoke()`, `rotate()`, `close()` and `leave()`, and both
-`close` and `leave` end every stream bound to that handle.
+plus `invite()`, `revoke()`, `rotate()`, `setActive()`, `close()` and `leave()`, and
+both `close` and `leave` end every stream bound to that handle. The root also carries
+`suspend()` and `resume()`, so a UI drives backgrounding from its own lifecycle.
 
 `watch` and `changes` arrive as plain streamx readables. Snapshots are
 idempotent, so a slow wire keeps only the newest. Deltas are not, so the server

@@ -151,6 +151,10 @@ export declare const rpc: {
     'req-handle': {
         handle: import("@cero-base/core").Prim;
     };
+    'req-set-active': {
+        handle: import("@cero-base/core").Prim;
+        active: import("@cero-base/core").Prim;
+    };
     'res-data': {
         data: import("@cero-base/core").Prim;
     };

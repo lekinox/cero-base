@@ -86,6 +86,10 @@ export declare class Client extends RPCClient {
      */
     constructor(ipc: any, spec: Spec);
     _open(): Promise<void>;
+    /** Pause networking and storage on the server. Idempotent. */
+    suspend(): Promise<void>;
+    /** Resume a suspended server. Idempotent. */
+    resume(): Promise<void>;
     /**
      * Create a new child handle of the given type.
      *

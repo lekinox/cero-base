@@ -7,15 +7,7 @@ import safetyCatch from 'safety-catch'
 import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 
-import {
-  NAMESPACE,
-  SINGLE,
-  COLLECTION,
-  ACTION,
-  ACTIVE,
-  PASSIVE,
-  QUERY_RESERVED
-} from '../lib/constants.js'
+import { NAMESPACE, SINGLE, COLLECTION, ACTION, QUERY_RESERVED } from '../lib/constants.js'
 import { genId, subscribe, admission, ownership, filter } from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs } from './encryption.js'
@@ -36,7 +28,7 @@ import { makeDispatcher } from './dispatch.js'
  * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
- * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
+ * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -93,7 +85,7 @@ export class Database extends ReadyResource {
     if (opts.epochs) for (const e of opts.epochs) this.keyring.add(e.stamp, e.entropy, e.epoch)
     this.rotation = new Rotation(this)
     this.key = opts.key || null
-    this.passive = opts.passive === true
+    this.pinned = opts.pinned === true
     this.keyPair = opts.keyPair || Identity.randomKeyPair()
     if (b4a.equals(this.keyPair.publicKey, this.identity.publicKey)) {
       throw CeroError.INVALID('the identity keypair is never a writer — use a device keypair')
@@ -102,7 +94,7 @@ export class Database extends ReadyResource {
     this._onerror = opts.onerror || safetyCatch
     this.bee = null
     this.dispatcher = null
-    this._discovery = null
+    this._presence = null
     this._txChain = null
 
     this._before = new Map()
@@ -180,10 +172,9 @@ export class Database extends ReadyResource {
 
   async _close() {
     this.rotation.close()
-    if (this._discovery) {
-      // unannounce in the background, the DHT round-trip would block close for seconds
-      this._discovery.destroy().catch(safetyCatch)
-      this._discovery = null
+    if (this._presence) {
+      this._presence.remove()
+      this._presence = null
     }
     if (this.bee) {
       // detach first, else the closed bee replicates into every new connection
@@ -194,15 +185,15 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Flip announce mode at runtime — passive stays reachable (server) but
-   * stops actively looking (client). Cheap; use it to demote idle rooms.
+   * `true` ranks this database as just touched, `false` takes it out of the swarm until the
+   * next update lands in it.
    *
    * @param {boolean} active
-   * @returns {Promise<void>}
    */
-  async setActive(active) {
-    if (!this._discovery) return
-    await (active ? this._discovery.activate() : this._discovery.deactivate())
+  setActive(active) {
+    if (!this._presence) return
+    if (active) this._presence.touch()
+    else this._presence.off()
   }
 
   /**
@@ -658,16 +649,13 @@ export class Database extends ReadyResource {
     const touched = this._touched
     this._touched = new Set()
     this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
+    this._presence?.touch()
   }
 
-  // a writer swap re-opens the bee on the SAME topic, join first so destroy is a detach
+  // a writer swap re-opens the bee on the same topic, so the slot is the same one
   _joinSwarm(bee, discoveryKey) {
     this.network.attach(bee)
-    const prev = this._discovery
-    this._discovery = this.network.join(discoveryKey, {
-      mode: this.passive ? PASSIVE : ACTIVE
-    })
-    if (prev) prev.destroy().catch(safetyCatch)
+    this._presence = this.network.presence.add(discoveryKey, { pinned: this.pinned })
   }
 
   // wrapped so an operator called from inside a hook fails instead of appending its own op

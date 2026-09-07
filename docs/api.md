@@ -40,26 +40,27 @@ const me = await cero('./data', spec, { name: 'laptop' })
 Opens or creates a cero instance at `dir` and resolves to the ready root `Handle`,
 with every schema ref attached as a property. `spec` is the built spec.
 
-| Option            | Type                          | Default | Meaning                                                                                                                                         |
-| ----------------- | ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`            | `string \| null`              | `null`  | Friendly device name, persisted on the identity claim.                                                                                          |
-| `phrase`          | `string`                      | -       | BIP-39 mnemonic. On a device with no writer it recovers the identity from a reachable device.                                                   |
-| `seed`            | `Uint8Array`                  | -       | 16 or 32 bytes of entropy, the alternative to `phrase`.                                                                                         |
-| `words`           | `12 \| 24`                    | `12`    | Mnemonic length when generating a fresh identity.                                                                                               |
-| `identity`        | `Identity`                    | -       | A pre-resolved identity, instead of `seed` or `phrase`.                                                                                         |
-| `recoveryTimeout` | `number`                      | `30000` | How long recovery waits to find another device and be admitted, in ms.                                                                          |
-| `storageKey`      | `Uint8Array`                  | -       | 32-byte key encrypting local key material at rest. Source it from the OS keychain, cero never stores it.                                        |
-| `channel`         | `string`                      | -       | Network-isolation label. Only same-channel peers meet, and a storage remembers its channel.                                                     |
-| `mirrors`         | `Array<string \| Uint8Array>` | `[]`    | Blind-peer keys. Rooms and files mirror through them, so peers sync while never online together.                                                |
-| `bootstrap`       | `Array<{ host, port }>`       | -       | Custom DHT bootstrap nodes.                                                                                                                     |
-| `backoffs`        | `number[]`                    | -       | Swarm reconnect backoff tiers in ms, for tests and tuning.                                                                                      |
-| `isMobile`        | `boolean`                     | `false` | Marks this device as mobile.                                                                                                                    |
-| `bluetooth`       | `boolean \| object`           | `false` | `true` starts nearby sync. `{ autoStart: false }` builds `me.bluetooth` without the radio. Also `backend`, `maxOutbound`, `maxInbound`, `pipe`. |
-| `extensions`      | `boolean`                     | `true`  | `false` drops the bundled extensions. Build with `{ extensions: false }` too, so the spec matches.                                              |
-| `routes`          | `Record<string, Function>`    | `{}`    | Handlers for the action refs your schema declares.                                                                                              |
-| `onerror`         | `(err) => void`               | -       | Background-task error handler.                                                                                                                  |
-| `key`             | `Uint8Array`                  | -       | Existing database key to recover into, skipping the pointer lookup.                                                                             |
-| `encryptionKey`   | `Uint8Array`                  | -       | Pre-existing encryption key.                                                                                                                    |
+| Option            | Type                          | Default       | Meaning                                                                                                                                         |
+| ----------------- | ----------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | `string \| null`              | `null`        | Friendly device name, persisted on the identity claim.                                                                                          |
+| `phrase`          | `string`                      | -             | BIP-39 mnemonic. On a device with no writer it recovers the identity from a reachable device.                                                   |
+| `seed`            | `Uint8Array`                  | -             | 16 or 32 bytes of entropy, the alternative to `phrase`.                                                                                         |
+| `words`           | `12 \| 24`                    | `12`          | Mnemonic length when generating a fresh identity.                                                                                               |
+| `identity`        | `Identity`                    | -             | A pre-resolved identity, instead of `seed` or `phrase`.                                                                                         |
+| `recoveryTimeout` | `number`                      | `30000`       | How long recovery waits to find another device and be admitted, in ms.                                                                          |
+| `storageKey`      | `Uint8Array`                  | -             | 32-byte key encrypting local key material at rest. Source it from the OS keychain, cero never stores it.                                        |
+| `channel`         | `string`                      | -             | Network-isolation label. Only same-channel peers meet, and a storage remembers its channel.                                                     |
+| `mirrors`         | `Array<string \| Uint8Array>` | `[]`          | Blind-peer keys. Rooms and files mirror through them, so peers sync while never online together.                                                |
+| `bootstrap`       | `Array<{ host, port }>`       | -             | Custom DHT bootstrap nodes.                                                                                                                     |
+| `backoffs`        | `number[]`                    | -             | Swarm reconnect backoff tiers in ms, for tests and tuning.                                                                                      |
+| `presence`        | `{ active, announced, idle }` | `8, 8, 30000` | How many rooms search, how many only announce, and the idle ms before the rest leave the swarm. See [Network](network.md#many-rooms).           |
+| `isMobile`        | `boolean`                     | `false`       | Marks this device as mobile.                                                                                                                    |
+| `bluetooth`       | `boolean \| object`           | `false`       | `true` starts nearby sync. `{ autoStart: false }` builds `me.bluetooth` without the radio. Also `backend`, `maxOutbound`, `maxInbound`, `pipe`. |
+| `extensions`      | `boolean`                     | `true`        | `false` drops the bundled extensions. Build with `{ extensions: false }` too, so the spec matches.                                              |
+| `routes`          | `Record<string, Function>`    | `{}`          | Handlers for the action refs your schema declares.                                                                                              |
+| `onerror`         | `(err) => void`               | -             | Background-task error handler.                                                                                                                  |
+| `key`             | `Uint8Array`                  | -             | Existing database key to recover into, skipping the pointer lookup.                                                                             |
+| `encryptionKey`   | `Uint8Array`                  | -             | Pre-existing encryption key.                                                                                                                    |
 
 ## Operators
 
@@ -147,7 +148,7 @@ The root handle and every child handle are the same class.
 | `leave()`                 | Drop membership of a child handle and close it.                               |
 | `close()`                 | Close this handle and everything under it.                                    |
 | `suspend()` / `resume()`  | Pause and restore networking and storage. Root only, idempotent.              |
-| `setActive(active)`       | Announce server-only when `false`, search again when `true`.                  |
+| `setActive(active)`       | `true` ranks the handle as just updated, `false` takes it off the swarm.      |
 | `getLink(id)`             | Local, ephemeral download url for a file id.                                  |
 | `own(resource)`           | Destroy `resource` when this handle closes.                                   |
 | `on(event, fn, opts)`     | Listener with an optional `{ signal }`.                                       |
@@ -227,8 +228,9 @@ const me = await connect(ipc, spec)
 `connect(ipc, spec)` resolves to a `Client` carrying the same refs and operators
 as a local root handle. `cero(ipc, spec)` is an alias, so app code runs on either
 side. The subpath also re-exports the operators, `t`, `schema`, `restore`, `bind`
-and `define`. Handle stubs expose `invite`, `revoke`, `rotate`, `close` and
-`leave`, and `me.identity.toPhrase()` is async here. `before`, `after`, `peek` and
+and `define`. Handle stubs expose `invite`, `revoke`, `rotate`, `setActive`, `close`
+and `leave`, the root also `suspend` and `resume`, and `me.identity.toPhrase()` is
+async here. `before`, `after`, `peek` and
 `store.tx` are not on a client: hooks run where the data lives, so register them
 on the backend.
 

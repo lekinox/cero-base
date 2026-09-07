@@ -53,9 +53,9 @@ export type DatabaseOpts = {
      */
     key?: Uint8Array | null;
     /**
-     * Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
+     * Always search and announce, outside the network's presence budget. The root.
      */
-    passive?: boolean;
+    pinned?: boolean;
     /**
      * This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
      */
@@ -149,7 +149,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
- * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
+ * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -213,7 +213,7 @@ export declare class Database extends ReadyResource {
     keyring: Keyring;
     rotation: Rotation;
     key: Uint8Array<ArrayBufferLike>;
-    passive: boolean;
+    pinned: boolean;
     keyPair: import("../index.js").KeyPair;
     _onerror: any;
     bee: EpochAutobee;
@@ -224,7 +224,7 @@ export declare class Database extends ReadyResource {
             key: Buffer;
         }>, view: object, host: object) => Promise<void>;
     };
-    _discovery: import("../network/discovery.js").Discovery;
+    _presence: import("../network/presence.js").Slot;
     _txChain: any;
     _before: Map<any, any>;
     _after: Map<any, any>;
@@ -248,13 +248,12 @@ export declare class Database extends ReadyResource {
     _open(): Promise<void>;
     _close(): Promise<void>;
     /**
-     * Flip announce mode at runtime — passive stays reachable (server) but
-     * stops actively looking (client). Cheap; use it to demote idle rooms.
+     * `true` ranks this database as just touched, `false` takes it out of the swarm until the
+     * next update lands in it.
      *
      * @param {boolean} active
-     * @returns {Promise<void>}
      */
-    setActive(active: boolean): Promise<void>;
+    setActive(active: boolean): void;
     /**
      * Register a pre-op hook. It runs at apply on every peer, inside the op's transaction;
      * returning `false` (or throwing) refuses the op everywhere.

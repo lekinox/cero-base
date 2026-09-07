@@ -390,6 +390,16 @@ const operators = {
   async rotate() {
     const { epoch } = await this.rpc.rotate({ handle: this.id })
     return { epoch }
+  },
+
+  /**
+   * `true` ranks this handle as just updated on the server, `false` takes it off the swarm.
+   *
+   * @param {boolean} active
+   * @returns {Promise<void>}
+   */
+  async setActive(active) {
+    await this.rpc.setActive({ handle: this.id, active })
   }
 }
 
@@ -467,6 +477,16 @@ export class Client extends RPCClient {
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
     bind(this, null)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
+  }
+
+  /** Pause networking and storage on the server. Idempotent. */
+  async suspend() {
+    await this.rpc.suspend({})
+  }
+
+  /** Resume a suspended server. Idempotent. */
+  async resume() {
+    await this.rpc.resume({})
   }
 
   /**

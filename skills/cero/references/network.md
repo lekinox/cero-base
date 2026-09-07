@@ -59,12 +59,16 @@ me.suspended // true between the two
 
 Mobile apps call these when the app leaves and returns to the foreground. `suspend` is idempotent and cheap.
 
+## Many rooms
+
+Opening a room does not put it on the swarm. Rooms are ranked by their last update, from anyone: the latest 8 search and announce, the next 8 only announce, the rest leave their topic. A room moves up the moment it is updated and down only after 30 seconds, so rooms at the edge of the budget do not churn the DHT. The root always searches. A room off the swarm still reads, writes and watches, and still syncs over the connections the other rooms bring in, since every connection replicates the whole store. The first update that lands in it, from a peer or from you, moves it back up.
+
 ```js
-room.setActive(false) // stay reachable, stop searching
-room.setActive(true) // on focus
+room.setActive(true) // the user is looking at it: rank it as just updated
+room.setActive(false) // leave the swarm until something lands in it
 ```
 
-`setActive(false)` demotes a handle to server-only announcing. Use it for rooms the user is not looking at.
+The budget is a `cero()` option, `presence: { active, announced, idle }`, for the few apps that need to tune it.
 
 ## Nearby sync over Bluetooth
 

@@ -1,5 +1,6 @@
 import ReadyResource from 'ready-resource';
 import { Discovery } from './discovery.js';
+import { Presence } from './presence.js';
 export declare function channelTopic(topic: any, channel: any): any;
 export type NetworkOpts = {
     /**
@@ -37,6 +38,14 @@ export type NetworkOpts = {
      * Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
      */
     mirrors?: Array<string | Uint8Array>;
+    /**
+     * Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
+     */
+    presence?: {
+        active?: number;
+        announced?: number;
+        idle?: number;
+    };
 };
 export type Replicable = {
     replicate: (stream: any) => any;
@@ -51,6 +60,7 @@ export type Replicable = {
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+ * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
  * @typedef {{ replicate: (stream: any) => any }} Replicable
  */
@@ -72,6 +82,7 @@ export declare class Network extends ReadyResource {
     mirrors: any[];
     _swarm: any;
     wakeup: any;
+    presence: Presence;
     info: object;
     _peerInfo: Map<any, any>;
     _infoSenders: Set<any>;
@@ -81,7 +92,7 @@ export declare class Network extends ReadyResource {
     _blind: any;
     _blindPeering: any;
     /** @param {NetworkOpts} [opts] */
-    constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors }?: NetworkOpts);
+    constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence }?: NetworkOpts);
     /** @returns {any} The underlying hyperswarm, or null before ready / after close. */
     get swarm(): any;
     /** @returns {Map<string, any>} Known peers keyed by public-key string. */

@@ -274,6 +274,21 @@ export class Server extends RPCServer {
       return { epoch }
     })
 
+    this.rpc.onSetActive(({ handle, active }) => {
+      this._resolve(handle).setActive(active)
+      return {}
+    })
+
+    this.rpc.onSuspend(async () => {
+      await this.me.suspend()
+      return {}
+    })
+
+    this.rpc.onResume(async () => {
+      await this.me.resume()
+      return {}
+    })
+
     this.rpc.onJoin(async ({ parent, ref, invite }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       const child = await this.me._join(invite, ref)

@@ -159,6 +159,10 @@ export const rpc = {
   'req-handle': {
     handle: required(string)
   },
+  'req-set-active': {
+    handle: required(string),
+    active: bool
+  },
   'res-data': {
     data: bytes
   },

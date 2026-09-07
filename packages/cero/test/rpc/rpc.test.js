@@ -364,6 +364,25 @@ test('rpc: put/get on a child handle round-trips via the wire', async (t) => {
   t.is(list[0].text, 'team msg')
 })
 
+test('rpc: setActive ranks the server handle, suspend and resume reach the root', async (t) => {
+  const { me, client } = await openPair(t, { presence: { active: 1, announced: 0, idle: 50 } })
+  const team = await open(client.team, { name: 'engineering' })
+  const serverTeam = [...me.children][0]
+  const mode = () => me.network.presence.mode(serverTeam.store.bee.discoveryKey)
+  t.is(mode(), 'active', 'creating the room ranked it')
+
+  await team.setActive(false)
+  await waitUntil(() => mode() === null)
+  t.pass('off the swarm')
+  await team.setActive(true)
+  t.is(mode(), 'active', 'back on focus')
+
+  await client.suspend()
+  t.ok(me.suspended, 'suspended on the server')
+  await client.resume()
+  t.absent(me.suspended, 'resumed')
+})
+
 test('rpc: rotate on a child handle round-trips via the wire', async (t) => {
   const { me, client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })

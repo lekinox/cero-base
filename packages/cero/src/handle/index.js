@@ -48,7 +48,6 @@ export { Ref } from '../lib/refs.js'
  * @property {Array<{ epoch: number, entropy: Uint8Array }>} [epochs]  Rotation epochs delivered at join.
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
- * @property {boolean} [passive]               Join discovery server-only; flip later with `setActive`.
  * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
  *
  * @typedef {object} CreateChildOpts
@@ -139,7 +138,7 @@ export class Handle extends ReadyResource {
       epochs: opts.epochs,
       namespace: opts.namespace,
       keyPair: opts.keyPair,
-      passive: opts.passive,
+      pinned: !parent,
       onerror: this._onerror
     })
     this.pair = null
@@ -351,15 +350,13 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Flip this handle's swarm announce mode — `setActive(false)` demotes an idle/background
-   * room to server-only (still reachable, stops searching); `setActive(true)` promotes it
-   * back on focus.
+   * `true` ranks this handle as just touched, `false` takes it out of the swarm until the
+   * next update lands in it.
    *
    * @param {boolean} active
-   * @returns {Promise<void>}
    */
   setActive(active) {
-    return this.store.setActive(active)
+    this.store.setActive(active)
   }
 
   /**
