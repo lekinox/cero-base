@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.1 (2026-09-07)
+
+### Bug Fixes
+
+- a write waits for the drain that admitted it
+- a reloaded UI re-attaches to its worker
+
+### Chores
+
+- release pushes its own tag only
+
 ## 2.1.0 (2026-09-07)
 
 ### Features
