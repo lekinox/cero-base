@@ -6,7 +6,8 @@ import HyperDB from 'hyperdb'
 import ReadyResource from 'ready-resource'
 
 import { ROCKS, BEE, SINGLE, COLLECTION, QUERY_RESERVED } from '../lib/constants.js'
-import { genId, subscribe, filter } from '../lib/utils.js'
+import { genId } from '../lib/ids.js'
+import { subscribe, filter } from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
 
 /**

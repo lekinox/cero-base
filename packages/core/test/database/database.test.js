@@ -8,7 +8,8 @@ import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import hid from 'hypercore-id-encoding'
 import Hypercore from 'hypercore'
-import { admission, genId } from '../../src/lib/utils.js'
+import { genId } from '../../src/lib/ids.js'
+import { admission } from '../../src/lib/utils.js'
 import {
   makeTestnet,
   makeStore,

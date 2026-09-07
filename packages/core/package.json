@@ -1,7 +1,7 @@
 {
   "name": "@cero-base/core",
   "version": "2.1.1",
-  "description": "cero p2p primitives \u2014 identity, storage, network, database, blobs, rpc, pairing.",
+  "description": "cero p2p primitives — identity, storage, network, database, blobs, rpc, pairing.",
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -140,7 +140,7 @@
   },
   "dependencies": {
     "@hyperswarm/secret-stream": "^6.9.1",
-    "autobee": "^2.1.1",
+    "autobee": "^2.2.1",
     "autobee-encryption": "0.1.3",
     "b4a": "^1.8.1",
     "bare-crypto": "^1.15.3",

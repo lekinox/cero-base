@@ -1,25 +1,14 @@
-import crypto from 'crypto'
 import b4a from 'b4a'
 import { Readable } from 'streamx'
-import z32 from 'z32'
 
 import { ROLE_PERMS, RANK, QUERY_RESERVED } from './constants.js'
 
 // can() callers need the capability names, and constants.js is not public
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 
-/**
- * Generate a short opaque id (z32-encoded 16 random bytes).
- *
- * @returns {string}
- */
-export function genId() {
-  return z32.encode(crypto.randomBytes(16))
-}
-
 // binding the db key makes an admission unreplayable across rooms
-const ADD_WRITER_TAG = b4a.from('cero/add-writer/v2')
-const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer/v2')
+const ADD_WRITER_TAG = b4a.from('cero/add-writer')
+const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer')
 
 /** @type {(dbKey: Uint8Array, writer: Uint8Array, appender: Uint8Array) => Uint8Array} */
 export function admission(dbKey, writer, appender) {

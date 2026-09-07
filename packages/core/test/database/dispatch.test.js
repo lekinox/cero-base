@@ -8,7 +8,8 @@ import { Network } from '../../src/network/index.js'
 import { wrap } from '../../src/database/envelope.js'
 import { makeStore, makeTestnet, randomTopic, waitForConnection } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
-import { genId, admission, ownership } from '../../src/lib/utils.js'
+import { genId } from '../../src/lib/ids.js'
+import { admission, ownership } from '../../src/lib/utils.js'
 import { spec } from '../fixtures/spec/index.js'
 
 test.configure({ timeout: 60000 })
