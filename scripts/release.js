@@ -63,7 +63,8 @@ function generateChangelog(version) {
   const other = []
 
   for (const line of log.split('\n')) {
-    const match = line.match(/^(\w+)(?:\(.+?\))?:\s*(.+)/)
+    // subjects carry a leading emoji
+    const match = line.replace(/^[^\w]+/, '').match(/^(\w+)(?:\(.+?\))?:\s*(.+)/)
     if (match && categories[match[1]]) {
       categories[match[1]].items.push(match[2])
     } else if (!line.startsWith('release:')) {

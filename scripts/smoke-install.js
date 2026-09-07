@@ -57,7 +57,9 @@ function imports(pkgDir, sources) {
       const src = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
       for (const m of src.matchAll(/(?:from|import)\s+["']([^"']+)["']/g)) {
         const spec = m[1]
-        if (!spec.startsWith('.') && !spec.startsWith('#')) found.add(pkgRoot(spec))
+        // a template placeholder is emitted code, not an import of this package
+        if (spec.startsWith('.') || spec.startsWith('#') || spec.includes('${')) continue
+        found.add(pkgRoot(spec))
       }
     }
   }
