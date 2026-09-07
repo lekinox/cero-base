@@ -213,6 +213,6 @@ for (const dir of PACKAGES) {
 
 // 9. Push
 console.log('\nPushing...')
-run('git push && git push --tags')
+run(`git push && git push origin v${next}`)
 
 console.log(`\n✓ Released v${next}${dryRun ? ' (dry run — nothing published or pushed)' : ''}`)
