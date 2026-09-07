@@ -74,8 +74,8 @@ for await (const { changes } of cero.changes(me.todos)) apply(changes)
 await cero.call(room.promote, { memberId, role: 'admin' })
 const room = await cero.open(me.room, { name: 'general' })
 await cero.rotate(room)
-cero.before(me.todos, (ctx) => (ctx.row.text ? undefined : false), { signal: me.signal })
-cero.after(me.todos, ({ op, row }) => log(op, row), { signal: me.signal })
+cero.before(room.messages, ({ row }) => (row.text ? undefined : false))
+cero.after(room.banned, ({ row, put }) => put(room.audit, { target: row.id }))
 ```
 
 Every operator takes a `Ref` first. `me.messages` is a data ref, `me.room` a handle ref.
@@ -92,12 +92,17 @@ Every operator takes a `Ref` first. `me.messages` is a data ref, `me.room` a han
 | `cero.call(ref, data)`       | `Promise<any>`                                             | Invoke an action ref.                                                             |
 | `cero.open(ref, arg)`        | `Promise<Handle>`                                          | Create, join, or load a child handle.                                             |
 | `cero.rotate(handle)`        | `{ epoch }`                                                | New encryption epoch. Needs the remove permission.                                |
-| `cero.before(ref, fn, opts)` | `() => void`                                               | Runs in path, awaited. Return `false` to cancel, or mutate `ctx.row`.             |
-| `cero.after(ref, fn, opts)`  | `() => void`                                               | Runs after each committed write, non-blocking.                                    |
+| `cero.before(ref, fn, opts)` | `() => void`                                               | Rule run at apply on every peer. Return `false` to refuse, or mutate `ctx.row`.   |
+| `cero.after(ref, fn, opts)`  | `() => void`                                               | Rule run at apply on every peer, in the same transaction. Derive rows here.       |
 
 `watch`, `changes`, `before` and `after` take `{ signal }`. Watch streams are tied
-to their handle and destroyed when it closes; a signal gives a shorter scope. A
-hook's `ctx` is `{ op, name, row }`.
+to their handle and destroyed when it closes; a signal gives a shorter scope.
+
+A hook's `ctx` is `{ op, name, row, existing, id, memberId, role, get, put, set, del }`.
+The four operators on it read and write the room as it stands at this op, inside
+the transaction; the imported ones throw inside a hook. Hooks must be
+deterministic, and registered in the process that owns the data before any op
+applies. See [Hooks](data.md#hooks).
 
 `cero.open(ref, arg)` dispatches on `arg`: a string or `{ invite }` joins, `{ id }`
 loads an existing child, anything else creates one. Create options are `name`,
@@ -226,7 +231,8 @@ as a local root handle. `cero(ipc, spec)` is an alias, so app code runs on eithe
 side. The subpath also re-exports the operators, `t`, `schema`, `restore`, `bind`
 and `define`. Handle stubs expose `invite`, `revoke`, `rotate`, `close` and
 `leave`, and `me.identity.toPhrase()` is async here. `before`, `after`, `peek` and
-`store.tx` are not on a client: they hook a local write path the proxy lacks.
+`store.tx` are not on a client: hooks run where the data lives, so register them
+on the backend.
 
 ## @cero-base/cero/extensions
 

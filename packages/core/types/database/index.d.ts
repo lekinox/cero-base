@@ -61,7 +61,7 @@ export type DatabaseOpts = {
      */
     keyPair?: import('../identity/index.js').KeyPair;
     /**
-     * Called when a background after-hook or onApply callback fails, a malformed node is skipped, or the bee errors.
+     * Called when an onApply callback fails, a node is skipped or refused, or the bee errors.
      */
     onerror?: (err: Error) => void;
 };
@@ -103,7 +103,7 @@ export type HookFn = (ctx: any) => any | Promise<any>;
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
- * @property {(err: Error) => void} [onerror]                         Called when a background after-hook or onApply callback fails, a malformed node is skipped, or the bee errors.
+ * @property {(err: Error) => void} [onerror]                         Called when an onApply callback fails, a node is skipped or refused, or the bee errors.
  *
  * @typedef {{ data: any | null }} SingleResult
  * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
@@ -164,6 +164,7 @@ export declare class Database extends ReadyResource {
     _txChain: any;
     _before: Map<any, any>;
     _after: Map<any, any>;
+    _hooking: number;
     _updaters: Map<any, any>;
     _observers: Set<any>;
     _verbs: Map<any, any>;
@@ -193,7 +194,8 @@ export declare class Database extends ReadyResource {
      */
     setActive(active: boolean): Promise<void>;
     /**
-     * Register a pre-op hook. Returning `false` from `fn` aborts the op.
+     * Register a pre-op hook. It runs at apply on every peer, inside the op's transaction;
+     * returning `false` (or throwing) refuses the op everywhere.
      *
      * @param {string} op
      * @param {HookFn} fn
@@ -201,7 +203,8 @@ export declare class Database extends ReadyResource {
      */
     before(op: string, fn: HookFn): () => void;
     /**
-     * Register a post-op hook, fired after the write succeeds.
+     * Register a post-op hook. It runs at apply on every peer, in the op's transaction, so it
+     * may write derived rows through `ctx.put` / `ctx.set` / `ctx.del`.
      *
      * @param {string} op
      * @param {HookFn} fn
@@ -300,6 +303,15 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<SingleResult | ListResult>}
      */
     get(name: string, query?: string | Query): Promise<SingleResult | ListResult>;
+    _read(view: any, name: any, query: any): Promise<{
+        data: any;
+        total?: undefined;
+        size?: undefined;
+    } | {
+        data: any[];
+        total: any;
+        size: number;
+    }>;
     /**
      * Number of rows that match `query` (or total if omitted).
      *
@@ -360,12 +372,14 @@ export declare class Database extends ReadyResource {
         timeout?: number;
     }): Promise<void>;
     /**
-     * Add a peer's writer key to the indexer set.
+     * Admit a device as a writer for `memberId`, an existing member. Omit it to
+     * admit another device of this identity.
      *
      * @param {Uint8Array} publicKey
+     * @param {string} [memberId]
      * @returns {Promise<void>}
      */
-    addWriter(publicKey: Uint8Array): Promise<void>;
+    addWriter(publicKey: Uint8Array, memberId?: string): Promise<void>;
     /**
      * Remove a peer's writer key from the indexer set.
      *
@@ -400,8 +414,8 @@ export declare class Database extends ReadyResource {
     _apply(nodes: any, view: any, host: any): Promise<void>;
     _update(db: any): Promise<void>;
     _joinSwarm(bee: any, discoveryKey: any): void;
-    _runBefore(op: any, ctx: any): Promise<boolean>;
-    _runAfter(op: any, ctx: any): Promise<void>;
+    _hooks(phase: any, op: any): any;
+    _inHook(fn: any): (ctx: any) => Promise<any>;
     _opOf(node: any): {
         op: any;
         name: any;
@@ -411,19 +425,15 @@ export declare class Database extends ReadyResource {
     _merge(name: any, row: any, { upsert }?: {
         upsert?: boolean;
     }): Promise<{
-        op: any;
-        name: any;
         row: any;
     }>;
     _prepare(name: any, row: any): Ref;
-    _append(op: any, name: any, stored: any, verb: any): Promise<{
-        op: any;
-        name: any;
+    _append(stored: any, verb: any): Promise<{
         row: any;
     }>;
-    _done(op: any, ctx: any): Promise<{
+    _done(ctx: any): {
         data: any;
-    }>;
+    };
     _onfuture(version: any): void;
     _dryRun(encoded: any): Promise<any>;
     _plan(name: any, query?: {}): {
@@ -440,7 +450,7 @@ export declare class Database extends ReadyResource {
         rest: {};
         sorted: boolean;
     };
-    _total(path: any, range: any, rows: any, query: any): Promise<any>;
+    _total(view: any, path: any, range: any, rows: any, query: any): Promise<any>;
     _optimistic(op: any, opts: any): Promise<void>;
     _backfilled(timeout: any): Promise<void>;
     _admission(writer: any, ts?: number): {
@@ -450,5 +460,5 @@ export declare class Database extends ReadyResource {
         ts: number;
     };
     _checkFields(name: any, row: any): void;
-    _admit(verb: any, hook: any, publicKey: any): Promise<void>;
+    _admit(verb: any, publicKey: any, memberId: any): Promise<void>;
 }

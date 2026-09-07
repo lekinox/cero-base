@@ -30,6 +30,7 @@ async function ceroOpen(t, opts = {}) {
   await discovery.flush()
   const me = new Handle({ store, identity, network: net, spec, ...opts })
   await me.ready()
+  if (!opts.key) await me.bootstrap({ name: opts.name || null })
   t.teardown(
     async () => {
       try {
@@ -155,9 +156,15 @@ test('Handle: ref carries handle + name + kind', async (t) => {
 // ─── bootstrap ────────────────────────────────────────────────────────────
 
 test('Handle: bootstrap on fresh', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { store } = await makeStore(t)
+  const identity = await Identity.generate()
+  const net = await makeNet(t, await makeTestnet(t))
+  const me = new Handle({ store, identity, network: net, spec })
+  await me.ready()
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
   await me.bootstrap({ name: 'desktop' })
   t.is(me.store.writable, true)
+  t.is((await get(me.members)).data.length, 1, 'bootstrap enrolls the owner')
 })
 
 // ─── operators ────────────────────────────────────────────────────────────
@@ -803,8 +810,8 @@ test('Handle: removal fires unwritable on the victim and onApply on observers', 
     lostAccess = true
   })
 
-  // onApply sees REPLICATED ops too — after() hooks fire only on the writer,
-  // so an observer would never learn of a removal it did not perform
+  // hooks are an app-data rule: membership moves through the builtin routes, which run
+  // none, so onApply is what tells an observer about a removal
   const applied = []
   const off = observer.room.store.onApply(({ op, name, row }) => {
     if (op === 'del' && name === 'member') applied.push(row.id)
@@ -824,7 +831,7 @@ test('Handle: removal fires unwritable on the victim and onApply on observers', 
 
   await waitUntil(() => (applied.includes(victim.identity.id) ? true : null))
   t.pass('observer saw the replicated removal via onApply')
-  t.absent(afterFired, 'after() stayed local — it does not fire for replicated ops')
+  t.absent(afterFired, 'after() does not fire on membership rows')
 })
 
 test('Handle: a re-invited removed member reads the gap era (documented semantics)', async (t) => {

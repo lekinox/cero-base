@@ -892,28 +892,18 @@ test('add-writer: a rank the inviter cannot grant admits nobody', async (t) => {
   t.absent(await db.bee.system.get(writerKey, { unflushed: true }), 'and no writer was admitted')
 })
 
-test('add-writer: a refused membership leaves no writer bound to the inviter', async (t) => {
+test('add-writer: a writer for a member that does not exist is refused', async (t) => {
   const { db, identity } = await withRole(t, 'member')
-  const inviterMemberId = identity.id
-
   const joiner = Identity.randomKeyPair()
-  // a grantable rank, but the member row will not exist yet
-  await db.call('add-writer', {
+  const op = {
     master: identity.publicKey,
     writer: joiner.publicKey,
     sig: identity.sign(admission(db.key, joiner.publicKey, db.writerKey)),
     memberId: hid.encode(joiner.publicKey),
-    role: 'member',
     ts: Date.now()
-  })
-
-  const { data: device } = await db.get('devices', hid.encode(joiner.publicKey))
-  t.ok(device, 'a grantable rank is admitted')
-  t.not(
-    device.memberId,
-    inviterMemberId,
-    'the device binds to the joiner, never to the inviter — an unenrolled writer resolves to nobody'
-  )
+  }
+  await t.exception(db.call('add-writer', op), /REFUSED/, 'no member row, no writer')
+  t.absent((await db.get('devices', hid.encode(joiner.publicKey))).data, 'no device row either')
 })
 
 // ─── add-device: the writer→role mapping is unauthenticated ───────────────
@@ -1021,13 +1011,6 @@ test('add-file: a member (WRITE) can add a file', async (t) => {
   t.ok(data, 'a member with WRITE added the file row')
   t.is(data.name, 'shot.png', 'name persisted')
   t.is(data.memberId, identity.id, 'memberId stamped from the signer→member backlink')
-})
-
-test('add-file: no member table (genesis) still gates on role — a bare writer is not WRITE', async (t) => {
-  const { db } = await bootstrapped(t)
-  const id = genId()
-  await t.exception(db.call('add-file', { id, name: 'x.png' }), /REFUSED/)
-  t.absent((await db.get('files', id)).data, 'no member → getSignerRole null → no WRITE')
 })
 
 // ─── poison ops: malformed nodes must not crash peers ─────────────────────

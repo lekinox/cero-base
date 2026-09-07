@@ -183,17 +183,8 @@ export async function cero(dir, spec, opts = {}) {
           secretKey: result.writer.secretKey
         })
       }
-      if (!recovering) {
-        const ts = Date.now()
-        await me.store.call('add-member', {
-          id: identity.id,
-          key: me.store.writerKey,
-          role: 'owner',
-          name: opts.name || null,
-          createdAt: ts,
-          updatedAt: ts
-        })
-        if (pointer.length === 0) await pointer.append(c.encode(c.fixed32, me.store.key))
+      if (!recovering && pointer.length === 0) {
+        await pointer.append(c.encode(c.fixed32, me.store.key))
       }
     }
 

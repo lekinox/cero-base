@@ -7,6 +7,7 @@ import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import hid from 'hypercore-id-encoding'
+import Hypercore from 'hypercore'
 import { admission, genId } from '../../src/lib/utils.js'
 import {
   makeTestnet,
@@ -36,7 +37,20 @@ async function makeDb(t, opts = {}) {
 async function bootstrapped(t, opts = {}) {
   const { db, store, identity } = await makeDb(t, opts)
   await db.bootstrap({ name: 'first', isMobile: false })
+  await enroll(db, identity)
   return { db, store, identity }
+}
+
+// every real open lands the member row with the writer; the fixture does the same
+async function enroll(db, identity, role = 'owner') {
+  const ts = Date.now()
+  await db.call('add-member', {
+    id: identity.id,
+    key: db.writerKey,
+    role,
+    createdAt: ts,
+    updatedAt: ts
+  })
 }
 
 async function makeNetworked(t, testnet, opts = {}) {
@@ -538,6 +552,103 @@ test('call: a declared action with a registered route succeeds', async (t) => {
   const db = await teamDb(t, { promote: async () => {} })
   await db.call('promote', { memberId: 'm', role: 'admin' })
   t.pass('routed action call did not throw')
+})
+
+test('call: a route gets the hook ctx and writes through it', async (t) => {
+  const db = await teamDb(t, {
+    promote: async ({ row, memberId, role, get, put }) => {
+      const { data: before } = await get('notes', { text: row.memberId })
+      await put('notes', { text: `${row.memberId}:${row.role}:${before.length}:${role}` })
+      await put('notes', { text: 'second' })
+      t.ok(memberId, 'ctx carries the signer')
+    }
+  })
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  const { data } = await db.get('notes')
+  t.alike(
+    data.map((n) => n.text),
+    ['m:admin:0:owner', 'second'],
+    'the route read and wrote the room through ctx'
+  )
+  t.ok(
+    data.every((n) => n.id.length > 0),
+    'hook writes get ids'
+  )
+  t.not(data[0].id, data[1].id, 'two writes in one op get distinct ids')
+  t.alike(
+    data.map((n) => n.index),
+    [1, 2],
+    'hook writes take the collection index in write order'
+  )
+})
+
+test('call: rows a route writes get the same ids on every peer', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const routes = {
+    promote: async ({ row, put }) => put('notes', { text: `promoted ${row.memberId}` })
+  }
+  const a = await makeNetworked(t, testnet, { topic, spec: spec.handles.team, routes })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makeNetworked(t, testnet, {
+    identity: await Identity.generate(),
+    topic,
+    spec: spec.handles.team,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey,
+    routes
+  })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await a.db.call('promote', { memberId: 'm', role: 'admin' })
+  const onA = (await a.db.get('notes')).data
+  const onB = await waitFor(async () => {
+    const { data } = await b.db.get('notes')
+    return data.length === onA.length ? data : null
+  })
+  t.is(onA.length, 1)
+  t.alike(onB, onA, 'identical row, id included, derived independently on B')
+})
+
+test('a writer is always a member: admitting one for an unknown member is refused', async (t) => {
+  const { db, store } = await bootstrapped(t)
+  const stranger = Identity.randomKeyPair()
+  const core = Hypercore.key({
+    version: store.manifestVersion,
+    signers: [{ publicKey: stranger.publicKey }]
+  })
+  await t.exception(db.addWriter(stranger.publicKey, 'nobody'), /REFUSED/)
+  t.absent((await db.get('devices', hid.encode(core))).data, 'no device row')
+  // without a member the key is admitted as another device of this identity
+  await db.addWriter(stranger.publicKey)
+  const { data: device } = await db.get('devices', hid.encode(core))
+  t.is(device.memberId, db.identity.id, 'bound to the admitting identity')
+})
+
+test('call: a route that throws refuses the action', async (t) => {
+  const db = await teamDb(t, {
+    promote: async ({ row }) => {
+      if (row.role === 'god') throw new Error('no such rank')
+    }
+  })
+  await t.exception(db.call('promote', { memberId: 'm', role: 'god' }), /REFUSED/)
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  t.pass('a passing route still applies')
+})
+
+test('call: an operator called inside a route throws INVALID', async (t) => {
+  let err = null
+  const db = await teamDb(t, {
+    promote: async () => {
+      try {
+        await db.put('notes', { text: 'x' })
+      } catch (e) {
+        err = e
+      }
+    }
+  })
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  t.is(err?.code, 'INVALID', 'cero operators are off limits inside a route')
 })
 
 test('onApply: fires per applied op with op/name/row/writerKey, and unsubscribes', async (t) => {
@@ -1189,29 +1300,43 @@ test('tx: nested tx joins outer', async (t) => {
 
 // ─── hooks ────────────────────────────────────────────────────────────────
 
-test('before("put"): can cancel by returning false', async (t) => {
+test('before("put"): returning false refuses the write', async (t) => {
   const { db } = await bootstrapped(t)
   db.before('put', async (ctx) => {
     if (ctx.row.text === 'block') return false
   })
 
-  const r1 = await db.put('messages', { text: 'block' })
-  t.is(r1, null, 'cancelled')
-  const r2 = await db.put('messages', { text: 'ok' })
-  t.is(r2.data.text, 'ok')
+  await t.exception(() => db.put('messages', { text: 'block' }), /refused by hook/)
+  const r = await db.put('messages', { text: 'ok' })
+  t.is(r.data.text, 'ok')
 
   const { data } = await db.get('messages', {})
   t.is(data.length, 1)
 })
 
-test('before("put"): mutation in hook carries through', async (t) => {
+test('before("put"): a hook that throws refuses too', async (t) => {
+  const { db } = await bootstrapped(t)
+  db.before('put', async () => {
+    throw new Error('nope')
+  })
+
+  const err = await db.put('messages', { text: 'x' }).catch((e) => e)
+  t.is(err.code, 'REFUSED', 'a rule that errors refuses instead of diverging peers')
+  t.ok(/nope/.test(err.message), 'and carries the rule error')
+  const { data } = await db.get('messages', {})
+  t.is(data.length, 0)
+})
+
+test('before("put"): mutation in hook rewrites the stored row', async (t) => {
   const { db } = await bootstrapped(t)
   db.before('put', async (ctx) => {
     ctx.row.text = ctx.row.text.toUpperCase()
   })
 
-  const { data } = await db.put('messages', { text: 'hello' })
-  t.is(data.text, 'HELLO')
+  const { data: submitted } = await db.put('messages', { text: 'hello' })
+  t.is(submitted.text, 'hello', 'the call returns the row it submitted')
+  const { data } = await db.get('messages', submitted.id)
+  t.is(data.text, 'HELLO', 'the hook decides what lands')
 })
 
 test('multiple before hooks chain in registration order', async (t) => {
@@ -1224,7 +1349,8 @@ test('multiple before hooks chain in registration order', async (t) => {
     calls.push('b')
   })
   await db.put('messages', { text: 'x' })
-  t.alike(calls, ['a', 'b'])
+  // the writer runs its hooks twice: once in the dry run, once at apply
+  t.alike(calls, ['a', 'b', 'a', 'b'])
 })
 
 test('first before hook to return false short-circuits', async (t) => {
@@ -1237,12 +1363,11 @@ test('first before hook to return false short-circuits', async (t) => {
   db.before('put', async () => {
     calls.push('b')
   })
-  const r = await db.put('messages', { text: 'x' })
-  t.is(r, null)
+  await t.exception(() => db.put('messages', { text: 'x' }), /refused by hook/)
   t.alike(calls, ['a'])
 })
 
-test('after("put") fires on success with result', async (t) => {
+test('after("put") fires with the applied row', async (t) => {
   const { db } = await bootstrapped(t)
   let seen = null
   db.after('put', async (ctx) => {
@@ -1252,18 +1377,68 @@ test('after("put") fires on success with result', async (t) => {
   t.ok(seen)
   t.is(seen.op, 'put')
   t.is(seen.name, 'messages')
-  t.is(seen.result.data.text, 'observed')
+  t.is(seen.row.text, 'observed')
+  t.is(seen.existing, null, 'no row under that id before the op')
 })
 
-test('after("put") does not fire when before cancels', async (t) => {
+test('after("put") writes a derived row through ctx.put', async (t) => {
+  const { db } = await bootstrapped(t)
+  db.after('put', async (ctx) => {
+    await ctx.put('records', { id: `a-${ctx.row.id}`, text: ctx.row.text })
+  })
+  const { data: row } = await db.put('messages', { text: 'audited' })
+  const { data } = await db.get('records', `a-${row.id}`)
+  t.is(data?.text, 'audited', 'the derived row landed in the same transaction')
+})
+
+test('after("del") removes a derived row through ctx.del', async (t) => {
+  const { db } = await bootstrapped(t)
+  db.after('put', (ctx) => ctx.put('records', { id: `a-${ctx.row.id}`, text: ctx.row.text }))
+  db.after('del', (ctx) => ctx.del('records', `a-${ctx.id}`))
+  const { data: row } = await db.put('messages', { text: 'x' })
+  t.ok((await db.get('records', `a-${row.id}`)).data, 'derived row written')
+  await db.del('messages', row.id)
+  t.absent((await db.get('records', `a-${row.id}`)).data, 'and removed in the op that deleted it')
+})
+
+test('a hook write wakes watchers of the collection it wrote', async (t) => {
+  const { db } = await bootstrapped(t)
+  db.after('put', (ctx) => ctx.put('records', { id: `a-${ctx.row.id}`, text: ctx.row.text }))
+  const seen = []
+  const stream = db.watch('records')
+  stream.on('data', ({ data }) => seen.push(data.length))
+  t.teardown(() => stream.destroy())
+  await waitUntil(() => seen.length > 0 || null)
+
+  await db.put('messages', { text: 'x' })
+  await waitUntil(() => (seen.includes(1) ? true : null))
+  t.pass('the derived row reached a subscriber')
+})
+
+test('after("put") does not fire when before refuses', async (t) => {
   const { db } = await bootstrapped(t)
   let after = 0
   db.before('put', async () => false)
   db.after('put', async () => {
     after++
   })
-  await db.put('messages', { text: 'x' })
+  await t.exception(() => db.put('messages', { text: 'x' }), /refused by hook/)
   t.is(after, 0)
+})
+
+test('an operator called inside a hook throws INVALID', async (t) => {
+  const { db } = await bootstrapped(t)
+  let err = null
+  db.before('put', async () => {
+    try {
+      await db.put('messages', { text: 'nested' })
+    } catch (e) {
+      err = e
+    }
+  })
+  await db.put('messages', { text: 'outer' })
+  t.is(err?.code, 'INVALID')
+  t.ok(/inside a hook/.test(err.message), 'points at the ctx operators')
 })
 
 // ─── events ───────────────────────────────────────────────────────────────
@@ -1615,9 +1790,8 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   t.ok(seen, 'a saw b row after claim')
 })
 
-test('replication: after("put") hook on A does NOT fire for B-originated writes', async (t) => {
-  // Hooks are local to the call site of the operator. Replicated commits go
-  // through apply() on the receiving side, not through put()/runAfter().
+test('replication: after("put") on A fires for B-originated writes', async (t) => {
+  // hooks run at apply, so every peer runs them on every op, whoever wrote it
   const testnet = await makeTestnet(t)
   const identity = await Identity.generate()
   const topic = randomTopic()
@@ -1636,28 +1810,24 @@ test('replication: after("put") hook on A does NOT fire for B-originated writes'
   await waitForConnection(b.network)
 
   await a.db.addWriter(b.db.keyPair.publicKey)
+  await enroll(a.db, bIdentity, 'member', b.db.writerKey)
   await waitUntil(() => b.db.writable)
 
-  let aAfter = 0
-  a.db.after('put', () => {
-    aAfter++
+  const seen = []
+  a.db.after('put', (ctx) => {
+    seen.push(ctx.row.text)
   })
 
   const { data: row } = await b.db.put('messages', { text: 'from-b' })
-
-  // Wait for A to ingest the row.
   await waitUntil(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
 
-  t.is(aAfter, 0, 'a.after("put") did not fire for replicated write')
+  t.alike(seen, ['from-b'], "a ran its hook when b's op applied")
 })
 
-test('replication: before("put") on A does NOT cancel B-originated writes', async (t) => {
-  // Same rationale as above: before-hooks gate the local operator only.
-  // Replicated writes have already committed on the originator and apply
-  // unconditionally on the receiver.
+test('replication: a before hook refuses replicated writes on the peer that has it', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.generate()
   const topic = randomTopic()
@@ -1676,22 +1846,40 @@ test('replication: before("put") on A does NOT cancel B-originated writes', asyn
   await waitForConnection(b.network)
 
   await a.db.addWriter(b.db.keyPair.publicKey)
+  await enroll(a.db, bIdentity, 'member', b.db.writerKey)
   await waitUntil(() => b.db.writable)
 
-  let aBefore = 0
-  a.db.before('put', () => {
-    aBefore++
-    return false
-  })
+  // only b has the rule
+  b.db.before('put', (ctx) => ctx.row.text !== 'blocked')
 
-  const { data: row } = await b.db.put('messages', { text: 'from-b' })
-
-  const seen = await waitUntil(async () => {
-    const { data } = await a.db.get('messages', row.id)
-    return data || null
+  const rows = []
+  const stream = b.db.changes('messages')
+  stream.on('data', (batch) => {
+    for (const { next } of batch.changes) if (next) rows.push(next.text)
   })
-  t.ok(seen, 'a still saw b row despite before-hook')
-  t.is(aBefore, 0, 'a.before("put") did not fire for replicated write')
+  t.teardown(() => stream.destroy())
+
+  const applied = []
+  t.teardown(
+    b.db.onApply(({ name, row }) => {
+      if (name === 'messages') applied.push(row.text)
+    })
+  )
+
+  const { data: kept } = await a.db.put('messages', { text: 'kept' })
+  await waitUntil(async () => (await b.db.get('messages', kept.id)).data || null)
+
+  const { data: blocked } = await a.db.put('messages', { text: 'blocked' })
+  t.ok((await a.db.get('messages', blocked.id)).data, 'a applied its own write, it has no rule')
+
+  await waitUntil(() => applied.includes('blocked') || null)
+  t.absent((await b.db.get('messages', blocked.id)).data, 'b refused what its rule rejects')
+  t.absent(rows.includes('blocked'), 'and never handed it to a subscriber')
+
+  // with the rule on both peers the writer learns at its own dry run
+  a.db.before('put', (ctx) => ctx.row.text !== 'blocked')
+  const err = await a.db.put('messages', { text: 'blocked' }).catch((e) => e)
+  t.is(err.code, 'REFUSED', 'refused before it reached the log')
 })
 
 test('replication: eventually-consistent — B sees all 5 rows put by A before joining', async (t) => {
@@ -1828,16 +2016,16 @@ test('whenWritable: resolves when bee becomes writable via add-writer', async (t
 
 // ─── onerror hook ─────────────────────────────────────────────────────────
 
-test('onerror: after-hook failure surfaces to onerror instead of being swallowed', async (t) => {
-  t.plan(1)
-  const boom = new Error('after-hook boom')
-  const { db } = await bootstrapped(t, {
-    onerror: (err) => t.is(err, boom, 'onerror received the after-hook error')
-  })
+test('a throwing after hook refuses the op', async (t) => {
+  const { db } = await bootstrapped(t)
   db.after('put', async () => {
-    throw boom
+    throw new Error('after-hook boom')
   })
-  await db.put('messages', { text: 'hello' })
+  const err = await db.put('messages', { text: 'hello' }).catch((e) => e)
+  t.is(err.code, 'REFUSED')
+  t.ok(/after-hook boom/.test(err.message))
+  const { data } = await db.get('messages', {})
+  t.is(data.length, 0, 'the row never landed')
 })
 
 // idle rooms can demote to server-only discovery instead of holding an
@@ -1897,8 +2085,8 @@ test('apply: builtin timestamps are deterministic across peers', async (t) => {
 
 test('write: a throwing route rejects the call and appends nothing (dry-run)', async (t) => {
   const db = await teamDb(t, {
-    promote: async (op) => {
-      if (op.role === 'boom') throw new Error('role rejected by app')
+    promote: async ({ row }) => {
+      if (row.role === 'boom') throw new Error('role rejected by app')
     }
   })
   const before = db.bee.local.length
@@ -1976,8 +2164,8 @@ test('apply: an add-writer without ts falls back to 0 — identical everywhere',
 
 test('write: a throwing op anywhere in a tx batch rejects the whole batch', async (t) => {
   const db = await teamDb(t, {
-    promote: async (op) => {
-      if (op.role === 'boom') throw new Error('batch poison')
+    promote: async ({ row }) => {
+      if (row.role === 'boom') throw new Error('batch poison')
     }
   })
   const before = db.bee.local.length

@@ -18,6 +18,7 @@ async function ceroOpen(t, opts = {}) {
   await discovery.flush()
   const me = new Handle({ store, identity, network: net, spec, ...opts })
   await me.ready()
+  if (!opts.key) await me.bootstrap({ name: opts.name || null })
   t.teardown(
     async () => {
       try {

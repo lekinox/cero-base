@@ -467,16 +467,16 @@ export class Handle extends ReadyResource {
     }
 
     const sig = this.identity.sign(admission(this.store.key, writerKey, this.store.writerKey))
+    // one batch: the member row, then the writer that belongs to it; a refusal discards both
     await this.store.tx(async (tx) => {
+      await tx.call('add-member', member)
       await tx.call('add-writer', {
         sig,
         master: this.identity.publicKey,
         writer: writerKey,
-        // add-member in the same transaction decides the rank, a refusal discards both
         memberId: member.id,
         ts: member.updatedAt || Date.now()
       })
-      await tx.call('add-member', member)
     })
   }
 

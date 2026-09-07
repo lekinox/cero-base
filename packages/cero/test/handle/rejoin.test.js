@@ -24,6 +24,7 @@ async function ceroOpen(t, opts = {}) {
   await local.ready()
   const me = new Handle({ store, identity, network: net, spec, local, ...opts })
   await me.ready()
+  if (!opts.key) await me.bootstrap({ name: opts.name || null })
   t.teardown(
     async () => {
       try {

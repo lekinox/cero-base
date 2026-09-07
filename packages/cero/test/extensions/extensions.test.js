@@ -5,7 +5,20 @@ import { promises as fs, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
-import { cero, put, set, get, del, open, watch, before, after, schema, t } from '../../src/index.js'
+import {
+  cero,
+  put,
+  set,
+  get,
+  del,
+  open,
+  watch,
+  before,
+  after,
+  restore,
+  schema,
+  t
+} from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { profileSync, handleSync } from '../../src/extensions/index.js'
 import { makeTestnet, waitUntil, waitForConnection } from '../helpers/index.js'
@@ -19,7 +32,11 @@ process.on('exit', () => rmSync(buildRoot, { recursive: true, force: true }))
 const base = schema({
   profile: t.single({ name: t.string, avatar: t.string }),
   notes: t.collection({ text: t.string }),
-  room: { messages: t.collection({ text: t.string }) }
+  room: {
+    messages: t.collection({ text: t.string }),
+    audits: t.collection({ text: t.string }),
+    banned: t.collection({ reason: t.string })
+  }
 })
 
 // Defined at module level — inside a brittle `(t) =>` callback, `t` is the test
@@ -119,6 +136,7 @@ test('after(ref): fires on a single set with ctx { op, name, row }', async (t) =
   t.is(ctx?.row.name, 'a')
 })
 
+// a hook runs twice on the writer: once in its dry run, once at apply
 test('after(ref): fires on collection put / set / del', async (t) => {
   const me = await openCero(t, (await buildSpec(t, 'after-coll')).spec)
   const ops = []
@@ -126,7 +144,8 @@ test('after(ref): fires on collection put / set / del', async (t) => {
   const { data } = await put(me.notes, { text: 'x' })
   await set(me.notes, { id: data.id, text: 'y' })
   await del(me.notes, data.id)
-  t.alike(ops, ['put', 'set', 'del'], 'fired on each write op')
+  // an upsert on a collection applies as an add, so a hook sees it as a put
+  t.alike(ops, ['put', 'put', 'put', 'put', 'del', 'del'], 'fired on each write op')
 })
 
 test('after(ref): only the named ref, and unsubscribes', async (t) => {
@@ -136,10 +155,10 @@ test('after(ref): only the named ref, and unsubscribes', async (t) => {
   await put(me.notes, { text: 'x' })
   t.is(hits, 0, 'a different ref does not fire')
   await set(me.profile, { name: 'a' })
-  t.is(hits, 1, 'the named ref fires')
+  t.is(hits, 2, 'the named ref fires')
   off()
   await set(me.profile, { name: 'b' })
-  t.is(hits, 1, 'stops after unsubscribe')
+  t.is(hits, 2, 'stops after unsubscribe')
 })
 
 test('after(ref): multiple subscribers all fire', async (t) => {
@@ -149,29 +168,104 @@ test('after(ref): multiple subscribers all fire', async (t) => {
   after(me.profile, () => a++)
   after(me.profile, () => b++)
   await set(me.profile, { name: 'x' })
-  t.is(a, 1)
-  t.is(b, 1)
+  t.is(a, 2)
+  t.is(b, 2)
+})
+
+test('after(ref): a derived row written through ctx.put lands on every peer', async (t) => {
+  const { spec } = await buildSpec(t, 'hook-tx')
+  const { host, joiner } = await openTwo(t, spec)
+
+  const room = await open(host.room)
+  const invite = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const joined = await open(joiner.room, invite)
+  await waitForConnection(host.network)
+  await waitForConnection(joiner.network)
+  await waitUntil(() => joined.store.writable)
+
+  const audit = (c) =>
+    c.op === 'del'
+      ? c.set('audits', { id: `a-${c.id}`, text: 'deleted' })
+      : c.put('audits', { id: `a-${c.row.id}`, text: c.row.text })
+  after(room.messages, audit)
+  after(joined.messages, audit)
+
+  const { data: row } = await put(room.messages, { text: 'hello' })
+  const onHost = await waitUntil(async () => (await get(room.audits, `a-${row.id}`)).data)
+  const onJoiner = await waitUntil(async () => (await get(joined.audits, `a-${row.id}`)).data)
+  t.is(onHost.text, 'hello', 'the hook wrote the derived row')
+  t.alike(onJoiner, onHost, 'byte for byte the same row on both peers')
+
+  await del(room.messages, row.id)
+  const edited = await waitUntil(async () => {
+    const { data } = await get(joined.audits, `a-${row.id}`)
+    return data?.text === 'deleted' ? data : null
+  })
+  t.is(edited.createdAt, onHost.createdAt, 'ctx.set merged over the row it found')
+})
+
+test('before(ref): ctx.get reads the room as it stands at this op', async (t) => {
+  const me = await openCero(t, (await buildSpec(t, 'hook-read')).spec)
+  const room = await open(me.room)
+
+  before(room.messages, async ({ memberId, get: read }) => {
+    if ((await read(room.banned, memberId)).data) return false
+  })
+
+  await put(room.messages, { text: 'fine' })
+  await put(room.banned, { id: me.identity.id, reason: 'spam' })
+
+  const err = await put(room.messages, { text: 'blocked' }).catch((e) => e)
+  t.is(err.code, 'REFUSED', 'the rule read the ban it was written under')
+  t.is((await get(room.messages)).data.length, 1)
 })
 
 // ─── before(ref): write hooks ───────────────────────────────────────────────
 
-test('before(ref): returning false cancels the write', async (t) => {
+test('before(ref): returning false refuses the write', async (t) => {
   const me = await openCero(t, (await buildSpec(t, 'before-cancel')).spec)
   before(me.notes, (c) => (c.row.text === 'no' ? false : undefined))
-  await put(me.notes, { text: 'no' })
+  const err = await put(me.notes, { text: 'no' }).catch((e) => e)
+  t.is(err.code, 'REFUSED', 'the writer learns at its own dry run')
   await put(me.notes, { text: 'yes' })
   const { data } = await get(me.notes)
-  t.is(data.length, 1, 'cancelled write not stored')
+  t.is(data.length, 1, 'refused write not stored')
   t.is(data[0].text, 'yes')
 })
 
-test('before(ref): mutating ctx.row carries into the write', async (t) => {
+test('before(ref): mutating ctx.row rewrites the stored row', async (t) => {
   const me = await openCero(t, (await buildSpec(t, 'before-mutate')).spec)
   before(me.notes, (c) => {
     c.row.text = c.row.text.toUpperCase()
   })
-  const { data } = await put(me.notes, { text: 'hi' })
-  t.is(data.text, 'HI', 'mutation applied to the stored row')
+  const { data: submitted } = await put(me.notes, { text: 'hi' })
+  t.is(submitted.text, 'hi', 'the call returns the row it submitted')
+  const { data } = await get(me.notes, submitted.id)
+  t.is(data.text, 'HI', 'the hook decides what lands')
+})
+
+test('before(ref): a mutated row lands identically on every peer', async (t) => {
+  const { spec } = await buildSpec(t, 'hook-mutate-two')
+  const { host, joiner } = await openTwo(t, spec)
+
+  const room = await open(host.room)
+  const invite = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const joined = await open(joiner.room, invite)
+  await waitForConnection(host.network)
+  await waitForConnection(joiner.network)
+  await waitUntil(() => joined.store.writable)
+
+  const shout = (c) => {
+    c.row.text = c.row.text.toUpperCase()
+  }
+  before(room.messages, shout)
+  before(joined.messages, shout)
+
+  const { data: submitted } = await put(room.messages, { text: 'shout' })
+  const onHost = await waitUntil(async () => (await get(room.messages, submitted.id)).data)
+  const onJoiner = await waitUntil(async () => (await get(joined.messages, submitted.id)).data)
+  t.is(onHost.text, 'SHOUT', 'the rewrite landed')
+  t.alike(onJoiner, onHost, 'and every peer derived the same row')
 })
 
 test('before(ref): only the named ref, and unsubscribes', async (t) => {
@@ -183,20 +277,36 @@ test('before(ref): only the named ref, and unsubscribes', async (t) => {
   await set(me.profile, { name: 'a' })
   t.is(hits, 0, 'a different ref does not fire')
   await put(me.notes, { text: 'x' })
-  t.is(hits, 1, 'the named ref fires')
+  t.is(hits, 2, 'the named ref fires')
   off()
   await put(me.notes, { text: 'y' })
-  t.is(hits, 1, 'stops after unsubscribe')
+  t.is(hits, 2, 'stops after unsubscribe')
 })
 
-test('before(ref): vetoing a del keeps the row', async (t) => {
+test('before(ref): refusing a del keeps the row', async (t) => {
   const me = await openCero(t, (await buildSpec(t, 'before-del')).spec)
   const { data: row } = await put(me.notes, { text: 'keep' })
   before(me.notes, (c) => (c.op === 'del' ? false : undefined))
-  await del(me.notes, row.id)
+  const err = await del(me.notes, row.id).catch((e) => e)
+  t.is(err.code, 'REFUSED')
   const { data } = await get(me.notes)
-  t.is(data.length, 1, 'del vetoed — row survives')
+  t.is(data.length, 1, 'del refused — row survives')
   t.is(data[0].id, row.id)
+})
+
+test('before(ref): an operator called inside a hook throws INVALID', async (t) => {
+  const me = await openCero(t, (await buildSpec(t, 'before-nested')).spec)
+  let err = null
+  before(me.notes, async () => {
+    try {
+      await put(me.notes, { text: 'nested' })
+    } catch (e) {
+      err = e
+    }
+  })
+  await put(me.notes, { text: 'outer' })
+  t.is(err?.code, 'INVALID')
+  t.ok(/ctx\.put/.test(err.message), 'points at the ctx operators')
 })
 
 // ─── me.on('handle') ────────────────────────────────────────────────────────
@@ -520,6 +630,32 @@ test('profileSync: a room opened before the profile syncs once it is set', async
     return data?.avatar === 'a.png' ? data : null
   })
   t.is(m.name, 'jb', 'an already-open room syncs when the profile appears')
+})
+
+test('profileSync: a profile set on another device republishes here', async (t) => {
+  cero.use(profileSync())
+  t.teardown(reset)
+  const testnet = await makeTestnet(t)
+  const { spec } = await buildSpec(t, 'ps-device')
+
+  const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => a.close().catch(() => {}), { order: 5 })
+  const room = await open(a.room)
+
+  let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  b = await restore(b, a.identity.toPhrase())
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+
+  // the row arrives on a by replication, not through a's own write path
+  await set(b.profile, { name: 'jb', avatar: 'b.png' })
+
+  const m = await waitUntil(async () => {
+    const { data } = await get(room.members, a.identity.id)
+    return data?.avatar === 'b.png' ? data : null
+  })
+  t.is(m.name, 'jb', "the other device's profile reached this device's rooms")
 })
 
 test('profileSync: a profile edit propagates to every open room', async (t) => {
@@ -868,25 +1004,25 @@ test('signal: after(ref, fn, { signal }) stops firing on abort', async (t) => {
   after(me.profile, () => hits++, { signal: ctrl.signal })
 
   await set(me.profile, { name: 'a' })
-  t.is(hits, 1)
+  t.is(hits, 2)
   ctrl.abort()
   await set(me.profile, { name: 'b' })
-  t.is(hits, 1, 'unsubscribed on abort')
+  t.is(hits, 2, 'unsubscribed on abort')
 })
 
-test('signal: before(ref, fn, { signal }) stops vetoing on abort', async (t) => {
+test('signal: before(ref, fn, { signal }) stops refusing on abort', async (t) => {
   const me = await openManual(t, (await buildSpec(t, 'sig-before')).spec)
   const ctrl = new AbortController()
   before(me.notes, (c) => (c.row.text === 'no' ? false : undefined), { signal: ctrl.signal })
 
-  await put(me.notes, { text: 'no' })
+  await t.exception(() => put(me.notes, { text: 'no' }), /refused by hook/)
   let { data } = await get(me.notes)
-  t.is(data.length, 0, 'veto active')
+  t.is(data.length, 0, 'rule active')
 
   ctrl.abort()
   await put(me.notes, { text: 'no' })
   ;({ data } = await get(me.notes))
-  t.is(data.length, 1, 'veto removed on abort')
+  t.is(data.length, 1, 'rule removed on abort')
 })
 
 test('signal: watch(ref, q, { signal }) destroys on abort without closing the handle', async (t) => {
@@ -928,5 +1064,5 @@ test('signal: a pre-aborted signal tears down on/after/before immediately', asyn
   before(me.notes, () => false, { signal: ctrl.signal })
   await put(me.notes, { text: 'kept' })
   const { data } = await get(me.notes)
-  t.is(data.length, 1, 'before veto never applied')
+  t.is(data.length, 1, 'before rule never applied')
 })

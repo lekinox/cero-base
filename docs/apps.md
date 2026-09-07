@@ -128,7 +128,7 @@ const room = await cero.open(me.room, { invite }) // yes
 cero.watch(room.messages).on('data', render) // yes
 await room.invite() // yes
 
-cero.before(me.todos, fn) // no: hooks run where the data lives
+cero.before(room.messages, fn) // no: hooks are a rule of the data itself
 await cero.open(me.room, { routes }) // no: functions do not serialize
 ```
 
@@ -143,17 +143,21 @@ plus `invite()`, `revoke()`, `rotate()`, `close()` and `leave()`, and both
 idempotent, so a slow wire keeps only the newest. Deltas are not, so the server
 holds the iteration instead and loses nothing.
 
-Three things do not cross. `before`, `after` and `peek` hook the local write
-path or probe a local directory, and a proxy has neither. `routes`, and any
-other function passed as an option, cannot be serialized: register those on the
-backend. Error classes stay put too, only codes cross on the rejection message,
-so match on the code and not on `instanceof`.
+Three things do not cross. `before` and `after` run inside apply, where the data
+lives, and `peek` probes a local directory — a proxy has neither. Register hooks
+on the backend, next to the databases they rule. `routes`, and any other function
+passed as an option, cannot be serialized: register those on the backend too.
+Error classes stay put, only codes cross on the rejection message, so match on
+the code and not on `instanceof` — a hook that refuses a client's write surfaces
+as `REFUSED`.
 
 ## `use` and `define` on both sides
 
 An extension's schema is folded in at build time and its `setup` runs inside
 `cero()`, so `cero.use` belongs in `build.js` and in the backend entry. The UI
-process registers nothing: the client has no `use`.
+process registers nothing: the client has no `use`. An extension's `setup` is
+also where hooks belong — it runs before any op applies, which is what a rule
+needs.
 
 `define` is different. A custom operator is a plain function composed from the
 operators, and its body runs in the process that calls it, so register the same

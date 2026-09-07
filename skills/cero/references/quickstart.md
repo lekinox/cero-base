@@ -146,7 +146,7 @@ import fs from 'fs' // not 'node:fs'
 import { join } from 'path'
 ```
 
-Both. Import `fs`, `path`, `crypto`, `events` and `url` as usual, with no `node:` prefix; on Bare the package maps them to the `bare-*` modules. Nothing in your code changes.
+Both, Node 22 or newer. Import `fs`, `path`, `crypto`, `events` and `url` as usual, with no `node:` prefix; on Bare the package maps them to the `bare-*` modules. Nothing in your code changes.
 
 ## Next
 

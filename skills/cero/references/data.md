@@ -122,22 +122,50 @@ for await (const { changes, reset } of cero.changes(room.messages)) {
 
 ## Hooks
 
-```js
-cero.before(
-  me.todos,
-  (ctx) => {
-    if (!ctx.row.text.trim()) return false // cancel the write
-    ctx.row.text = ctx.row.text.trim() // or change it
-  },
-  { signal: me.signal }
-)
+A hook is a rule, not a listener. It runs when the op applies — on every peer, inside the op's transaction.
 
-cero.after(me.todos, ({ op, row }) => audit(op, row), { signal: me.signal })
+```js
+cero.before(room.messages, ({ row }) => {
+  if (!row.text.trim()) return false // refuse the write, everywhere
+  row.text = row.text.trim() // or change what lands
+})
+
+cero.before(room.messages, async ({ memberId, get }) => {
+  if ((await get(room.banned, memberId)).data) return false
+})
+
+cero.after(room.banned, ({ row, memberId, put }) =>
+  put(room.audit, { kind: 'ban', by: memberId, target: row.id })
+)
 ```
 
-`before` runs in the write path and is awaited. Return `false` to cancel, or mutate `ctx.row`. `after` runs once the write is in the log and never blocks it. Both receive `{ op, name, row }`, where `op` is `put`, `set` or `del`. Both return an unsubscribe function, and `{ signal }` unsubscribes on abort.
+`before` decides. Return `false` and the op is refused: the writer's own call rejects with `REFUSED` and no peer stores the row. Mutating `row` rewrites what lands — the call still returns the row it submitted, the hook decides what everyone keeps.
 
-Hooks fire only on the device doing the write. They are not available over RPC.
+`after` derives. Write the rows that follow from this one and they commit in the same transaction. A hook that throws refuses the op too: a rule that errors must not leave one peer with a row its neighbour rejected.
+
+Both receive the same ctx:
+
+| Field                      | Is                                                       |
+| -------------------------- | -------------------------------------------------------- |
+| `op`                       | `put`, `set` or `del`, as it applies                     |
+| `name`                     | The ref the op is on                                     |
+| `row`                      | The incoming row, mutable in `before`, `null` on a `del` |
+| `existing`                 | The stored row this op replaces, or `null`               |
+| `id`                       | The row id                                               |
+| `memberId`, `role`         | Who signed the op, and what they may do                  |
+| `get`, `put`, `set`, `del` | The operators, on the room as it stands at this op       |
+
+The operators on the ctx are the ones you already use — `get(room.banned, id)`, `put(room.audit, row)` — reading and writing inside the transaction. The imported `cero.put` and `cero.get` throw inside a hook; go through the ctx.
+
+An upsert on a collection applies as an add, so `cero.set(me.todos, { id, done: true })` reaches a hook as a `put`. `op` is always the op as it applies.
+
+Three rules follow from running on every peer:
+
+- **Be deterministic.** Read `ctx` and nothing else. No clock, no random, no local state — two peers that disagree store different rows.
+- **Register before the data moves.** Hooks live in the process that owns the data, set up in `cero.use` or right after `cero()`, before any op applies. A peer that registers late has already applied ops without the rule. They are not available over RPC.
+- **Expect to run twice on the writer.** The writing device runs its hooks once to check the op, then again when it applies. Pure hooks do not notice.
+
+`before` and `after` return an unsubscribe function, and `{ signal }` unsubscribes on abort. To watch writes locally instead of ruling on them, use [`changes`](#changes).
 
 ## Store events
 

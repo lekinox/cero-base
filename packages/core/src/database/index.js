@@ -38,7 +38,7 @@ import { makeDispatcher } from './dispatch.js'
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
- * @property {(err: Error) => void} [onerror]                         Called when a background after-hook or onApply callback fails, a malformed node is skipped, or the bee errors.
+ * @property {(err: Error) => void} [onerror]                         Called when an onApply callback fails, a node is skipped or refused, or the bee errors.
  *
  * @typedef {{ data: any | null }} SingleResult
  * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
@@ -91,6 +91,7 @@ export class Database extends ReadyResource {
 
     this._before = new Map()
     this._after = new Map()
+    this._hooking = 0
     this._updaters = new Map()
     this._observers = new Set()
     this._verbs = verbMap(this.refs)
@@ -134,7 +135,11 @@ export class Database extends ReadyResource {
       routes: this.routes,
       onerror: this._onerror,
       key: () => this.key,
-      onepoch: (row) => this.rotation.learn(row)
+      onepoch: (row) => this.rotation.learn(row),
+      hooks: (phase, op) => this._hooks(phase, op),
+      inHook: (fn) => this._inHook(fn),
+      touch: (name) => this._touched.add(name),
+      read: (view, name, query) => this._read(view, name, query)
     })
 
     const known = !!this.key
@@ -186,7 +191,8 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Register a pre-op hook. Returning `false` from `fn` aborts the op.
+   * Register a pre-op hook. It runs at apply on every peer, inside the op's transaction;
+   * returning `false` (or throwing) refuses the op everywhere.
    *
    * @param {string} op
    * @param {HookFn} fn
@@ -197,7 +203,8 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Register a post-op hook, fired after the write succeeds.
+   * Register a post-op hook. It runs at apply on every peer, in the op's transaction, so it
+   * may write derived rows through `ctx.put` / `ctx.set` / `ctx.del`.
    *
    * @param {string} op
    * @param {HookFn} fn
@@ -243,7 +250,7 @@ export class Database extends ReadyResource {
     const ref = this._prepare(name, row)
     const ts = Date.now()
     const stored = { createdAt: ts, updatedAt: ts, ...row, id: row.id || genId() }
-    return this._done('put', await this._append('put', name, stored, `add-${ref.verb}`))
+    return this._done(await this._append(stored, `add-${ref.verb}`))
   }
 
   /**
@@ -255,7 +262,7 @@ export class Database extends ReadyResource {
    * @returns {Promise<SingleResult | null>}
    */
   async set(name, row, opts) {
-    return this._done('set', await this.tx((tx) => tx._merge(name, row, opts)))
+    return this._done(await this.tx((tx) => tx._merge(name, row, opts)))
   }
 
   /**
@@ -268,12 +275,9 @@ export class Database extends ReadyResource {
   async del(name, id) {
     this.guard()
     const ref = this.ref(name)
-    const ctx = { op: 'del', name, id }
-    if ((await this._runBefore('del', ctx)) === false) return null
     // singles have no id, the dummy one just satisfies the shared del-by-id encoding
     const payload = ref.kind === SINGLE ? { id: '' } : { id }
     await this.write([[`del-${ref.verb}`, payload]])
-    await this._runAfter('del', ctx)
   }
 
   /**
@@ -378,22 +382,27 @@ export class Database extends ReadyResource {
    */
   async get(name, query) {
     this.guard()
+    return this._read(this.view, name, query)
+  }
+
+  // the same read against any view: hooks read the transaction they run in
+  async _read(view, name, query) {
     const ref = this.ref(name)
     const col = this.col(ref)
 
     if (ref.kind === SINGLE) {
-      return { data: await this.view.findOne(col, {}) }
+      return { data: await view.findOne(col, {}) }
     }
 
     if (typeof query === 'string') {
-      return { data: await this.view.get(col, { id: query }) }
+      return { data: await view.get(col, { id: query }) }
     }
 
     const { path, range, rest, sorted } = this._plan(name, query)
-    const rows = await this.view.find(path, range).toArray()
+    const rows = await view.find(path, range).toArray()
     if (!sorted) rows.sort(byIndex)
     const data = filter(rows, rest)
-    return { data, total: await this._total(path, range, rows, query), size: data.length }
+    return { data, total: await this._total(view, path, range, rows, query), size: data.length }
   }
 
   /**
@@ -461,14 +470,23 @@ export class Database extends ReadyResource {
         updatedAt: ts
       }
     ]
-    if (!recovering) {
-      await this.write([['add-writer', writer], device])
-    } else {
+    if (recovering) {
       await this._backfilled(timeout)
       await this._optimistic(this.spec.dispatch.encode(`@${this.ns}/add-writer`, writer), {
         timeout
       })
       await this.write([device])
+    } else {
+      // one batch: a writer is never on the log without its member row
+      const member = {
+        id: this.identity.id,
+        key: this.writerKey,
+        role: 'owner',
+        name: name || null,
+        createdAt: ts,
+        updatedAt: ts
+      }
+      await this.write([['add-writer', writer], ['add-member', member], device])
     }
     return { id: this.writerKey, writer: this.keyPair }
   }
@@ -519,13 +537,15 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Add a peer's writer key to the indexer set.
+   * Admit a device as a writer for `memberId`, an existing member. Omit it to
+   * admit another device of this identity.
    *
    * @param {Uint8Array} publicKey
+   * @param {string} [memberId]
    * @returns {Promise<void>}
    */
-  async addWriter(publicKey) {
-    return this._admit('add-writer', 'addWriter', publicKey)
+  async addWriter(publicKey, memberId) {
+    return this._admit('add-writer', publicKey, memberId)
   }
 
   /**
@@ -535,7 +555,7 @@ export class Database extends ReadyResource {
    * @returns {Promise<void>}
    */
   async removeWriter(publicKey) {
-    return this._admit('del-writer', 'removeWriter', publicKey)
+    return this._admit('del-writer', publicKey)
   }
 
   /**
@@ -544,6 +564,9 @@ export class Database extends ReadyResource {
    * @returns {void}
    */
   guard() {
+    if (this._hooking) {
+      throw CeroError.INVALID('operators are not available inside a hook, use ctx.put / ctx.get')
+    }
     if (this.closing || this.closed) throw CeroError.CLOSED('Database')
     if (!this.bee) throw CeroError.NOT_READY('Database', 'db')
   }
@@ -673,23 +696,21 @@ export class Database extends ReadyResource {
     if (prev) prev.destroy().catch(safetyCatch)
   }
 
-  async _runBefore(op, ctx) {
-    for (const fn of this._before.get(op) || []) {
-      if ((await fn(ctx)) === false) return false
-    }
-    this.emit(`before:${op}`, ctx)
-    return true
+  // wrapped so an operator called from inside a hook fails instead of appending its own op
+  _hooks(phase, op) {
+    const fns = (phase === 'before' ? this._before : this._after).get(op)
+    return fns?.length ? fns.map((fn) => this._inHook(fn)) : NO_HOOKS
   }
 
-  async _runAfter(op, ctx) {
-    for (const fn of this._after.get(op) || []) {
+  _inHook(fn) {
+    return async (ctx) => {
+      this._hooking++
       try {
-        await fn(ctx)
-      } catch (err) {
-        this._onerror(err)
+        return await fn(ctx)
+      } finally {
+        this._hooking--
       }
     }
-    this.emit(`after:${op}`, ctx)
   }
 
   // '@cero/set-messages' → { op: 'set', name: 'messages' }; an action has no dash
@@ -741,7 +762,7 @@ export class Database extends ReadyResource {
     const stored = { ...existing, ...row, createdAt: existing?.createdAt ?? ts, updatedAt: ts }
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     const insert = ref.kind === COLLECTION && upsert && !BESPOKE.has(ref.verb)
-    return this._append('set', name, stored, `${insert ? 'add' : 'set'}-${ref.verb}`)
+    return this._append(stored, `${insert ? 'add' : 'set'}-${ref.verb}`)
   }
 
   _prepare(name, row) {
@@ -751,18 +772,13 @@ export class Database extends ReadyResource {
     return ref
   }
 
-  async _append(op, name, stored, verb) {
-    const ctx = { op, name, row: stored }
-    if ((await this._runBefore(op, ctx)) === false) return null
-    await this.write([[verb, ctx.row]])
-    return ctx
+  async _append(stored, verb) {
+    await this.write([[verb, stored]])
+    return { row: stored }
   }
 
-  async _done(op, ctx) {
-    if (!ctx) return null
-    const result = { data: ctx.row }
-    await this._runAfter(op, { ...ctx, result })
-    return result
+  _done(ctx) {
+    return ctx ? { data: ctx.row } : null
   }
 
   // ops from a newer app version: emit behind once per version, the marker survives restarts
@@ -784,6 +800,7 @@ export class Database extends ReadyResource {
           view: tx,
           key: this.writerKey,
           dbKey: this.key,
+          seed: crypto.hash([this.writerKey, value]),
           dryRun: true
         })
       }
@@ -828,11 +845,11 @@ export class Database extends ReadyResource {
   }
 
   // rows before the in-memory pass; unknown once a pushed-down limit filled the page
-  async _total(path, range, rows, query) {
+  async _total(view, path, range, rows, query) {
     if (range.limit === undefined || rows.length < range.limit) return rows.length
     if (!query?.total) return null
     const { limit, reverse, ...bounds } = range
-    return (await this.view.find(path, bounds).toArray()).length
+    return (await view.find(path, bounds).toArray()).length
   }
 
   // an append by a core not yet admitted: apply verifies the signature and admits it
@@ -872,14 +889,11 @@ export class Database extends ReadyResource {
     }
   }
 
-  async _admit(verb, hook, publicKey) {
+  async _admit(verb, publicKey, memberId) {
     this.guard()
     if (!b4a.isBuffer(publicKey)) throw CeroError.INVALID('publicKey must be a buffer')
-    const ctx = { op: hook, publicKey }
-    if ((await this._runBefore(hook, ctx)) === false) return
     const writer = Hypercore.key({ version: this.store.manifestVersion, signers: [{ publicKey }] })
-    await this.write([[verb, this._admission(writer)]])
-    await this._runAfter(hook, ctx)
+    await this.write([[verb, { ...this._admission(writer), memberId }]])
   }
 }
 
@@ -890,6 +904,8 @@ function bounded(promise, ms = 2000) {
     new Promise((resolve) => setTimeout(() => resolve(null), ms))
   ])
 }
+
+const NO_HOOKS = []
 
 function addHook(map, op, fn) {
   if (typeof fn !== 'function') throw CeroError.INVALID('hook fn must be a function')

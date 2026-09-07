@@ -7,6 +7,7 @@ import { onAbort } from '@cero-base/core/utils'
 
 /**
  * @typedef {import('./refs.js').Ref} Ref
+ * @typedef {{ op: string, name: string, row: any, existing: any, id: string | null, memberId: string | null, role: string | null, get: Function, put: Function, set: Function, del: Function }} HookCtx
  * @typedef {import('../handle/index.js').CeroHandle} CeroHandle
  * @typedef {{ data: any }} SingleResult
  * @typedef {{ data: any[], total: number, size: number }} ListResult
@@ -100,10 +101,17 @@ export function call(ref, d) {
 const WRITES = { single: ['set'], collection: ['put', 'set', 'del'] }
 
 /**
- * Intercept writes to `ref` before they commit — `fn(ctx)` runs in-path (awaited).
+ * Rule that runs before a write to `ref` lands — at apply, on every peer, inside the op's
+ * transaction. Return `false` to refuse it: the writer's own call rejects with `REFUSED`.
+ * `ctx` is `{ op, name, row, existing, id, memberId, role, get, put, set, del }`; mutate
+ * `ctx.row` to rewrite what is stored. `op` is the op as it applies, so an upsert on a
+ * collection is a `put`. The four operators on `ctx` read and write the room as it stands at
+ * this op, inside the transaction. Must be deterministic — read only `ctx`, never a clock or
+ * local state — and registered before any op applies, in the process that owns the data. The
+ * imported operators throw inside a hook; use the ones on `ctx`. Not available over RPC.
  *
  * @param {Ref} ref
- * @param {(ctx: { op: string, name: string, row: any }) => any} fn
+ * @param {(ctx: HookCtx) => any} fn
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {() => void}
  */
@@ -123,22 +131,23 @@ export function before(ref, fn, opts) {
 }
 
 /**
- * Subscribe to writes on `ref` — fires after each committed write, non-blocking (observe
- * only).
+ * Rule that runs after a write to `ref` lands — at apply, on every peer, inside the op's
+ * transaction. Write derived rows through `ctx.put` / `ctx.set` / `ctx.del`; a throw refuses
+ * the whole op. Same `ctx` and the same determinism and registration rules as `before`. Use
+ * `changes(ref)` instead to observe writes locally.
  *
  * @param {Ref} ref
- * @param {(ctx: { op: string, name: string, row: any }) => void} fn
+ * @param {(ctx: HookCtx) => any} fn
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {() => void}
  */
 export function after(ref, fn, opts) {
   const db = ref.handle.store
   const ops = WRITES[ref.kind] || ['set']
-  const handler = (ctx) => ctx.name === ref.name && fn(ctx)
-  for (const op of ops) db.on(`after:${op}`, handler)
+  const offs = ops.map((op) => db.after(op, (ctx) => (ctx.name === ref.name ? fn(ctx) : undefined)))
   let stopAbort
   const off = () => {
-    ops.forEach((op) => db.off(`after:${op}`, handler))
+    offs.forEach((unsub) => unsub())
     stopAbort?.()
   }
   stopAbort = onAbort(opts?.signal, off)
