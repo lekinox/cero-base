@@ -2,7 +2,7 @@
 
 Passive devtools for [cero](https://www.npmjs.com/package/@cero-base/cero) — observe a running instance's **data**, its **event log**, and its **p2p/replication stats** from another process, without ever touching the swarm it measures.
 
-A `cero.use(devtools())` extension taps the instance over a **local out-of-band pipe** (never the app's hyperswarm), so connection counts, core lengths, and replication numbers stay exactly as they'd be with no devtools attached. Read-only by construction; identity secrets are structurally unreachable.
+A `devtools()` extension taps the instance over a **local out-of-band pipe** (never the app's hyperswarm), so connection counts, core lengths, and replication numbers stay exactly as they'd be with no devtools attached. Read-only by construction; identity secrets are structurally unreachable.
 
 ## Install
 
@@ -16,7 +16,9 @@ npm install @cero-base/tools
 import { cero } from '@cero-base/cero'
 import { devtools, loopback } from '@cero-base/tools'
 
-cero.use(devtools({ transport: loopback({ port: 9111 }) }))
+const me = await cero('./data', spec, {
+  extensions: [...spec.extensions, devtools({ transport: loopback({ port: 9111 }) })]
+})
 // ...then create your instance as usual; the tap follows it and every child handle.
 ```
 

@@ -18,19 +18,21 @@ export declare class Ref {
     name: string;
     kind: string;
     schema: string;
+    type: any;
     /**
      * @param {any} handle  Owner — a `Handle` (or `Local`) the ref lives on.
      * @param {string} name  Ref name as declared in the schema.
      * @param {string} kind  Ref kind: `'collection'`, `'single'`, `'action'`, or `'handle'`.
      * @param {string | null} [schema]  Fully-qualified schema id, if any.
      */
-    constructor(handle: any, name: string, kind: string, schema?: string | null);
+    constructor(handle: any, name: string, kind: string, schema?: string | null, type?: any);
     /**
      * Attach a `Ref` property to `target` for every entry in `refs`, so callers
      * write `handle.someRef` instead of looking refs up by name.
      *
      * @param {any} target
      * @param {Record<string, RefInfo>} refs
+     * @param {Record<string, any>} [handles]  The handle types, so `target.room.notes` names every room's notes.
      */
-    static attach(target: any, refs: Record<string, RefInfo>): void;
+    static attach(target: any, refs: Record<string, RefInfo>, handles?: Record<string, any>): void;
 }

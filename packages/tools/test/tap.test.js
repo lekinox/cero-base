@@ -38,10 +38,6 @@ function memoryTransport() {
   }
 }
 
-const reset = () => {
-  cero._registry.length = 0
-}
-
 const waitFor = (stream, pred) =>
   new Promise((resolve, reject) => {
     const onData = (frame) => {
@@ -60,10 +56,8 @@ const waitFor = (stream, pred) =>
 
 test('tap: a consumer sees live events + data + stats end-to-end', async (t) => {
   const tp = memoryTransport()
-  cero.use(devtools({ transport: tp, sampleInterval: 50, token: 't-e2e' }))
-  t.teardown(reset)
-
-  const me = await openCero(t, (await buildSpec(t, 'tap-e2e')).spec)
+  const extensions = [devtools({ transport: tp, sampleInterval: 50, token: 't-e2e' })]
+  const me = await openCero(t, (await buildSpec(t, 'tap-e2e')).spec, { extensions })
   const session = await connect(tp.connect(), { token: 't-e2e' })
   t.teardown(() => session.close())
 
@@ -88,10 +82,8 @@ test('tap: a consumer sees live events + data + stats end-to-end', async (t) => 
 
 test('tap: non-disruption — the consumer is NOT a swarm connection', async (t) => {
   const tp = memoryTransport()
-  cero.use(devtools({ transport: tp, token: 't-e2e' }))
-  t.teardown(reset)
-
-  const me = await openCero(t, (await buildSpec(t, 'tap-nondisrupt')).spec)
+  const extensions = [devtools({ transport: tp, token: 't-e2e' })]
+  const me = await openCero(t, (await buildSpec(t, 'tap-nondisrupt')).spec, { extensions })
   const session = await connect(tp.connect(), { token: 't-e2e' })
   t.teardown(() => session.close())
 

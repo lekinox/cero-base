@@ -9,7 +9,6 @@ import { get, set, changes } from '../lib/operators.js'
 export function profileSync({ fields = { avatar: t.string } } = {}) {
   return {
     name: 'profile-sync',
-    bundled: true,
     schema: {
       profile: t.single({ name: t.string, ...fields }),
       members: t.extend(fields)

@@ -10,7 +10,6 @@ import { get, set, watch } from '../lib/operators.js'
 export function handleSync({ fields = { avatar: t.string } } = {}) {
   return {
     name: 'handle-sync',
-    bundled: true,
     schema: { handles: t.extend(fields) },
     setup(me) {
       const keys = ['name', ...Object.keys(fields)]

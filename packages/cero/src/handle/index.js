@@ -22,7 +22,8 @@ import { FileServer } from '@cero-base/core/blobs/server'
 import { NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
-import { bind } from '../lib/operators.js'
+import { extensionsOf, operatorsOf, bind } from '../extensions/index.js'
+import { before, after } from '../lib/operators.js'
 
 export { Ref } from '../lib/refs.js'
 
@@ -113,8 +114,11 @@ export class Handle extends ReadyResource {
     this._discovery = opts.discovery || null
     this._dir = opts.dir || null
     this._opts = opts.opts || {}
+    this.extensions = parent?.extensions || extensionsOf(spec, this._opts.extensions)
+    this.operators = parent?.operators || operatorsOf(spec, this._opts.operators)
     this._onerror = this._opts.onerror || safetyCatch
     this.children = parent ? null : new Set()
+    this._typeHooks = parent ? null : new Set()
     this._loading = parent ? null : new Map()
     this._joining = parent ? null : new Map()
     this._coreKeys = parent ? null : new Map()
@@ -200,6 +204,11 @@ export class Handle extends ReadyResource {
     return blobs
   }
 
+  /** The handle type of a child, null on the root. */
+  get type() {
+    return this.spec.meta.type || null
+  }
+
   /** Canonical id — identity id for the root handle, store key for children. */
   get id() {
     if (!this.parent) return this.identity.id
@@ -237,7 +246,7 @@ export class Handle extends ReadyResource {
       }
       this.store.on('update', this._invitesSync)
     }
-    Ref.attach(this, this.store.refs)
+    Ref.attach(this, this.store.refs, this.spec.handles)
     this.root._coreKeys.set(b4a.toString(this.store.key, 'hex'), this.store.encryptionKey)
     if (!this.parent) await this.fileServer.listen()
   }
@@ -674,9 +683,7 @@ export class Handle extends ReadyResource {
       })
 
       if (accept !== false) this._wireAccept(child, { role })
-      bind(child, type)
-      this.children.add(child)
-      this.emit('handle', child, { name, role })
+      this._adopt(child, { name, role })
       publish(child)
       this._loading?.delete(id)
       return child
@@ -780,9 +787,7 @@ export class Handle extends ReadyResource {
         updatedAt: ts
       })
       this._wireAccept(child)
-      bind(child, type)
-      this.children.add(child)
-      this.emit('handle', child, {})
+      this._adopt(child, {})
       publish(child)
       this._loading?.delete(id)
       return child
@@ -851,9 +856,7 @@ export class Handle extends ReadyResource {
     }
     // `accept: false` is a host-approval gate, re-arming it silently is worse
     if (opts?.accept !== false) this._wireAccept(child, { role: opts?.role })
-    bind(child, type)
-    this.children.add(child)
-    this.emit('handle', child, {})
+    this._adopt(child, {})
     return child
   }
 
@@ -879,6 +882,35 @@ export class Handle extends ReadyResource {
     await this.network.resume()
     await this.bluetooth?.resume()
     await Promise.all([...this.children].map((child) => child.pair?.resume()))
+  }
+
+  // a child is a child once it has its operators, the hooks declared for its type, and a slot
+  _adopt(child, info) {
+    bind(child, child.type, this.operators)
+    for (const hook of this._typeHooks) hook.apply(child)
+    this.children.add(child)
+    this.emit('handle', child, info)
+  }
+
+  // before(me.room.notes, fn): on every room open now and every one opened later
+  _hookType(op, ref, fn, opts) {
+    const offs = new Map()
+    const hook = {
+      apply: (child) => {
+        if (child.type !== ref.type) return
+        offs.set(child, op(child[ref.name], fn))
+        child.once('close', () => offs.delete(child))
+      }
+    }
+    this._typeHooks.add(hook)
+    for (const child of this.children) hook.apply(child)
+    const off = () => {
+      this._typeHooks.delete(hook)
+      for (const o of offs.values()) o()
+      offs.clear()
+    }
+    onAbort(opts?.signal, off)
+    return off
   }
 
   /**

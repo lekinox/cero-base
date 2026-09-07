@@ -7,7 +7,6 @@ export declare function profileSync({ fields }?: {
     fields?: Record<string, any>;
 }): {
     name: string;
-    bundled: boolean;
     schema: {
         profile: import("@cero-base/core").TypeDef;
         members: {

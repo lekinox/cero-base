@@ -5,22 +5,11 @@ import z32 from 'z32'
 import { decodeId } from '@cero-base/core/blobs/codec'
 
 import { Ref } from '../lib/refs.js'
-import {
-  put,
-  set,
-  get,
-  del,
-  watch,
-  changes,
-  call,
-  open,
-  rotate,
-  bind,
-  define
-} from '../lib/operators.js'
+import { put, set, get, del, watch, changes, call, open, rotate } from '../lib/operators.js'
 import { t, schema } from '../lib/spec.js'
+import { operatorsOf, bind } from '../extensions/index.js'
 
-export { put, set, get, del, watch, changes, call, open, rotate, bind, define, t, schema }
+export { put, set, get, del, watch, changes, call, open, rotate, t, schema }
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCClient} BaseRPCClient
@@ -455,11 +444,13 @@ export class Client extends RPCClient {
   /**
    * @param {any} ipc   Framed IPC stream (must be writable).
    * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
+   * @param {{ operators?: Record<string, any> }} [opts]  The operators to bind, instead of the ones the spec carries.
    */
-  constructor(ipc, spec) {
+  constructor(ipc, spec, opts = {}) {
     super(ipc, spec)
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     Object.assign(this, operators)
+    this.operators = operatorsOf(spec, opts.operators)
     this.id = null
     this.deviceId = null
     this.store = this
@@ -475,7 +466,7 @@ export class Client extends RPCClient {
     this._fileToken = fileToken || ''
     this.identity = { id, toPhrase: async () => (await this.rpc.seed({})).phrase || null }
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
-    bind(this, null)
+    bind(this, null, this.operators)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
   }
 
@@ -554,7 +545,7 @@ class Handle {
     if (!this.spec.codec) bindCodec(this.spec)
     this.store = this
     Ref.attach(this, this.spec.meta.refs)
-    bind(this, this.type)
+    bind(this, this.type, parent.operators)
   }
 
   /** Underlying RPC channel borrowed from the parent. */
@@ -578,10 +569,11 @@ class Handle {
  *
  * @param {any} ipc
  * @param {object} spec
+ * @param {{ operators?: Record<string, any> }} [opts]
  * @returns {Promise<Client>}
  */
-export async function connect(ipc, spec) {
-  const client = new Client(ipc, spec)
+export async function connect(ipc, spec, opts) {
+  const client = new Client(ipc, spec, opts)
   await client.ready()
   return client
 }
@@ -592,10 +584,11 @@ export async function connect(ipc, spec) {
  *
  * @param {any} ipc    Framed IPC duplex stream.
  * @param {any} spec   Built cero spec.
+ * @param {{ operators?: Record<string, any> }} [opts]
  * @returns {Promise<Client>}
  */
-export function cero(ipc, spec) {
-  return connect(ipc, spec)
+export function cero(ipc, spec, opts) {
+  return connect(ipc, spec, opts)
 }
 cero.connect = connect
 cero.restore = restore
@@ -609,6 +602,4 @@ cero.changes = changes
 cero.call = call
 cero.open = open
 cero.rotate = rotate
-cero.bind = bind
-cero.define = define
 cero.schema = schema

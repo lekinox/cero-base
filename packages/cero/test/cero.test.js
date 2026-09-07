@@ -7,8 +7,7 @@ import b4a from 'b4a'
 import { Identity } from '@cero-base/core/identity'
 import { decodeId } from '@cero-base/core/blobs/codec'
 
-import { cero, put, set, get, open, peek, restore, define } from '../src/index.js'
-import { _clearDefined } from '../src/lib/operators.js'
+import { cero, put, set, get, open, peek, restore } from '../src/index.js'
 import { spec } from './fixtures/spec/index.js'
 import { makeTestnet, waitForConnection, waitUntil } from './helpers/index.js'
 
@@ -794,22 +793,30 @@ test('cero(): close() works after suspend without resume', async (t) => {
   t.pass('close after suspend did not throw')
 })
 
-// ─── custom operators (define) ──────────────────────────────────────────────
+// ─── operators ──────────────────────────────────────────────────────────────
 
-test('define: cero() auto-binds root operators', async (t) => {
-  define({ user: { rename: (h, name) => set(h.profile, { name }) } })
-  t.teardown(_clearDefined)
-  const { me } = await ceroOpen(t)
+test('operators: a map binds root operators on cero()', async (t) => {
+  const operators = { user: { rename: (h, name) => set(h.profile, { name }) } }
+  const { me } = await ceroOpen(t, { operators })
   await me.user.rename('Auto')
   t.is((await get(me.profile)).data.name, 'Auto')
 })
 
-test('define: open() auto-binds child operators (not on the root)', async (t) => {
-  define({ team: { note: { add: (h, text) => put(h.notes, { text }) } } })
-  t.teardown(_clearDefined)
-  const { me } = await ceroOpen(t)
+test('operators: a handle-type key binds on open(), not on the root', async (t) => {
+  const operators = { team: { note: { add: (h, text) => put(h.notes, { text }) } } }
+  const { me } = await ceroOpen(t, { operators })
   t.absent(me.note, 'child-scope op is not on the root')
   const team = await open(me.team, { name: 'squad' })
   await team.note.add('hello')
   t.is((await get(team.notes)).data[0].text, 'hello')
+})
+
+test('extensions: the bundled two run when nothing is named', async (t) => {
+  const { me } = await ceroOpen(t)
+  await set(me.profile, { name: 'jb' })
+  const team = await open(me.team, { name: 'squad' })
+  await waitUntil(async () => (await get(team.members, me.id)).data?.name === 'jb')
+  t.pass('profileSync ran')
+  await waitUntil(async () => (await get(me.handles, team.id)).data?.name === 'squad')
+  t.pass('handleSync ran')
 })

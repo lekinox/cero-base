@@ -11,7 +11,7 @@ Every export of `@cero-base/cero` and its subpaths, in one page.
 - [Operators](#operators)
 - [Handle](#handle)
 - [restore and peek](#restore-and-peek)
-- [use, define and bind](#use-define-and-bind)
+- [extensions and operators](#extensions-and-operators)
 - [@cero-base/cero/build](#cero-basecerobuild)
 - [@cero-base/cero/server](#cero-baseceroserver)
 - [@cero-base/cero/client](#cero-baseceroclient)
@@ -24,10 +24,9 @@ Every export of `@cero-base/cero` and its subpaths, in one page.
 import { cero, t, schema } from '@cero-base/cero'
 ```
 
-The package exports `cero`, `t`, `schema`, `restore`, `peek`, the fourteen
+The package exports `cero`, `t`, `schema`, `restore`, `peek`, the eleven
 operators (`put`, `set`, `get`, `del`, `watch`, `changes`, `call`,
-`open`, `rotate`, `before`, `after`, `bind`, `define`) and the classes `Handle`,
-`Ref` and `Local`. Every operator is also a property of `cero`, so one import is
+`open`, `rotate`, `before`, `after`) and the classes `Handle`, `Ref` and `Local`. Every operator is also a property of `cero`, so one import is
 enough. Use the facade, `cero.put`, never an aliased named import. Subpaths:
 `@cero-base/cero/build`, `/server`, `/client`, `/extensions`.
 
@@ -56,7 +55,8 @@ with every schema ref attached as a property. `spec` is the built spec.
 | `presence`        | `{ active, announced, idle }` | `8, 8, 30000` | How many rooms search, how many only announce, and the idle ms before the rest leave the swarm. See [Network](network.md#many-rooms).           |
 | `isMobile`        | `boolean`                     | `false`       | Marks this device as mobile.                                                                                                                    |
 | `bluetooth`       | `boolean \| object`           | `false`       | `true` starts nearby sync. `{ autoStart: false }` builds `me.bluetooth` without the radio. Also `backend`, `maxOutbound`, `maxInbound`, `pipe`. |
-| `extensions`      | `boolean`                     | `true`        | `false` drops the bundled extensions. Build with `{ extensions: false }` too, so the spec matches.                                              |
+| `extensions`      | `Extension[]`                 | the spec's    | The extensions this instance runs, instead of the ones the spec carries.                                                                        |
+| `operators`       | `object`                      | the spec's    | The operators to bind, instead of the ones the spec carries.                                                                                    |
 | `routes`          | `Record<string, Function>`    | `{}`          | Handlers for the action refs your schema declares.                                                                                              |
 | `onerror`         | `(err) => void`               | -             | Background-task error handler.                                                                                                                  |
 | `key`             | `Uint8Array`                  | -             | Existing database key to recover into, skipping the pointer lookup.                                                                             |
@@ -174,22 +174,29 @@ unchanged when the phrase is already this identity. `peek(dir, spec)` resolves
 `true` when `dir` already holds an identity, which is how a launcher chooses
 between a first-run screen and a normal boot.
 
-## use, define and bind
+## extensions and operators
 
 ```js
-cero.use(profileSync({ fields: { avatar: t.string } }))
-cero.define({ room: { chat: { send } } })
+// extensions.js
+export const extensions = [profileSync({ fields: { avatar: t.string } }), bookmarks]
+// operators.js
+export const operators = { room: { chat: { send } } }
+
+// build.js
+await build('./spec', schema, { extensions: '../extensions.js', operators: '../operators.js' })
 ```
 
-`cero.use(...exts)` registers extensions. Call it before `build` and before
-`cero()`, in both processes. It takes one extension, several, or an array; a bare
-function is shorthand for `{ setup }`; a named one replaces a registered one of
-the same name.
+An extension is `{ schema, setup }`, or a bare function as `{ setup }`. Operators are
+a map keyed by namespace, a bare key on the root, a key naming a handle type holding
+that type's namespaces, each function taking the handle first and bound as
+`room.chat.send(text)`. `build` writes both modules into the spec, so `cero()` runs
+the extensions and binds the operators, and `connect()` binds the operators. The
+bundled two extensions run when no list is named.
 
-`cero.define(map)` registers custom operators by scope: a bare key binds on the
-root, a key naming a child-handle type on every handle of that type.
-`cero.bind(handle, map)` binds a `{ ns: module }` map by hand. Both curry the
-handle as argument zero, so `room.chat.send(text)` calls `send(room, text)`.
+`cero(dir, spec, { extensions, operators })` and `connect(ipc, spec, { operators })`
+take values instead of the spec's, and `build(dir, schema, { extensions: [] })` folds a
+list without writing an import. See [Extensions](extensions.md) and
+[Operators](operators.md).
 
 ## @cero-base/cero/build
 
@@ -227,8 +234,8 @@ const me = await connect(ipc, spec)
 
 `connect(ipc, spec)` resolves to a `Client` carrying the same refs and operators
 as a local root handle. `cero(ipc, spec)` is an alias, so app code runs on either
-side. The subpath also re-exports the operators, `t`, `schema`, `restore`, `bind`
-and `define`. Handle stubs expose `invite`, `revoke`, `rotate`, `setActive`, `close`
+side. The subpath also re-exports the operators, `t`, `schema` and `restore`.
+Handle stubs expose `invite`, `revoke`, `rotate`, `setActive`, `close`
 and `leave`, the root also `suspend` and `resume`, and `me.identity.toPhrase()` is
 async here. `before`, `after`, `peek` and
 `store.tx` are not on a client: hooks run where the data lives, so register them

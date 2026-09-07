@@ -23,14 +23,12 @@ import {
   open,
   rotate,
   before,
-  after,
-  bind,
-  define
+  after
 } from './lib/operators.js'
 import { peek } from './lib/peek.js'
 import { t, schema } from './lib/spec.js'
 import { FLUSH, TIMEOUT } from './lib/constants.js'
-import { registry } from './extensions/index.js'
+import { bind } from './extensions/index.js'
 
 export { Handle, Ref, Local }
 export {
@@ -44,9 +42,7 @@ export {
   open,
   rotate,
   before,
-  after,
-  bind,
-  define
+  after
 } from './lib/operators.js'
 export { peek } from './lib/peek.js'
 export { t, schema } from './lib/spec.js'
@@ -74,7 +70,8 @@ export { t, schema } from './lib/spec.js'
  * @property {(err: any) => void} [onerror]            Background-task error handler.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
- * @property {boolean} [extensions]                    `false` disables the bundled extensions (profileSync, handleSync) for this instance. Build with `{ extensions: false }` too so the spec matches.
+ * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
+ * @property {Record<string, any>} [operators]  The operators to bind, instead of the ones the spec carries.
  * @property {boolean | { autoStart?: boolean, backend?: any, maxOutbound?: number, maxInbound?: number, pipe?: 'l2cap' | 'gatt' }} [bluetooth]  `true` enables nearby (Bluetooth) sync via `me.bluetooth` (auto-started). `{ autoStart: false }` creates the facade without starting the radio — the app calls `me.bluetooth.start()`/`stop()` (user toggle). `backend` injects a bare-bluetooth-shaped backend (tests). `maxOutbound`/`maxInbound` cap concurrent outbound links and inbound sessions. `pipe` picks the data pipe — `'l2cap'` (default, faster) or `'gatt'`; both peers must match. Absent backend on an unsupported host → `me.bluetooth.state === 'unsupported'`.
  */
 
@@ -188,8 +185,7 @@ export async function cero(dir, spec, opts = {}) {
       }
     }
 
-    for (const ext of registry) {
-      if (ext.bundled && opts.extensions === false) continue
+    for (const ext of me.extensions) {
       const off = await ext.setup?.(me)
       if (typeof off === 'function') me.once('close', off)
     }
@@ -208,7 +204,7 @@ export async function cero(dir, spec, opts = {}) {
       await me.bluetooth.ready()
     }
 
-    bind(me, null)
+    bind(me, null, me.operators)
     return me
   } catch (err) {
     // before the root Handle exists, tear the raw resources down in reverse order
@@ -267,18 +263,6 @@ cero.after = after
 cero.peek = peek
 cero.restore = restore
 cero.schema = schema
-cero.bind = bind
-cero.define = define
-// test-only
-cero._registry = registry
-// a bare function is shorthand for { setup }; a named extension replaces one of the same name
-cero.use = (...exts) => {
-  for (const e of exts.flat().map((e) => (typeof e === 'function' ? { setup: e } : e))) {
-    const i = e.name ? registry.findIndex((x) => x.name === e.name) : -1
-    if (i >= 0) registry[i] = e
-    else registry.push(e)
-  }
-}
 
 function pointerManifest(store, identity) {
   return { version: store.manifestVersion, signers: [{ publicKey: identity.publicKey }] }

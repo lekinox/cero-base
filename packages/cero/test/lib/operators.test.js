@@ -2,17 +2,7 @@ import test from 'brittle'
 import AbortController from 'bare-abort-controller'
 
 import { Ref } from '../../src/handle/index.js'
-import {
-  put,
-  set,
-  get,
-  del,
-  watch,
-  call,
-  bind,
-  define,
-  _clearDefined
-} from '../../src/lib/operators.js'
+import { put, set, get, del, watch, call } from '../../src/lib/operators.js'
 import { onAbort } from '@cero-base/core/utils'
 import { cero } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -113,43 +103,6 @@ test('operators: each ref dispatches to its own name', async (t) => {
   await put(b.ref, { text: 'b' })
   t.is(a.store.calls[0].name, 'profile')
   t.is(a.store.calls[1].name, 'messages')
-})
-
-// ─── custom operators: bind / define / applyDefined ─────────────────────────
-
-test('bind: curries the handle as arg 0, returns it, skips non-functions', (t) => {
-  const handle = { tag: 'h' }
-  const seen = []
-  const out = bind(handle, { guest: { create: (h, d) => seen.push([h.tag, d]), NOPE: 5 } })
-  t.is(out, handle)
-  t.is(handle.guest.NOPE, undefined)
-  handle.guest.create({ x: 1 })
-  t.alike(seen, [['h', { x: 1 }]])
-})
-
-test('bind(scope): bare keys bind on root; child-type keys bind only on that child', (t) => {
-  const calls = []
-  define({
-    user: { rename: (h, name) => calls.push(['user.rename', h.tag, name]) },
-    team: { note: { add: (h, text) => calls.push(['team.note.add', h.tag, text]) } }
-  })
-  t.teardown(_clearDefined)
-
-  const root = { tag: 'root', spec: { meta: { handles: { team: {} } } } }
-  bind(root, null)
-  t.is(typeof root.user.rename, 'function')
-  t.absent(root.team, 'child-type group is not bound on the root')
-
-  const child = { tag: 'child' }
-  bind(child, 'team')
-  t.is(typeof child.note.add, 'function')
-
-  root.user.rename('Z')
-  child.note.add('hi')
-  t.alike(calls, [
-    ['user.rename', 'root', 'Z'],
-    ['team.note.add', 'child', 'hi']
-  ])
 })
 
 test('changes: store.changes(name, q), handle refs rejected', async (t) => {

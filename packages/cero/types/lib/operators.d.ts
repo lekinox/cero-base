@@ -155,21 +155,3 @@ export declare function open(ref: Ref, arg?: string | {
 export declare function rotate(handle: any): Promise<{
     epoch: number;
 }>;
-/**
- * Put custom operators on `handle`, currying it as their first argument so
- * `handle.ns.fn(args)` calls `fn(handle, args)`.
- *
- * @param {any} handle
- * @param {Record<string, any> | string | null} arg
- * @returns {any} handle
- */
-export declare function bind(handle: any, arg: Record<string, any> | string | null): any;
-/**
- * Register custom operators by scope. A bare key binds on the root handle; a key that
- * names a child-handle type binds on every handle of that type.
- *
- * @param {Record<string, any>} map
- */
-export declare function define(map: Record<string, any>): void;
-/** Test seam: clear all registered operators. */
-export declare function _clearDefined(): void;

@@ -20,7 +20,7 @@ import {
   t
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { profileSync, handleSync } from '../../src/extensions/index.js'
+import { profileSync, handleSync, bind } from '../../src/extensions/index.js'
 import { makeTestnet, waitUntil, waitForConnection } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -87,22 +87,20 @@ const handleWideSchema = schema({
   }
 })
 
-const reset = () => {
-  cero._registry.length = 0
-}
-
-async function buildSpec(t, sub, sch = base) {
+// the list a build names; tests hand it to the spec the way a named module would
+async function buildSpec(t, sub, sch = base, exts = []) {
   const dir = join(buildRoot, sub)
   await fs.rm(dir, { recursive: true, force: true })
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
-  await build(dir, sch)
+  await build(dir, sch, { extensions: exts })
   const { spec } = await import(pathToFileURL(join(dir, 'index.js')).href)
+  spec.extensions = exts
   return { spec, dir }
 }
 
-async function openCero(t, spec) {
+async function openCero(t, spec, opts = {}) {
   const testnet = await makeTestnet(t)
-  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, ...opts })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return me
 }
@@ -371,49 +369,184 @@ test('me.on("handle"): carries the open opts (the create name)', async (t) => {
   t.is(opts?.name, 'general', 'create name passed through the handle event')
 })
 
-// ─── cero.use(): registration forms ─────────────────────────────────────────
+// ─── extensions: the list a build names ─────────────────────────────────────
 
-test('cero.use: object form runs setup with the ready handle', async (t) => {
-  let captured = null
-  cero.use({ setup: (me) => (captured = me) })
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'use-obj')).spec)
-  t.is(captured, me)
+// an extension nests by handle type like the app schema; operators are their own map
+const notes = {
+  schema: { room: { todos: t.collection({ text: t.string }) } },
+  setup: (me) => before(me.room.todos, ({ row }) => !!row.text.trim())
+}
+const noteOps = {
+  room: {
+    note: {
+      add: (room, text) => put(room.todos, { text }),
+      list: (room) => get(room.todos)
+    }
+  }
+}
+
+test('extensions: a nested schema folds into the handle type', async (t) => {
+  const { spec } = await buildSpec(t, 'ext-scope', base, [notes])
+  t.ok(spec.handles.room.meta.refs.todos, 'todos landed on room')
+  t.absent(spec.meta.refs.todos, 'not on the root')
+  t.ok(spec.handles.room.meta.refs.messages, 'the app refs on room survived')
 })
 
-test('cero.use: a bare function is shorthand for { setup }', async (t) => {
-  let captured = null
-  cero.use((me) => (captured = me))
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'use-fn')).spec)
-  t.is(captured, me)
-})
-
-test('cero.use: multiple extensions all run', async (t) => {
-  const ran = []
-  cero.use(
-    () => ran.push('a'),
-    () => ran.push('b')
+test('operators: nested operators bind on the type, a type hook guards every room', async (t) => {
+  const { spec } = await buildSpec(t, 'ext-feature', base, [notes])
+  const me = await openCero(t, spec, { operators: noteOps })
+  t.absent(me.note, 'nothing on the root')
+  const room = await open(me.room, { name: 'r' })
+  await room.note.add('kept')
+  await t.exception(room.note.add('   '), /REFUSED/, 'the setup hook refused the blank one')
+  t.alike(
+    (await room.note.list()).data.map((r) => r.text),
+    ['kept']
   )
-  cero.use(() => ran.push('c'))
-  t.teardown(reset)
-  await openCero(t, (await buildSpec(t, 'use-multi')).spec)
+})
+
+test('hooks: a hook on a type ref covers rooms already open, and off() lifts it', async (t) => {
+  const me = await openCero(t, (await buildSpec(t, 'type-hook-late', base, [notes])).spec)
+  const room = await open(me.room, { name: 'early' })
+  const off = before(me.room.messages, ({ row }) => row.text !== 'nope')
+  await t.exception(put(room.messages, { text: 'nope' }), /REFUSED/, 'the open room got the hook')
+  const later = await open(me.room, { name: 'later' })
+  await t.exception(put(later.messages, { text: 'nope' }), /REFUSED/, 'so did the next one')
+  off()
+  t.ok((await put(room.messages, { text: 'nope' })).data, 'lifted on the open room')
+  t.ok((await put(later.messages, { text: 'nope' })).data, 'and on the later one')
+})
+
+test('extensions: a module named at build time reaches the runtime through the spec', async (t) => {
+  const dir = join(buildRoot, 'ext-module')
+  await fs.rm(dir, { recursive: true, force: true })
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await fs.mkdir(dir, { recursive: true })
+  const src = pathToFileURL(join(here, '..', '..', 'src', 'extensions', 'index.js')).href
+  await fs.writeFile(
+    join(dir, 'ext.js'),
+    `import { t } from '${src}'
+export let ran = 0
+export const extensions = [
+  { schema: { room: { todos: t.collection({ text: t.string }) } }, setup() { ran++ } }
+]
+`
+  )
+  await fs.writeFile(
+    join(dir, 'ops.js'),
+    `import { put } from '${src}'
+export const operators = {
+  user: { hello: (h) => h.id },
+  room: { note: { add: (room, text) => put(room.todos, { text }) } }
+}
+`
+  )
+  await build(join(dir, 'spec'), base, { extensions: '../ext.js', operators: '../ops.js' })
+  const { spec } = await import(pathToFileURL(join(dir, 'spec', 'index.js')).href)
+  const mod = await import(pathToFileURL(join(dir, 'ext.js')).href)
+  const ops = await import(pathToFileURL(join(dir, 'ops.js')).href)
+  t.is(spec.extensions, mod.extensions, 'the spec imports the extensions it was built from')
+  t.is(spec.operators, ops.operators, 'and the operators it was told about')
+  t.ok(spec.handles.room.meta.refs.todos, 'and folded its schema')
+  const types = JSON.parse(await fs.readFile(join(dir, 'spec/main/schema/schema.json'), 'utf-8'))
+  const handle = types.schema.find((x) => x.name === 'handle')
+  t.absent(
+    handle.fields.find((f) => f.name === 'avatar'),
+    'a named list leaves the bundled two out'
+  )
+
+  const me = await openCero(t, spec)
+  t.is(mod.ran, 1, 'setup ran with nothing registered')
+  t.is(me.user.hello(), me.id, 'the operators export bound on the root')
+  const room = await open(me.room, { name: 'r' })
+  await room.note.add('through the spec')
+  t.is((await get(room.todos)).data[0].text, 'through the spec')
+})
+
+test('operators: naming operators alone keeps the bundled two', async (t) => {
+  const dir = join(buildRoot, 'ops-only')
+  await fs.rm(dir, { recursive: true, force: true })
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(join(dir, 'ops.js'), 'export const operators = { user: { hi: () => 1 } }\n')
+  await build(join(dir, 'spec'), base, { operators: '../ops.js' })
+  const schema = JSON.parse(await fs.readFile(join(dir, 'spec/main/schema/schema.json'), 'utf-8'))
+  const handle = schema.schema.find((x) => x.name === 'handle')
+  t.ok(
+    handle.fields.find((f) => f.name === 'avatar'),
+    'handleSync still folded'
+  )
+  const { spec } = await import(pathToFileURL(join(dir, 'spec', 'index.js')).href)
+  const me = await openCero(t, spec)
+  t.is(me.user.hi(), 1)
+})
+
+test('operators: keyed by namespace, a handle-type key holds its namespaces', (t) => {
+  const calls = []
+  const operators = {
+    user: { rename: (h, name) => calls.push(['user.rename', h.tag, name]) },
+    team: { note: { add: (h, text) => calls.push(['team.note.add', h.tag, text]) } }
+  }
+  const root = { tag: 'root', spec: { meta: { handles: { team: {} } } } }
+  bind(root, null, operators)
+  t.is(typeof root.user.rename, 'function')
+  t.absent(root.team, 'a handle-type key is not a root namespace')
+  const child = { tag: 'child' }
+  bind(child, 'team', operators)
+  t.is(typeof child.note.add, 'function')
+  root.user.rename('Z')
+  child.note.add('hi')
+  t.alike(calls, [
+    ['user.rename', 'root', 'Z'],
+    ['team.note.add', 'child', 'hi']
+  ])
+})
+
+test('bind: curries the handle as arg 0, returns it, skips non-functions', (t) => {
+  const handle = { tag: 'h' }
+  const seen = []
+  const out = bind(handle, null, { guest: { create: (h, d) => seen.push([h.tag, d]), NOPE: 5 } })
+  t.is(out, handle)
+  t.is(handle.guest.NOPE, undefined)
+  handle.guest.create({ x: 1 })
+  t.alike(seen, [['h', { x: 1 }]])
+})
+
+test('extensions: an object runs its setup with the ready handle', async (t) => {
+  let captured = null
+  const exts = [{ setup: (me) => (captured = me) }]
+  const me = await openCero(t, (await buildSpec(t, 'ext-obj', base, exts)).spec)
+  t.is(captured, me)
+})
+
+test('extensions: a bare function is shorthand for { setup }', async (t) => {
+  let captured = null
+  const exts = [(me) => (captured = me)]
+  const me = await openCero(t, (await buildSpec(t, 'ext-fn', base, exts)).spec)
+  t.is(captured, me)
+})
+
+test('extensions: every setup in the list runs', async (t) => {
+  const ran = []
+  const exts = [() => ran.push('a'), () => ran.push('b'), () => ran.push('c')]
+  await openCero(t, (await buildSpec(t, 'ext-multi', base, exts)).spec)
   t.alike(ran.sort(), ['a', 'b', 'c'])
 })
 
-test('cero.use: accepts an array, and a mix of arrays and args', async (t) => {
+test('extensions: the instance list replaces the one the spec carries', async (t) => {
   const ran = []
-  cero.use([() => ran.push('a'), () => ran.push('b')])
-  cero.use(() => ran.push('c'), [() => ran.push('d')])
-  t.teardown(reset)
-  await openCero(t, (await buildSpec(t, 'use-array')).spec)
-  t.alike(ran.sort(), ['a', 'b', 'c', 'd'])
+  const { spec } = await buildSpec(t, 'ext-override', base, [() => ran.push('spec')])
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, {
+    bootstrap: testnet.bootstrap,
+    extensions: [() => ran.push('instance')]
+  })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.alike(ran, ['instance'])
 })
 
-test('cero.use: a schema-only extension merges and runs without a setup', async (t) => {
-  cero.use(tagExtension)
-  t.teardown(reset)
-  const { spec, dir } = await buildSpec(t, 'use-schema-only')
+test('extensions: a schema-only extension merges and runs without a setup', async (t) => {
+  const { spec, dir } = await buildSpec(t, 'ext-schema-only', base, [tagExtension])
   t.ok(
     (await memberType(dir)).fields.find((f) => f.name === 'tag'),
     'schema merged'
@@ -422,33 +555,32 @@ test('cero.use: a schema-only extension merges and runs without a setup', async 
   t.ok(me.id, 'cero ran fine with no setup')
 })
 
-test('cero.use: a setup disposer runs on close', async (t) => {
+test('extensions: a setup disposer runs on close', async (t) => {
   let disposed = false
-  cero.use(() => () => (disposed = true))
-  t.teardown(reset)
+  const exts = [() => () => (disposed = true)]
   const testnet = await makeTestnet(t)
-  const { spec } = await buildSpec(t, 'use-dispose')
+  const { spec } = await buildSpec(t, 'ext-dispose', base, exts)
   const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   await me.close()
   t.ok(disposed, 'disposer called on me.close()')
 })
 
-test('cero.use: a throwing setup rejects cero() without leaking', async (t) => {
-  cero.use(() => {
-    throw new Error('boom')
-  })
-  t.teardown(reset)
+test('extensions: a throwing setup rejects cero() without leaking', async (t) => {
+  const exts = [
+    () => {
+      throw new Error('boom')
+    }
+  ]
   const testnet = await makeTestnet(t)
-  const { spec } = await buildSpec(t, 'use-throw')
+  const { spec } = await buildSpec(t, 'ext-throw', base, exts)
   await t.exception(cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap }), /boom/)
 })
 
 // ─── build: schema merge ────────────────────────────────────────────────────
 
 test('build: app extend + extension extend combine on the same builtin', async (t) => {
-  cero.use(profileSync()) // adds members.avatar
-  t.teardown(reset)
-  const { dir } = await buildSpec(t, 'combine', appExtendSchema)
+  const exts = [profileSync()]
+  const { dir } = await buildSpec(t, 'combine', appExtendSchema, exts)
   const member = await memberType(dir)
   t.ok(
     member.fields.find((f) => f.name === 'tag'),
@@ -473,9 +605,8 @@ test('cero(): works with a spec that has no profile', async (t) => {
 // ─── profileSync ────────────────────────────────────────────────────────────
 
 test('profileSync: declares its own profile when the app has none', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'ps-byo', roomOnly)).spec)
+  const exts = [profileSync()]
+  const me = await openCero(t, (await buildSpec(t, 'ps-byo', roomOnly, exts)).spec)
   t.ok(me.profile, 'profile ref exists — declared by the extension')
 
   await set(me.profile, { name: 'jb', avatar: 'a.png' })
@@ -488,9 +619,8 @@ test('profileSync: declares its own profile when the app has none', async (t) =>
 })
 
 test('profileSync: mirrors profile onto your member row (open + edit)', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'ps-solo')).spec)
+  const exts = [profileSync()]
+  const me = await openCero(t, (await buildSpec(t, 'ps-solo', base, exts)).spec)
 
   await set(me.profile, { name: 'jb', avatar: 'a.png' })
   const room = await open(me.room)
@@ -509,9 +639,8 @@ test('profileSync: mirrors profile onto your member row (open + edit)', async (t
 })
 
 test('profileSync: syncs custom fields', async (t) => {
-  cero.use(statusSync)
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'ps-custom', customSchema)).spec)
+  const exts = [statusSync]
+  const me = await openCero(t, (await buildSpec(t, 'ps-custom', customSchema, exts)).spec)
 
   await set(me.profile, { name: 'x', status: 'busy' })
   const room = await open(me.room)
@@ -525,9 +654,8 @@ test('profileSync: syncs custom fields', async (t) => {
 // an extension that writes on every open grows the log without bound and
 // broadcasts to the whole room each time
 test('extensions: reopening a handle with an unchanged profile writes zero new ops', async (t) => {
-  cero.use(profileSync(), handleSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'ext-noop')).spec)
+  const exts = [profileSync(), handleSync()]
+  const me = await openCero(t, (await buildSpec(t, 'ext-noop', base, exts)).spec)
 
   await set(me.profile, { name: 'jb', avatar: 'a.png' })
   const room = await open(me.room, { name: 'general' })
@@ -563,39 +691,28 @@ async function settled(fn, ms = 150) {
   }
 }
 
-test('bundled extensions: double registration builds the identical spec', async (t) => {
-  const saved = [...cero._registry]
-  t.teardown(() => {
-    cero._registry.length = 0
-    cero._registry.push(...saved)
-  })
-  cero._registry.length = 0
-  cero._registry.push(profileSync(), handleSync())
-
+test('bundled extensions: the default build equals naming the two by hand', async (t) => {
   const readSchema = async (dir) =>
     JSON.parse(await fs.readFile(join(dir, 'main/schema/schema.json'), 'utf-8'))
 
   const a = await t.tmp()
   await build(a, base)
-  cero.use(profileSync(), handleSync()) // app registers the defaults again
-  t.is(cero._registry.length, 2, 'use() replaced by name, no doubling')
   const b = await t.tmp()
-  await build(b, base)
-  t.alike(await readSchema(a), await readSchema(b), 'spec unchanged by the double use()')
+  await build(b, base, { extensions: [profileSync(), handleSync()] })
+  t.alike(await readSchema(a), await readSchema(b), 'same spec')
 
   const c = await t.tmp()
-  await build(c, base, { extensions: false })
+  await build(c, base, { extensions: [] })
   const handle = (await readSchema(c)).schema.find((x) => x.name === 'handle')
   t.absent(
     handle.fields.find((f) => f.name === 'avatar'),
-    'extensions:false leaves the builtins unextended'
+    'an empty list leaves the builtins unextended'
   )
 })
 
 test('profileSync: a joiner profile is visible on the host member list', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
-  const { spec } = await buildSpec(t, 'ps-two')
+  const exts = [profileSync()]
+  const { spec } = await buildSpec(t, 'ps-two', base, exts)
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
@@ -616,9 +733,8 @@ test('profileSync: a joiner profile is visible on the host member list', async (
 })
 
 test('profileSync: a room opened before the profile syncs once it is set', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'ps-late')).spec)
+  const exts = [profileSync()]
+  const me = await openCero(t, (await buildSpec(t, 'ps-late', base, exts)).spec)
 
   const room = await open(me.room)
   const { data: before } = await get(room.members, me.identity.id)
@@ -633,10 +749,9 @@ test('profileSync: a room opened before the profile syncs once it is set', async
 })
 
 test('profileSync: a profile set on another device republishes here', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
+  const exts = [profileSync()]
   const testnet = await makeTestnet(t)
-  const { spec } = await buildSpec(t, 'ps-device')
+  const { spec } = await buildSpec(t, 'ps-device', base, exts)
 
   const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => a.close().catch(() => {}), { order: 5 })
@@ -659,9 +774,8 @@ test('profileSync: a profile set on another device republishes here', async (t) 
 })
 
 test('profileSync: a profile edit propagates to every open room', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'ps-multi')).spec)
+  const exts = [profileSync()]
+  const me = await openCero(t, (await buildSpec(t, 'ps-multi', base, exts)).spec)
 
   const avatarOf = (room, want) =>
     waitUntil(async () => {
@@ -685,9 +799,8 @@ test('profileSync: a profile edit propagates to every open room', async (t) => {
 // ─── handleSync ─────────────────────────────────────────────────────────
 
 test('handleSync: extends the handle builtin with avatar', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const { dir } = await buildSpec(t, 'his-schema', handleSchema)
+  const exts = [handleSync()]
+  const { dir } = await buildSpec(t, 'his-schema', handleSchema, exts)
   const { schema: types } = JSON.parse(
     await fs.readFile(join(dir, 'main/schema/schema.json'), 'utf-8')
   )
@@ -699,9 +812,8 @@ test('handleSync: extends the handle builtin with avatar', async (t) => {
 })
 
 test('handleSync: mirrors a handle profile onto its handles row', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'his-solo', handleSchema)).spec)
+  const exts = [handleSync()]
+  const me = await openCero(t, (await buildSpec(t, 'his-solo', handleSchema, exts)).spec)
 
   const room = await open(me.room)
   await set(room.profile, { name: 'general', avatar: 'pic.png' })
@@ -716,9 +828,8 @@ test('handleSync: mirrors a handle profile onto its handles row', async (t) => {
 })
 
 test('handleSync: a joiner handles row gets named from the handle profile', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const { spec } = await buildSpec(t, 'his-join', handleSchema)
+  const exts = [handleSync()]
+  const { spec } = await buildSpec(t, 'his-join', handleSchema, exts)
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
@@ -736,9 +847,8 @@ test('handleSync: a joiner handles row gets named from the handle profile', asyn
 })
 
 test('handleSync: a profile wider than the mirrored set still mirrors', async (t) => {
-  cero.use(handleStatus)
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'his-wide', handleWideSchema)).spec)
+  const exts = [handleStatus]
+  const me = await openCero(t, (await buildSpec(t, 'his-wide', handleWideSchema, exts)).spec)
 
   const room = await open(me.room)
   await set(room.profile, { name: 'general', status: 'open', motto: 'be kind' })
@@ -754,10 +864,9 @@ test('handleSync: a profile wider than the mirrored set still mirrors', async (t
 })
 
 test('handleSync: a handle without a profile is left untouched', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
+  const exts = [handleSync()]
   // `base.room` declares no profile — there is nothing to mirror.
-  const me = await openCero(t, (await buildSpec(t, 'his-no-profile')).spec)
+  const me = await openCero(t, (await buildSpec(t, 'his-no-profile', base, exts)).spec)
 
   const room = await open(me.room, { name: 'general' })
   await put(room.messages, { text: 'ok' })
@@ -770,9 +879,8 @@ test('handleSync: a handle without a profile is left untouched', async (t) => {
 })
 
 test('handleSync: seeds the handle name from the open name', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'his-seed', handleSchema)).spec)
+  const exts = [handleSync()]
+  const me = await openCero(t, (await buildSpec(t, 'his-seed', handleSchema, exts)).spec)
 
   const room = await open(me.room, { name: 'general' })
   const row = await waitUntil(async () => {
@@ -785,9 +893,8 @@ test('handleSync: seeds the handle name from the open name', async (t) => {
 })
 
 test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'his-avatar', handleSchema)).spec)
+  const exts = [handleSync()]
+  const me = await openCero(t, (await buildSpec(t, 'his-avatar', handleSchema, exts)).spec)
 
   const room = await open(me.room)
   const avatarOf = (want) =>
@@ -811,9 +918,8 @@ test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
 // Minimal repro filed against autobee (test/concurrent-append-crash.js). Re-enable
 // once autobee ships a fix.
 test.skip('handleSync: multiple handles are named independently', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'his-many', handleSchema)).spec)
+  const exts = [handleSync()]
+  const me = await openCero(t, (await buildSpec(t, 'his-many', handleSchema, exts)).spec)
 
   const roomA = await open(me.room)
   const roomB = await open(me.room)
@@ -831,9 +937,8 @@ test.skip('handleSync: multiple handles are named independently', async (t) => {
 })
 
 test('handleSync: syncs custom fields', async (t) => {
-  cero.use(handleStatus)
-  t.teardown(reset)
-  const me = await openCero(t, (await buildSpec(t, 'his-custom', handleStatusSchema)).spec)
+  const exts = [handleStatus]
+  const me = await openCero(t, (await buildSpec(t, 'his-custom', handleStatusSchema, exts)).spec)
 
   const room = await open(me.room)
   await set(room.profile, { name: 'general', status: 'open' })
@@ -857,18 +962,16 @@ async function openManual(t, spec) {
 }
 
 test('profileSync: detaches its handle listener on close', async (t) => {
-  cero.use(profileSync())
-  t.teardown(reset)
-  const me = await openManual(t, (await buildSpec(t, 'ps-dispose')).spec)
+  const exts = [profileSync()]
+  const me = await openManual(t, (await buildSpec(t, 'ps-dispose', base, exts)).spec)
   t.is(me.listenerCount('handle'), 1, 'extension registered its handle listener')
   await me.close()
   t.is(me.listenerCount('handle'), 0, 'listener detached on close (via me.signal)')
 })
 
 test('handleSync: detaches its handle listener on close', async (t) => {
-  cero.use(handleSync())
-  t.teardown(reset)
-  const me = await openManual(t, (await buildSpec(t, 'his-dispose', handleSchema)).spec)
+  const exts = [handleSync()]
+  const me = await openManual(t, (await buildSpec(t, 'his-dispose', handleSchema, exts)).spec)
   t.is(me.listenerCount('handle'), 1, 'extension registered its handle listener')
   await me.close()
   t.is(me.listenerCount('handle'), 0, 'listener detached on close (via me.signal)')

@@ -187,12 +187,11 @@ import { schema } from './schema.js'
 await build('./spec', schema)
 ```
 
-| Option       | Type      | Default  | Meaning                                                       |
-| ------------ | --------- | -------- | ------------------------------------------------------------- |
-| `ns`         | `string`  | `'cero'` | Namespace prefix for the emitted ids, as in `@cero/messages`. |
-| `extensions` | `boolean` | `true`   | `false` leaves out the bundled extensions' schema.            |
-
-Build with `{ extensions: false }` and open with `{ extensions: false }` too, or the spec and the runtime disagree.
+| Option       | Type                | Default         | Meaning                                                                                                                         |
+| ------------ | ------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `ns`         | `string`            | `'cero'`        | Namespace prefix for the emitted ids, as in `@cero/messages`.                                                                   |
+| `extensions` | `string` or `array` | the bundled two | A module, relative to the spec dir, whose `extensions` export is folded in and imported by the spec. Or a list, folded in only. |
+| `operators`  | `string`            | -               | A module, relative to the spec dir, whose `operators` export the spec imports.                                                  |
 
 `build` writes `spec/index.js` plus `main/`, `local/` and one `handles/<name>/` per room type, each holding `schema/` and `db/`, and `dispatch/` for the replicated scopes. Only `main/` gets `rpc/`. `spec/index.js` exports `spec`, which you hand to `cero()`, and `meta`, which describes the shape: `ns`, `version`, `refs`, `local`, `handles`.
 

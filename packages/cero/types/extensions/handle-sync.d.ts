@@ -8,7 +8,6 @@ export declare function handleSync({ fields }?: {
     fields?: Record<string, any>;
 }): {
     name: string;
-    bundled: boolean;
     schema: {
         handles: {
             kind: 'extend';

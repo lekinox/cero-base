@@ -18,11 +18,12 @@ export class Ref {
    * @param {string} kind  Ref kind: `'collection'`, `'single'`, `'action'`, or `'handle'`.
    * @param {string | null} [schema]  Fully-qualified schema id, if any.
    */
-  constructor(handle, name, kind, schema = null) {
+  constructor(handle, name, kind, schema = null, type = null) {
     this.handle = handle
     this.name = name
     this.kind = kind
     this.schema = schema
+    this.type = type
   }
 
   /**
@@ -31,8 +32,9 @@ export class Ref {
    *
    * @param {any} target
    * @param {Record<string, RefInfo>} refs
+   * @param {Record<string, any>} [handles]  The handle types, so `target.room.notes` names every room's notes.
    */
-  static attach(target, refs) {
+  static attach(target, refs, handles) {
     for (const [name, info] of Object.entries(refs || {})) {
       // a ref named like a reserved member must fail loud, not overwrite it
       if (name in target) {
@@ -40,7 +42,10 @@ export class Ref {
           `schema ref '${name}' collides with a reserved ${target.constructor?.name || 'handle'} member — rename it`
         )
       }
-      target[name] = new Ref(target, name, info.kind, info.schema)
+      const ref = (target[name] = new Ref(target, name, info.kind, info.schema))
+      for (const [sub, i] of Object.entries(handles?.[name]?.meta?.refs || {})) {
+        ref[sub] = new Ref(target, sub, i.kind, i.schema, name)
+      }
     }
   }
 }

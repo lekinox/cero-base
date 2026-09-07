@@ -163,10 +163,10 @@ An upsert on a collection applies as an add, so `cero.set(me.todos, { id, done: 
 Three rules follow from running on every peer:
 
 - **Be deterministic.** Read `ctx` and nothing else. No clock, no random, no local state — two peers that disagree store different rows.
-- **Register before the data moves.** Hooks live in the process that owns the data, set up in `cero.use` or right after `cero()`, before any op applies. A peer that registers late has already applied ops without the rule. They are not available over RPC.
+- **Register before the data moves.** Hooks live in the process that owns the data, set up in an extension's `setup` or right after `cero()`, before any op applies. A peer that registers late has already applied ops without the rule. They are not available over RPC.
 - **Expect to run twice on the writer.** The writing device runs its hooks once to check the op, then again when it applies. Pure hooks do not notice.
 
-`before` and `after` return an unsubscribe function, and `{ signal }` unsubscribes on abort. To watch writes locally instead of ruling on them, use [`changes`](#changes).
+`before` and `after` return an unsubscribe function, and `{ signal }` unsubscribes on abort. A hook on `me.room.messages`, the ref through the handle type, applies to every room open now and every one opened later. To watch writes locally instead of ruling on them, use [`changes`](#changes).
 
 ## Store events
 

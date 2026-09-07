@@ -192,8 +192,11 @@ export declare class Handle extends ReadyResource {
     _discovery: any;
     _dir: string;
     _opts: any;
+    extensions: any;
+    operators: any;
     _onerror: any;
     children: Set<any>;
+    _typeHooks: Set<any>;
     _loading: Map<any, any>;
     _joining: Map<any, any>;
     _coreKeys: Map<any, any>;
@@ -230,6 +233,8 @@ export declare class Handle extends ReadyResource {
      * @returns {Blobs}
      */
     get blobs(): Blobs;
+    /** The handle type of a child, null on the root. */
+    get type(): any;
     /** Canonical id — identity id for the root handle, store key for children. */
     get id(): any;
     /** This device's id + name. `null` on child handles. */
@@ -408,6 +413,8 @@ export declare class Handle extends ReadyResource {
     _reopen(type: string, id: string, opts: any): Promise<Handle>;
     _suspend(): Promise<void>;
     _resume(): Promise<void>;
+    _adopt(child: any, info: any): void;
+    _hookType(op: any, ref: any, fn: any, opts: any): () => void;
     /**
      * @param {Handle} child
      * @param {{ role?: string }} [opts]

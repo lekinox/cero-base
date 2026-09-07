@@ -1,6 +1,6 @@
 # Files
 
-[Docs](README.md) · Previous: [Extensions](extensions.md) · Next: [Network](network.md)
+[Docs](README.md) · Previous: [Operators](operators.md) · Next: [Network](network.md)
 
 ```js
 const { data: file } = await cero.put(me.files, {

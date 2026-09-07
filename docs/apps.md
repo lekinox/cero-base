@@ -23,7 +23,7 @@ The UI code is the same code.
 - [serve(ipc, spec, opts)](#serveipc-spec-opts)
 - [connect(ipc, spec)](#connectipc-spec)
 - [What crosses the wire](#what-crosses-the-wire)
-- [use and define on both sides](#use-and-define-on-both-sides)
+- [Extensions and operators cross with the spec](#extensions-and-operators-cross-with-the-spec)
 - [A duplex pair, for tests](#a-duplex-pair-for-tests)
 - [Electron and a Bare worker](#electron-and-a-bare-worker)
 - [Expo and a Bare worklet](#expo-and-a-bare-worklet)
@@ -152,26 +152,26 @@ Error classes stay put, only codes cross on the rejection message, so match on
 the code and not on `instanceof` — a hook that refuses a client's write surfaces
 as `REFUSED`.
 
-## `use` and `define` on both sides
+## Extensions and operators cross with the spec
 
-An extension's schema is folded in at build time and its `setup` runs inside
-`cero()`, so `cero.use` belongs in `build.js` and in the backend entry. The UI
-process registers nothing: the client has no `use`. An extension's `setup` is
-also where hooks belong — it runs before any op applies, which is what a rule
-needs.
-
-`define` is different. A custom operator is a plain function composed from the
-operators, and its body runs in the process that calls it, so register the same
-map in both processes and either side can call them.
+The spec imports the modules the build named, so neither process registers
+anything. An extension's `schema` is used at build time and its `setup` inside
+`cero()`. Operators are bound by both `cero()` and `connect()`, since an
+operator's body runs in the process that calls it.
 
 ```js
-cero.define({
+// operators.js
+export const operators = {
   user: { rename: (h, name) => cero.set(h.profile, { name }) },
   room: { note: { add: (h, text) => cero.put(h.notes, { text }) } }
-})
+}
 
 await me.user.rename('Remote') // works on a client and on a local handle
 ```
+
+A `setup` is also where hooks belong. It runs before any op applies, which is what
+a rule needs, and the client ignores it. Both modules are bundled into the UI, so
+they import from `@cero-base/cero/extensions`, never from `@cero-base/cero`.
 
 ## A duplex pair, for tests
 
@@ -238,6 +238,6 @@ or backend change.
 
 ## Next
 
-- [Extensions](extensions.md) for what `cero.use` and `cero.define` register.
+- [Extensions](extensions.md) and [Operators](operators.md) for the modules the build names.
 - [Files](files.md) for uploads, which cross the wire as one message.
 - [Examples](examples.md) for the four apps these snippets come from.

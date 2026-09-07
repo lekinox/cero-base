@@ -7,20 +7,7 @@ import { Duplex } from 'streamx'
 import { decodeId } from '@cero-base/core/blobs'
 import { Invite } from '@cero-base/core/invite'
 
-import {
-  cero,
-  put,
-  set,
-  get,
-  del,
-  watch,
-  changes,
-  call,
-  open,
-  rotate,
-  define
-} from '../../src/index.js'
-import { _clearDefined } from '../../src/lib/operators.js'
+import { cero, put, set, get, del, watch, changes, call, open, rotate } from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
 import { connect } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
@@ -46,7 +33,7 @@ function pair() {
   return [a, b]
 }
 
-async function openPair(t, serverOpts = {}) {
+async function openPair(t, serverOpts = {}, clientOpts) {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
 
@@ -56,7 +43,7 @@ async function openPair(t, serverOpts = {}) {
     bootstrap: testnet.bootstrap,
     ...serverOpts
   })
-  const client = await connect(clientStream, spec)
+  const client = await connect(clientStream, spec, clientOpts)
 
   t.teardown(
     async () => {
@@ -595,13 +582,12 @@ test('rpc: server rejects local ops on builtin refs', async (t) => {
   )
 })
 
-test('rpc: defined operators are symmetric over the wire', async (t) => {
-  define({
+test('rpc: operators are symmetric over the wire', async (t) => {
+  const operators = {
     user: { rename: (h, name) => set(h.profile, { name }) },
     team: { note: { add: (h, text) => put(h.notes, { text }) } }
-  })
-  t.teardown(_clearDefined)
-  const { client } = await openPair(t)
+  }
+  const { client } = await openPair(t, { operators }, { operators })
 
   await client.user.rename('Remote')
   t.is((await get(client.profile)).data.name, 'Remote')
@@ -609,6 +595,28 @@ test('rpc: defined operators are symmetric over the wire', async (t) => {
   const team = await open(client.team, { name: 'squad' })
   await team.note.add('via-rpc')
   t.is((await get(team.notes)).data[0].text, 'via-rpc')
+})
+
+test('rpc: connect() binds the operators it is given', async (t) => {
+  const operators = { team: { note: { add: (h, text) => put(h.notes, { text }) } } }
+  const testnet = await makeTestnet(t)
+  const [serverStream, clientStream] = pair()
+  const server = await serve(serverStream, spec, {
+    storage: await t.tmp(),
+    bootstrap: testnet.bootstrap
+  })
+  const client = await connect(clientStream, spec, { operators })
+  t.teardown(
+    async () => {
+      await client.close().catch(() => {})
+      await server.close().catch(() => {})
+    },
+    { order: 5 }
+  )
+
+  const team = await open(client.team, { name: 'squad' })
+  await team.note.add('instance')
+  t.is((await get(team.notes)).data[0].text, 'instance')
 })
 
 test('rpc: changes streams deltas over the wire, symmetric with local', async (t) => {

@@ -18,7 +18,7 @@ import { loopback } from './transport.js'
  */
 
 /**
- * `cero.use(devtools())` tap extension. Bound to the root handle's lifecycle, it feeds
+ * The `devtools()` tap extension. Bound to the root handle's lifecycle, it feeds
  * every applied op into a bounded ring buffer, samples `stats(me)` on an interval, and
  * serves a read-only inspection.
  *

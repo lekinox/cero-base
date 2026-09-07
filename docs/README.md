@@ -148,6 +148,7 @@ Read them in order the first time. Every page links to the previous and the next
 | [identity.md](identity.md)     | Your phrase, your devices, recovery.                           |
 | [apps.md](apps.md)             | A backend process and a UI process, three lines each.          |
 | [extensions.md](extensions.md) | Behaviour and schema you reuse across apps.                    |
+| [operators.md](operators.md)   | Functions bound on handles, the same on both sides of RPC.     |
 | [files.md](files.md)           | Store a file next to a row.                                    |
 | [network.md](network.md)       | Channels, mirrors, backgrounding, Bluetooth.                   |
 | [examples.md](examples.md)     | Four runnable apps, and which guide each one pairs with.       |

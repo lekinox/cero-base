@@ -1,7 +1,7 @@
 import { RPCClient } from '@cero-base/core/rpc';
-import { put, set, get, del, watch, changes, call, open, rotate, bind, define } from '../lib/operators.js';
+import { put, set, get, del, watch, changes, call, open, rotate } from '../lib/operators.js';
 import { t, schema } from '../lib/spec.js';
-export { put, set, get, del, watch, changes, call, open, rotate, bind, define, t, schema };
+export { put, set, get, del, watch, changes, call, open, rotate, t, schema };
 export type BaseRPCClient = import('@cero-base/core/rpc').RPCClient;
 export type RefInfo = {
     kind?: 'single' | 'collection' | 'action' | 'handle';
@@ -70,6 +70,7 @@ declare class LocalRefs {
  * across the wire.
  */
 export declare class Client extends RPCClient {
+    operators: Record<string, any>;
     id: any;
     deviceId: any;
     store: this;
@@ -83,8 +84,11 @@ export declare class Client extends RPCClient {
     /**
      * @param {any} ipc   Framed IPC stream (must be writable).
      * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
+     * @param {{ operators?: Record<string, any> }} [opts]  The operators to bind, instead of the ones the spec carries.
      */
-    constructor(ipc: any, spec: Spec);
+    constructor(ipc: any, spec: Spec, opts?: {
+        operators?: Record<string, any>;
+    });
     _open(): Promise<void>;
     /** Pause networking and storage on the server. Idempotent. */
     suspend(): Promise<void>;
@@ -146,18 +150,24 @@ declare class Handle {
  *
  * @param {any} ipc
  * @param {object} spec
+ * @param {{ operators?: Record<string, any> }} [opts]
  * @returns {Promise<Client>}
  */
-export declare function connect(ipc: any, spec: object): Promise<Client>;
+export declare function connect(ipc: any, spec: object, opts?: {
+    operators?: Record<string, any>;
+}): Promise<Client>;
 /**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
  * server (via `connect`) instead of opening a local store.
  *
  * @param {any} ipc    Framed IPC duplex stream.
  * @param {any} spec   Built cero spec.
+ * @param {{ operators?: Record<string, any> }} [opts]
  * @returns {Promise<Client>}
  */
-export declare function cero(ipc: any, spec: any): Promise<Client>;
+export declare function cero(ipc: any, spec: any, opts?: {
+    operators?: Record<string, any>;
+}): Promise<Client>;
 export declare namespace cero {
     export { connect };
     export { restore };
@@ -171,7 +181,5 @@ export declare namespace cero {
     export { call };
     export { open };
     export { rotate };
-    export { bind };
-    export { define };
     export { schema };
 }

@@ -33,9 +33,9 @@ export async function buildSpec(t, sub, sch = appSchema) {
   return { spec, dir }
 }
 
-export async function openCero(t, spec) {
+export async function openCero(t, spec, opts = {}) {
   const testnet = await makeTestnet(t)
-  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, ...opts })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return me
 }

@@ -105,6 +105,7 @@ const WRITES = { single: ['set'], collection: ['put', 'set', 'del'] }
  * @returns {() => void}
  */
 export function before(ref, fn, opts) {
+  if (ref.type) return ref.handle._hookType(before, ref, fn, opts)
   const db = ref.handle.store
   const ops = WRITES[ref.kind] || ['set']
   const offs = ops.map((op) =>
@@ -131,6 +132,7 @@ export function before(ref, fn, opts) {
  * @returns {() => void}
  */
 export function after(ref, fn, opts) {
+  if (ref.type) return ref.handle._hookType(after, ref, fn, opts)
   const db = ref.handle.store
   const ops = WRITES[ref.kind] || ['set']
   const offs = ops.map((op) => db.after(op, (ctx) => (ctx.name === ref.name ? fn(ctx) : undefined)))
@@ -330,53 +332,4 @@ export function open(ref, arg) {
  */
 export function rotate(handle) {
   return handle.store.rotate()
-}
-
-const registry = {}
-
-function attach(handle, ns, fns) {
-  const bound = {}
-  for (const key of Object.keys(fns)) {
-    if (typeof fns[key] === 'function') bound[key] = (...args) => fns[key](handle, ...args)
-  }
-  handle[ns] = bound
-}
-
-/**
- * Put custom operators on `handle`, currying it as their first argument so
- * `handle.ns.fn(args)` calls `fn(handle, args)`.
- *
- * @param {any} handle
- * @param {Record<string, any> | string | null} arg
- * @returns {any} handle
- */
-export function bind(handle, arg) {
-  if (arg !== null && typeof arg !== 'string') {
-    for (const ns of Object.keys(arg)) attach(handle, ns, arg[ns])
-    return handle
-  }
-  const handles = handle.spec?.meta?.handles || {}
-  for (const ns of Object.keys(registry)) {
-    if (arg === null) {
-      if (!(ns in handles)) attach(handle, ns, registry[ns]) // bare root namespace
-    } else if (ns === arg) {
-      for (const k of Object.keys(registry[ns])) attach(handle, k, registry[ns][k]) // child group
-    }
-  }
-  return handle
-}
-
-/**
- * Register custom operators by scope. A bare key binds on the root handle; a key that
- * names a child-handle type binds on every handle of that type.
- *
- * @param {Record<string, any>} map
- */
-export function define(map) {
-  Object.assign(registry, map)
-}
-
-/** Test seam: clear all registered operators. */
-export function _clearDefined() {
-  for (const k of Object.keys(registry)) delete registry[k]
 }

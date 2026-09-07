@@ -33,7 +33,7 @@ export type StatsSample = {
  * @typedef {{ handleId: string, network: { connections: number, peers: number, dht: object | null }, bee: { local: number }, cores: Array<{ length: number, byteLength: number, peers: number }>, at: number }} StatsSample
  */
 /**
- * `cero.use(devtools())` tap extension. Bound to the root handle's lifecycle, it feeds
+ * The `devtools()` tap extension. Bound to the root handle's lifecycle, it feeds
  * every applied op into a bounded ring buffer, samples `stats(me)` on an interval, and
  * serves a read-only inspection.
  *

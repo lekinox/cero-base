@@ -5,7 +5,7 @@ description: >-
   Use for any task on a project that depends on @cero-base/*: designing a
   schema, using the operators, child handles and invites, roles, multi-device
   identity and phrase recovery, split apps with serve/connect over a Bare
-  worker or worklet, extensions and custom operators, or "build a p2p app
+  worker or worklet, extensions and operators, or "build a p2p app
   with cero".
 ---
 
@@ -77,9 +77,12 @@ the same user; `cero.open(me.room, { invite })` joins the handle.
 
 1. **Open against the built spec**, never the raw schema. Build, server and
    client all import the same generated `spec/index.js`.
-2. **Register before you build or open**: `cero.use(extensions)` before
-   `build()` and before `cero()` / `serve()` / `connect()`, in every process.
-   `cero.define(operators)` once at startup on both sides of RPC.
+2. **Name extensions and operators once, at build time**:
+   `build('./spec', schema, { extensions: '../extensions.js', operators: '../operators.js' })`.
+   The spec imports both modules, so `cero()` and `connect()` register nothing.
+   An extension is `{ schema, setup }`, nested by handle type; operators are a
+   map keyed by namespace, a handle-type key holding that type's. Both modules
+   import from `@cero-base/cero/extensions`, never `@cero-base/cero`.
 3. **The schema is append-only.** Fields and refs are numbered in declaration
    order. Add at the end; never insert, remove or reorder.
 4. **`put` inserts, `set` merges.** `set` reads the stored row, merges your
@@ -143,7 +146,8 @@ every transport. See [apps](references/apps.md).
 | Invites, roles, members, devices, leaving                  | [handles](references/handles.md)       |
 | The phrase, recovery, restore, peek                        | [identity](references/identity.md)     |
 | serve, connect, Electron, Expo                             | [apps](references/apps.md)             |
-| use, define, bind, profileSync, handleSync                 | [extensions](references/extensions.md) |
+| extensions, profileSync, handleSync, hooks on every room   | [extensions](references/extensions.md) |
+| operators, the map, bound on both sides                    | [operators](references/operators.md)   |
 | Files next to rows                                         | [files](references/files.md)           |
 | Channels, mirrors, suspend, Bluetooth, app versions        | [network](references/network.md)       |
 | Every export and option                                    | [api reference](references/api.md)     |

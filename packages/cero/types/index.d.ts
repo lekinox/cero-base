@@ -1,12 +1,11 @@
 import { Identity } from '@cero-base/core/identity';
 import { Handle, Ref } from './handle/index.js';
 import { Local } from './local/index.js';
-import { put, set, get, del, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
+import { put, set, get, del, watch, changes, call, open, rotate, before, after } from './lib/operators.js';
 import { peek } from './lib/peek.js';
 import { t, schema } from './lib/spec.js';
-import { registry } from './extensions/index.js';
 export { Handle, Ref, Local };
-export { put, set, get, del, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
+export { put, set, get, del, watch, changes, call, open, rotate, before, after } from './lib/operators.js';
 export { peek } from './lib/peek.js';
 export { t, schema } from './lib/spec.js';
 export type CeroHandle = import('./handle/index.js').CeroHandle;
@@ -87,9 +86,13 @@ export type CeroOpts = {
      */
     storageKey?: Uint8Array;
     /**
-     * `false` disables the bundled extensions (profileSync, handleSync) for this instance. Build with `{ extensions: false }` too so the spec matches.
+     * The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
      */
-    extensions?: boolean;
+    extensions?: import('./extensions/index.js').Extension[];
+    /**
+     * The operators to bind, instead of the ones the spec carries.
+     */
+    operators?: Record<string, any>;
     /**
      * `true` enables nearby (Bluetooth) sync via `me.bluetooth` (auto-started). `{ autoStart: false }` creates the facade without starting the radio — the app calls `me.bluetooth.start()`/`stop()` (user toggle). `backend` injects a bare-bluetooth-shaped backend (tests). `maxOutbound`/`maxInbound` cap concurrent outbound links and inbound sessions. `pipe` picks the data pipe — `'l2cap'` (default, faster) or `'gatt'`; both peers must match. Absent backend on an unsupported host → `me.bluetooth.state === 'unsupported'`.
      */
@@ -123,7 +126,8 @@ export type CeroOpts = {
  * @property {(err: any) => void} [onerror]            Background-task error handler.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
- * @property {boolean} [extensions]                    `false` disables the bundled extensions (profileSync, handleSync) for this instance. Build with `{ extensions: false }` too so the spec matches.
+ * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
+ * @property {Record<string, any>} [operators]  The operators to bind, instead of the ones the spec carries.
  * @property {boolean | { autoStart?: boolean, backend?: any, maxOutbound?: number, maxInbound?: number, pipe?: 'l2cap' | 'gatt' }} [bluetooth]  `true` enables nearby (Bluetooth) sync via `me.bluetooth` (auto-started). `{ autoStart: false }` creates the facade without starting the radio — the app calls `me.bluetooth.start()`/`stop()` (user toggle). `backend` injects a bare-bluetooth-shaped backend (tests). `maxOutbound`/`maxInbound` cap concurrent outbound links and inbound sessions. `pipe` picks the data pipe — `'l2cap'` (default, faster) or `'gatt'`; both peers must match. Absent backend on an unsupported host → `me.bluetooth.state === 'unsupported'`.
  */
 /**
@@ -151,10 +155,6 @@ export declare namespace cero {
     export { peek };
     export { restore };
     export { schema };
-    export { bind };
-    export { define };
-    export { registry as _registry };
-    export var use: (...exts: any[]) => void;
 }
 /**
  * Restore a cero instance from a mnemonic phrase.
