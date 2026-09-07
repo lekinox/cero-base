@@ -1,7 +1,7 @@
 {
   "name": "@cero-base/cero",
   "version": "2.1.1",
-  "description": "The ideal p2p API — everything is a handle, handles contain refs, refs contain rows.",
+  "description": "The ideal p2p API \u2014 everything is a handle, handles contain refs, refs contain rows.",
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -18,7 +18,8 @@
     "src",
     "types",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!src/**/CLAUDE.md"
   ],
   "publishConfig": {
     "access": "public"

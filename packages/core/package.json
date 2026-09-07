@@ -1,7 +1,7 @@
 {
   "name": "@cero-base/core",
   "version": "2.1.1",
-  "description": "cero p2p primitives — identity, storage, network, database, blobs, rpc, pairing.",
+  "description": "cero p2p primitives \u2014 identity, storage, network, database, blobs, rpc, pairing.",
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -18,7 +18,8 @@
     "src",
     "types",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!src/**/CLAUDE.md"
   ],
   "publishConfig": {
     "access": "public"

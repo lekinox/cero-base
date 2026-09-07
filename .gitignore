@@ -19,3 +19,7 @@ example/*/package-lock.json
 # local notes and tooling
 .claude
 .superpowers/
+
+# claude-mem stubs, the root file is the only one
+**/CLAUDE.md
+!/CLAUDE.md

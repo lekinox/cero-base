@@ -1,7 +1,7 @@
 {
   "name": "@cero-base/tools",
   "version": "2.1.1",
-  "description": "Passive devtools for cero — observe data, events, and p2p/replication stats over a local out-of-band pipe.",
+  "description": "Passive devtools for cero \u2014 observe data, events, and p2p/replication stats over a local out-of-band pipe.",
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -48,7 +48,8 @@
     "types",
     "bin",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "!src/**/CLAUDE.md"
   ],
   "publishConfig": {
     "access": "public"
