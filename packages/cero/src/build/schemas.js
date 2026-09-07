@@ -171,9 +171,6 @@ export const rpc = {
     changes: required(bytes),
     reset: bool
   },
-  'res-count': {
-    count: required(int)
-  },
   'res-invite': {
     invite: required(string)
   },

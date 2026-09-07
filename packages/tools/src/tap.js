@@ -40,9 +40,9 @@ export function devtools(opts = {}) {
       const servers = new Set()
 
       const follow = (handle) => {
-        const off = handle.store.onApply((e) =>
-          events.push(redactor ? { ...e, row: redactor(e.name, e.row) } : e)
-        )
+        const push = (e) => events.push(redactor ? { ...e, row: redactor(e.name, e.row) } : e)
+        handle.store.on('apply', push)
+        const off = () => handle.store.off('apply', push)
         offs.push(off)
         if (handle !== me) handle.once('close', off)
       }

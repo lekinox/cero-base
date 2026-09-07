@@ -211,7 +211,7 @@ export declare class Handle extends ReadyResource {
     pair: Pairing;
     _wantsPair: boolean;
     _ac: AbortController;
-    _invitesSync: () => Promise<void>;
+    _invitesSync: (touched: any) => void;
     /** @param {HandleOpts} [opts] */
     constructor(opts?: HandleOpts);
     /**

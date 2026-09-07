@@ -1,4 +1,4 @@
-import { get, count, watch } from '@cero-base/cero'
+import { get, watch } from '@cero-base/cero'
 
 import { Framed } from './protocol.js'
 
@@ -91,16 +91,6 @@ export class TapServer {
       ? r.data.map((row) => this.redact(req.ref, row))
       : r.data && this.redact(req.ref, r.data)
     this._send({ id: req.id, ok: true, data: { ...r, data } })
-  }
-
-  /**
-   * Count rows for a ref and reply with the total.
-   * @param {ReqFrame} req  A request frame carrying `id`, `ref`, `handleId` and `query`.
-   * @returns {Promise<void>}
-   */
-  async count(req) {
-    const ref = this._resolveRef(req)
-    this._send({ id: req.id, ok: true, data: (await count(ref, req.query)).data })
   }
 
   /**
@@ -205,7 +195,7 @@ export class TapServer {
   }
 }
 
-const METHODS = new Set(['handles', 'get', 'count', 'watch', 'events', 'stats', 'cancel'])
+const METHODS = new Set(['handles', 'get', 'watch', 'events', 'stats', 'cancel'])
 
 class CodeError extends Error {
   constructor(code, message) {

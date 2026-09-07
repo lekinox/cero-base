@@ -61,7 +61,11 @@ export type DatabaseOpts = {
      */
     keyPair?: import('../identity/index.js').KeyPair;
     /**
-     * Called when an onApply callback fails, a node is skipped or refused, or the bee errors.
+     * Called when a node is skipped or refused, or the bee errors.
+     *
+     * Events: `update` (touched refs, a Set, after each applied batch), `apply` (one per applied
+     * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
+     * `behind` (an op from a newer app version was skipped).
      */
     onerror?: (err: Error) => void;
 };
@@ -89,7 +93,51 @@ export type Ref = {
     verb: string;
     name: string;
 };
-export type HookFn = (ctx: any) => any | Promise<any>;
+export type HookContext = {
+    /**
+     * One of `put`, `set`, `del`, or an action name.
+     */
+    op: string;
+    /**
+     * The ref the op targets.
+     */
+    name: string;
+    /**
+     * The incoming row; mutate it in `before` to change what lands.
+     */
+    row: Record<string, unknown> | null;
+    /**
+     * The stored row, or null.
+     */
+    existing: Record<string, unknown> | null;
+    /**
+     * The row id for a `del`.
+     */
+    id: string | null;
+    /**
+     * The writer's member id.
+     */
+    memberId: string;
+    /**
+     * The writer's role.
+     */
+    role: string;
+    get: (ref: string | {
+        name: string;
+    }, query?: string | Record<string, unknown>) => Promise<{
+        data: unknown;
+    }>;
+    put: (ref: string | {
+        name: string;
+    }, row: Record<string, unknown>) => Promise<void>;
+    set: (ref: string | {
+        name: string;
+    }, row: Record<string, unknown>) => Promise<void>;
+    del: (ref: string | {
+        name: string;
+    }, id?: string) => Promise<void>;
+};
+export type HookFn = (ctx: HookContext) => unknown;
 /**
  * @typedef {object} DatabaseOpts
  * @property {any} store                                              Corestore (or compatible) used to materialize the autobee.
@@ -103,13 +151,29 @@ export type HookFn = (ctx: any) => any | Promise<any>;
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
- * @property {(err: Error) => void} [onerror]                         Called when an onApply callback fails, a node is skipped or refused, or the bee errors.
+ * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
+ *
+ * Events: `update` (touched refs, a Set, after each applied batch), `apply` (one per applied
+ * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
+ * `behind` (an op from a newer app version was skipped).
  *
  * @typedef {{ data: any | null }} SingleResult
  * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
  * @typedef {{ gt?: string, gte?: string, lt?: string, lte?: string, reverse?: boolean, limit?: number, search?: string, fields?: string[], total?: boolean }} Query
  * @typedef {{ kind: string, verb: string, name: string }} Ref
- * @typedef {(ctx: any) => any | Promise<any>} HookFn
+ * @typedef {object} HookContext
+ * @property {string} op                                One of `put`, `set`, `del`, or an action name.
+ * @property {string} name                              The ref the op targets.
+ * @property {Record<string, unknown> | null} row       The incoming row; mutate it in `before` to change what lands.
+ * @property {Record<string, unknown> | null} existing  The stored row, or null.
+ * @property {string | null} id                         The row id for a `del`.
+ * @property {string} memberId                          The writer's member id.
+ * @property {string} role                              The writer's role.
+ * @property {(ref: string | { name: string }, query?: string | Record<string, unknown>) => Promise<{ data: unknown }>} get
+ * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} put
+ * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} set
+ * @property {(ref: string | { name: string }, id?: string) => Promise<void>} del
+ * @typedef {(ctx: HookContext) => unknown} HookFn
  */
 /**
  * Multi-writer database built on Autobee + HyperDB.
@@ -165,8 +229,6 @@ export declare class Database extends ReadyResource {
     _before: Map<any, any>;
     _after: Map<any, any>;
     _hooking: number;
-    _updaters: Map<any, any>;
-    _observers: Set<any>;
     _verbs: Map<any, any>;
     _touched: Set<any>;
     _seq: number;
@@ -211,28 +273,6 @@ export declare class Database extends ReadyResource {
      * @returns {() => void} disposer
      */
     after(op: string, fn: HookFn): () => void;
-    /**
-     * Subscribe to local apply notifications. Fires whenever the view updates;
-     * pass `scope` (a ref name) to fire only when that ref was touched.
-     *
-     * @param {() => void} fn
-     * @param {string} [scope]
-     * @returns {() => void} disposer
-     */
-    onUpdate(fn: () => void, scope?: string): () => void;
-    /**
-     * Observe every applied op — local AND replicated (apply processes the merged log).
-     *
-     * @param {(event: { op: string, name: string, row: any, writerKey: any, seq: number }) => void} fn
-     * @returns {() => void} disposer
-     */
-    onApply(fn: (event: {
-        op: string;
-        name: string;
-        row: any;
-        writerKey: any;
-        seq: number;
-    }) => void): () => void;
     /**
      * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
      *
@@ -311,16 +351,6 @@ export declare class Database extends ReadyResource {
         data: any[];
         total: any;
         size: number;
-    }>;
-    /**
-     * Number of rows that match `query` (or total if omitted).
-     *
-     * @param {string} name
-     * @param {Query} [query]
-     * @returns {Promise<{ data: number }>}
-     */
-    count(name: string, query?: Query): Promise<{
-        data: number;
     }>;
     /**
      * Live snapshot stream — re-emits the latest `get()` result on every
@@ -416,6 +446,7 @@ export declare class Database extends ReadyResource {
     _joinSwarm(bee: any, discoveryKey: any): void;
     _hooks(phase: any, op: any): any;
     _inHook(fn: any): (ctx: any) => Promise<any>;
+    onUpdate(name: any, fn: any): () => this;
     _opOf(node: any): {
         op: any;
         name: any;
@@ -450,7 +481,7 @@ export declare class Database extends ReadyResource {
         rest: {};
         sorted: boolean;
     };
-    _total(view: any, path: any, range: any, rows: any, query: any): Promise<any>;
+    _total(view: any, path: any, range: any, matched: any, query: any): Promise<any>;
     _optimistic(op: any, opts: any): Promise<void>;
     _backfilled(timeout: any): Promise<void>;
     _admission(writer: any, ts?: number): {

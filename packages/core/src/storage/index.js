@@ -193,27 +193,12 @@ export class Storage extends ReadyResource {
     }
 
     const data = await this.db.find(col, range(query)).toArray()
-    // a limit caps data, so total needs a full count
-    const filtered = query && Object.keys(query).length > 0
-    const total = filtered ? (await this.db.find(col, {}).toArray()).length : data.length
+    // a limit caps data, so total needs the unlimited range
+    const total =
+      query?.limit != null
+        ? (await this.db.find(col, range({ ...query, limit: undefined })).toArray()).length
+        : data.length
     return { data, total, size: data.length }
-  }
-
-  /**
-   * Number of rows that match `query` (or total if omitted).
-   *
-   * @param {string} name
-   * @param {Record<string, any>} [query]
-   * @returns {Promise<{ data: number }>}
-   */
-  async count(name, query) {
-    this._guard()
-    const ref = this._ref(name)
-    const col = this._col(ref)
-    const eq = Object.keys(query || {}).filter((k) => !QUERY_RESERVED.has(k))
-    const filtered = eq.length || query?.search
-    const rows = await this.db.find(col, filtered ? {} : range(query)).toArray()
-    return { data: (filtered ? filter(rows, query) : rows).length }
   }
 
   /**

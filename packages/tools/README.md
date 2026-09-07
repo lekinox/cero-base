@@ -46,7 +46,6 @@ const session = await connect(dial({ port: 9111 }))
 
 await session.handles() // [{ id, type }, ...] — root + open children
 await session.get('messages') // { data, total, size } — reuses cero's read operators
-await session.count('members') // number
 session.watch('messages') // Readable of live snapshots
 session.events() // Readable of { op, name, row, writerKey, seq } — local AND remote
 session.stats() // Readable of { network, bee, cores }
@@ -82,7 +81,7 @@ Identity credentials (the seed and keypairs) need no redaction: they're `local` 
 
 ## Status
 
-MVP: local-pipe transport, `get`/`watch`/`count` + events + sampled stats, redaction, a CLI. Deferred to later phases: a whitelisted swarm transport, a read-only replication / time-travel plane, and an MCP/UI consumer.
+MVP: local-pipe transport, `get`/`watch` + events + sampled stats, redaction, a CLI. Deferred to later phases: a whitelisted swarm transport, a read-only replication / time-travel plane, and an MCP/UI consumer.
 
 ## License
 

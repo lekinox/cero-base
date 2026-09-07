@@ -206,7 +206,7 @@ me.on('handle', (room, opts) => {}, { signal: me.signal })
 room.store.on('unwritable', () => {})
 ```
 
-`room.store.onApply(fn)` also sees replicated ops, so an observer learns about a
+`room.store.on('apply', fn)` also sees replicated ops, so an observer learns about a
 removal it did not perform. `me.signal` is an `AbortSignal` that fires when the
 handle closes: pass it to `on`, `watch`, `before` or `after` to drop a
 subscription automatically. Closing the root closes every open child with it.

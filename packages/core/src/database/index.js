@@ -38,13 +38,29 @@ import { makeDispatcher } from './dispatch.js'
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [passive]                                      Join discovery server-only (reachable but not searching). Flip at runtime with `setActive`.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
- * @property {(err: Error) => void} [onerror]                         Called when an onApply callback fails, a node is skipped or refused, or the bee errors.
+ * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
+ *
+ * Events: `update` (touched refs, a Set, after each applied batch), `apply` (one per applied
+ * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
+ * `behind` (an op from a newer app version was skipped).
  *
  * @typedef {{ data: any | null }} SingleResult
  * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
  * @typedef {{ gt?: string, gte?: string, lt?: string, lte?: string, reverse?: boolean, limit?: number, search?: string, fields?: string[], total?: boolean }} Query
  * @typedef {{ kind: string, verb: string, name: string }} Ref
- * @typedef {(ctx: any) => any | Promise<any>} HookFn
+ * @typedef {object} HookContext
+ * @property {string} op                                One of `put`, `set`, `del`, or an action name.
+ * @property {string} name                              The ref the op targets.
+ * @property {Record<string, unknown> | null} row       The incoming row; mutate it in `before` to change what lands.
+ * @property {Record<string, unknown> | null} existing  The stored row, or null.
+ * @property {string | null} id                         The row id for a `del`.
+ * @property {string} memberId                          The writer's member id.
+ * @property {string} role                              The writer's role.
+ * @property {(ref: string | { name: string }, query?: string | Record<string, unknown>) => Promise<{ data: unknown }>} get
+ * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} put
+ * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} set
+ * @property {(ref: string | { name: string }, id?: string) => Promise<void>} del
+ * @typedef {(ctx: HookContext) => unknown} HookFn
  */
 
 /**
@@ -92,11 +108,11 @@ export class Database extends ReadyResource {
     this._before = new Map()
     this._after = new Map()
     this._hooking = 0
-    this._updaters = new Map()
-    this._observers = new Set()
     this._verbs = verbMap(this.refs)
     this._touched = new Set()
     this._seq = 0
+    // every watch and changes stream is an 'update' listener
+    this.setMaxListeners(0)
     this.txQueue = null
   }
 
@@ -160,7 +176,6 @@ export class Database extends ReadyResource {
 
     // a fresh db has no key until boot mints it
     if (this.network && !known) this._joinSwarm(this.bee, this.bee.discoveryKey)
-    if (replayed) this.emit('rebuild')
   }
 
   async _close() {
@@ -212,31 +227,6 @@ export class Database extends ReadyResource {
    */
   after(op, fn) {
     return addHook(this._after, op, fn)
-  }
-
-  /**
-   * Subscribe to local apply notifications. Fires whenever the view updates;
-   * pass `scope` (a ref name) to fire only when that ref was touched.
-   *
-   * @param {() => void} fn
-   * @param {string} [scope]
-   * @returns {() => void} disposer
-   */
-  onUpdate(fn, scope) {
-    this._updaters.set(fn, scope || null)
-    return () => this._updaters.delete(fn)
-  }
-
-  /**
-   * Observe every applied op — local AND replicated (apply processes the merged log).
-   *
-   * @param {(event: { op: string, name: string, row: any, writerKey: any, seq: number }) => void} fn
-   * @returns {() => void} disposer
-   */
-  onApply(fn) {
-    if (typeof fn !== 'function') return () => {}
-    this._observers.add(fn)
-    return () => this._observers.delete(fn)
   }
 
   /**
@@ -401,22 +391,9 @@ export class Database extends ReadyResource {
     const { path, range, rest, sorted } = this._plan(name, query)
     const rows = await view.find(path, range).toArray()
     if (!sorted) rows.sort(byIndex)
-    const data = filter(rows, rest)
-    return { data, total: await this._total(view, path, range, rows, query), size: data.length }
-  }
-
-  /**
-   * Number of rows that match `query` (or total if omitted).
-   *
-   * @param {string} name
-   * @param {Query} [query]
-   * @returns {Promise<{ data: number }>}
-   */
-  async count(name, query) {
-    this.guard()
-    this.ref(name)
-    const { path, range, rest } = this._plan(name, query)
-    return { data: filter(await this.view.find(path, range).toArray(), rest).length }
+    const matched = filter(rows, { ...rest, limit: undefined })
+    const data = rest.limit === undefined ? matched : matched.slice(0, rest.limit)
+    return { data, total: await this._total(view, path, range, matched, query), size: data.length }
   }
 
   /**
@@ -431,7 +408,7 @@ export class Database extends ReadyResource {
     this.guard()
     return subscribe({
       get: () => this.get(name, query),
-      watch: (fn) => this.onUpdate(fn, name)
+      watch: (fn) => this.onUpdate(name, fn)
     })
   }
 
@@ -671,19 +648,16 @@ export class Database extends ReadyResource {
       ready.push(version === 0 ? node : { ...node, value: body })
     }
     const result = await this.dispatcher.apply(ready, view, host)
-    if (this._updaters.size || this._observers.size) this._notify(ready)
+    this._notify(ready)
     return result
   }
 
+  // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip
   async _update(db) {
     await db.update()
     const touched = this._touched
     this._touched = new Set()
-    const all = touched.size === 0 || touched.has('*')
-    for (const [fn, scope] of this._updaters) {
-      if (all || !scope || touched.has(scope)) fn()
-    }
-    this.emit('update')
+    this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
   }
 
   // a writer swap re-opens the bee on the SAME topic, join first so destroy is a detach
@@ -713,6 +687,15 @@ export class Database extends ReadyResource {
     }
   }
 
+  // an 'update' listener for one ref; the disposer detaches it
+  onUpdate(name, fn) {
+    const tick = (touched) => {
+      if (touched.has('*') || touched.has(name)) fn()
+    }
+    this.on('update', tick)
+    return () => this.off('update', tick)
+  }
+
   // '@cero/set-messages' → { op: 'set', name: 'messages' }; an action has no dash
   _opOf(node) {
     const { name, value } = this.spec.dispatch.decode(node.value)
@@ -722,8 +705,9 @@ export class Database extends ReadyResource {
     return { op: verb.slice(0, dash), name: verb.slice(dash + 1), value }
   }
 
-  // which refs the batch touched, for scoped update ticks, and one event per op
+  // marks the refs a batch touched and emits 'apply' per op, local and replicated alike
   _notify(nodes) {
+    const listened = this.listenerCount('apply') > 0
     for (const node of nodes) {
       let op
       try {
@@ -736,21 +720,14 @@ export class Database extends ReadyResource {
       const ref = this._verbs.get(op.name)
       // an action's route handler writes wherever it wants, widen to all
       this._touched.add(ref && this.refs[ref].kind !== ACTION ? ref : '*')
-      if (!this._observers.size) continue
-      const event = {
+      if (!listened) continue
+      this.emit('apply', {
         op: op.op,
         name: op.name,
         row: op.value,
         writerKey: node.key,
         seq: this._seq++
-      }
-      for (const fn of this._observers) {
-        try {
-          fn(event)
-        } catch (err) {
-          this._onerror(err)
-        }
-      }
+      })
     }
   }
 
@@ -844,9 +821,9 @@ export class Database extends ReadyResource {
     return { path: col, range: {}, rest, sorted: false }
   }
 
-  // rows before the in-memory pass; unknown once a pushed-down limit filled the page
-  async _total(view, path, range, rows, query) {
-    if (range.limit === undefined || rows.length < range.limit) return rows.length
+  // matched rows; unknown once a pushed-down limit filled the page
+  async _total(view, path, range, matched, query) {
+    if (range.limit === undefined || matched.length < range.limit) return matched.length
     if (!query?.total) return null
     const { limit, reverse, ...bounds } = range
     return (await view.find(path, bounds).toArray()).length

@@ -20,7 +20,7 @@ export function makeChanges(db, name, col, matches) {
     dirty = true
     if (wake !== null) wake()
   }
-  const off = db.onUpdate(mark, name)
+  const off = db.onUpdate(name, mark)
 
   const stream = new Readable({
     async read(cb) {

@@ -792,7 +792,7 @@ test('Handle: removal is observable — observers get the delete, the victim is 
   t.absent(own.destroyed, 'and their stream stays open — silent, not broken')
 })
 
-test('Handle: removal fires unwritable on the victim and onApply on observers', async (t) => {
+test('Handle: removal fires unwritable on the victim and apply on observers', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, room, joinAsRoot, sees } = await nestedRoom(t, testnet)
 
@@ -811,11 +811,13 @@ test('Handle: removal fires unwritable on the victim and onApply on observers', 
   })
 
   // hooks are an app-data rule: membership moves through the builtin routes, which run
-  // none, so onApply is what tells an observer about a removal
+  // none, so the apply event is what tells an observer about a removal
   const applied = []
-  const off = observer.room.store.onApply(({ op, name, row }) => {
+  const onApply = ({ op, name, row }) => {
     if (op === 'del' && name === 'member') applied.push(row.id)
-  })
+  }
+  observer.room.store.on('apply', onApply)
+  const off = () => observer.room.store.off('apply', onApply)
   t.teardown(off)
   let afterFired = false
   t.teardown(
@@ -830,7 +832,7 @@ test('Handle: removal fires unwritable on the victim and onApply on observers', 
   t.absent(victim.room.store.writable, 'and the store reports it as state too')
 
   await waitUntil(() => (applied.includes(victim.identity.id) ? true : null))
-  t.pass('observer saw the replicated removal via onApply')
+  t.pass('observer saw the replicated removal via the apply event')
   t.absent(afterFired, 'after() does not fire on membership rows')
 })
 

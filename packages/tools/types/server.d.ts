@@ -62,12 +62,6 @@ export declare class TapServer {
      */
     get(req: ReqFrame): Promise<void>;
     /**
-     * Count rows for a ref and reply with the total.
-     * @param {ReqFrame} req  A request frame carrying `id`, `ref`, `handleId` and `query`.
-     * @returns {Promise<void>}
-     */
-    count(req: ReqFrame): Promise<void>;
-    /**
      * Stream redacted live updates for a ref until cancelled or the stream ends.
      * @param {ReqFrame} req  A request frame carrying `id`, `ref`, `handleId` and `query`.
      * @returns {void}

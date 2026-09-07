@@ -3,7 +3,7 @@ import b4a from 'b4a'
 
 import { Local } from '../../src/local/index.js'
 import { cero, open as openHandle } from '../../src/index.js'
-import { put, set, get, del, count, watch } from '../../src/lib/operators.js'
+import { put, set, get, del, watch } from '../../src/lib/operators.js'
 import { spec } from '../fixtures/spec/index.js'
 import { makeTestnet, observe } from '../helpers/index.js'
 
@@ -77,14 +77,6 @@ test('Local: del removes a row', async (t) => {
   t.is(list.length, 0)
 })
 
-test('Local: count returns size', async (t) => {
-  const { local } = await open(t)
-  await put(local.drafts, { text: 'a' })
-  await put(local.drafts, { text: 'b' })
-  const { data } = await count(local.drafts)
-  t.is(data, 2)
-})
-
 // ─── persistence ──────────────────────────────────────────────────────────
 
 test('Local: persists across reopen', async (t) => {
@@ -149,12 +141,6 @@ test('Local: get(unknown id) → { data: null }', async (t) => {
   await put(local.drafts, { text: 'a' })
   const { data } = await get(local.drafts, 'no-such-id')
   t.is(data, null)
-})
-
-test('Local: count(empty) → { data: 0 }', async (t) => {
-  const { local } = await open(t)
-  const { data } = await count(local.drafts)
-  t.is(data, 0)
 })
 
 // ─── watch ────────────────────────────────────────────────────────────────

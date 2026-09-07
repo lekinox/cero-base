@@ -423,21 +423,31 @@ test("set: concurrent sets on a single keep each other's fields", async (t) => {
   t.ok(b4a.equals(data.avatar, avatar), 'second field kept')
 })
 
-test('count returns total rows', async (t) => {
+test('watch and changes streams detach their update listener on destroy', async (t) => {
   const { db } = await bootstrapped(t)
-  t.is((await db.count('messages')).data, 0)
-  await db.put('messages', { text: 'a' })
-  await db.put('messages', { text: 'b' })
-  t.is((await db.count('messages')).data, 2)
+  const base = db.listenerCount('update')
+  const streams = [db.watch('messages'), db.changes('messages'), db.watch('messages', { limit: 1 })]
+  t.is(db.listenerCount('update'), base + 3, 'one listener per stream')
+  for (const s of streams) s.destroy()
+  await Promise.all(streams.map((s) => new Promise((r) => s.once('close', r))))
+  t.is(db.listenerCount('update'), base, 'all detached')
 })
 
-test('count applies query filters and limit', async (t) => {
+test('total counts the rows', async (t) => {
+  const { db } = await bootstrapped(t)
+  t.is((await db.get('messages')).total, 0)
+  await db.put('messages', { text: 'a' })
+  await db.put('messages', { text: 'b' })
+  t.is((await db.get('messages')).total, 2)
+})
+
+test('total follows the range', async (t) => {
   const { db } = await bootstrapped(t)
   for (let i = 0; i < 5; i++) await db.put('messages', { id: `id-${i}`, text: `t${i}` })
-  t.is((await db.count('messages')).data, 5, 'no query → total')
-  t.is((await db.count('messages', { gt: 'id-1' })).data, 3, 'gt filters the count')
-  t.is((await db.count('messages', { lt: 'id-2' })).data, 2, 'lt filters the count')
-  t.is((await db.count('messages', { limit: 2 })).data, 2, 'limit caps the count')
+  t.is((await db.get('messages')).total, 5, 'no query → total')
+  t.is((await db.get('messages', { gt: 'id-1' })).total, 3, 'gt filters the total')
+  t.is((await db.get('messages', { lt: 'id-2' })).total, 2, 'lt filters the total')
+  t.is((await db.get('messages', { limit: 2 })).total, null, 'a full page skips the count')
 })
 
 test('tx: concurrent transactions are isolated — a failing one does not drop the other', async (t) => {
@@ -651,10 +661,12 @@ test('call: an operator called inside a route throws INVALID', async (t) => {
   t.is(err?.code, 'INVALID', 'cero operators are off limits inside a route')
 })
 
-test('onApply: fires per applied op with op/name/row/writerKey, and unsubscribes', async (t) => {
+test('apply event: fires per applied op with op/name/row/writerKey, and unsubscribes', async (t) => {
   const { db } = await bootstrapped(t)
   const seen = []
-  const off = db.onApply((e) => seen.push(e))
+  const push = (e) => seen.push(e)
+  db.on('apply', push)
+  const off = () => db.off('apply', push)
   await db.put('messages', { text: 'a' })
   await db.put('messages', { text: 'b' })
   t.ok(seen.length >= 2, 'fired for each applied op')
@@ -669,16 +681,16 @@ test('onApply: fires per applied op with op/name/row/writerKey, and unsubscribes
   t.is(seen.length, n, 'no fire after unsubscribe')
 })
 
-test('onApply: zero cost when no subscriber', async (t) => {
+test('apply event: zero cost when nobody listens', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { text: 'x' }) // apply runs the gated path with no subscriber
   t.is((await db.get('messages')).data.length, 1, 'op still applied normally')
 })
 
-// Remote case: apply processes the MERGED log, so onApply fires for a peer's ops
+// Remote case: apply processes the MERGED log, so 'apply' fires for a peer's ops
 // too, carrying that peer's writerKey. Same shape as the passing A → B replication
 // tests above (shared identity, recovering peer, waitUntil on B).
-test('onApply: fires for REMOTE ops with the remote writerKey (two-peer)', async (t) => {
+test('apply event: fires for REMOTE ops with the remote writerKey (two-peer)', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.generate()
   const topic = randomTopic()
@@ -690,7 +702,7 @@ test('onApply: fires for REMOTE ops with the remote writerKey (two-peer)', async
   await waitForConnection(b.network)
 
   const seen = []
-  b.db.onApply((e) => seen.push(e))
+  b.db.on('apply', (e) => seen.push(e))
   await a.db.put('messages', { text: 'from-a' })
 
   const e = await waitUntil(
@@ -772,7 +784,7 @@ test('get search: case-insensitive substring across string fields', async (t) =>
   await db.put('messages', { id: 'm3', text: 'goodbye' })
   const r = await db.get('messages', { search: 'hel' })
   t.alike(r.data.map((m) => m.id).sort(), ['m1', 'm2'], 'substring match, case-insensitive')
-  t.is(r.total, 3, 'total stays the full collection size')
+  t.is(r.total, 2, 'total counts the matches')
 })
 
 test('get search: matches any string field (e.g. id/code)', async (t) => {
@@ -790,7 +802,7 @@ test('get search: composes with limit (pagination)', async (t) => {
   await db.put('messages', { id: 'x', text: 'other' })
   const r = await db.get('messages', { search: 'room', limit: 3 })
   t.is(r.data.length, 3, 'page capped to limit')
-  t.is(r.total, 7, 'total stays the full collection')
+  t.is(r.total, 6, 'total counts the matches, not the page')
 })
 
 test('get search: no match returns an empty page', async (t) => {
@@ -843,12 +855,12 @@ test('get search: fields restricts which fields are searched', async (t) => {
   )
 })
 
-test('count honors search', async (t) => {
+test('total honors search', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { id: 'm1', text: 'apple' })
   await db.put('messages', { id: 'm2', text: 'apricot' })
   await db.put('messages', { id: 'm3', text: 'banana' })
-  t.is((await db.count('messages', { search: 'ap' })).data, 2, 'count matches the search filter')
+  t.is((await db.get('messages', { search: 'ap' })).total, 2, 'total matches the search filter')
 })
 
 test('get: an indexed-field query routes to the secondary index', async (t) => {
@@ -883,13 +895,14 @@ test('get: an indexed-field query still applies a co-passed search filter', asyn
   t.is(r.data.length, 0, 'search co-applies on the index path — not dropped')
 })
 
-test('count: an indexed-field query agrees with get (no divergence)', async (t) => {
+test('an indexed-field query totals what it returns', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { id: 'm1', text: 'alpha' })
   await db.put('messages', { id: 'm2', text: 'beta' })
   await db.put('messages', { id: 'm3', text: 'alpha' })
-  t.is((await db.get('messages', { text: 'alpha' })).data.length, 2, 'get matches via the index')
-  t.is((await db.count('messages', { text: 'alpha' })).data, 2, 'count agrees with get')
+  const r = await db.get('messages', { text: 'alpha' })
+  t.is(r.data.length, 2, 'get matches via the index')
+  t.is(r.total, 2, 'total agrees')
 })
 
 test('get: an indexed-field query pushes reverse/limit down to the index', async (t) => {
@@ -914,11 +927,6 @@ test('get: an indexed-field query pushes reverse/limit down to the index', async
   t.is(calls.length, 1, 'one read')
   t.ok(calls[0].path.endsWith('/messages-by-text'), 'served by the secondary index')
   t.is(calls[0].range.limit, 1, 'limit reached hyperdb')
-  t.is(
-    (await db.count('messages', { text: 'even', limit: 1 })).data,
-    1,
-    'count takes the same plan'
-  )
 })
 
 test('get reverse returns reversed index order', async (t) => {
@@ -1238,7 +1246,7 @@ test('tx: multiple writes commit atomically', async (t) => {
 
 test('tx: throw inside fn discards queued writes', async (t) => {
   const { db } = await bootstrapped(t)
-  const before = (await db.count('messages')).data
+  const before = (await db.get('messages')).total
   await t.exception.all(
     () =>
       db.tx(async (tx) => {
@@ -1247,7 +1255,7 @@ test('tx: throw inside fn discards queued writes', async (t) => {
       }),
     /oops/
   )
-  const after = (await db.count('messages')).data
+  const after = (await db.get('messages')).total
   t.is(after, before, 'no writes landed')
 })
 
@@ -1860,11 +1868,9 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   t.teardown(() => stream.destroy())
 
   const applied = []
-  t.teardown(
-    b.db.onApply(({ name, row }) => {
-      if (name === 'messages') applied.push(row.text)
-    })
-  )
+  b.db.on('apply', ({ name, row }) => {
+    if (name === 'messages') applied.push(row.text)
+  })
 
   const { data: kept } = await a.db.put('messages', { text: 'kept' })
   await waitUntil(async () => (await b.db.get('messages', kept.id)).data || null)
@@ -2336,12 +2342,9 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
 
   const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
   const again = new Database({ store, identity, spec: upgraded, key, keyPair })
-  let rebuilt = 0
-  again.on('rebuild', () => rebuilt++)
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
 
-  t.is(rebuilt, 1, 'rebuild ran once')
   t.is(again.behind, null, 'marker cleared')
   t.ok((await again.get('messages', futureId)).data, 'skipped op applied after upgrade')
   t.ok(

@@ -110,5 +110,5 @@ test('tap: zero footprint when not registered', async (t) => {
     (await get(me.messages)).data.find((r) => r.id === data.id),
     'get works'
   )
-  t.is(me.store._observers.size, 0, 'no onApply hook registered')
+  t.is(me.store.listenerCount('apply'), 0, 'no apply listener registered')
 })

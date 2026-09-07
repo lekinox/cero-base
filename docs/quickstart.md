@@ -153,5 +153,5 @@ Both, Node 22 or newer. Import `fs`, `path`, `crypto`, `events` and `url` as usu
 ## Next
 
 - [Schema](schema.md) for every field type, singles, actions and rooms.
-- [Data](data.md) for queries, `set`, `del`, `count`, `changes` and hooks.
+- [Data](data.md) for queries, `set`, `del`, `changes` and hooks.
 - [Handles](handles.md) for roles, invites that expire, and revoking.

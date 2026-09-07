@@ -13,7 +13,6 @@ import {
   set,
   get,
   del,
-  count,
   watch,
   changes,
   call,
@@ -256,7 +255,7 @@ test('rpc: search + fields filter rows over the wire', async (t) => {
   const { client } = await openPair(t)
   for (const text of ['hello', 'help', 'goodbye']) await put(client.messages, { text })
   const { data, total } = await get(client.messages, { search: 'hel', fields: ['text'] })
-  t.is(total, 3, 'total is the full collection')
+  t.is(total, 2, 'total counts the matches')
   t.alike(
     data.map((m) => m.text).sort(),
     ['hello', 'help'],
@@ -270,14 +269,6 @@ test('rpc: del removes a row over the wire', async (t) => {
   await del(client.messages, row.id)
   const { data } = await get(client.messages)
   t.is(data.length, 0)
-})
-
-test('rpc: count over the wire', async (t) => {
-  const { client } = await openPair(t)
-  await put(client.messages, { text: 'a' })
-  await put(client.messages, { text: 'b' })
-  const { data } = await count(client.messages)
-  t.is(data, 2)
 })
 
 // ─── watch over the wire ──────────────────────────────────────────────────

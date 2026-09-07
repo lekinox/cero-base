@@ -233,7 +233,9 @@ export class Handle extends ReadyResource {
       await this.pair.ready()
       // serve invites persisted by any member, in step with the rows
       await this._syncInvites().catch(safetyCatch)
-      this._invitesSync = () => this._syncInvites().catch(safetyCatch)
+      this._invitesSync = (touched) => {
+        if (touched.has('*') || touched.has('invites')) this._syncInvites().catch(safetyCatch)
+      }
       this.store.on('update', this._invitesSync)
     }
     Ref.attach(this, this.store.refs)

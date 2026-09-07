@@ -1,12 +1,12 @@
 import { Identity } from '@cero-base/core/identity';
 import { Handle, Ref } from './handle/index.js';
 import { Local } from './local/index.js';
-import { put, set, get, del, count, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
+import { put, set, get, del, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
 import { peek } from './lib/peek.js';
 import { t, schema } from './lib/spec.js';
 import { registry } from './extensions/index.js';
 export { Handle, Ref, Local };
-export { put, set, get, del, count, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
+export { put, set, get, del, watch, changes, call, open, rotate, before, after, bind, define } from './lib/operators.js';
 export { peek } from './lib/peek.js';
 export { t, schema } from './lib/spec.js';
 export type CeroHandle = import('./handle/index.js').CeroHandle;
@@ -132,7 +132,6 @@ export declare namespace cero {
     export { set };
     export { get };
     export { del };
-    export { count };
     export { watch };
     export { changes };
     export { call };

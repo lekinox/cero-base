@@ -45,7 +45,7 @@ me.toPhrase() // back to words
 
 ## Storage
 
-Hyperbee or Rocks-backed local table store with a uniform put/set/get/del/count/watch surface.
+Hyperbee or Rocks-backed local table store with a uniform put/set/get/del/watch surface.
 
 ```js
 import { Storage } from '@cero-base/core/storage'

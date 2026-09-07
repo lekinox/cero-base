@@ -10,7 +10,6 @@ import {
   set,
   get,
   del,
-  count,
   watch,
   changes,
   call,
@@ -21,7 +20,7 @@ import {
 } from '../lib/operators.js'
 import { t, schema } from '../lib/spec.js'
 
-export { put, set, get, del, count, watch, changes, call, open, rotate, bind, define, t, schema }
+export { put, set, get, del, watch, changes, call, open, rotate, bind, define, t, schema }
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCClient} BaseRPCClient
@@ -250,24 +249,6 @@ const operators = {
    */
   async del(name, id) {
     await this.rpc.del({ handle: this.id, ref: name, id, local: this._local })
-  },
-
-  /**
-   * Count matching rows.
-   *
-   * @param {string} name
-   * @param {Record<string, any>} [query]
-   * @returns {Promise<{ data: number }>}
-   */
-  async count(name, query) {
-    const codec = this._codec()
-    const res = await this.rpc.count({
-      handle: this.id,
-      ref: name,
-      query: codec.encodeQuery(query),
-      local: this._local
-    })
-    return { data: res.count }
   },
 
   /**
@@ -603,7 +584,6 @@ cero.put = put
 cero.set = set
 cero.get = get
 cero.del = del
-cero.count = count
 cero.watch = watch
 cero.changes = changes
 cero.call = call

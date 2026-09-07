@@ -7,7 +7,6 @@ import {
   set,
   get,
   del,
-  count,
   watch,
   call,
   bind,
@@ -90,12 +89,6 @@ test('del: store.del(name, id)', async (t) => {
   const { ref, store } = makeRef('messages')
   await del(ref, 'abc')
   t.alike(store.calls[0], { op: 'del', name: 'messages', arg: 'abc' })
-})
-
-test('count: store.count(name, q)', async (t) => {
-  const { ref, store } = makeRef('messages')
-  await count(ref, { limit: 5 })
-  t.alike(store.calls[0], { op: 'count', name: 'messages', arg: { limit: 5 } })
 })
 
 test('watch: store.watch(name, q)', async (t) => {

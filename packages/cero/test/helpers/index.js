@@ -115,9 +115,6 @@ export class FakeStore extends ReadyResource {
   del(name, id) {
     return this.record('del', name, id)
   }
-  count(name, q) {
-    return this.record('count', name, q)
-  }
   watch(name, q) {
     this.record('watch', name, q)
     return { on() {}, once() {}, destroy() {} }

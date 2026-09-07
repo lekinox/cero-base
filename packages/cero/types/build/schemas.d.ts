@@ -163,9 +163,6 @@ export declare const rpc: {
         changes: import("@cero-base/core").Prim;
         reset: import("@cero-base/core").Prim;
     };
-    'res-count': {
-        count: import("@cero-base/core").Prim;
-    };
     'res-invite': {
         invite: import("@cero-base/core").Prim;
     };

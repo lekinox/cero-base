@@ -23,7 +23,7 @@ import { cero, t, schema } from '@cero-base/cero'
 ```
 
 The package exports `cero`, `t`, `schema`, `restore`, `peek`, the fourteen
-operators (`put`, `set`, `get`, `del`, `count`, `watch`, `changes`, `call`,
+operators (`put`, `set`, `get`, `del`, `watch`, `changes`, `call`,
 `open`, `rotate`, `before`, `after`, `bind`, `define`) and the classes `Handle`,
 `Ref` and `Local`. Every operator is also a property of `cero`, so one import is
 enough. Use the facade, `cero.put`, never an aliased named import. Subpaths:
@@ -66,7 +66,6 @@ await cero.put(me.todos, { text: 'buy milk' })
 await cero.set(me.todos, { id, done: true })
 const { data } = await cero.get(me.todos, { done: false, limit: 20 })
 await cero.del(me.todos, id)
-const { data: open } = await cero.count(me.todos, { done: false })
 cero.watch(me.todos).on('data', ({ data }) => render(data))
 for await (const { changes } of cero.changes(me.todos)) apply(changes)
 await cero.call(room.promote, { memberId, role: 'admin' })
@@ -84,7 +83,6 @@ Every operator takes a `Ref` first. `me.messages` is a data ref, `me.room` a han
 | `cero.set(ref, row, opts)`   | `{ data }`                                                 | Merge over the stored row, keeping `createdAt`. `{ upsert: false }` updates only. |
 | `cero.get(ref, q)`           | `{ data }`, `{ data \| null }`, or `{ data, total, size }` | Single, by id string, or a list. On a handle ref, lists child handles.            |
 | `cero.del(ref, id)`          | `undefined`                                                | Delete a row by id, or wipe a single.                                             |
-| `cero.count(ref, q)`         | `{ data: number }`                                         | Rows matching `q`.                                                                |
 | `cero.watch(ref, q, opts)`   | `Readable`                                                 | Re-emits the latest `get` on every mutation, holding only the newest snapshot.    |
 | `cero.changes(ref, q, opts)` | `Readable`                                                 | Batches of `{ prev, next }` pairs. Lossless. Not available on handle refs.        |
 | `cero.call(ref, data)`       | `Promise<any>`                                             | Invoke an action ref.                                                             |
@@ -154,7 +152,7 @@ The root handle and every child handle are the same class.
 
 A handle emits `'handle'` with `(child, opts)` when a child opens, and `'close'`.
 Writability and app-version events live on `handle.store`: `'writable'`,
-`'unwritable'`, `'update'`, `'behind'` and `'rebuild'`.
+`'unwritable'`, `'update'` (the refs a batch touched), `'apply'` (one event per applied op, local and replicated) and `'behind'`.
 
 `me.local.<ref>` are the device-only refs from the schema's `local` block. They
 take the same operators and never replicate. Every handle also carries the

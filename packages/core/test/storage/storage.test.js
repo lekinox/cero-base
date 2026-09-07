@@ -172,8 +172,8 @@ for (const backend of backends) {
   })
 
   // hyperdb ignores equality fields, so they must be applied in memory or a
-  // filtered get/count silently returns every row
-  test(`[${backend}] get/count honor equality query fields`, async (t) => {
+  // a filtered get silently returns every row
+  test(`[${backend}] get honors equality query fields`, async (t) => {
     const { storage } = await make(t, backend)
     await storage.put('drafts', { id: 'a', text: 'x' })
     await storage.put('drafts', { id: 'b', text: 'y' })
@@ -188,8 +188,8 @@ for (const backend of backends) {
     t.is(limited.size, 1, 'limit applies after the filter')
     t.is(limited.total, 2)
 
-    t.is((await storage.count('drafts', { text: 'y' })).data, 1)
-    t.is((await storage.count('drafts', { text: 'nope' })).data, 0)
+    t.is((await storage.get('drafts', { text: 'y' })).total, 1)
+    t.is((await storage.get('drafts', { text: 'nope' })).total, 0)
   })
 
   // ─── del ───────────────────────────────────────────────────────────────────
@@ -210,14 +210,14 @@ for (const backend of backends) {
     t.is(data, null)
   })
 
-  // ─── count ─────────────────────────────────────────────────────────────────
+  // ─── total ─────────────────────────────────────────────────────────────────
 
-  test(`[${backend}] count returns total rows`, async (t) => {
+  test(`[${backend}] total counts the rows`, async (t) => {
     const { storage } = await make(t, backend)
-    t.is((await storage.count('drafts')).data, 0)
+    t.is((await storage.get('drafts')).total, 0)
     await storage.put('drafts', { id: 'c1', text: 'a' })
     await storage.put('drafts', { id: 'c2', text: 'b' })
-    t.is((await storage.count('drafts')).data, 2)
+    t.is((await storage.get('drafts')).total, 2)
   })
 
   // ─── watch ─────────────────────────────────────────────────────────────────
@@ -376,7 +376,7 @@ test('storageKey validation: rocks backend and bad lengths rejected', (t) => {
 })
 
 for (const backend of backends) {
-  test(`[${backend}] get/count: search is a query operator, not an equality field`, async (t) => {
+  test(`[${backend}] get: search is a query operator, not an equality field`, async (t) => {
     const { storage } = await make(t, backend)
     await storage.put('drafts', { text: 'José writes hello' })
     await storage.put('drafts', { text: 'unrelated row' })
@@ -385,8 +385,7 @@ for (const backend of backends) {
     t.is(data.length, 1, 'search matched by folded substring')
     t.is(data[0].text, 'José writes hello')
 
-    const { data: n } = await storage.count('drafts', { search: 'jose' })
-    t.is(n, 1, 'count honors search')
+    t.is((await storage.get('drafts', { search: 'jose' })).total, 1, 'total honors search')
 
     const { data: none } = await storage.get('drafts', { search: 'zzz' })
     t.is(none.length, 0, 'no match comes back empty')
@@ -394,7 +393,7 @@ for (const backend of backends) {
 }
 
 for (const backend of backends) {
-  test(`[${backend}] get/count: equality on a bytes field matches by content`, async (t) => {
+  test(`[${backend}] get: equality on a bytes field matches by content`, async (t) => {
     const { storage } = await make(t, backend)
     const publicKey = b4a.alloc(32, 1)
     await storage.put('handle-keypairs', { id: 'a', publicKey, secretKey: b4a.alloc(64, 1) })
@@ -407,7 +406,7 @@ for (const backend of backends) {
     const { data } = await storage.get('handle-keypairs', { publicKey: b4a.alloc(32, 1) })
     t.is(data.length, 1, 'a fresh buffer with the same bytes matches')
     t.is(data[0].id, 'a')
-    t.is((await storage.count('handle-keypairs', { publicKey: b4a.alloc(32, 2) })).data, 1)
+    t.is((await storage.get('handle-keypairs', { publicKey: b4a.alloc(32, 2) })).total, 1)
   })
 
   test(`[${backend}] get: id ranges and reverse apply with an equality field`, async (t) => {
@@ -430,7 +429,7 @@ for (const backend of backends) {
       'reverse orders the equality matches'
     )
 
-    t.is((await storage.count('drafts', { text: 'x', lte: 'a' })).data, 1, 'count honors the range')
+    t.is((await storage.get('drafts', { text: 'x', lte: 'a' })).total, 1, 'total honors the range')
   })
 
   test(`[${backend}] get: an id range alone reaches hyperdb as a key`, async (t) => {
@@ -445,6 +444,6 @@ for (const backend of backends) {
       ['b', 'c'],
       'gt without an equality field'
     )
-    t.is((await storage.count('drafts', { lte: 'b' })).data, 2, 'count without an equality field')
+    t.is((await storage.get('drafts', { lte: 'b' })).total, 2, 'total without an equality field')
   })
 }

@@ -129,16 +129,6 @@ export declare class Storage extends ReadyResource {
      */
     get(name: string, query?: string | Record<string, any>): Promise<SingleResult | ListResult | GetByIdResult>;
     /**
-     * Number of rows that match `query` (or total if omitted).
-     *
-     * @param {string} name
-     * @param {Record<string, any>} [query]
-     * @returns {Promise<{ data: number }>}
-     */
-    count(name: string, query?: Record<string, any>): Promise<{
-        data: number;
-    }>;
-    /**
      * Live snapshot stream — re-emits the latest `get()` result on every
      * underlying mutation. Destroy the stream to stop watching.
      *

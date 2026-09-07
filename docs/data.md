@@ -17,7 +17,7 @@ Every operator takes a ref first. `me.todos` is a ref on the root handle, `room.
 - [set](#set)
 - [get](#get)
 - [Queries](#queries)
-- [del and count](#del-and-count)
+- [del](#del)
 - [watch](#watch)
 - [changes](#changes)
 - [Hooks](#hooks)
@@ -81,15 +81,14 @@ await cero.get(me.todos, { gt: lastId, limit: 50 }) // cursor pagination on id
 
 An equality query on an indexed field reads through the index. Declare one with `t.collection(fields, { indexes: { 'by-done': ['done'] } })`. `reverse` and `limit` are served by the store when nothing else narrows the read, so a page of the newest rows touches `limit` rows, not the whole collection.
 
-## del and count
+## del
 
 ```js
 await cero.del(me.todos, id) // one row
 await cero.del(me.profile) // wipe the single
-const { data: open } = await cero.count(me.todos, { done: false })
 ```
 
-`count` takes the same query as `get`.
+To count, read `total`: `(await cero.get(me.todos, { done: false })).total`.
 
 ## watch
 
@@ -174,10 +173,10 @@ Three rules follow from running on every peer:
 ```js
 room.store.on('writable', () => {}) // this device may write
 room.store.on('unwritable', () => {}) // access ended, you were removed
-room.store.on('update', () => {}) // a batch of ops applied
+room.store.on('update', (touched) => {}) // a batch applied; touched = the refs it changed
 ```
 
-To see every applied op, local and replicated, use `room.store.onApply(fn)`. It returns an unsubscribe function and runs inside apply, so keep it cheap.
+To see every applied op, local and replicated, listen for `apply` on the store: `room.store.on('apply', ({ op, name, row }) => ...)`. It fires inside apply, so keep it cheap.
 
 ## Batching writes in process
 

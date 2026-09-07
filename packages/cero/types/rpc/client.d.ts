@@ -1,7 +1,7 @@
 import { RPCClient } from '@cero-base/core/rpc';
-import { put, set, get, del, count, watch, changes, call, open, rotate, bind, define } from '../lib/operators.js';
+import { put, set, get, del, watch, changes, call, open, rotate, bind, define } from '../lib/operators.js';
 import { t, schema } from '../lib/spec.js';
-export { put, set, get, del, count, watch, changes, call, open, rotate, bind, define, t, schema };
+export { put, set, get, del, watch, changes, call, open, rotate, bind, define, t, schema };
 export type BaseRPCClient = import('@cero-base/core/rpc').RPCClient;
 export type RefInfo = {
     kind?: 'single' | 'collection' | 'action' | 'handle';
@@ -162,7 +162,6 @@ export declare namespace cero {
     export { set };
     export { get };
     export { del };
-    export { count };
     export { watch };
     export { changes };
     export { call };

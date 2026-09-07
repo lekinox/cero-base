@@ -87,7 +87,6 @@ test('tap server: get/count/handles round-trip', async (t) => {
     got.data.find((r) => r.text === 'hello'),
     'get returns app rows'
   )
-  t.is(await session.count('messages'), got.total, 'count matches total')
 
   const handles = await session.handles()
   t.ok(

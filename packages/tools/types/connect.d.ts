@@ -12,12 +12,11 @@ export type Handle = Record<string, unknown>;
  * Consumer SDK for a tap server reached over a local Duplex `stream`.
  *
  * @param {object} stream  A streamx Duplex connected to a tap server.
- * @returns {Promise<{ handles(): Promise<Handle[]>, get(ref: string, query?: Query, handleId?: string): Promise<unknown>, count(ref: string, query?: Query, handleId?: string): Promise<number>, watch(ref: string, query?: Query, handleId?: string): import('streamx').Readable, events(): import('streamx').Readable, stats(): import('streamx').Readable, close(): void }>}
+ * @returns {Promise<{ handles(): Promise<Handle[]>, get(ref: string, query?: Query, handleId?: string): Promise<unknown>, watch(ref: string, query?: Query, handleId?: string): import('streamx').Readable, events(): import('streamx').Readable, stats(): import('streamx').Readable, close(): void }>}
  */
 export declare function connect(stream: object, { token }?: {}): Promise<{
     handles(): Promise<Handle[]>;
     get(ref: string, query?: Query, handleId?: string): Promise<unknown>;
-    count(ref: string, query?: Query, handleId?: string): Promise<number>;
     watch(ref: string, query?: Query, handleId?: string): import('streamx').Readable;
     events(): import('streamx').Readable;
     stats(): import('streamx').Readable;
@@ -46,15 +45,6 @@ export declare class Session {
      * @returns {Promise<unknown>} Resolves to the value.
      */
     get(ref: string, query?: Query, handleId?: string): Promise<unknown>;
-    /**
-     * Counts entries matching `ref`.
-     *
-     * @param {string} ref  Reference to count.
-     * @param {Query} [query]  Optional query filter.
-     * @param {string} [handleId]  Optional handle to scope the count.
-     * @returns {Promise<number>} Resolves to the count.
-     */
-    count(ref: string, query?: Query, handleId?: string): Promise<number>;
     /**
      * Watches `ref` for changes, emitting frames as they arrive.
      *

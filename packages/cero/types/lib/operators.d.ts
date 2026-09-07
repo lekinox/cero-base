@@ -1,17 +1,5 @@
 export type Ref = import('./refs.js').Ref;
-export type HookCtx = {
-    op: string;
-    name: string;
-    row: any;
-    existing: any;
-    id: string | null;
-    memberId: string | null;
-    role: string | null;
-    get: Function;
-    put: Function;
-    set: Function;
-    del: Function;
-};
+export type HookContext = import('@cero-base/core/database').HookContext;
 export type CeroHandle = import('../handle/index.js').CeroHandle;
 export type SingleResult = {
     data: any;
@@ -26,7 +14,7 @@ export type GetByIdResult = {
 };
 /**
  * @typedef {import('./refs.js').Ref} Ref
- * @typedef {{ op: string, name: string, row: any, existing: any, id: string | null, memberId: string | null, role: string | null, get: Function, put: Function, set: Function, del: Function }} HookCtx
+ * @typedef {import('@cero-base/core/database').HookContext} HookContext
  * @typedef {import('../handle/index.js').CeroHandle} CeroHandle
  * @typedef {{ data: any }} SingleResult
  * @typedef {{ data: any[], total: number, size: number }} ListResult
@@ -76,16 +64,6 @@ export declare function set(ref: Ref, row: Record<string, any>, opts?: {
  */
 export declare function del(ref: Ref, id?: string): Promise<void>;
 /**
- * Count rows on `ref`, optionally filtered.
- *
- * @param {Ref} ref
- * @param {Record<string, any>} [q]
- * @returns {Promise<{ data: number }>}
- */
-export declare function count(ref: Ref, q?: Record<string, any>): Promise<{
-    data: number;
-}>;
-/**
  * Invoke an `action`-kind ref (a custom mutation declared in the schema).
  *
  * @param {Ref} ref
@@ -104,11 +82,11 @@ export declare function call(ref: Ref, d?: Record<string, any>): Promise<any>;
  * imported operators throw inside a hook; use the ones on `ctx`. Not available over RPC.
  *
  * @param {Ref} ref
- * @param {(ctx: HookCtx) => any} fn
+ * @param {(ctx: HookContext) => unknown} fn
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {() => void}
  */
-export declare function before(ref: Ref, fn: (ctx: HookCtx) => any, opts?: {
+export declare function before(ref: Ref, fn: (ctx: HookContext) => unknown, opts?: {
     signal?: AbortSignal;
 }): () => void;
 /**
@@ -118,11 +96,11 @@ export declare function before(ref: Ref, fn: (ctx: HookCtx) => any, opts?: {
  * `changes(ref)` instead to observe writes locally.
  *
  * @param {Ref} ref
- * @param {(ctx: HookCtx) => any} fn
+ * @param {(ctx: HookContext) => unknown} fn
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {() => void}
  */
-export declare function after(ref: Ref, fn: (ctx: HookCtx) => any, opts?: {
+export declare function after(ref: Ref, fn: (ctx: HookContext) => unknown, opts?: {
     signal?: AbortSignal;
 }): () => void;
 /**

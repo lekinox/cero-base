@@ -17,7 +17,6 @@ import {
   set,
   get,
   del,
-  count,
   watch,
   changes,
   call,
@@ -39,7 +38,6 @@ export {
   set,
   get,
   del,
-  count,
   watch,
   changes,
   call,
@@ -257,7 +255,6 @@ cero.put = put
 cero.set = set
 cero.get = get
 cero.del = del
-cero.count = count
 cero.watch = watch
 cero.changes = changes
 cero.call = call

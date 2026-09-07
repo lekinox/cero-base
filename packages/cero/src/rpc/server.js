@@ -5,7 +5,7 @@ import { CeroError } from '@cero-base/core/errors'
 import { encodeId } from '@cero-base/core/blobs/codec'
 
 import { cero, restore } from '../index.js'
-import { put, set, get, del, count, watch, changes, call } from '../lib/operators.js'
+import { put, set, get, del, watch, changes, call } from '../lib/operators.js'
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCServer} BaseRPCServer
@@ -112,7 +112,7 @@ export class Server extends RPCServer {
     })
   }
 
-  /** Register the row-level RPC handlers (put/set/get/del/count/watch/call). */
+  /** Register the row-level RPC handlers (put/set/get/del/watch/call). */
   _wireData() {
     this.rpc.onAddFile(async ({ handle, data, name, type }) => {
       const h = this._resolve(handle)
@@ -159,12 +159,6 @@ export class Server extends RPCServer {
     this.rpc.onDel(async ({ handle, ref, id, local }) => {
       await del(this._refOf(handle, ref, local).ref, id)
       return {}
-    })
-
-    this.rpc.onCount(async ({ handle, ref, query, local }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const { data } = await count(r, codec.decodeQuery(query))
-      return { count: data }
     })
 
     this.rpc.onWatch((stream) => {

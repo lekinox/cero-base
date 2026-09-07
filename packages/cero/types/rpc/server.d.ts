@@ -101,7 +101,7 @@ export declare class Server extends RPCServer {
     _wireInit(): void;
     /** Wire the `restore` handler that rebuilds the local store from a phrase. */
     _wireRestore(): void;
-    /** Register the row-level RPC handlers (put/set/get/del/count/watch/call). */
+    /** Register the row-level RPC handlers (put/set/get/del/watch/call). */
     _wireData(): void;
     /** Register invite/revoke/join RPC handlers. */
     _wirePairing(): void;

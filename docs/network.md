@@ -96,7 +96,7 @@ stop()
 Every op carries the app's contract version, stamped into the spec by `build`. Peers on different versions keep working together:
 
 - Ops from a newer version are skipped, not errors. `me.store.behind` holds the highest version seen, and the store emits `behind` once per version, which is your cue to show an update prompt.
-- After the app upgrades past what it skipped, the next open replays those ops and the store emits `rebuild` once. Nothing is lost.
+- After the app upgrades past what it skipped, the next open replays those ops. Nothing is lost.
 
 ```js
 me.store.on('behind', (version) => showUpdatePrompt())

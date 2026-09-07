@@ -99,7 +99,6 @@ const COMMANDS = [
   ['get', 'req-query', 'res-rows'],
   ['get-one', 'req-id', 'res-data'],
   ['del', 'req-id', 'res-ok'],
-  ['count', 'req-query', 'res-count'],
   ['watch', 'req-query', 'res-rows', true],
   ['call', 'req-call', 'res-data'],
   ['invite', 'req-invite', 'res-invite'],

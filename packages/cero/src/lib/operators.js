@@ -7,7 +7,7 @@ import { onAbort } from '@cero-base/core/utils'
 
 /**
  * @typedef {import('./refs.js').Ref} Ref
- * @typedef {{ op: string, name: string, row: any, existing: any, id: string | null, memberId: string | null, role: string | null, get: Function, put: Function, set: Function, del: Function }} HookCtx
+ * @typedef {import('@cero-base/core/database').HookContext} HookContext
  * @typedef {import('../handle/index.js').CeroHandle} CeroHandle
  * @typedef {{ data: any }} SingleResult
  * @typedef {{ data: any[], total: number, size: number }} ListResult
@@ -77,17 +77,6 @@ export function del(ref, id) {
 }
 
 /**
- * Count rows on `ref`, optionally filtered.
- *
- * @param {Ref} ref
- * @param {Record<string, any>} [q]
- * @returns {Promise<{ data: number }>}
- */
-export function count(ref, q) {
-  return ref.handle.store.count(ref.name, q)
-}
-
-/**
  * Invoke an `action`-kind ref (a custom mutation declared in the schema).
  *
  * @param {Ref} ref
@@ -111,7 +100,7 @@ const WRITES = { single: ['set'], collection: ['put', 'set', 'del'] }
  * imported operators throw inside a hook; use the ones on `ctx`. Not available over RPC.
  *
  * @param {Ref} ref
- * @param {(ctx: HookCtx) => any} fn
+ * @param {(ctx: HookContext) => unknown} fn
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {() => void}
  */
@@ -137,7 +126,7 @@ export function before(ref, fn, opts) {
  * `changes(ref)` instead to observe writes locally.
  *
  * @param {Ref} ref
- * @param {(ctx: HookCtx) => any} fn
+ * @param {(ctx: HookContext) => unknown} fn
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {() => void}
  */

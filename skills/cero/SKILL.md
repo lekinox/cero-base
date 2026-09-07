@@ -117,7 +117,6 @@ for await (const { changes } of cero.changes(room.messages)) apply(changes)
   queries natively.
 - `watch(ref, query)` streams the current rows now and after every change,
   local or remote. `changes(ref, query)` streams `{ prev, next }` deltas.
-- `count(ref, query)` counts.
 
 ## Split apps
 
