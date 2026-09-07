@@ -338,6 +338,8 @@ export class Database extends ReadyResource {
     }
     this.guard()
     if (!this.bee.writable) throw CeroError.NOT_WRITABLE('Database')
+    // writable flips inside the apply that admits us, before its view flush lands our device row
+    await this.bee.updated()
     const encoded = ops.map(([op, payload]) =>
       this.spec.dispatch.encode(`@${this.ns}/${op}`, payload)
     )
