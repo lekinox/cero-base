@@ -1,6 +1,6 @@
 {
   "name": "@cero-base/tools",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Passive devtools for cero — observe data, events, and p2p/replication stats over a local out-of-band pipe.",
   "type": "module",
   "sideEffects": false,
@@ -75,7 +75,7 @@
     "test:node": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-node"
   },
   "dependencies": {
-    "@cero-base/cero": "^2.0.0",
+    "@cero-base/cero": "^2.1.0",
     "b4a": "^1.8.1",
     "bare-crypto": "^1.15.3",
     "bare-net": "^2.3.3",
