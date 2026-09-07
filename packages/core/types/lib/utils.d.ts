@@ -1,10 +1,4 @@
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js';
-/**
- * Generate a short opaque id (z32-encoded 16 random bytes).
- *
- * @returns {string}
- */
-export declare function genId(): string;
 /** @type {(dbKey: Uint8Array, writer: Uint8Array, appender: Uint8Array) => Uint8Array} */
 export declare function admission(dbKey: Uint8Array<ArrayBufferLike>, writer: Uint8Array<ArrayBufferLike>, appender: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike>;
 /** @type {(dbKey: Uint8Array, writer: Uint8Array) => Uint8Array} */

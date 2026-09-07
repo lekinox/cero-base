@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.2 (2026-09-07)
+
+### Documentation
+
+- rpc is the seventh core primitive
+
+### Chores
+
+- autobee 2.2.1, ids in their own module, admission tags without a version
+- the plugin's per-directory CLAUDE.md stubs stay out of git and npm
+
 ## 2.1.1 (2026-09-07)
 
 ### Bug Fixes
