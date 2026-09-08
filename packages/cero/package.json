@@ -1,6 +1,6 @@
 {
   "name": "@cero-base/cero",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "The ideal p2p API — everything is a handle, handles contain refs, refs contain rows.",
   "type": "module",
   "sideEffects": false,
@@ -99,7 +99,7 @@
     "test:node": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-node"
   },
   "dependencies": {
-    "@cero-base/core": "^2.1.2",
+    "@cero-base/core": "^2.1.3",
     "b4a": "^1.8.1",
     "bare-abort-controller": "^1.1.2",
     "bare-crypto": "^1.15.3",
