@@ -87,7 +87,7 @@ export function call(ref, d) {
   return ref.handle.store.call(ref.name, d)
 }
 
-const WRITES = { single: ['set'], collection: ['put', 'set', 'del'] }
+const WRITES = { single: ['set', 'del'], collection: ['put', 'set', 'del'] }
 
 /**
  * Rule that runs before a write to `ref` lands — at apply, on every peer, inside the op's

@@ -156,7 +156,7 @@ Both receive the same ctx:
 
 The operators on the ctx are the ones you already use — `get(room.banned, id)`, `put(room.audit, row)` — reading and writing inside the transaction. The imported `cero.put` and `cero.get` throw inside a hook; go through the ctx.
 
-An upsert on a collection applies as an add, so `cero.set(me.todos, { id, done: true })` reaches a hook as a `put`. `op` is always the op as it applies.
+An upsert on a collection applies as an add, so `cero.set(me.todos, { id, done: true })` reaches a hook as a `put`. `op` is always the op as it applies. A hook on a single sees its `set` and its `del`, so a rule on `me.profile` also decides who may wipe it.
 
 Three rules follow from running on every peer:
 

@@ -134,6 +134,19 @@ test('after(ref): fires on a single set with ctx { op, name, row }', async (t) =
   t.is(ctx?.row.name, 'a')
 })
 
+test('before(ref): a single is guarded on del as well as set', async (t) => {
+  const me = await openCero(t, (await buildSpec(t, 'before-single-del')).spec)
+  const seen = []
+  before(me.profile, ({ op, existing }) => {
+    seen.push([op, existing?.name ?? null])
+    return op !== 'del'
+  })
+  await set(me.profile, { name: 'kept' })
+  await t.exception(del(me.profile), /REFUSED/, 'the wipe is refused')
+  t.is((await get(me.profile)).data.name, 'kept')
+  t.alike(seen.at(-1), ['del', 'kept'], 'the hook saw the delete with the stored row')
+})
+
 // a hook runs twice on the writer: once in its dry run, once at apply
 test('after(ref): fires on collection put / set / del', async (t) => {
   const me = await openCero(t, (await buildSpec(t, 'after-coll')).spec)
