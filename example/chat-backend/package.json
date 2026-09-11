@@ -30,6 +30,6 @@
   },
   "devDependencies": {
     "@hyperswarm/testnet": "^3.1.4",
-    "brittle": "^4.1.1"
+    "brittle": "^4.2.0"
   }
 }
