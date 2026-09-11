@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.5 (2026-09-11)
+
+### Chores
+
+- autobee 2.7.0, compact-encoding 3.5.0
+
 ## 2.1.4 (2026-09-08)
 
 ### Bug Fixes

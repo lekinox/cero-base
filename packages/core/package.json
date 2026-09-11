@@ -1,6 +1,6 @@
 {
   "name": "@cero-base/core",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "cero p2p primitives — identity, storage, network, database, blobs, rpc, pairing.",
   "type": "module",
   "sideEffects": false,
