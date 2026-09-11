@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.6 (2026-09-11)
+
+### Bug Fixes
+
+- mirror a bee's view cores by hand
+
+### Other
+
+- Bump deps
+
 ## 2.1.5 (2026-09-11)
 
 ### Chores

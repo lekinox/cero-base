@@ -180,6 +180,7 @@ export declare class Network extends ReadyResource {
      * @returns {void}
      */
     attach(core: Replicable): void;
+    _mirror(bee: any): void;
     /**
      * Unregister a previously attached resource. New connections will no
      * longer replicate it (existing replication streams continue).
