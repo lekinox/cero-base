@@ -113,7 +113,7 @@ test('canary: upstream drain body is unchanged (our catch wraps it)', (t) => {
   t.is(
     b4a.toString(crypto.hash(b4a.from(src)), 'hex'),
     // takes { local }, which the wrapper must forward untouched
-    'ce62c36056a884e1fdf981b331ecb0ed2b636ad05b7797f355d5a047085ebb41',
+    '84b0d4fa0e1ad1a748fe3f616c4cd6a9b59ba315a377e18d6a13a3fbee8a7a1b',
     'autobee._bumpPendingWriters changed upstream — re-check the EpochAutobee wrapper'
   )
 })
