@@ -352,14 +352,23 @@ export class Network extends ReadyResource {
     for (const stream of this.connections) replicateInto(core, stream)
     // mirror the core so it stays available while its writers are offline
     if (this._blindPeering) {
-      if (Autobee.isAutobee(core)) {
-        this._blindPeering.addAutobaseBackground(core)
-        // the bootstrap core leaves the writer set after the local swap, but joiners boot from it
-        const mirrorBootstrap = () =>
-          this._blindPeering?.addCoreBackground(core.bootstrap, { referrer: core.key })
-        core.ready().then(mirrorBootstrap, safetyCatch)
-      } else this._blindPeering.addCoreBackground(core)
+      if (Autobee.isAutobee(core)) core.ready().then(() => this._mirror(core), safetyCatch)
+      else this._blindPeering.addCoreBackground(core)
     }
+  }
+
+  _mirror(bee) {
+    const peering = this._blindPeering
+    if (!peering || bee.closing) return
+    peering.addAutobaseBackground(bee)
+    // the bootstrap core leaves the writer set after the local swap, but joiners boot from it
+    peering.addCoreBackground(bee.bootstrap, { referrer: bee.key })
+    // autobee links views only through a trusted head, which a fresh room's first nodes lack
+    const views = bee.views().map((v) => this.store.get({ key: v.key }))
+    for (const view of views) peering.addCoreBackground(view, { referrer: bee.key })
+    bee.once('close', () => {
+      for (const view of views) view.close().catch(safetyCatch)
+    })
   }
 
   /**
