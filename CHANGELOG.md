@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.7 (2026-09-13)
+
+### Bug Fixes
+
+- smoke gate reads npm 12's pack report
+
+### Chores
+
+- autobee 2.7.2
+
 ## 2.1.6 (2026-09-11)
 
 ### Bug Fixes
