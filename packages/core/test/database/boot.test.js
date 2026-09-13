@@ -76,9 +76,10 @@ async function scenario(t, label, makeBooter) {
   return moved
 }
 
-const boot = (head) => ({
+const boot = (head, conservative = true) => ({
   isTrusted: () => true,
   fastForward: {
+    conservative,
     boot: { head, bootCondition: async (view) => (await view.get(b4a.from('latest'))) !== null }
   }
 })
@@ -88,8 +89,12 @@ test('P1: full head {key,length}, dead writer, passive holder', async (t) => {
   t.ok(ok, 'boots from a passive holder with a real head')
 })
 
+// conservative FF lands only on a head a peer serves whole, which a key-only
+// seed head never names — so this shape needs conservative off, unlike the rest
 test('P2: key-only head (cero shape)', async (t) => {
-  const ok = await scenario(t, 'P2 key-only', (dbKey) => create(t, dbKey, boot({ key: dbKey })))
+  const ok = await scenario(t, 'P2 key-only', (dbKey) =>
+    create(t, dbKey, boot({ key: dbKey }, false))
+  )
   t.ok(ok, 'boots with a key-only seed head')
 })
 
