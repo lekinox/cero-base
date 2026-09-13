@@ -134,9 +134,9 @@
     "pretest": "npm run build:test",
     "prepublishOnly": "npm run build:types",
     "test": "npm run test:bare",
-    "test:bare": "brittle-bare $(find test -name '*.test.js' | sort)",
+    "test:bare": "find test -name '*.test.js' | sort | xargs -P4 -n1 brittle-bare",
     "pretest:bare": "npm run build:test",
-    "test:node": "brittle-node $(find test -name '*.test.js' | sort)"
+    "test:node": "find test -name '*.test.js' | sort | xargs -P4 -n1 brittle-node"
   },
   "dependencies": {
     "@hyperswarm/secret-stream": "^6.9.2",

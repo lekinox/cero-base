@@ -95,8 +95,8 @@
     "prepublishOnly": "npm run build:types",
     "test": "npm run test:bare",
     "pretest:bare": "npm run build:test",
-    "test:bare": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-bare",
-    "test:node": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-node"
+    "test:bare": "find test -name '*.test.js' | sort | xargs -P4 -n1 brittle-bare",
+    "test:node": "find test -name '*.test.js' | sort | xargs -P4 -n1 brittle-node"
   },
   "dependencies": {
     "@cero-base/core": "^2.1.7",
