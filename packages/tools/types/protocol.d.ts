@@ -5,7 +5,7 @@
 export declare class Framed {
     stream: any;
     onMessage: any;
-    buf: any;
+    buf: Uint8Array<ArrayBufferLike>;
     constructor(stream: any, onMessage: any);
     /**
      * Encode `obj` to wire form and write it as one length-prefixed frame.

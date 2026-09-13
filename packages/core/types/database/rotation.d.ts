@@ -6,7 +6,7 @@ export declare class Rotation {
     db: import("./index.js").Database;
     current: {
         entropy: Uint8Array<ArrayBufferLike>;
-        stamp: any;
+        stamp: number;
         epoch: number;
     };
     _timer: number;
@@ -40,7 +40,7 @@ export declare class Rotation {
     _members(): Promise<any[]>;
     _seal(members: any, entropy: any): any;
     _announce(stamp: any, entropy: any, wrapped: any): Promise<number>;
-    _mint(): any;
+    _mint(): number;
     _taken(stamp: any): Promise<any>;
     _epochs(): any;
     _unseal(row: any): Uint8Array<ArrayBufferLike>;

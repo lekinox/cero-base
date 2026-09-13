@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.1.8 (2026-09-13)
+
+### Bug Fixes
+
+- pin autobee 2.7.2, 2.7.3 has no tarball
+
+### Performance
+
+- core and cero run four test files at a time
+
+### Chores
+
+- b4a 1.9.0
+
 ## 2.1.7 (2026-09-13)
 
 ### Bug Fixes

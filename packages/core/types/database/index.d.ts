@@ -439,7 +439,7 @@ export declare class Database extends ReadyResource {
     _preload(): Promise<void>;
     _boot(): Promise<void>;
     _replay(): Promise<boolean>;
-    _isTrusted(writer: any, view: any): Promise<any>;
+    _isTrusted(writer: any, view: any): Promise<boolean>;
     _apply(nodes: any, view: any, host: any): Promise<void>;
     _update(db: any): Promise<void>;
     _joinSwarm(bee: any, discoveryKey: any): void;
