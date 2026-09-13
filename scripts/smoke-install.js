@@ -100,9 +100,11 @@ function installCheck() {
     console.log(`\nClean-room install + import → ${work}`)
     const tarballs = []
     for (const dir of PACKAGES) {
-      const [{ filename }] = JSON.parse(
+      const packed = JSON.parse(
         npm(['pack', '-w', dir, '--json', '--pack-destination', packDir], root)
       )
+      // npm 12 reports one object keyed by package name, older npm an array
+      const [{ filename }] = Array.isArray(packed) ? packed : Object.values(packed)
       tarballs.push(join(packDir, filename))
       console.log(`  packed ${dir}`)
     }
