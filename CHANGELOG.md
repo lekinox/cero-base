@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0 (2026-09-18)
+
+### Bug Fixes
+
+- background errors reach the app, close never leaks the lock
+
+### Chores
+
+- latest deps, autobee 2.9.6
+
 ## 2.1.8 (2026-09-13)
 
 ### Bug Fixes
