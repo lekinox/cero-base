@@ -203,5 +203,10 @@ export const rpc = {
   },
   'res-epoch': {
     epoch: required(uint)
+  },
+  'res-error': {
+    message: required(string),
+    code: string,
+    stack: string
   }
 }

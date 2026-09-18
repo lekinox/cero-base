@@ -89,6 +89,7 @@ export declare class Client extends RPCClient {
     constructor(ipc: any, spec: Spec, opts?: {
         operators?: Record<string, any>;
     });
+    _pumpErrors(): void;
     _open(): Promise<void>;
     /** Pause networking and storage on the server. Idempotent. */
     suspend(): Promise<void>;

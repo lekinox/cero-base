@@ -360,6 +360,17 @@ test('rpc: a reloaded UI re-attaches, init answers again and the old watches end
   t.is((await get(client.messages)).data[0].text, 'still served', 'the worker keeps serving')
 })
 
+test('rpc: worker background errors surface on the client as error events', async (t) => {
+  const { me, client } = await openPair(t)
+  const seen = new Promise((resolve) => client.once('error', resolve))
+  me.network.suspend = async () => {
+    throw new Error('radio')
+  }
+  await client.suspend()
+  t.is((await seen).message, 'radio')
+  await client.resume()
+})
+
 test('rpc: setActive ranks the server handle, suspend and resume reach the root', async (t) => {
   const { me, client } = await openPair(t, { presence: { active: 1, announced: 0, idle: 50 } })
   const team = await open(client.team, { name: 'engineering' })

@@ -74,7 +74,7 @@ export type CeroOpts = {
      */
     routes?: Record<string, Function>;
     /**
-     * Background-task error handler.
+     * Background-task error handler; without one, errors emit 'error' on the root handle.
      */
     onerror?: (err: any) => void;
     /**
@@ -123,7 +123,7 @@ export type CeroOpts = {
  * @property {Uint8Array} [key]                        Existing database key to recover into, skipping the pointer lookup.
  * @property {Uint8Array} [encryptionKey]              Pre-existing encryption key.
  * @property {Record<string, Function>} [routes]       Custom RPC routes for the database dispatcher.
- * @property {(err: any) => void} [onerror]            Background-task error handler.
+ * @property {(err: any) => void} [onerror]            Background-task error handler; without one, errors emit 'error' on the root handle.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
  * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.

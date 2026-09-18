@@ -92,7 +92,7 @@ export class Database extends ReadyResource {
       throw CeroError.INVALID('the identity keypair is never a writer — use a device keypair')
     }
 
-    this._onerror = opts.onerror || safetyCatch
+    this._onerror = opts.onerror || ((err) => console.error(err))
     this.bee = null
     this.dispatcher = null
     this._presence = null

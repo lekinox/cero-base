@@ -63,6 +63,7 @@ export type GetResult = {
  */
 export declare class Server extends RPCServer {
     storage: string;
+    _report: (err: Error) => void;
     opts: {
         name?: string;
         bootstrap?: Array<{
@@ -70,8 +71,10 @@ export declare class Server extends RPCServer {
             port: number;
         }>;
         isMobile?: boolean;
-        onerror?: (err: Error) => void;
+        onerror: (err: any) => void;
     };
+    /** @type {Set<object>} open error streams, one per connected client */
+    _errors: Set<object>;
     me: import("../handle/index.js").CeroHandle;
     handles: Map<any, any>;
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
@@ -98,6 +101,7 @@ export declare class Server extends RPCServer {
     /** End every watch stream bound to a handle (e.g. when it closes or leaves). */
     _endWatches(handle: any): void;
     /** Wire the `init` handler that lazily constructs the root cero handle. */
+    _onerror(err: any): void;
     _wireInit(): void;
     /** Wire the `restore` handler that rebuilds the local store from a phrase. */
     _wireRestore(): void;

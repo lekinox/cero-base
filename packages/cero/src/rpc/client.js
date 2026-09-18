@@ -457,6 +457,20 @@ export class Client extends RPCClient {
     this.local = null
   }
 
+  // the worker's background errors, delivered the way a local root delivers them
+  _pumpErrors() {
+    const report = (err) =>
+      this.listenerCount('error') ? this.emit('error', err) : console.error(err)
+    const pump = async () => {
+      for await (const { message, code, stack } of this.rpc.errors({})) {
+        report(Object.assign(new Error(message), code && { code }, stack && { stack }))
+      }
+    }
+    pump().catch((err) => {
+      if (err.code !== 'PREMATURE_CLOSE' && err.code !== 'CHANNEL_CLOSED') report(err)
+    })
+  }
+
   async _open() {
     await super._open()
     const { id, deviceId, fileBase, fileToken } = await this.rpc.init({})
@@ -468,6 +482,7 @@ export class Client extends RPCClient {
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
     bind(this, null, this.operators)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
+    this._pumpErrors()
   }
 
   /** Pause networking and storage on the server. Idempotent. */

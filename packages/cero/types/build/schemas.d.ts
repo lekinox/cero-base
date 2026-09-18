@@ -196,4 +196,9 @@ export declare const rpc: {
     'res-epoch': {
         epoch: import("@cero-base/core").Prim;
     };
+    'res-error': {
+        message: import("@cero-base/core").Prim;
+        code: import("@cero-base/core").Prim;
+        stack: import("@cero-base/core").Prim;
+    };
 };

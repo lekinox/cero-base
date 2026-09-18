@@ -215,7 +215,7 @@ export declare class Database extends ReadyResource {
     key: Uint8Array<ArrayBufferLike>;
     pinned: boolean;
     keyPair: import("../index.js").KeyPair;
-    _onerror: any;
+    _onerror: (err: Error) => void;
     bee: EpochAutobee;
     dispatcher: {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;

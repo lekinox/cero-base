@@ -116,7 +116,7 @@ export class Handle extends ReadyResource {
     this._opts = opts.opts || {}
     this.extensions = parent?.extensions || extensionsOf(spec, this._opts.extensions)
     this.operators = parent?.operators || operatorsOf(spec, this._opts.operators)
-    this._onerror = this._opts.onerror || safetyCatch
+    this._onerror = this._opts.onerror || ((err) => console.error(err))
     this.children = parent ? null : new Set()
     this._typeHooks = parent ? null : new Set()
     this._loading = parent ? null : new Map()
@@ -260,36 +260,40 @@ export class Handle extends ReadyResource {
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
     for (const r of [...this._owned]) r.destroy?.()
     this._owned.clear()
-    if (this._blobs) await this._blobs.close()
-    for (const b of this._epochBlobs?.values() || []) await b.close().catch(safetyCatch)
-    this._epochBlobs = null
-    if (this.children) {
-      for (const c of [...this.children]) await c.close()
-      this.children.clear()
-    }
     if (this._invitesSync) {
       this.store.off('update', this._invitesSync)
       this._invitesSync = null
     }
-    if (this.pair) await this.pair.close()
+    if (this._discovery) this._discovery.destroy().catch(safetyCatch)
+
+    const steps = [
+      () => this._blobs?.close(),
+      ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
+      ...[...(this.children || [])].map((c) => () => c.close()),
+      () => this.pair?.close()
+    ]
+    this._epochBlobs = null
+    this.children?.clear()
 
     if (this.parent) {
       this.parent.children?.delete(this)
-      await this.store.close()
-      return
+      steps.push(() => this.store.close())
+    } else {
+      const store = this.store.store
+      steps.push(
+        () => this.bluetooth?.close(),
+        () => this.local?.close(),
+        async () => {
+          await this._fileServer?.close()
+          this._fileServer = null
+        },
+        () => this.store.close(),
+        () => this.network.close(),
+        () => store.close(),
+        () => this._storage?.close()
+      )
     }
-
-    if (this.local) await this.local.close()
-    if (this._fileServer) {
-      await this._fileServer.close()
-      this._fileServer = null
-    }
-    const store = this.store.store
-    await this.store.close()
-    if (this._discovery) this._discovery.destroy().catch(safetyCatch)
-    await this.network.close()
-    await store.close()
-    if (this._storage) await this._storage.close()
+    await settle(steps)
   }
 
   /**
@@ -862,26 +866,18 @@ export class Handle extends ReadyResource {
 
   async _suspend() {
     if (this.closing || this.closed) return
-    await Promise.all([...this.children].map((c) => c.pair?.suspend()))
-    await this.bluetooth?.suspend()
-    await this.network.suspend()
-    try {
-      await this.store.store.suspend()
-    } catch (err) {
-      this._onerror(err)
-    }
+    await Promise.all([...this.children].map((c) => c.pair?.suspend().catch(this._onerror)))
+    await this.bluetooth?.suspend().catch(this._onerror)
+    await this.network.suspend().catch(this._onerror)
+    await this.store.store.suspend().catch(this._onerror)
   }
 
   async _resume() {
     if (this.closing || this.closed) return
-    try {
-      await this.store.store.resume()
-    } catch (err) {
-      this._onerror(err)
-    }
-    await this.network.resume()
-    await this.bluetooth?.resume()
-    await Promise.all([...this.children].map((child) => child.pair?.resume()))
+    await this.store.store.resume().catch(this._onerror)
+    await this.network.resume().catch(this._onerror)
+    await this.bluetooth?.resume().catch(this._onerror)
+    await Promise.all([...this.children].map((c) => c.pair?.resume().catch(this._onerror)))
   }
 
   // a child is a child once it has its operators, the hooks declared for its type, and a slot
@@ -1018,4 +1014,17 @@ function pickHandle(spec, type) {
 
 function randomNs() {
   return z32.encode(Identity.randomBytes(8))
+}
+
+// run every teardown step, then surface the first failure: a bug must not leak the storage lock
+async function settle(steps) {
+  let failed = null
+  for (const step of steps) {
+    try {
+      await step()
+    } catch (err) {
+      failed ??= err
+    }
+  }
+  if (failed) throw failed
 }

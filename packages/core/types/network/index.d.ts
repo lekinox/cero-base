@@ -39,6 +39,10 @@ export type NetworkOpts = {
      */
     mirrors?: Array<string | Uint8Array>;
     /**
+     * Background-task error handler.
+     */
+    onerror?: (err: any) => void;
+    /**
      * Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
      */
     presence?: {
@@ -60,6 +64,7 @@ export type Replicable = {
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+ * @property {(err: any) => void} [onerror]                        Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
  * @typedef {{ replicate: (stream: any) => any }} Replicable
@@ -91,8 +96,9 @@ export declare class Network extends ReadyResource {
     _injected: Set<any>;
     _blind: any;
     _blindPeering: any;
+    _onerror: (err: any) => void;
     /** @param {NetworkOpts} [opts] */
-    constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence }?: NetworkOpts);
+    constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
     /** @returns {any} The underlying hyperswarm, or null before ready / after close. */
     get swarm(): any;
     /** @returns {Map<string, any>} Known peers keyed by public-key string. */

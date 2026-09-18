@@ -82,13 +82,13 @@ Constructs a `Server`, waits for it to be ready and returns it. The root cero
 instance is not created here. It is created lazily, inside the server, on the
 client's first `init`.
 
-| option      | type                    | default  | meaning                                           |
-| ----------- | ----------------------- | -------- | ------------------------------------------------- |
-| `storage`   | `string`                | required | Directory passed to `cero()` for the local store. |
-| `name`      | `string`                | none     | Display name forwarded to `cero()`.               |
-| `bootstrap` | `Array<{ host, port }>` | none     | Custom DHT bootstrap.                             |
-| `isMobile`  | `boolean`               | `false`  | Marks this device as mobile.                      |
-| `onerror`   | `(err) => void`         | none     | Background-task error handler.                    |
+| option      | type                    | default  | meaning                                                                             |
+| ----------- | ----------------------- | -------- | ----------------------------------------------------------------------------------- |
+| `storage`   | `string`                | required | Directory passed to `cero()` for the local store.                                   |
+| `name`      | `string`                | none     | Display name forwarded to `cero()`.                                                 |
+| `bootstrap` | `Array<{ host, port }>` | none     | Custom DHT bootstrap.                                                               |
+| `isMobile`  | `boolean`               | `false`  | Marks this device as mobile.                                                        |
+| `onerror`   | `(err) => void`         | none     | Background-task error handler. Without one, errors emit `error` on the root handle. |
 
 Every other key is forwarded to `cero()` untouched, so `mirrors`, `channel`,
 `storageKey`, `phrase`, `seed`, `extensions` and `bluetooth` all work through
@@ -136,7 +136,8 @@ live handle in its map, and every later call carries its id. Nesting is refused,
 only the root may be a parent. A client handle carries the same operator surface
 plus `invite()`, `revoke()`, `rotate()`, `setActive()`, `close()` and `leave()`, and
 both `close` and `leave` end every stream bound to that handle. The root also carries
-`suspend()` and `resume()`, so a UI drives backgrounding from its own lifecycle.
+`suspend()` and `resume()`, so a UI drives backgrounding from its own lifecycle. Background
+errors on the worker reach the client as `error` events, the same as a local root.
 
 `watch` and `changes` arrive as plain streamx readables. Snapshots are
 idempotent, so a slow wire keeps only the newest. Deltas are not, so the server

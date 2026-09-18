@@ -174,3 +174,15 @@ test('announce: no-op until start(), no-op again after stop()', async (t) => {
   t.is(me.bluetooth._announce, null, 'radio stopped → announce touches nothing again')
   stop()
 })
+
+test('close: the BLE swarm is down before the network closes', async (t) => {
+  const me = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const close = me.network.close.bind(me.network)
+  let btClosed = null
+  me.network.close = () => {
+    btClosed = me.bluetooth.closed
+    return close()
+  }
+  await me.close()
+  t.is(btClosed, true, 'no late BLE connection can reach a closed network')
+})

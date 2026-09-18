@@ -43,7 +43,10 @@ export class Server extends RPCServer {
     super(ipc, spec)
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     this.storage = storage
-    this.opts = opts
+    this._report = opts.onerror || ((err) => console.error(err))
+    this.opts = { ...opts, onerror: (err) => this._onerror(err) }
+    /** @type {Set<object>} open error streams, one per connected client */
+    this._errors = new Set()
     this.me = null
     this.handles = new Map()
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
@@ -87,7 +90,22 @@ export class Server extends RPCServer {
   }
 
   /** Wire the `init` handler that lazily constructs the root cero handle. */
+  _onerror(err) {
+    if (!this._errors.size) return this._report(err)
+    const frame = {
+      message: err?.message || String(err),
+      code: err?.code || '',
+      stack: err?.stack || ''
+    }
+    for (const stream of this._errors) stream.write(frame)
+  }
+
   _wireInit() {
+    this.rpc.onErrors((stream) => {
+      this._errors.add(stream)
+      stream.on('error', safetyCatch)
+      stream.on('close', () => this._errors.delete(stream))
+    })
     this.rpc.onInit(async () => {
       // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end
       if (this.me) {

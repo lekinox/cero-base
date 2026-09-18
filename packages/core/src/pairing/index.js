@@ -47,7 +47,7 @@ export class Pairing extends ReadyResource {
     host = true,
     inviteEncoding = null,
     joinerEncoding = null,
-    onerror = safetyCatch,
+    onerror = (err) => console.error(err),
     onconsume = null
   } = {}) {
     super()
@@ -248,11 +248,7 @@ export class Pairing extends ReadyResource {
   async suspend() {
     if (!this._blind || this.closing || this.closed) return
     if (this._blind.suspended) return
-    try {
-      await this._blind.suspend()
-    } catch (err) {
-      safetyCatch(err)
-    }
+    await this._blind.suspend()
   }
 
   /**
@@ -263,11 +259,7 @@ export class Pairing extends ReadyResource {
   async resume() {
     if (!this._blind || this.closing || this.closed) return
     if (!this._blind.suspended) return
-    try {
-      await this._blind.resume()
-    } catch (err) {
-      safetyCatch(err)
-    }
+    await this._blind.resume()
   }
 
   async _oncandidate(req) {
@@ -283,7 +275,7 @@ export class Pairing extends ReadyResource {
     try {
       req.open(record.publicKey)
     } catch (err) {
-      safetyCatch(err)
+      this._onerror(err)
       return
     }
 

@@ -67,7 +67,7 @@ export { t, schema } from './lib/spec.js'
  * @property {Uint8Array} [key]                        Existing database key to recover into, skipping the pointer lookup.
  * @property {Uint8Array} [encryptionKey]              Pre-existing encryption key.
  * @property {Record<string, Function>} [routes]       Custom RPC routes for the database dispatcher.
- * @property {(err: any) => void} [onerror]            Background-task error handler.
+ * @property {(err: any) => void} [onerror]            Background-task error handler; without one, errors emit 'error' on the root handle.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
  * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
@@ -93,12 +93,23 @@ export async function cero(dir, spec, opts = {}) {
   let network = null
   let discovery = null
   let me = null
+  // background failures reach the app through opts.onerror or the root's 'error' event, never silence
+  const onerror =
+    opts.onerror ||
+    ((err) => (me?.listenerCount('error') ? me.emit('error', err) : console.error(err)))
+  opts = { ...opts, onerror }
   // any failure during open must close what opened, or the storage lock leaks
   try {
     await storage.ready()
     await fs.promises.chmod(`${dir}/main`, 0o700)
     store = new Corestore(storage, { manifestVersion: 2 })
     await store.ready()
+    store.watch((core) => {
+      const session = new Hypercore({ core, weak: true })
+      session.on('verification-error', onerror)
+      session.on('invalid-request', onerror)
+      session.on('conflict', () => onerror(CeroError.CONFLICT(`fork on core ${session.id}`)))
+    })
 
     if (spec.local && spec.meta?.local) {
       local = new Local(null, spec, { store, storageKey: opts.storageKey })
@@ -126,7 +137,8 @@ export async function cero(dir, spec, opts = {}) {
       channel: opts.channel,
       store,
       mirrors: opts.mirrors,
-      presence: opts.presence
+      presence: opts.presence,
+      onerror
     })
     await network.ready()
     discovery = network.join(identity.topic)
@@ -200,7 +212,6 @@ export async function cero(dir, spec, opts = {}) {
         maxInbound: bt.maxInbound,
         pipe: bt.pipe
       })
-      me.once('close', () => me.bluetooth.close().catch(safetyCatch))
       await me.bluetooth.ready()
     }
 

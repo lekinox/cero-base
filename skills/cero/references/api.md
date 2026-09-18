@@ -56,7 +56,7 @@ with every schema ref attached as a property. `spec` is the built spec.
 | `extensions`      | `Extension[]`                 | the spec's    | The extensions this instance runs, instead of the ones the spec carries.                                                                        |
 | `operators`       | `object`                      | the spec's    | The operators to bind, instead of the ones the spec carries.                                                                                    |
 | `routes`          | `Record<string, Function>`    | `{}`          | Handlers for the action refs your schema declares.                                                                                              |
-| `onerror`         | `(err) => void`               | -             | Background-task error handler.                                                                                                                  |
+| `onerror`         | `(err) => void`               | -             | Background-task error handler. Without one, errors emit `error` on the root handle.                                                             |
 | `key`             | `Uint8Array`                  | -             | Existing database key to recover into, skipping the pointer lookup.                                                                             |
 | `encryptionKey`   | `Uint8Array`                  | -             | Pre-existing encryption key.                                                                                                                    |
 

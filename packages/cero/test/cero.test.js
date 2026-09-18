@@ -696,6 +696,67 @@ test('cero(): suspend()/resume() flips swarm + corestore state', async (t) => {
   t.absent(me.network.swarm.suspended)
 })
 
+test('suspend: a failing step is reported to onerror, the rest still suspends', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  me.network.suspend = async () => {
+    throw new Error('radio')
+  }
+  await me.suspend()
+  t.is(errors[0]?.message, 'radio', 'the failure is reported')
+  t.ok(me.suspended, 'suspend still completes')
+  await me.resume()
+  t.absent(me.suspended)
+})
+
+test('onerror: without a handler background errors emit "error" on the root', async (t) => {
+  const { me } = await ceroOpen(t)
+  const seen = new Promise((resolve) => me.once('error', resolve))
+  me.network.suspend = async () => {
+    throw new Error('radio')
+  }
+  await me.suspend()
+  t.is((await seen).message, 'radio')
+  await me.resume()
+})
+
+test('onerror: a core fault reaches onerror', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const core = me.store.store.get({ name: 'probe' })
+  await core.ready()
+  for (const s of [...core.core.monitors]) s.emit('verification-error', new Error('bad proof'))
+  t.is(errors[0]?.message, 'bad proof')
+  await core.close()
+})
+
+test('close: a failing step still tears down the rest, then the error surfaces', async (t) => {
+  const { me, dir, testnet } = await ceroOpen(t)
+  const child = await open(me.team, { name: 'stuck' })
+  child._close = async () => {
+    throw new Error('stuck')
+  }
+  await t.exception(me.close(), /stuck/)
+  t.ok(me.network.closed, 'network closed past the failing child')
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.pass('storage lock released, same dir reopens')
+  await again.close()
+})
+
+test('onerror: with neither a handler nor a listener background errors are printed', async (t) => {
+  const { me } = await ceroOpen(t)
+  const printed = []
+  const error = console.error
+  console.error = (err) => printed.push(err)
+  t.teardown(() => (console.error = error))
+  me.network.suspend = async () => {
+    throw new Error('radio')
+  }
+  await me.suspend()
+  t.is(printed[0]?.message, 'radio')
+  await me.resume()
+})
+
 test('cero(): a suspend() racing an in-flight resume() serializes — last call wins', async (t) => {
   const { me } = await ceroOpen(t)
   const calls = []

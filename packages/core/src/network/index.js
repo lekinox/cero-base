@@ -31,6 +31,7 @@ export function channelTopic(topic, channel) {
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+ * @property {(err: any) => void} [onerror]                        Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
  * @typedef {{ replicate: (stream: any) => any }} Replicable
@@ -51,7 +52,8 @@ export class Network extends ReadyResource {
     channel,
     store,
     mirrors,
-    presence
+    presence,
+    onerror = (err) => console.error(err)
   } = {}) {
     super()
     this.identity = identity || null
@@ -76,6 +78,7 @@ export class Network extends ReadyResource {
     this._injected = new Set()
     this._blind = null
     this._blindPeering = null
+    this._onerror = onerror
   }
 
   /** @returns {any} The underlying hyperswarm, or null before ready / after close. */
@@ -292,11 +295,7 @@ export class Network extends ReadyResource {
   async suspend() {
     if (this.closing || this.closed) return
     await this._blindPeering?.suspend()
-    try {
-      await this._swarm?.suspend()
-    } catch (err) {
-      safetyCatch(err)
-    }
+    await this._swarm?.suspend()
   }
 
   /**
@@ -306,11 +305,7 @@ export class Network extends ReadyResource {
    */
   async resume() {
     if (this.closing || this.closed) return
-    try {
-      await this._swarm?.resume()
-    } catch (err) {
-      safetyCatch(err)
-    }
+    await this._swarm?.resume()
     await this._blindPeering?.resume()
   }
 
@@ -352,7 +347,7 @@ export class Network extends ReadyResource {
     for (const stream of this.connections) replicateInto(core, stream)
     // mirror the core so it stays available while its writers are offline
     if (this._blindPeering) {
-      if (Autobee.isAutobee(core)) core.ready().then(() => this._mirror(core), safetyCatch)
+      if (Autobee.isAutobee(core)) core.ready().then(() => this._mirror(core), this._onerror)
       else this._blindPeering.addCoreBackground(core)
     }
   }
