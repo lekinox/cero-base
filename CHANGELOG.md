@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.1 (2026-09-18)
+
+### Documentation
+
+- background errors in the errors guide
+
+### Chores
+
+- bare 1.33.5, blind-peering 2.9.5, bare-bluetooth-android 0.6.2, example deps
+- autobee 2.10.0
+
 ## 2.2.0 (2026-09-18)
 
 ### Bug Fixes
