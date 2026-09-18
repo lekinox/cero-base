@@ -63,6 +63,31 @@ recovery deadlines, `TIMEOUT` from the pairing handshake.
 
 A `REFUSED` aborts the writer's whole batch, which is what makes `tx` atomic.
 
+## Background errors
+
+Calls you make reject to you. Work cero does on its own, replication, pairing,
+mirroring, a suspend step, reports through one handler instead.
+
+```js
+const me = await cero(dir, spec, { onerror: (err) => toast(err.message) })
+```
+
+Without `onerror`, the root emits `error`, and prints when nobody listens either.
+
+```js
+me.on('error', (err) => {
+  if (err.code === 'CONFLICT') return showBanner('A device diverged, resyncing')
+  toast(err.message)
+})
+```
+
+A split app is the same: the worker forwards its background errors to every
+connected client, and the client emits `error` with the message, code and stack.
+The worker's own `onerror` only runs while no client is connected.
+
+`close()` still rejects when a step fails, but every step has run first, so the
+storage lock is never left held.
+
 ## Next
 
 - [Core primitives](core.md), for the layer most of these codes come from.
