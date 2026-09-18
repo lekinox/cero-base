@@ -148,7 +148,7 @@
     "bare-path": "^3.1.2",
     "bip39-mnemonic": "^2.5.0",
     "blind-pairing": "^2.3.1",
-    "blind-peering": "^2.9.4",
+    "blind-peering": "^2.9.5",
     "compact-encoding": "^3.5.0",
     "corestore": "^7.12.5",
     "framed-stream": "^1.0.1",
