@@ -33,8 +33,7 @@
   "license": "Apache-2.0",
   "packageManager": "npm@11.19.1",
   "devDependencies": {
-    "bare": "^1.32.0",
-    "bare-bluetooth": "^0.3.0",
+    "bare": "^1.33.4",
     "lunte": "^1.8.4",
     "prettier-config-holepunch": "^2.0.0",
     "turbo": "^2"
