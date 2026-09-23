@@ -37,6 +37,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {number} expires                       Absolute expiry; `0` never.
  * @property {boolean} reuse
  * @property {boolean} expired
+ * @property {{ close: () => Promise<void> }} inbox  Where its knocks arrive, on this member.
  *
  * @typedef {object} JoinOpts
  * @property {Identity} identity                    Who joins: the member they become, and who signs the knock.
@@ -70,7 +71,6 @@ export class Pairing extends ReadyResource {
     this.pending = new Set()
 
     this._invites = new Map() // id → Served
-    this._inboxes = new Map() // id → the inbox at that invite's address
     this._onupdate = (touched) => {
       if (touched.has('*') || touched.has('invites') || touched.has('members')) {
         this._sync().catch(safetyCatch)
@@ -87,10 +87,9 @@ export class Pairing extends ReadyResource {
 
   async _close() {
     this.db.off('update', this._onupdate)
-    const inboxes = [...this._inboxes.values()]
+    const inboxes = [...this._invites.values()].map((invite) => invite.inbox.close())
     this._invites.clear()
-    this._inboxes.clear()
-    await Promise.allSettled(inboxes.map((inbox) => inbox.close()))
+    await Promise.allSettled(inboxes)
   }
 
   /**
@@ -152,29 +151,18 @@ export class Pairing extends ReadyResource {
     const { data: rows } = can(me?.role, INVITE) ? await this.db.get('invites') : { data: [] }
     if (this.closing || this.closed) return
     const ids = new Set(rows.map((row) => row.id))
-    for (const id of this._invites.keys()) if (!ids.has(id)) this._invites.delete(id)
+    for (const id of this._invites.keys()) if (!ids.has(id)) this._drop(id)
     for (const row of rows) {
-      if (this._invites.has(row.id)) continue
-      const invite = served(row)
-      if (!invite.expired) this._invites.set(row.id, invite)
+      if (this._invites.has(row.id) || expired(row)) continue
+      const inbox = this.mailbox.receive(row.secret, (knock) => this._onknock(knock))
+      this._invites.set(row.id, served(row, inbox))
     }
-    this._syncInboxes()
   }
 
-  // one inbox per served invite, at its address
-  _syncInboxes() {
-    for (const [id, inbox] of this._inboxes) {
-      if (this._invites.has(id)) continue
-      this._inboxes.delete(id)
-      inbox.close().catch(safetyCatch)
-    }
-    for (const [id, invite] of this._invites) {
-      if (this._inboxes.has(id)) continue
-      this._inboxes.set(
-        id,
-        this.mailbox.receive(invite.secret, (knock) => this._onknock(knock))
-      )
-    }
+  // stops serving it on this member
+  _drop(id) {
+    this._invites.get(id)?.inbox.close().catch(safetyCatch)
+    this._invites.delete(id)
   }
 
   // resolves once the knock is done with: dropped, or its candidate settled
@@ -210,8 +198,7 @@ export class Pairing extends ReadyResource {
 
   // a single-use invite is consumed by whichever member answered it
   async _consume(id) {
-    this._invites.delete(id)
-    this._syncInboxes()
+    this._drop(id)
     await this.db.call('del-invite', { id }).catch(safetyCatch)
   }
 
@@ -262,7 +249,10 @@ export class Pairing extends ReadyResource {
     const onreply = (message) => {
       const response = decode(Response, message)
       if (response?.status === STATUS_DENIED) fail(CeroError.DENIED(response.reason || null))
-      else if (opens(response, parsed.discoveryKey)) resolve(keysOf(response, writer))
+      else if (opens(response, parsed.discoveryKey)) {
+        const { key, encryptionKey, epochs } = response
+        resolve({ key, encryptionKey, epochs: epochs || [], writer })
+      }
     }
 
     const reply = Mailbox.getAddress(writer.secretKey)
@@ -306,20 +296,26 @@ export class Pairing extends ReadyResource {
 }
 
 /**
- * @param {Partial<Served> & { id: string, secret: Uint8Array }} row
+ * @param {{ id: string, secret: Uint8Array, role?: string, expires?: number, reuse?: boolean }} row
+ * @param {{ close: () => Promise<void> }} inbox
  * @returns {Served}
  */
-function served({ id, secret, role = '', expires = 0, reuse = false }) {
+function served({ id, secret, role = '', expires = 0, reuse = false }, inbox) {
   return {
     id,
     secret,
     role,
     expires,
     reuse,
+    inbox,
     get expired() {
-      return this.expires > 0 && Date.now() > this.expires
+      return expired(this)
     }
   }
+}
+
+function expired({ expires }) {
+  return expires > 0 && Date.now() > expires
 }
 
 // what the joiner's identity signs: this invite, this writer, this reply address
@@ -330,10 +326,6 @@ function claim({ id, writer, reply }) {
 // the reply must open the database the invite names, not one a replier picked
 function opens(response, discoveryKey) {
   return !!response?.key && b4a.equals(crypto.discoveryKey(response.key), discoveryKey)
-}
-
-function keysOf({ key, encryptionKey, epochs }, writer) {
-  return { key, encryptionKey, epochs: epochs || [], writer }
 }
 
 // anyone can send to an address: what does not decode is dropped, never thrown

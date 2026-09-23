@@ -50,6 +50,12 @@ export type Served = {
     expires: number;
     reuse: boolean;
     expired: boolean;
+    /**
+     * Where its knocks arrive, on this member.
+     */
+    inbox: {
+        close: () => Promise<void>;
+    };
 };
 export type JoinOpts = {
     /**
@@ -102,6 +108,7 @@ export type JoinResult = {
  * @property {number} expires                       Absolute expiry; `0` never.
  * @property {boolean} reuse
  * @property {boolean} expired
+ * @property {{ close: () => Promise<void> }} inbox  Where its knocks arrive, on this member.
  *
  * @typedef {object} JoinOpts
  * @property {Identity} identity                    Who joins: the member they become, and who signs the knock.
@@ -127,7 +134,6 @@ export declare class Pairing extends ReadyResource {
     /** @type {Set<Request>} candidates not settled yet: whoever attaches after one fired goes through these first */
     pending: Set<Request>;
     _invites: Map<any, any>;
-    _inboxes: Map<any, any>;
     _onupdate: (touched: any) => void;
     /** @param {PairingOpts} [opts] */
     constructor({ mailbox, db }?: PairingOpts);
@@ -148,7 +154,7 @@ export declare class Pairing extends ReadyResource {
      */
     revoke(invite: string): Promise<boolean>;
     _sync(): Promise<void>;
-    _syncInboxes(): void;
+    _drop(id: any): void;
     _onknock(message: any): Promise<void>;
     _consume(id: any): Promise<void>;
     _me(): Promise<any>;
