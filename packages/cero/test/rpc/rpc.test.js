@@ -504,6 +504,18 @@ test('rpc: invite carries ttl and data over the wire', async (t) => {
   t.is(Invite.parse(forever).data, null, 'no data unless given')
 })
 
+test('rpc: the server boots cero before the first init, so the network is up early', async (t) => {
+  const testnet = await makeTestnet(t)
+  const [serverStream] = pair()
+  const server = await serve(serverStream, spec, {
+    storage: await t.tmp(),
+    bootstrap: testnet.bootstrap
+  })
+  t.teardown(() => server.close().catch(() => {}))
+  const me = await waitUntil(() => server.me || null)
+  t.ok(me.network.opened, 'booted with no client attached')
+})
+
 test('rpc: a join that lands after the caller stopped waiting shows up in handles', async (t) => {
   const { me, client, testnet } = await openPair(t)
   const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })

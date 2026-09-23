@@ -27,9 +27,9 @@ import { put, set, get, del, watch, changes, call } from '../lib/operators.js'
  */
 
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree:
- * lazy-initializes the root via `cero()` on the first `init` call, then exposes data ops,
- * pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
+ * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
+ * exposes data ops, pairing, and handle lifecycle.
  */
 export class Server extends RPCServer {
   /**
@@ -51,11 +51,12 @@ export class Server extends RPCServer {
     this.handles = new Map()
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     this._watchStreams = new Map()
+    this._booting = null
     this._wireInit()
   }
 
   /**
-   * Root cero id (null until `init` has run).
+   * Root cero id (undefined until booted).
    *
    * @returns {string|undefined}
    */
@@ -64,7 +65,7 @@ export class Server extends RPCServer {
   }
 
   /**
-   * Root identity object (null until `init` has run).
+   * Root identity object (undefined until booted).
    *
    * @returns {any}
    */
@@ -72,7 +73,26 @@ export class Server extends RPCServer {
     return this.me?.identity
   }
 
+  async _open() {
+    await super._open()
+    this._booting = this._boot()
+    // it surfaces on init
+    this._booting.catch(() => {})
+  }
+
+  async _boot() {
+    this.me = await cero(this.storage, this.spec, this.opts)
+    this.handles.set(this.me.id, this.me)
+    await this.me.fileServer.listen()
+    this._wireData()
+    this._wirePairing()
+    this._wireHandles()
+    this._wireRestore()
+    this._wireSeed()
+  }
+
   async _close() {
+    await this._booting?.catch(() => {})
     if (this.me) {
       try {
         await this.me.close()
@@ -89,7 +109,7 @@ export class Server extends RPCServer {
     this._watchStreams.delete(handle)
   }
 
-  /** Wire the `init` handler that lazily constructs the root cero handle. */
+  /** Wire the `init` handler: it waits for the boot and attaches the client. */
   _onerror(err) {
     if (!this._errors.size) return this._report(err)
     const frame = {
@@ -107,19 +127,9 @@ export class Server extends RPCServer {
       stream.on('close', () => this._errors.delete(stream))
     })
     this.rpc.onInit(async () => {
+      await this._booting
       // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end
-      if (this.me) {
-        for (const handle of this._watchStreams.keys()) this._endWatches(handle)
-        return this._identity()
-      }
-      this.me = await cero(this.storage, this.spec, this.opts)
-      this.handles.set(this.me.id, this.me)
-      await this.me.fileServer.listen()
-      this._wireData()
-      this._wirePairing()
-      this._wireHandles()
-      this._wireRestore()
-      this._wireSeed()
+      for (const handle of this._watchStreams.keys()) this._endWatches(handle)
       return this._identity()
     })
   }

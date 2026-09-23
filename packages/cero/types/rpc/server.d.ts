@@ -57,9 +57,9 @@ export type GetResult = {
  * @typedef {{ data: any, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
  */
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree:
- * lazy-initializes the root via `cero()` on the first `init` call, then exposes data ops,
- * pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
+ * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
+ * exposes data ops, pairing, and handle lifecycle.
  */
 export declare class Server extends RPCServer {
     storage: string;
@@ -79,6 +79,7 @@ export declare class Server extends RPCServer {
     handles: Map<any, any>;
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     _watchStreams: Map<string, Set<object>>;
+    _booting: Promise<void>;
     /**
      * @param {any} ipc                Framed IPC stream (must be writable).
      * @param {object} spec
@@ -86,21 +87,23 @@ export declare class Server extends RPCServer {
      */
     constructor(ipc: any, spec: object, { storage, ...opts }?: Partial<ServerOpts>);
     /**
-     * Root cero id (null until `init` has run).
+     * Root cero id (undefined until booted).
      *
      * @returns {string|undefined}
      */
     get id(): string | undefined;
     /**
-     * Root identity object (null until `init` has run).
+     * Root identity object (undefined until booted).
      *
      * @returns {any}
      */
     get identity(): any;
+    _open(): Promise<void>;
+    _boot(): Promise<void>;
     _close(): Promise<void>;
     /** End every watch stream bound to a handle (e.g. when it closes or leaves). */
     _endWatches(handle: any): void;
-    /** Wire the `init` handler that lazily constructs the root cero handle. */
+    /** Wire the `init` handler: it waits for the boot and attaches the client. */
     _onerror(err: any): void;
     _wireInit(): void;
     /** Wire the `restore` handler that rebuilds the local store from a phrase. */
