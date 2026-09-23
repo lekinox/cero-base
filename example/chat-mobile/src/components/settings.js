@@ -17,8 +17,16 @@ export function Settings() {
   const toast = useToast()
   const [name, setName] = useState(profile?.name || '')
   const [invite, setInvite] = useState('')
+  const [phrase, setPhrase] = useState(null)
 
-  const phrase = ''
+  // asked of the worker only when the user wants to see it, and never stored
+  const reveal = async () => {
+    try {
+      setPhrase(await me.identity.toPhrase())
+    } catch (err) {
+      toast.show(err.message || 'no phrase stored')
+    }
+  }
 
   const save = async () => {
     const v = name.trim()
@@ -81,15 +89,20 @@ export function Settings() {
         )}
       </Section>
 
-      {phrase && (
-        <Section title='Recovery phrase (write this down!)'>
-          <Card>
-            <Text style={[styles.text, { color: '#fbbf24' }]} selectable>
-              {phrase}
-            </Text>
-          </Card>
-        </Section>
-      )}
+      <Section title='Recovery phrase'>
+        {phrase ? (
+          <>
+            <Card>
+              <Text style={[styles.text, { color: '#fbbf24' }]} selectable>
+                {phrase}
+              </Text>
+            </Card>
+            <Button title='Hide' variant='secondary' onPress={() => setPhrase(null)} />
+          </>
+        ) : (
+          <Button title='Show recovery phrase' onPress={reveal} />
+        )}
+      </Section>
 
       <Toast message={toast.message} />
     </ScrollView>
