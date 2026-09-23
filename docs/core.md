@@ -101,7 +101,7 @@ db.before('put', (ctx) => {
 
 `spec` is one built scope: `spec.main` or `spec.handles.room` from a cero build, with `database`, `dispatch` and `meta` on it. `db.key` identifies the database, `db.writerKey` this device's core.
 
-A second device of the same identity opens the same key and enrolls with `db.bootstrap({ recovering: true })`: it waits for the others' state, admits itself with an add-writer signed by the identity, and records its device row. A member who was handed the key and encryption key through pairing calls `db.claim()` and `db.whenWritable()` instead. `db.addWriter(key)` and `db.removeWriter(key)` manage other writers, `db.rotate()` starts a new encryption epoch.
+A second device of the same identity opens the same key and enrolls with `db.bootstrap({ recovering: true })`: it waits for the others' state, admits itself with an add-writer signed by the identity, and records its device row. A member admitted through pairing needs nothing: its device seats itself (`claim-writer`, signed by its identity) once it sees its member record, and `db.whenWritable()` resolves then. Nobody seats a writer for another identity. `db.addWriter(key)` admits another device of your own identity, `db.removeWriter(key)` removes one, `db.rotate()` starts a new encryption epoch.
 
 ## Mailbox
 

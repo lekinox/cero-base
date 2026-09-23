@@ -9,7 +9,7 @@ import hid from 'hypercore-id-encoding'
 
 import { NAMESPACE, SINGLE, COLLECTION, ACTION, QUERY_RESERVED } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
-import { subscribe, admission, ownership, filter } from '../lib/utils.js'
+import { subscribe, admission, ownership, filter, can, WRITE } from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
@@ -93,6 +93,7 @@ export class Database extends ReadyResource {
     }
 
     this._onerror = opts.onerror || ((err) => console.error(err))
+    this._seating = false
     this.bee = null
     this.dispatcher = null
     this._presence = null
@@ -161,6 +162,9 @@ export class Database extends ReadyResource {
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())
+    // an admission names the member, only this device can seat its writer
+    this.on('update', () => this._seat().catch(this._onerror))
+    this._seat().catch(this._onerror)
     this.bee.on('writable', () => this.emit('writable'))
     // falling edge: apps freeze the UI the moment access ends
     this.bee.on('unwritable', () => this.emit('unwritable'))
@@ -508,15 +512,13 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Admit a device as a writer for `memberId`, an existing member. Omit it to
-   * admit another device of this identity.
+   * Admit another device of this identity as a writer. Another member's device seats itself.
    *
    * @param {Uint8Array} publicKey
-   * @param {string} [memberId]
    * @returns {Promise<void>}
    */
-  async addWriter(publicKey, memberId) {
-    return this._admit('add-writer', publicKey, memberId)
+  async addWriter(publicKey) {
+    return this._admit('add-writer', publicKey)
   }
 
   /**
@@ -857,11 +859,24 @@ export class Database extends ReadyResource {
     }
   }
 
-  async _admit(verb, publicKey, memberId) {
+  async _admit(verb, publicKey) {
     this.guard()
     if (!b4a.isBuffer(publicKey)) throw CeroError.INVALID('publicKey must be a buffer')
     const writer = Hypercore.key({ version: this.store.manifestVersion, signers: [{ publicKey }] })
-    await this.write([[verb, { ...this._admission(writer), memberId }]])
+    await this.write([[verb, this._admission(writer)]])
+  }
+
+  // only a device that never wrote: a revoked one must not seat itself again
+  async _seat() {
+    if (this.writable || this.bee.local.length > 0 || this._seating || this.closing) return
+    const { data: me } = await this.get('members', this.identity.id)
+    if (!me || !can(me.role, WRITE)) return
+    this._seating = true
+    try {
+      await this.claim()
+    } finally {
+      this._seating = false
+    }
   }
 }
 

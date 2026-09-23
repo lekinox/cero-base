@@ -665,7 +665,8 @@ export class Handle extends ReadyResource {
     const known = await this._load(type, existing.id)
     const { data: me } = await known.store.get('members', this.identity.id)
     const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
-    if (me && device) return known
+    // a reader never had a seat, a removed writer lost it
+    if (me && (device || me.role === 'reader')) return known
     await known.close().catch(safetyCatch)
     return null
   }
@@ -694,6 +695,7 @@ export class Handle extends ReadyResource {
       await child.ready()
       // admitted once our member row lands; a writer rides the same batch, a reader has none
       const member = await admitted(child.store, this.identity.id)
+      // the device seats itself once it sees its member record (Database claims it)
       if (member.role !== 'reader' && !child.store.writable) {
         await child.store.whenWritable({ timeout: 0 })
       }

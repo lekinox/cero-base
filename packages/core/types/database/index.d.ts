@@ -216,6 +216,7 @@ export declare class Database extends ReadyResource {
     pinned: boolean;
     keyPair: import("../index.js").KeyPair;
     _onerror: (err: Error) => void;
+    _seating: boolean;
     bee: EpochAutobee;
     dispatcher: {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
@@ -401,14 +402,12 @@ export declare class Database extends ReadyResource {
         timeout?: number;
     }): Promise<void>;
     /**
-     * Admit a device as a writer for `memberId`, an existing member. Omit it to
-     * admit another device of this identity.
+     * Admit another device of this identity as a writer. Another member's device seats itself.
      *
      * @param {Uint8Array} publicKey
-     * @param {string} [memberId]
      * @returns {Promise<void>}
      */
-    addWriter(publicKey: Uint8Array, memberId?: string): Promise<void>;
+    addWriter(publicKey: Uint8Array): Promise<void>;
     /**
      * Remove a peer's writer key from the indexer set.
      *
@@ -490,5 +489,6 @@ export declare class Database extends ReadyResource {
         ts: number;
     };
     _checkFields(name: any, row: any): void;
-    _admit(verb: any, publicKey: any, memberId: any): Promise<void>;
+    _admit(verb: any, publicKey: any): Promise<void>;
+    _seat(): Promise<void>;
 }

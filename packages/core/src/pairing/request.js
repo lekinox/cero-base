@@ -1,11 +1,10 @@
 import Hypercore from 'hypercore'
-import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 import c from 'compact-encoding'
 
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
-import { grants, isRank, admission } from '../lib/utils.js'
+import { grants, isRank } from '../lib/utils.js'
 
 export const STATUS_ACCEPTED = 0
 export const STATUS_DENIED = 1
@@ -103,28 +102,12 @@ export class Request {
   }
 }
 
-// the member row, and for anyone who writes, the writer that belongs to it: one batch, so a
-// refusal discards both
+// the member record only: the joiner's device claims its own seat once it sees it
 async function admit(db, { identity, writer, role }) {
   const ts = Date.now()
   const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer }] })
   const member = { id: hid.encode(identity), key, role, createdAt: ts, updatedAt: ts }
-  // a knock delivered again: this writer is already in, so only the reply goes out again
-  const { data: existing } = await db.get('members', member.id)
-  if (existing && b4a.equals(existing.key, key)) return
-  if (role === 'reader') {
-    await db.call('add-member', member)
-    return
-  }
-  const sig = db.identity.sign(admission(db.key, key, db.writerKey))
-  await db.tx(async (tx) => {
-    await tx.call('add-member', member)
-    await tx.call('add-writer', {
-      sig,
-      master: db.identity.publicKey,
-      writer: key,
-      memberId: member.id,
-      ts
-    })
-  })
+  // already a member (a knock delivered again, a fresh device of theirs): only the reply goes out
+  if ((await db.get('members', member.id)).data) return
+  await db.call('add-member', member)
 }

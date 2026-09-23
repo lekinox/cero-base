@@ -622,16 +622,13 @@ test('call: rows a route writes get the same ids on every peer', async (t) => {
   t.alike(onB, onA, 'identical row, id included, derived independently on B')
 })
 
-test('a writer is always a member: admitting one for an unknown member is refused', async (t) => {
+test('addWriter admits another device of this identity', async (t) => {
   const { db, store } = await bootstrapped(t)
   const stranger = Identity.randomKeyPair()
   const core = Hypercore.key({
     version: store.manifestVersion,
     signers: [{ publicKey: stranger.publicKey }]
   })
-  await t.exception(db.addWriter(stranger.publicKey, 'nobody'), /REFUSED/)
-  t.absent((await db.get('devices', hid.encode(core))).data, 'no device row')
-  // without a member the key is admitted as another device of this identity
   await db.addWriter(stranger.publicKey)
   const { data: device } = await db.get('devices', hid.encode(core))
   t.is(device.memberId, db.identity.id, 'bound to the admitting identity')
@@ -1812,7 +1809,6 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   await waitForConnection(b.network)
 
   await enroll(a.db, bIdentity, 'member', b.db.writerKey)
-  await a.db.addWriter(b.db.keyPair.publicKey, bIdentity.id)
   await waitUntil(() => b.db.writable)
 
   const seen = []
@@ -1848,7 +1844,6 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   await waitForConnection(b.network)
 
   await enroll(a.db, bIdentity, 'member', b.db.writerKey)
-  await a.db.addWriter(b.db.keyPair.publicKey, bIdentity.id)
   await waitUntil(() => b.db.writable)
 
   // only b has the rule
@@ -2213,9 +2208,8 @@ test('apply: claim-path device timestamps are deterministic across peers', async
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
-  t.absent(b.db.writable, 'a fresh device core starts unadmitted')
-  await b.db.claim({ name: 'laptop', isMobile: true })
-  t.ok(b.db.writable, 'b admitted')
+  // a device of the identity seats itself once it sees the member record
+  await waitFor(() => b.db.writable)
 
   const id = z32.encode(b.db.writerKey)
   const onB = await waitFor(async () => (await b.db.get('devices', id)).data)

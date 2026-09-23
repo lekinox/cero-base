@@ -255,15 +255,10 @@ export function makeDispatcher({
     // the rank is add-member's decision in the same transaction: a refused grant discards this admission.
     // Always an indexer: autobee gc's caught-up non-indexer sessions and they miss later appends
     // a writer belongs to a member: its own identity, or the member named by the op
-    const memberId = op.memberId || hid.encode(op.master)
-    if (op.memberId) {
-      const target = await getMember(ctx.view, op.memberId)
-      if (!target) throw CeroError.REFUSED('member')
-      // a writer for someone else, only for a rank you could have admitted
-      if (op.memberId !== hid.encode(op.master) && !genesis && !grants(inviter, target.role)) {
-        throw CeroError.REFUSED('invite')
-      }
-    }
+    // only a device of the signer's own identity: another member's device seats itself with
+    // claim-writer, or any key the signer holds would act as them
+    const memberId = hid.encode(op.master)
+    if (op.memberId && op.memberId !== memberId) throw CeroError.REFUSED('member')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
     await ctx.host.addWriter(op.writer, { isIndexer: true })
     const ts = op.ts || 0
@@ -294,6 +289,7 @@ export function makeDispatcher({
     if (!b4a.equals(ctx.key, op.writer)) return
     const memberId = hid.encode(op.identity)
     if (!can(await getRole(ctx.view, op.identity), WRITE)) throw CeroError.REFUSED('write')
+    if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
     await ctx.host.addWriter(op.writer, { isIndexer: true })
     const ts = op.ts || 0
     await insert(ctx.view, 'devices', `@${ns}/devices`, {
@@ -314,19 +310,8 @@ export function makeDispatcher({
     }
     // an existing member keeps its row: its rank changes only through set-member
     if (await getMember(ctx.view, op.id)) return
-    if (await boundElsewhere(ctx.view, op.key, op.id)) throw CeroError.REFUSED('member')
+    // a member record seats nothing: its device claims its own seat (claim-writer)
     await insert(ctx.view, 'members', `@${ns}/members`, op)
-    const deviceId = hid.encode(op.key)
-    const existingDevice = await getDevice(ctx.view, deviceId)
-    const ts = op.updatedAt || 0
-    await insert(ctx.view, 'devices', `@${ns}/devices`, {
-      id: deviceId,
-      memberId: op.id,
-      name: existingDevice?.name ?? null,
-      isMobile: existingDevice?.isMobile ?? false,
-      createdAt: existingDevice?.createdAt || op.createdAt || ts,
-      updatedAt: ts
-    })
   })
 
   add('set-member', async (op, ctx) => {

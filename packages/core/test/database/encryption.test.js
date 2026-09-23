@@ -285,7 +285,6 @@ async function makeRoom(t, memberRoles = []) {
   const members = []
   for (const role of memberRoles) {
     const m = await makePeer(t, testnet, topic, { encryptionKey, key: a.db.key })
-    const sig = a.identity.sign(admission(a.db.key, m.db.writerKey, a.db.writerKey))
     await a.db.tx(async (tx) => {
       await tx.call('add-member', {
         id: m.identity.id,
@@ -293,13 +292,6 @@ async function makeRoom(t, memberRoles = []) {
         role,
         createdAt: Date.now(),
         updatedAt: Date.now()
-      })
-      await tx.call('add-writer', {
-        master: a.identity.publicKey,
-        writer: m.db.writerKey,
-        memberId: m.identity.id,
-        sig,
-        ts: Date.now()
       })
     })
     members.push(m)
@@ -748,7 +740,6 @@ test('rotate: divergent offline removals converge — no data loss, both targets
     updatedAt: Date.now()
   })
   const admit = async (peer, role) => {
-    const sig = a.identity.sign(admission(a.db.key, peer.db.writerKey, a.db.writerKey))
     await a.db.tx(async (tx) => {
       await tx.call('add-member', {
         id: peer.identity.id,
@@ -756,13 +747,6 @@ test('rotate: divergent offline removals converge — no data loss, both targets
         role,
         createdAt: Date.now(),
         updatedAt: Date.now()
-      })
-      await tx.call('add-writer', {
-        master: a.identity.publicKey,
-        writer: peer.db.writerKey,
-        sig,
-        ts: Date.now(),
-        memberId: peer.identity.id
       })
     })
   }
@@ -933,16 +917,6 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
     encryptionKey,
     key: a.db.key
   })
-  const admitWriter = async (db) => {
-    const sig = a.identity.sign(admission(a.db.key, db.writerKey, a.db.writerKey))
-    await a.db.call('add-writer', {
-      master: a.identity.publicKey,
-      writer: db.writerKey,
-      memberId: memberId.id,
-      sig,
-      ts: Date.now()
-    })
-  }
   await a.db.call('add-member', {
     id: memberId.id,
     key: dev1.db.writerKey,
@@ -950,8 +924,6 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
     createdAt: Date.now(),
     updatedAt: Date.now()
   })
-  await admitWriter(dev1.db)
-  await admitWriter(dev2.db)
 
   await a.db.put('messages', { text: 'pre' })
   await waitFor(async () => (await texts(dev1.db)).includes('pre'))
