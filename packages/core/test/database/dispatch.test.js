@@ -165,7 +165,7 @@ test('admission signed for another appender is rejected (appender binding)', asy
 
 function inviteOp(role) {
   return {
-    id: genId(),
+    id: hid.encode(Identity.randomKeyPair().publicKey),
     key: Identity.randomKeyPair().publicKey,
     role,
     name: 'v',
@@ -965,7 +965,11 @@ test('add-device: a writer cannot re-point its device row at another member', as
   )
 
   // the escalation attempt: re-point the device row at the owner's member id
-  await db.call('add-device', { id: deviceId, memberId: ownerMemberId, updatedAt: Date.now() })
+  await t.exception(
+    db.call('add-device', { id: deviceId, memberId: ownerMemberId, updatedAt: Date.now() }),
+    /REFUSED/,
+    'a device row is written only by its own device'
+  )
 
   t.is(
     (await db.get('devices', deviceId)).data.memberId,
@@ -1214,16 +1218,16 @@ test('poison op: wrong-length key/sig fields are skipped, not crashed', async (t
 const RANKS = ['owner', 'admin', 'member', 'reader']
 
 async function addTarget(db, role) {
-  const row = {
-    id: genId(),
+  const record = {
+    id: hid.encode(Identity.randomKeyPair().publicKey),
     key: Identity.randomKeyPair().publicKey,
     role,
     name: 't',
     createdAt: 1,
     updatedAt: 1
   }
-  await db.call('add-member', row)
-  return row
+  await db.call('add-member', record)
+  return record
 }
 
 const allowed = (signer, from, to) =>
@@ -1257,8 +1261,8 @@ test('roles: a promotion gives the writer seats back, a demotion takes them', as
   const { db, identity } = await withRole(t, 'owner')
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
   const id = hid.encode(writer.publicKey)
-  const row = { id, key: writer.publicKey, name: 'b', createdAt: 1, updatedAt: 1 }
-  await db.call('add-member', { ...row, role: 'member' })
+  const record = { id, key: writer.publicKey, name: 'b', createdAt: 1, updatedAt: 1 }
+  await db.call('add-member', { ...record, role: 'member' })
   await db.call('add-writer', { ...op, memberId: id, ts: Date.now() })
 
   const seats = { added: [], removed: [] }
@@ -1273,9 +1277,9 @@ test('roles: a promotion gives the writer seats back, a demotion takes them', as
       key: db.writerKey,
       dbKey: db.key
     })
-  await asOwner({ ...row, role: 'reader', updatedAt: Date.now() })
+  await asOwner({ ...record, role: 'reader', updatedAt: Date.now() })
   t.ok(seats.removed.includes(id), 'demoted below write: its writer goes')
-  await asOwner({ ...row, role: 'member', updatedAt: Date.now() })
+  await asOwner({ ...record, role: 'member', updatedAt: Date.now() })
   t.ok(seats.added.includes(id), 'promoted back: its writer returns')
 })
 
@@ -1291,7 +1295,7 @@ test('escalation: admitting an existing member again does not change its rank', 
 test('escalation: add-member cannot move a writer to another member', async (t) => {
   const { db, as, owner, id, writer } = await withMember(t, 'member')
   const err = await as('add-member', {
-    id: genId(),
+    id: hid.encode(Identity.randomKeyPair().publicKey),
     key: writer.publicKey,
     role: 'member',
     name: 'x',
@@ -1347,4 +1351,90 @@ test('escalation: a member may still add a writer for a member it outranks or eq
   })
   t.is(err, null)
   t.is((await db.get('devices', hid.encode(extra.publicKey))).data.memberId, target.id)
+})
+
+// ─── the rest of the view: every record keeps its rank rule ─────────────
+
+test('invites: an invite grants at most its minter rank', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const secret = b4a.alloc(32, 1)
+  const refused = await as('add-invite', { id: 'up', secret, role: 'owner', createdAt: 1 })
+  t.is(refused?.code, 'REFUSED')
+  t.absent((await db.get('invites', 'up')).data, 'no owner invite from a member')
+  t.is(await as('add-invite', { id: 'ok', secret, role: 'member', createdAt: 1 }), null)
+})
+
+test('invites: altering one keeps its rank capped and its secret', async (t) => {
+  const { db, as } = await withMember(t, 'admin')
+  await db.call('add-invite', { id: 'i', secret: b4a.alloc(32, 1), role: 'member', createdAt: 1 })
+  const record = { id: 'i', secret: b4a.alloc(32, 1), role: 'member', createdAt: 1 }
+  const raised = await as('set-invite', { ...record, role: 'owner' })
+  t.is(raised?.code, 'REFUSED')
+  await as('set-invite', { ...record, secret: b4a.alloc(32, 2) })
+  const { data } = await db.get('invites', 'i')
+  t.is(data.role, 'member')
+  t.alike(data.secret, b4a.alloc(32, 1), 'knocks still arrive where they did')
+})
+
+test('invites: consuming one needs a rank that could grant it', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const secret = b4a.alloc(32, 1)
+  await db.call('add-invite', { id: 'admin', secret, role: 'admin', createdAt: 1 })
+  await db.call('add-invite', { id: 'member', secret, role: 'member', createdAt: 1 })
+  t.is((await as('del-invite', { id: 'admin' }))?.code, 'REFUSED')
+  t.ok((await db.get('invites', 'admin')).data, 'a member cannot drop an admin invite')
+  t.is(await as('del-invite', { id: 'member' }), null, 'but consumes one it could grant')
+})
+
+test('devices: a device record is written only by its own device', async (t) => {
+  const { db, as, id } = await withMember(t, 'reader')
+  t.is((await as('add-device', { id: '!', updatedAt: 1 }))?.code, 'REFUSED')
+  t.absent((await db.get('devices', '!')).data, 'no made-up record')
+  const owners = hid.encode(db.writerKey)
+  t.is((await as('set-device', { id: owners, name: 'pwned', updatedAt: 1 }))?.code, 'REFUSED')
+  t.not((await db.get('devices', owners)).data.name, 'pwned')
+  t.is(
+    await as('set-device', { id, name: 'mine', updatedAt: 1 }),
+    null,
+    'its own record it may name'
+  )
+  t.is(
+    await db.call('del-member', { id }).then(
+      () => null,
+      (e) => e
+    ),
+    null,
+    'and it stays removable'
+  )
+})
+
+test('singles: wiping one needs write', async (t) => {
+  const { db, as } = await withMember(t, 'reader')
+  await db.set('profile', { name: 'owner' })
+  t.is((await as('del-profile', { id: '' }))?.code, 'REFUSED')
+  t.ok((await db.get('profile')).data, 'the single survives')
+})
+
+test('add-member: an id that is not an identity is refused', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const record = {
+    id: 'x',
+    key: Identity.randomKeyPair().publicKey,
+    role: 'reader',
+    createdAt: 1,
+    updatedAt: 1
+  }
+  await t.exception(db.call('add-member', record), /REFUSED/)
+  t.absent((await db.get('members', 'x')).data)
+})
+
+test('files: a member cannot overwrite or drop another member file record', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  await db.call('add-file', { id: 'f', name: 'scan.pdf', stamp: 1 })
+  t.is((await as('add-file', { id: 'f', name: 'x', stamp: 9 }))?.code, 'REFUSED')
+  t.is((await as('set-file', { id: 'f', name: 'x', stamp: 9 }))?.code, 'REFUSED')
+  t.is((await as('del-file', { id: 'f' }))?.code, 'REFUSED')
+  const { data } = await db.get('files', 'f')
+  t.is(data.name, 'scan.pdf')
+  t.is(data.stamp, 1)
 })

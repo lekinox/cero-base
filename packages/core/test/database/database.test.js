@@ -1103,22 +1103,14 @@ test('set-device: a set keeps structural fields (memberId + createdAt)', async (
   t.is(after.createdAt, createdAt, 'createdAt preserved')
 })
 
-test('set-device creates a missing row (intentionally no resurrection guard)', async (t) => {
+test('set-device: a device writes only its own record', async (t) => {
   const { db } = await bootstrapped(t)
-  const fresh = b4a.alloc(32)
-  for (let i = 0; i < 32; i++) fresh[i] = i + 41 // an id no existing device uses
-  const id = z32.encode(fresh)
-  t.absent((await db.get('devices', id)).data, 'device absent before the set')
-  await db.call('set-device', { id, name: 'newphone', isMobile: true })
-  const { data: after } = await db.get('devices', id)
-  t.ok(after, 'set-device created the missing row — unlike set-member, no if(!existing) return')
-  t.is(after.name, 'newphone')
-  t.is(after.isMobile, true)
-  t.is(
-    after.memberId,
-    (await db.get('devices', hid.encode(db.writerKey))).data.memberId,
-    'a created row binds to the signer, never to a wire-supplied memberId'
+  const other = z32.encode(b4a.alloc(32, 41))
+  await t.exception(
+    db.call('set-device', { id: other, name: 'newphone', isMobile: true }),
+    /REFUSED/
   )
+  t.absent((await db.get('devices', other)).data, 'no record for another device')
 })
 
 test('bootstrap: post-bootstrap puts replicate identity', async (t) => {

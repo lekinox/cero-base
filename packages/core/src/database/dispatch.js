@@ -67,6 +67,13 @@ export function makeDispatcher({
     return d?.memberId ? ((await getMember(view, d.memberId))?.role ?? null) : null
   }
   const isGenesis = async (view) => !(await view.findOne(`@${ns}/members`, {}))
+  const isIdentity = (id) => {
+    try {
+      return isKey(hid.decode(id))
+    } catch {
+      return false
+    }
+  }
   // a writer stays with the member it was admitted for: nothing moves it to another
   const boundElsewhere = async (view, writer, memberId) => {
     const device = await getDevice(view, hid.encode(writer))
@@ -299,6 +306,8 @@ export function makeDispatcher({
 
   add('add-member', async (op, ctx) => {
     if (!isKey(op.key)) return
+    // every member id is an identity key: rotation seals to it
+    if (!isIdentity(op.id)) throw CeroError.REFUSED('member')
     if (!(await isGenesis(ctx.view))) {
       const r = await getSignerRole(ctx.view, ctx.key)
       if (!can(r, INVITE) || !grants(r, op.role)) throw CeroError.REFUSED('invite')
@@ -421,11 +430,17 @@ export function makeDispatcher({
   const devices = `@${ns}/devices`
   const bind = async (ctx, existing) =>
     existing?.memberId ?? (await getSignerMember(ctx.view, ctx.key))
+  // a device describes only itself: another's record, or a made-up id, would break removing it
+  const selfOnly = (op, ctx) => {
+    if (!ctx.key || op.id !== hid.encode(ctx.key)) throw CeroError.REFUSED('device')
+  }
   add('add-device', async (op, ctx) => {
+    selfOnly(op, ctx)
     const existing = await getDevice(ctx.view, op.id)
     await insert(ctx.view, 'devices', devices, { ...op, memberId: await bind(ctx, existing) })
   })
   add('set-device', async (op, ctx) => {
+    selfOnly(op, ctx)
     const existing = await getDevice(ctx.view, op.id)
     const ts = op.updatedAt || 0
     await insert(ctx.view, 'devices', devices, {
@@ -439,32 +454,39 @@ export function makeDispatcher({
   // any WRITE member mints an invite, its rank capped at admission; an existing row is never
   // overwritten, and altering or revoking one needs REMOVE
   const invites = `@${ns}/invites`
+  // an invite grants at most its minter's rank, or the member that answers it would grant more
+  const capped = (r, record) => !record.role || grants(r, record.role)
   add('add-invite', async (op, ctx) => {
     await requireWrite(ctx)
     if (await ctx.view.get(invites, { id: op.id })) throw CeroError.REFUSED('invite')
+    if (!capped(await getSignerRole(ctx.view, ctx.key), op)) throw CeroError.REFUSED('invite')
     await insert(ctx.view, 'invites', invites, op)
   })
-  const moderate = async (ctx) => {
-    if (!can(await getSignerRole(ctx.view, ctx.key), REMOVE)) throw CeroError.REFUSED('invite')
-  }
   add('set-invite', async (op, ctx) => {
-    await moderate(ctx)
+    const r = await getSignerRole(ctx.view, ctx.key)
+    if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
     const existing = await ctx.view.get(invites, { id: op.id })
     if (!existing) return
-    await insert(ctx.view, 'invites', invites, { ...existing, ...op })
+    // its secret owns the address knocks arrive at: changing it would redirect them
+    const next = { ...existing, ...op, secret: existing.secret }
+    if (!capped(r, next)) throw CeroError.REFUSED('invite')
+    await insert(ctx.view, 'invites', invites, next)
   })
   // revoking needs REMOVE; consuming a single-use invite is done by whichever replica served the join
   add('del-invite', async (op, ctx) => {
     const existing = await ctx.view.get(invites, { id: op.id })
     const consume = existing && existing.reuse !== true
     const r = await getSignerRole(ctx.view, ctx.key)
-    if (!can(r, REMOVE) && !(consume && can(r, INVITE))) throw CeroError.REFUSED('invite')
+    if (!can(r, REMOVE) && !(consume && can(r, INVITE) && capped(r, existing))) {
+      throw CeroError.REFUSED('invite')
+    }
     return ctx.view.delete(invites, op)
   })
 
   const files = `@${ns}/files`
   add('add-file', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), WRITE)) throw CeroError.REFUSED('write')
+    await requireOwn(ctx, await ctx.view.get(files, { id: op.id }))
     const memberId = await getSignerMember(ctx.view, ctx.key)
     await insert(ctx.view, 'files', files, {
       id: op.id,
@@ -473,8 +495,8 @@ export function makeDispatcher({
       stamp: op.stamp ?? 0
     })
   })
-  add('set-file', update('files', files))
-  add('del-file', remove('files', files))
+  add('set-file', update('files', files, true))
+  add('del-file', remove('files', files, true))
 
   const handles = `@${ns}/handles`
   add('add-handle', upsert('handles', handles, COLLECTION))
@@ -514,6 +536,7 @@ export function makeDispatcher({
     if (info.kind === SINGLE) {
       // wipe the keyless single row (the dummy id in the op is ignored)
       add(`del-${name}`, async (op, ctx) => {
+        await requireWrite(ctx)
         const fns = pick('del')
         const existing = fns ? await ctx.view.findOne(col, {}) : null
         return hooked(fns, { op: 'del', name, existing }, ctx, () => ctx.view.delete(col, {}))
