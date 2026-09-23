@@ -35,8 +35,12 @@ A keypair backed by a 12- or 24-word phrase. Signs and verifies. Derives a topic
 ```js
 import { Identity } from '@cero-base/core/identity'
 
-const identity = await Identity.create()
+const identity = await Identity.create() // or { words: 24 }
+const phrase = identity.toPhrase() // show it once, the user writes it down
+
+// later, on any device
 const restored = await Identity.create({ seed: Identity.toSeed(phrase) })
+restored.id === identity.id // true
 
 const signature = identity.sign(message)
 Identity.verify(identity.publicKey, message, signature) // true

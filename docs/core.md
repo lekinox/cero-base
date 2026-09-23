@@ -41,8 +41,12 @@ import { RPCServer, RPCClient } from '@cero-base/core/rpc'
 A keypair derived from a phrase. It signs, verifies, seals to another identity, and names a swarm topic.
 
 ```js
-const identity = await Identity.create()
+const identity = await Identity.create() // or { words: 24 }
+const phrase = identity.toPhrase() // show it once, the user writes it down
+
+// later, on any device
 const restored = await Identity.create({ seed: Identity.toSeed(phrase) })
+restored.id === identity.id // true
 
 const signature = identity.sign(message)
 Identity.verify(identity.publicKey, message, signature) // true
