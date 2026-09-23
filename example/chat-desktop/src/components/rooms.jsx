@@ -33,7 +33,13 @@ export function Rooms({ onOpen, onSettings }) {
       setInvite('')
       onOpen(room.id)
     } catch (err) {
-      setError(err.message || 'Failed to join room')
+      // the join goes on: the room shows up in the list once a member lets you in
+      if (err.code === 'TIMEOUT') setInvite('')
+      setError(
+        err.code === 'TIMEOUT'
+          ? 'No member has answered yet. The room will appear here once someone lets you in.'
+          : err.message || 'Failed to join room'
+      )
     } finally {
       setBusy(false)
     }
