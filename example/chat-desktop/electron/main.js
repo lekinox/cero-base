@@ -188,6 +188,8 @@ async function createWindow() {
 ipcMain.handle('pear:applyUpdate', () => getPear().applyUpdate())
 ipcMain.handle('pear:startWorker', (event, filename, extraArgs = []) => {
   getWorker(filename, extraArgs)
+  // set up now: a reloaded page must not offer setup again
+  initialized = true
   return true
 })
 let initialized = null
