@@ -691,7 +691,11 @@ export class Handle extends ReadyResource {
     let inflightId = null
     try {
       await child.ready()
-      if (!child.store.writable) await child.store.whenWritable({ timeout: 0 })
+      // admitted once our member row lands; a writer rides the same batch, a reader has none
+      const member = await admitted(child.store, this.identity.id)
+      if (member.role !== 'reader' && !child.store.writable) {
+        await child.store.whenWritable({ timeout: 0 })
+      }
 
       const id = hid.encode(child.store.key)
       // same create/open race as _create, a concurrent _load must share this child
@@ -930,6 +934,20 @@ export class Handle extends ReadyResource {
   static fromReply({ key, encryptionKey, epochs, writer }, opts) {
     return new Handle({ ...opts, key, encryptionKey, epochs, keyPair: writer })
   }
+}
+
+function admitted(db, id) {
+  return new Promise((resolve, reject) => {
+    const check = async () => {
+      const { data } = await db.get('members', id)
+      if (!data) return
+      db.off('update', onupdate)
+      resolve(data)
+    }
+    const onupdate = () => check().catch(reject)
+    db.on('update', onupdate)
+    onupdate()
+  })
 }
 
 // a device without a local store keeps its mail in memory

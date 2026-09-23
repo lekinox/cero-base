@@ -42,7 +42,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {Identity} identity                    Who joins: the member they become, and who signs the knock.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. Its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
- * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`.
+ * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
  *
  * @typedef {object} JoinResult
  * @property {Uint8Array} key
@@ -252,6 +252,7 @@ export class Pairing extends ReadyResource {
     }
     const parsed = Invite.parse(invite)
     if (parsed.expired) throw CeroError.EXPIRED()
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
     if (!mailbox.opened) await mailbox.ready()
 
     let resolve, fail
@@ -285,6 +286,7 @@ export class Pairing extends ReadyResource {
     const onabort = () => fail(CeroError.CLOSED('join'))
     if (signal?.aborted) onabort()
     signal?.addEventListener('abort', onabort)
+    mailbox.once('close', onabort)
     const timer = timeout > 0 ? setTimeout(() => fail(CeroError.TIMEOUT('join')), timeout) : null
     const left = parsed.expires - Date.now()
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
@@ -297,6 +299,7 @@ export class Pairing extends ReadyResource {
       clearTimeout(timer)
       clearTimeout(expiry)
       signal?.removeEventListener('abort', onabort)
+      mailbox.off('close', onabort)
       await Promise.allSettled([inbox.close(), post.close()])
     }
   }

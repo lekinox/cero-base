@@ -1,6 +1,6 @@
 # @cero-base/core
 
-The building blocks `cero` is made of. Use them when `cero` is too high-level — when you want just an autobee, just a swarm, or just signed pairing.
+The building blocks `cero` is made of. Use them when `cero` is too high-level — when you want just an autobee, just a swarm, just a mailbox, or just pairing.
 
 Eight primitives, one subpath each: identity, storage, network, database, blobs, mailbox, pairing, rpc. `ReadyResource`-shaped where it makes sense (`.ready()` + `.close()`).
 

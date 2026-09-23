@@ -11,9 +11,9 @@ import { Invite } from '@cero-base/core/invite'
 import { Pairing } from '@cero-base/core/pairing'
 import { epochEntries } from '@cero-base/core/database/encryption'
 
-import { cero, put, set, get, open, peek, restore } from '../src/index.js'
-import { spec } from './fixtures/spec/index.js'
-import { makeTestnet, makeMirror, holds, waitForConnection, waitUntil } from './helpers/index.js'
+import { cero, put, set, get, open, peek, restore } from '../../src/index.js'
+import { spec } from '../fixtures/spec/index.js'
+import { makeTestnet, makeMirror, holds, waitForConnection, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -40,7 +40,7 @@ test('mirrors: opt threads to the network and survives restore', async (t) => {
   t.alike(me._opts.mirrors, [key], 'mirrors retained on opts for restore')
 })
 
-test('mirrors: a joiner knocks while every member is offline, the mirror holds it', async (t) => {
+test('mirrors: a joiner knocks while every member is offline or suspended, the mirror holds it', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)
   const { me: owner } = await ceroOpen(t, {
@@ -56,6 +56,7 @@ test('mirrors: a joiner knocks while every member is offline, the mirror holds i
   const knocked = holds(mirror, Invite.parse(invite).address)
   const joining = open(joiner.team, invite)
   await knocked
+  t.is((await get(room.members)).data.length, 1, 'a suspended owner admits nobody')
 
   await owner.resume()
   const joined = await joining
@@ -71,6 +72,40 @@ async function reopen(t, dir, testnet, opts = {}) {
 
 const joined = (me, id) =>
   waitUntil(() => [...me.children].find((child) => child.id === id) || null)
+
+test('mirrors: owner and joiner are never online together, across restarts', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const mirrors = [b4a.toString(mirror.publicKey, 'hex')]
+  const owner = await ceroOpen(t, { testnet, mirrors })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const { id } = room
+  const invite = await room.invite()
+  await owner.me.close()
+
+  // the joiner knocks alone and leaves: the knock waits on the mirror
+  const joiner = await ceroOpen(t, { testnet })
+  const knocked = holds(mirror, Invite.parse(invite).address)
+  joiner.me._join(invite, 'team', { timeout: 500 }).catch(() => {})
+  await knocked
+  await joiner.me.close()
+
+  // the owner comes back alone, admits it, and leaves once the reply and the admission are on
+  // the mirror
+  const back = await reopen(t, owner.dir, testnet, { mirrors })
+  const reopened = await open(back.team, { id })
+  await waitUntil(async () => ((await get(reopened.members)).data.length === 2 ? true : null))
+  await waitUntil(async () => ((await back.mailbox.outbox.list()).length === 0 ? true : null))
+  const { writerKey, bee } = reopened.store
+  const mirrored = mirror.store.get({ key: writerKey })
+  await mirrored.ready()
+  await waitUntil(() => mirrored.contiguousLength >= bee.local.length || null)
+  await mirrored.close()
+  await back.close()
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, id), 'joined with nobody else online')
+})
 
 test('invites: a join survives the joiner restarting, and lands once a member is back', async (t) => {
   const testnet = await makeTestnet(t)
@@ -175,6 +210,34 @@ function nowhere(opts) {
   const random = () => Identity.randomBytes(32)
   return Invite.create({ discoveryKey: random(), address: random(), ...opts }).toString()
 }
+
+test('invites: a reader invite joins through cero() and reads', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'hello' })
+  const invite = await room.invite({ role: 'reader' })
+
+  const joiner = await ceroOpen(t, { testnet })
+  const joined = await open(joiner.me.team, invite)
+  t.is(joined.id, room.id)
+  t.absent(joined.store.writable, 'a reader has no writer')
+  const row = await waitUntil(async () => (await get(joined.messages)).data[0] || null)
+  t.is(row.text, 'hello')
+})
+
+test('invites: an admin invite joins through cero() with admin rights', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  const joined = await open(joiner.me.team, await room.invite({ role: 'admin' }))
+
+  const { data: member } = await get(joined.members, joiner.me.identity.id)
+  t.is(member.role, 'admin')
+  t.ok(joined.store.writable)
+  t.ok(await joined.invite({ role: 'member' }), 'an admin mints invites')
+})
 
 test('invites: a pending join is listed, survives a restart, and a cancel ends it for good', async (t) => {
   const joiner = await ceroOpen(t)

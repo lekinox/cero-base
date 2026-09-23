@@ -299,6 +299,16 @@ test('join: waiting for good still ends when the invite expires', async (t) => {
   t.is(err.code, 'TIMEOUT', 'an expiry past the timer range does not fire early')
 })
 
+test('join: closing the mailbox stops it with CLOSED', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite()
+  await host.pairing.close()
+  const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
+  await joiner.mailbox.close()
+  t.is((await joining).code, 'CLOSED')
+  t.is((await joiner.join(invite).catch((e) => e)).code, 'CLOSED', 'and once it is closed')
+})
+
 test('join: an abort signal stops it', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite()

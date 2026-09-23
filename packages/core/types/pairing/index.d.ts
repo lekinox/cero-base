@@ -65,7 +65,7 @@ export type JoinOpts = {
      */
     timeout?: number;
     /**
-     * Stops the join, rejecting it with `CLOSED`.
+     * Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
      */
     signal?: AbortSignal;
 };
@@ -107,7 +107,7 @@ export type JoinResult = {
  * @property {Identity} identity                    Who joins: the member they become, and who signs the knock.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. Its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
- * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`.
+ * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
  *
  * @typedef {object} JoinResult
  * @property {Uint8Array} key
