@@ -42,7 +42,7 @@ export declare class Rotation {
     _mint(): number;
     _taken(stamp: any): Promise<any>;
     _epochs(): any;
-    _unseal(row: any): Uint8Array<ArrayBufferLike>;
+    _unseal(row: any): any;
     _save(): any;
     _audit(): Promise<void>;
 }

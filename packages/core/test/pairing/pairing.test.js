@@ -119,6 +119,20 @@ test('invite: its secret is sealed only to members who can invite', async (t) =>
   t.alike(ids, [identity.id], 'the owner can open it, the reader cannot')
 })
 
+test('invite: a member who can invite later gets its copy and serves it', async (t) => {
+  const { pairing, db } = await makeHost(t)
+  await pairing.invite({ reuse: true })
+  const later = await Identity.create()
+  const record = { id: later.id, key: later.publicKey, role: 'reader', createdAt: 1, updatedAt: 1 }
+  await db.call('add-member', record)
+  await db.call('set-member', { ...record, role: 'member', updatedAt: Date.now() })
+  await waitFor(async () => {
+    const [invite] = await invites(db)
+    return c.decode(wraps, invite.wrapped).some((w) => w.id === later.id)
+  })
+  t.pass('sealed to the member it now can serve')
+})
+
 test('invite: the role is a rank', async (t) => {
   const { pairing } = await makeHost(t)
   await t.exception(pairing.invite({ role: 'volunteer' }), /not a rank/)

@@ -134,6 +134,7 @@ export declare class Pairing extends ReadyResource {
     /** @type {Set<Request>} candidates not settled yet: whoever attaches after one fired goes through these first */
     pending: Set<Request>;
     _invites: Map<any, any>;
+    _consumed: Set<any>;
     _onupdate: (touched: any) => void;
     /** @param {PairingOpts} [opts] */
     constructor({ mailbox, db }?: PairingOpts);
@@ -156,6 +157,7 @@ export declare class Pairing extends ReadyResource {
     /** @returns {boolean} Whether this member serves any invite. */
     get serving(): boolean;
     _sync(): Promise<void>;
+    _reseal(row: any, secret: any, inviters: any): void;
     _drop(id: any): void;
     _onknock(message: any): Promise<void>;
     _consume(id: any): Promise<void>;

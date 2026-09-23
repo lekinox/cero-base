@@ -2,8 +2,10 @@ import test from 'brittle'
 import b4a from 'b4a'
 import z32 from 'z32'
 import crypto from 'hypercore-crypto'
+import c from 'compact-encoding'
 
 import { Database } from '../../src/database/index.js'
+import { wraps, seal } from '../../src/database/encryption.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import { wrap } from '../../src/database/envelope.js'
@@ -1336,6 +1338,33 @@ test('invites: revoking one needs a rank that could grant it', async (t) => {
   t.is((await as('del-invite', { id: 'owner' }))?.code, 'REFUSED')
   t.ok((await db.get('invites', 'owner')).data, 'an admin cannot revoke an owner invite')
   t.is(await as('del-invite', { id: 'admin' }), null, 'but revokes one it could grant')
+})
+
+test('invites: an inviter only appends copies for later inviters', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const secret = b4a.alloc(32, 7)
+  const inviter = await addTarget(db, 'member')
+  const reader = await addTarget(db, 'reader')
+  const record = {
+    id: 'i',
+    wrapped: c.encode(wraps, seal([], secret)),
+    role: 'member',
+    reuse: true,
+    createdAt: 1
+  }
+  await db.call('add-invite', record)
+  const withCopy = (members) => ({ ...record, wrapped: c.encode(wraps, seal(members, secret)) })
+
+  t.is((await as('set-invite', withCopy([reader])))?.code, 'REFUSED', 'not for a reader')
+  t.is(await as('set-invite', { ...withCopy([inviter]), role: 'reader' }), null)
+  const { data } = await db.get('invites', 'i')
+  t.alike(
+    c.decode(wraps, data.wrapped).map((w) => w.id),
+    [inviter.id],
+    'the copy is added'
+  )
+  t.is(data.role, 'member', 'nothing else changes')
+  t.is((await as('set-invite', withCopy([reader])))?.code, 'REFUSED', 'sealed copies never change')
 })
 
 test('invites: consuming one needs a rank that could grant it', async (t) => {

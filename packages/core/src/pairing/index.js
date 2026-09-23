@@ -9,7 +9,7 @@ import { Request, Response, STATUS_DENIED } from './request.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { Identity } from '../identity/index.js'
-import { wraps, seal } from '../database/encryption.js'
+import { wraps, seal, opened } from '../database/encryption.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, INVITE, REMOVE } from '../lib/utils.js'
@@ -72,6 +72,7 @@ export class Pairing extends ReadyResource {
     this.pending = new Set()
 
     this._invites = new Map() // id → Served
+    this._consumed = new Set() // until their delete applies, or a sync would serve them again
     this._onupdate = (touched) => {
       if (touched.has('*') || touched.has('invites') || touched.has('members')) {
         this._sync().catch(safetyCatch)
@@ -169,14 +170,27 @@ export class Pairing extends ReadyResource {
     if (this.closing || this.closed) return
     const ids = new Set(rows.map((row) => row.id))
     for (const id of this._invites.keys()) if (!ids.has(id)) this._drop(id)
+    for (const id of this._consumed) if (!ids.has(id)) this._consumed.delete(id)
+    const { data: members } = await this.db.get('members')
+    const inviters = members.filter((m) => can(m.role, INVITE))
     for (const row of rows) {
-      if (this._invites.has(row.id) || expired(row)) continue
-      const secret = opened(this.db.identity, row.wrapped)
+      if (expired(row) || this._consumed.has(row.id)) continue
+      const [secret] = opened(this.db.identity, row.wrapped)
       if (!secret) continue
+      this._reseal(row, secret, inviters)
+      if (this._invites.has(row.id)) continue
       const inbox = this.mailbox.receive(secret, (knock) => this._onknock(knock))
       this._invites.set(row.id, served(row, inbox))
     }
     this.emit('serving', this.serving)
+  }
+
+  _reseal(row, secret, inviters) {
+    const copies = c.decode(wraps, row.wrapped)
+    const missing = inviters.filter((m) => !copies.some((w) => w.id === m.id))
+    if (!missing.length) return
+    const wrapped = c.encode(wraps, [...copies, ...seal(missing, secret)])
+    this.db.call('set-invite', { ...row, wrapped }).catch(safetyCatch)
   }
 
   // stops serving it on this member
@@ -218,6 +232,7 @@ export class Pairing extends ReadyResource {
 
   // a single-use invite is consumed by whichever member answered it
   async _consume(id) {
+    this._consumed.add(id)
     this._drop(id)
     await this.db.call('del-invite', { id }).catch(safetyCatch)
   }
@@ -332,11 +347,6 @@ function served({ id, role = '', expires = 0, reuse = false }, inbox) {
       return expired(this)
     }
   }
-}
-
-function opened(identity, wrapped) {
-  const box = c.decode(wraps, wrapped).find((w) => w.id === identity.id)?.box
-  return box ? identity.unseal(box) : null
 }
 
 function expired({ expires }) {

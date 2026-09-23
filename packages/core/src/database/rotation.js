@@ -5,7 +5,7 @@ import hid from 'hypercore-id-encoding'
 
 import { REMOVE } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
-import { wraps, epochEntries, seal } from './encryption.js'
+import { wraps, epochEntries, seal, opened } from './encryption.js'
 import { Identity } from '../identity/index.js'
 import { CeroError } from '../lib/errors.js'
 
@@ -162,11 +162,8 @@ export class Rotation {
 
   // every envelope addressed to us is tried, a bad one must not lock us out
   _unseal(row) {
-    const { identity } = this.db
-    for (const w of c.decode(wraps, row.wrapped)) {
-      if (w.id !== identity.id) continue
-      const entropy = identity.unseal(w.box)
-      if (entropy?.byteLength !== 32) continue
+    for (const entropy of opened(this.db.identity, row.wrapped)) {
+      if (entropy.byteLength !== 32) continue
       // a secret failing the row's commitment means the rotator sealed different ones
       if (row.commit && b4a.equals(crypto.hash(entropy), row.commit)) return entropy
       this.db._onerror(CeroError.INVALID(`epoch ${row.epoch} envelope fails its commitment`))

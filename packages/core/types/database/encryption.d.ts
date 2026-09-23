@@ -15,6 +15,7 @@ export declare function loadEpochs(keyring: any, local: any): Promise<void>;
  * per remaining member, addressed by member id.
  */
 export declare function seal(members: any, secret: any): any;
+export declare function opened(identity: any, wrapped: any): Generator<any, void, unknown>;
 export declare const wraps: c.Encoder<any[], {
     id: string;
     box: Uint8Array<ArrayBufferLike>;

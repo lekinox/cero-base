@@ -18,6 +18,7 @@ import {
 import { can, grants, outranks, admission, ownership } from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
+import { wraps } from './encryption.js'
 
 // wire fields are variable-length: reject wrong sizes before sodium and hid throw on them
 const isKey = (b) => b?.byteLength === 32
@@ -446,14 +447,32 @@ export function makeDispatcher({
     if (!capped(await getSignerRole(ctx.view, ctx.key), op)) throw CeroError.REFUSED('invite')
     await insert(ctx.view, 'invites', invites, op)
   })
+  const appendsCopies = async (view, existing, op) => {
+    let kept, next
+    try {
+      kept = c.decode(wraps, existing.wrapped)
+      next = c.decode(wraps, op.wrapped)
+    } catch {
+      return false
+    }
+    if (next.length <= kept.length) return false
+    if (!kept.every((w, i) => w.id === next[i].id && b4a.equals(w.box, next[i].box))) return false
+    const ids = new Set(kept.map((w) => w.id))
+    for (const { id } of next.slice(kept.length)) {
+      if (ids.has(id) || !can((await getMember(view, id))?.role, INVITE)) return false
+      ids.add(id)
+    }
+    return true
+  }
+  // an inviter may seal it for later inviters; anything else is moderation, and needs REMOVE
   add('set-invite', async (op, ctx) => {
     const r = await getSignerRole(ctx.view, ctx.key)
-    if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
     const existing = await ctx.view.get(invites, { id: op.id })
     if (!existing) return
-    // the sealed secret owns the address knocks arrive at
-    const next = { ...existing, ...op, wrapped: existing.wrapped }
-    if (!capped(r, next)) throw CeroError.REFUSED('invite')
+    const copies = await appendsCopies(ctx.view, existing, op)
+    const next = can(r, REMOVE) ? { ...existing, ...op } : { ...existing }
+    next.wrapped = copies ? op.wrapped : existing.wrapped
+    if (!can(r, copies ? INVITE : REMOVE) || !capped(r, next)) throw CeroError.REFUSED('invite')
     await insert(ctx.view, 'invites', invites, next)
   })
   // revoking needs REMOVE; consuming a single-use invite is done by whichever replica served the join

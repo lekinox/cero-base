@@ -70,15 +70,15 @@ AutobeeEncryption.prototype.update = async function (ctx) {
  * per remaining member, addressed by member id.
  */
 export function seal(members, secret) {
-  return members.map((m) => {
-    let key
-    try {
-      key = hid.decode(m.id)
-    } catch {
-      throw CeroError.INVALID(`member id is not an identity key: ${m.id}`)
-    }
-    return { id: m.id, box: Identity.seal(key, secret) }
-  })
+  return members.map((m) => ({ id: m.id, box: Identity.seal(hid.decode(m.id), secret) }))
+}
+
+export function* opened(identity, wrapped) {
+  for (const w of c.decode(wraps, wrapped)) {
+    if (w.id !== identity.id) continue
+    const secret = identity.unseal(w.box)
+    if (secret) yield secret
+  }
 }
 
 export const wraps = c.array({
