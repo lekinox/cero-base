@@ -7,6 +7,9 @@ import Corestore from 'corestore'
 import { Duplex, Readable } from 'streamx'
 
 import { Network } from '../../src/network/index.js'
+import { Database } from '../../src/database/index.js'
+import { Identity } from '../../src/identity/index.js'
+import { spec } from '../fixtures/spec/index.js'
 
 // ─── generic ──────────────────────────────────────────────────────────────
 
@@ -269,4 +272,40 @@ export async function waitForMirrored(db) {
 export async function fetch(...args) {
   const f = globalThis.fetch || (await import('bare-fetch')).default
   return f(...args)
+}
+
+// a database on its own network, joined to its topic
+export async function makePeer(t, testnet, { topic, presence, mirrors, ...opts } = {}) {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = opts.identity || (await Identity.create())
+  // only mirrors need the store on the network
+  const network = new Network({
+    bootstrap: testnet.bootstrap,
+    store: mirrors && store,
+    presence,
+    mirrors
+  })
+  await network.ready()
+  topic ??= identity.topic
+  const discovery = network.join(topic)
+  await discovery.flush()
+  const errors = []
+  const db = new Database({
+    store,
+    identity,
+    network,
+    spec,
+    onerror: (err) => errors.push(err),
+    ...opts
+  })
+  await db.ready()
+  t.teardown(
+    async () => {
+      await db.close().catch(() => {})
+      await discovery.destroy().catch(() => {})
+      await network.close().catch(() => {})
+    },
+    { order: 5 }
+  )
+  return { db, store, identity, network, discovery, topic, errors }
 }

@@ -17,7 +17,8 @@ import {
   makeMirror,
   randomTopic,
   waitFor,
-  waitForMirrored
+  waitForMirrored,
+  makePeer
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
@@ -231,40 +232,6 @@ test('keyring validates stamps and entropy, orders by sequence', (t) => {
 
 test.configure({ timeout: 120000 })
 
-async function makePeer(t, testnet, topic, opts = {}) {
-  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.create())
-  const network = new Network({ bootstrap: testnet.bootstrap, store, mirrors: opts.mirrors })
-  await network.ready()
-  const discovery = network.join(topic)
-  await discovery.flush()
-  const errors = []
-  const db = new Database({
-    store,
-    identity,
-    network,
-    spec,
-    onerror: (err) => errors.push(err),
-    ...opts
-  })
-  await db.ready()
-  t.teardown(
-    async () => {
-      try {
-        await db.close()
-      } catch {}
-      try {
-        await discovery.destroy()
-      } catch {}
-      try {
-        await network.close()
-      } catch {}
-    },
-    { order: 5 }
-  )
-  return { db, store, identity, network, errors }
-}
-
 // Owner room + admitted members: A bootstraps as owner, then admits each
 // peer's identity + writer (the same tx handle.accept performs).
 async function makeRoom(t, memberRoles = []) {
@@ -272,7 +239,7 @@ async function makeRoom(t, memberRoles = []) {
   const topic = randomTopic()
   const encryptionKey = Identity.randomBytes(32)
 
-  const a = await makePeer(t, testnet, topic, { encryptionKey })
+  const a = await makePeer(t, testnet, { topic, encryptionKey })
   await a.db.bootstrap({ name: 'owner' })
   await a.db.call('add-member', {
     id: a.identity.id,
@@ -284,7 +251,7 @@ async function makeRoom(t, memberRoles = []) {
 
   const members = []
   for (const role of memberRoles) {
-    const m = await makePeer(t, testnet, topic, { encryptionKey, key: a.db.key })
+    const m = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
     await a.db.tx(async (tx) => {
       await tx.call('add-member', {
         id: m.identity.id,
@@ -439,7 +406,8 @@ test('rotate: a post-rotation joiner reads full history from delivered epochs', 
   await a.db.put('messages', { text: 'current' })
 
   // simulate the pairing-confirm delivery: latest keys handed over at join
-  const joiner = await makePeer(t, testnet, topic, {
+  const joiner = await makePeer(t, testnet, {
+    topic,
     encryptionKey,
     key: a.db.key,
     epochs: a.db.keyring.all()
@@ -462,7 +430,8 @@ test('rotate: seed-phrase recovery re-derives everything — reads, claims, writ
   // writer (as the cero layer always mints), no userData, no delivered
   // epochs — the log replay alone must hydrate keys
   const recoveredId = await Identity.create({ seed: a.identity.seed })
-  const rec = await makePeer(t, testnet, topic, {
+  const rec = await makePeer(t, testnet, {
+    topic,
     identity: recoveredId,
     keyPair: Identity.randomKeyPair(),
     encryptionKey,
@@ -498,7 +467,8 @@ test('rotate: reader-role member (no writer) follows rotations on every device',
     updatedAt: Date.now()
   })
 
-  const phone = await makePeer(t, testnet, topic, {
+  const phone = await makePeer(t, testnet, {
+    topic,
     identity: readerId,
     encryptionKey,
     key: a.db.key
@@ -512,7 +482,8 @@ test('rotate: reader-role member (no writer) follows rotations on every device',
   t.is(phone.db.keyring.seq, 1, 'reader unsealed its envelope without being a writer')
 
   // second device, same reader identity, joining after the rotation
-  const laptop = await makePeer(t, testnet, topic, {
+  const laptop = await makePeer(t, testnet, {
+    topic,
     identity: await Identity.create({ seed: readerId.seed }),
     encryptionKey,
     key: a.db.key
@@ -567,7 +538,8 @@ test('rotate: a member syncs a rotated room through a blind mirror, writer offli
   await aNet.close().catch(() => {})
 
   // B has only the mirror — ciphertext relay — as a path to the data
-  const b = await makePeer(t, testnet, topic, {
+  const b = await makePeer(t, testnet, {
+    topic,
     identity: bId,
     encryptionKey,
     key: aKey,
@@ -600,7 +572,8 @@ test('rotate: ten consecutive rotations stay consistent for members and joiners'
   await waitFor(async () => (await texts(b.db)).length === 11)
   t.is(b.db.keyring.seq, 10, 'member walked all ten epochs')
 
-  const joiner = await makePeer(t, testnet, topic, {
+  const joiner = await makePeer(t, testnet, {
+    topic,
     encryptionKey,
     key: a.db.key,
     epochs: a.db.keyring.all()
@@ -730,7 +703,7 @@ test('rotate: divergent offline removals converge — no data loss, both targets
   const encryptionKey = Identity.randomBytes(32)
 
   // A owner, B admin (writable), C and D plain members
-  const a = await makePeer(t, testnet, topic, { encryptionKey })
+  const a = await makePeer(t, testnet, { topic, encryptionKey })
   await a.db.bootstrap({ name: 'a' })
   await a.db.call('add-member', {
     id: a.identity.id,
@@ -750,9 +723,9 @@ test('rotate: divergent offline removals converge — no data loss, both targets
       })
     })
   }
-  const b = await makePeer(t, testnet, topic, { encryptionKey, key: a.db.key })
-  const cPeer = await makePeer(t, testnet, topic, { encryptionKey, key: a.db.key })
-  const dPeer = await makePeer(t, testnet, topic, { encryptionKey, key: a.db.key })
+  const b = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
+  const cPeer = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
+  const dPeer = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
   await admit(b, 'admin')
   await admit(cPeer, 'member')
   await admit(dPeer, 'member')
@@ -905,13 +878,15 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
 
   const memberId = await Identity.create()
-  const dev1 = await makePeer(t, testnet, topic, {
+  const dev1 = await makePeer(t, testnet, {
+    topic,
     identity: memberId,
     keyPair: Identity.randomKeyPair(),
     encryptionKey,
     key: a.db.key
   })
-  const dev2 = await makePeer(t, testnet, topic, {
+  const dev2 = await makePeer(t, testnet, {
+    topic,
     identity: memberId,
     keyPair: Identity.randomKeyPair(),
     encryptionKey,
