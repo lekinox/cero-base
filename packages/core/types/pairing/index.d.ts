@@ -153,6 +153,8 @@ export declare class Pairing extends ReadyResource {
      * @returns {Promise<boolean>}  Whether it was served.
      */
     revoke(invite: string): Promise<boolean>;
+    /** @returns {boolean} Whether this member serves any invite. */
+    get serving(): boolean;
     _sync(): Promise<void>;
     _drop(id: any): void;
     _onknock(message: any): Promise<void>;

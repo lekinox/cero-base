@@ -242,6 +242,7 @@ export class Handle extends ReadyResource {
       await this.fileServer.listen()
       await this.mailbox.ready()
       await this._carryOn().catch(this._onerror)
+      this._reserve().catch(this._onerror)
     }
   }
 
@@ -824,6 +825,7 @@ export class Handle extends ReadyResource {
     bind(child, child.type, this.operators)
     for (const hook of this._typeHooks) hook.apply(child)
     this.children.add(child)
+    this._serve(child)
     this.emit('handle', child, info)
   }
 
@@ -852,7 +854,40 @@ export class Handle extends ReadyResource {
    * @param {Handle} child
    * @param {{ role?: string }} [opts]
    */
+  // a room that serves invites is reopened at boot, so they are served whenever we are online,
+  // not only while the app has the room open
+  _serve(child) {
+    if (!this.local || !child.pair) return
+    const save = async () => {
+      const { serving } = child.pair
+      if (serving === child._serving) return
+      child._serving = serving
+      if (!serving) return this.local.store.del('serving', child.id)
+      const { role = '' } = child._accepting || {}
+      await this.local.store.put('serving', {
+        id: child.id,
+        type: child.type,
+        accept: !!child._accepting,
+        role
+      })
+    }
+    child.pair.on('serving', () => save().catch(this._onerror))
+    save().catch(this._onerror)
+  }
+
+  // gated rooms stay gated: their requests wait for the app
+  async _reserve() {
+    if (!this.local) return
+    for (const { id, type, accept, role } of (await this.local.store.get('serving')).data) {
+      this._load(type, id, { accept, role: role || undefined }).catch((err) => {
+        if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
+        this._onerror(err)
+      })
+    }
+  }
+
   _wireAccept(child, { role } = {}) {
+    child._accepting = { role: role || '' }
     const accept = (cand) => {
       if (this.closing || this.closed || child.closing || child.closed) return
       cand.accept({ role }).catch(this._onerror)

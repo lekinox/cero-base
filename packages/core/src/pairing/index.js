@@ -145,6 +145,11 @@ export class Pairing extends ReadyResource {
     return true
   }
 
+  /** @returns {boolean} Whether this member serves any invite. */
+  get serving() {
+    return this._invites.size > 0
+  }
+
   // serve exactly the invites the database holds, while this member may invite
   async _sync() {
     const me = await this._me()
@@ -157,6 +162,7 @@ export class Pairing extends ReadyResource {
       const inbox = this.mailbox.receive(row.secret, (knock) => this._onknock(knock))
       this._invites.set(row.id, served(row, inbox))
     }
+    this.emit('serving', this.serving)
   }
 
   // stops serving it on this member

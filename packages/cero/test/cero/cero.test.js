@@ -209,6 +209,71 @@ function nowhere(opts) {
   return Invite.create({ discoveryKey: random(), address: random(), ...opts }).toString()
 }
 
+test('invites: an owner back online serves its invites without opening the room', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const { id } = room
+  const invite = await room.invite()
+  await owner.me.close()
+
+  const joiner = await ceroOpen(t, { testnet })
+  joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
+
+  // the app only boots; nobody opens the room
+  await reopen(t, owner.dir, testnet)
+  t.ok(await joined(joiner.me, id), 'admitted by the room reopened at boot')
+})
+
+test('invites: a gated room reopened at boot stays gated', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const { id } = room
+  const invite = await room.invite()
+  await owner.me.close()
+
+  const joiner = await ceroOpen(t, { testnet })
+  joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
+
+  const back = await reopen(t, owner.dir, testnet)
+  const served = await waitUntil(() => [...back.children].find((c) => c.id === id) || null)
+  const request = await waitUntil(() => [...served.pair.pending][0] || null)
+  t.is((await get(served.members)).data.length, 1, 'waiting for the app, not admitted')
+  await served.accept(request)
+  t.ok(await joined(joiner.me, id))
+})
+
+test('invites: a room with no invite left is not reopened at boot', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const serving = async (me) => (await me.local.store.get('serving')).data.length
+  const invite = await room.invite()
+  await waitUntil(async () => ((await serving(owner.me)) === 1 ? true : null))
+
+  const joiner = await ceroOpen(t, { testnet })
+  await open(joiner.me.team, invite)
+  await waitUntil(async () => ((await serving(owner.me)) === 0 ? true : null))
+  t.pass('the used invite takes the room off the list')
+})
+
+test('invites: a room left with invites still served is dropped from the list at boot', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  await room.invite()
+  await waitUntil(async () =>
+    (await owner.me.local.store.get('serving')).data.length ? true : null
+  )
+  await owner.me.store.call('del-handle', { id: room.id })
+  await owner.me.close()
+
+  const back = await reopen(t, owner.dir, testnet)
+  await waitUntil(async () => ((await back.local.store.get('serving')).data.length ? null : true))
+  t.is(back.children.size, 0, 'nothing reopened')
+})
+
 test('invites: a reader invite joins through cero() and reads', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })

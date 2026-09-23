@@ -41,6 +41,9 @@ export declare const defs: {
             type: string;
             kind: string;
         };
+        serving: {
+            type: string;
+        };
     };
 };
 export declare function fields(map: any): {

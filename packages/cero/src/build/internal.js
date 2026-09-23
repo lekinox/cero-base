@@ -18,7 +18,8 @@ export const defs = {
     joins: { type: 'join' },
     inbox: { type: 'mail' },
     outbox: { type: 'mail' },
-    environment: { type: 'environment', kind: 'single' }
+    environment: { type: 'environment', kind: 'single' },
+    serving: { type: 'serving' }
   }
 }
 

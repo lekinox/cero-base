@@ -72,7 +72,10 @@ const invite = await room.invite({ role: 'member', ttl: '1d' })
 
 Every minted invite is also a row in the room's `invites` collection. The row
 replicates, so any member's replica serves the invite after the minting device
-goes offline, and the invite survives a close and reopen. A single-use row
+goes offline, and the invite survives a close and reopen. A device serves its rooms'
+invites whenever it is online, not only while the app has the room open: at boot
+cero reopens every room that still has invites, the way the app last opened it,
+so a gated room stays gated. A single-use row
 disappears everywhere once consumed. A `reuse` row stays.
 
 ## Joining

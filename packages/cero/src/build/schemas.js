@@ -98,6 +98,13 @@ export const local = {
     secretKey: required(bytes),
     encryptionKey: bytes
   },
+  // a room serving invites, reopened at boot the way the app last opened it
+  serving: {
+    id: required(string),
+    type: required(string),
+    accept: bool,
+    role: string
+  },
   // a join not answered yet: the writer is fixed before the first knock, so a resumed one
   // hears the reply to an earlier knock
   join: {

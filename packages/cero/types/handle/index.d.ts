@@ -435,9 +435,9 @@ export declare class Handle extends ReadyResource {
      * @param {Handle} child
      * @param {{ role?: string }} [opts]
      */
-    _wireAccept(child: Handle, { role }?: {
-        role?: string;
-    }): void;
+    _serve(child: Handle): void;
+    _reserve(): Promise<void>;
+    _wireAccept(child: any, { role }?: {}): void;
     /**
      * @param {string} id
      * @param {KeyPair | { publicKey: Uint8Array, secretKey: Uint8Array } | null} keyPair

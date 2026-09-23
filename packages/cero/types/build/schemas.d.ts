@@ -90,6 +90,12 @@ export declare const local: {
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
     };
+    serving: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        accept: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
+    };
     join: {
         id: import("@cero-base/core").Prim;
         type: import("@cero-base/core").Prim;
