@@ -178,6 +178,26 @@ test('handshake: accept admits the joiner and sends the keys and epochs', async 
   t.is(member.role, 'member', 'admitted before the reply went out')
 })
 
+test('handshake: a knock delivered again leaves the member row as it is', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite({ role: 'member', reuse: true })
+  host.pairing.on('candidate', (request) => request.accept().catch((err) => t.fail(err.message)))
+  const writer = crypto.keyPair()
+  await joiner.join(invite, { writer })
+
+  const id = hid.encode(joiner.identity.publicKey)
+  const { data: admitted } = await host.db.get('members', id)
+  await host.db.call('set-member', { ...admitted, role: 'admin', updatedAt: Date.now() })
+  const { data: before } = await host.db.get('members', id)
+  t.is(before.role, 'admin')
+
+  // the same writer knocks again, as a join resumed after a restart does
+  await joiner.join(invite, { writer })
+  const { data: after } = await host.db.get('members', id)
+  t.is(after.role, 'admin', 'the role it was given since')
+  t.is(after.createdAt, before.createdAt)
+})
+
 test('handshake: accept checks the role and the expiry first', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
 

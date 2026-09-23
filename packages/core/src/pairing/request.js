@@ -1,4 +1,5 @@
 import Hypercore from 'hypercore'
+import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 import c from 'compact-encoding'
 
@@ -104,6 +105,9 @@ async function admit(db, { identity, writer, role }) {
   const ts = Date.now()
   const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer }] })
   const member = { id: hid.encode(identity), key, role, createdAt: ts, updatedAt: ts }
+  // a knock delivered again: this writer is already in, so only the reply goes out again
+  const { data: existing } = await db.get('members', member.id)
+  if (existing && b4a.equals(existing.key, key)) return
   if (role === 'reader') {
     await db.call('add-member', member)
     return
