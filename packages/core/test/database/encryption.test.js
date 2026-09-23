@@ -3,9 +3,10 @@ import b4a from 'b4a'
 import Autobee from 'autobee'
 import autobeeEncryption from 'autobee-encryption'
 import crypto from 'hypercore-crypto'
+import c from 'compact-encoding'
 import { isBare } from 'which-runtime'
 
-import { Keyring, EpochEncryption, EpochAutobee } from '../../src/database/encryption.js'
+import { Keyring, EpochEncryption, EpochAutobee, wraps } from '../../src/database/encryption.js'
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
@@ -596,9 +597,6 @@ test('rotate: an envelope failing its commitment is rejected, not adopted', asyn
 
   // a malicious/buggy rotator: envelopes carry one secret, the commitment
   // another — every honest member must refuse the epoch
-  const { default: cryptoLib } = await import('hypercore-crypto')
-  const { wraps } = await import('../../src/database/encryption.js')
-  const { default: cenc } = await import('compact-encoding')
   const sealed = Identity.randomBytes(32)
   const wrapped = [
     { id: a.identity.id, box: Identity.seal(a.identity.publicKey, sealed) },
@@ -607,15 +605,37 @@ test('rotate: an envelope failing its commitment is rejected, not adopted', asyn
   await a.db.call('rotate-key', {
     epoch: 0,
     stamp: 12345,
-    wrapped: cenc.encode(wraps, wrapped),
+    wrapped: c.encode(wraps, wrapped),
     createdAt: Date.now(),
-    commit: cryptoLib.hash(Identity.randomBytes(32)) // does not match `sealed`
+    commit: crypto.hash(Identity.randomBytes(32)) // does not match `sealed`
   })
   await a.db.bee.update()
 
   await waitFor(async () => b.errors.some((e) => /commitment/.test(e.message)))
   t.is(a.db.keyring.seq, 0, 'rotator side never adopts the epoch')
   t.is(b.db.keyring.seq, 0, 'member refuses an envelope that fails the commitment')
+})
+
+test('rotate: an admin sealing the owner out is healed by the owner', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['admin'])
+  await waitFor(async () => b.db.writable)
+  await waitFor(async () => (await b.db.get('members')).data.length === 2)
+
+  // the admin's own rotation, but the owner's envelope holds a secret that fails the commitment
+  const seal = Identity.seal
+  Identity.seal = (key, secret) =>
+    seal(key, b4a.equals(key, a.identity.publicKey) ? Identity.randomBytes(32) : secret)
+  await b.db.rotate().finally(() => {
+    Identity.seal = seal
+  })
+
+  await waitFor(() => a.db.keyring.seq === 2 && b.db.keyring.seq === 2, { timeout: 30000 })
+  await a.db.put('messages', { text: 'after' })
+  await waitFor(async () => (await texts(b.db)).includes('after'))
+  t.pass('the owner re-keyed, and both read the new epoch')
 })
 
 test('wakeup hints: UNKNOWN_EPOCH parks and retries instead of closing the bee', async (t) => {
@@ -800,9 +820,7 @@ test('rotate: divergent offline removals converge — no data loss, both targets
     if (!rows.length) return false
     const top = rows.reduce((x, y) => (y.epoch > x.epoch ? y : x))
     if (db.keyring.current !== top.stamp || !db.keyring.entropy(top.stamp)) return false
-    const ids = (await import('../../src/database/encryption.js')).wraps
-    const cenc = (await import('compact-encoding')).default
-    const recipients = cenc.decode(ids, top.wrapped).map((w) => w.id)
+    const recipients = c.decode(wraps, top.wrapped).map((w) => w.id)
     const expect = [a.identity.id, b.identity.id].sort()
     return (
       recipients.length === 2 &&
@@ -850,18 +868,15 @@ test('rotate: a stamp collision is rejected deterministically', async (t) => {
   const rows = await a.db.view.find('@cero/epochs', {}).toArray()
   const taken = rows[0].stamp
 
-  const { wraps: wrapsEnc } = await import('../../src/database/encryption.js')
-  const cenc = (await import('compact-encoding')).default
-  const { default: cryptoLib } = await import('hypercore-crypto')
   const entropy = Identity.randomBytes(32)
   await a.db.call('rotate-key', {
     epoch: 0,
     stamp: taken, // collides with the existing epoch's stamp
-    wrapped: cenc.encode(wrapsEnc, [
+    wrapped: c.encode(wraps, [
       { id: a.identity.id, box: Identity.seal(a.identity.publicKey, entropy) }
     ]),
     createdAt: Date.now(),
-    commit: cryptoLib.hash(entropy)
+    commit: crypto.hash(entropy)
   })
   await a.db.bee.update()
 

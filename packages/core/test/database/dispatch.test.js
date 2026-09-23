@@ -1328,6 +1328,16 @@ test('invites: altering one keeps its rank capped and its secret', async (t) => 
   t.alike(data.wrapped, b4a.alloc(32, 1), 'knocks still arrive where they did')
 })
 
+test('invites: revoking one needs a rank that could grant it', async (t) => {
+  const { db, as } = await withMember(t, 'admin')
+  const wrapped = b4a.alloc(32, 1)
+  await db.call('add-invite', { id: 'owner', wrapped, role: 'owner', reuse: true, createdAt: 1 })
+  await db.call('add-invite', { id: 'admin', wrapped, role: 'admin', reuse: true, createdAt: 1 })
+  t.is((await as('del-invite', { id: 'owner' }))?.code, 'REFUSED')
+  t.ok((await db.get('invites', 'owner')).data, 'an admin cannot revoke an owner invite')
+  t.is(await as('del-invite', { id: 'admin' }), null, 'but revokes one it could grant')
+})
+
 test('invites: consuming one needs a rank that could grant it', async (t) => {
   const { db, as } = await withMember(t, 'member')
   const wrapped = b4a.alloc(32, 1)

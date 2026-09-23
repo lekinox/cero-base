@@ -459,9 +459,10 @@ export function makeDispatcher({
   // revoking needs REMOVE; consuming a single-use invite is done by whichever replica served the join
   add('del-invite', async (op, ctx) => {
     const existing = await ctx.view.get(invites, { id: op.id })
-    const consume = existing && existing.reuse !== true
+    if (!existing) return
+    const consume = existing.reuse !== true
     const r = await getSignerRole(ctx.view, ctx.key)
-    if (!can(r, REMOVE) && !(consume && can(r, INVITE) && capped(r, existing))) {
+    if (!capped(r, existing) || !(can(r, REMOVE) || (consume && can(r, INVITE)))) {
       throw CeroError.REFUSED('invite')
     }
     return ctx.view.delete(invites, op)

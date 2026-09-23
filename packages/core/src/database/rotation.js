@@ -181,10 +181,11 @@ export class Rotation {
   }
 
   // a rotation seals for the rotator's view of the members; REMOVE-capable devices re-key
-  // when the current epoch's recipients drift from the member list
+  // when the current epoch's recipients drift from the member list, or when its envelope
+  // for them does not open: a rotator must not seal anyone who could heal it out
   async _audit() {
     const db = this.db
-    if (db.closing || db.closed || !db.writable || this.current || !db.keyring.current) return
+    if (db.closing || db.closed || !db.writable || this.current) return
     const { data: device } = await db.get('devices', hid.encode(db.writerKey))
     const me = device?.memberId ? (await db.get('members', device.memberId)).data : null
     if (!can(me?.role, REMOVE)) return
@@ -195,7 +196,8 @@ export class Rotation {
     const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
     const { data: members } = await db.get('members')
     const ids = new Set(members.map((m) => m.id))
-    if (recipients.size === ids.size && [...recipients].every((id) => ids.has(id))) {
+    const sealedOut = !db.keyring.entropy(top.stamp)
+    if (!sealedOut && recipients.size === ids.size && [...recipients].every((id) => ids.has(id))) {
       this._healedFor = null
       return
     }
