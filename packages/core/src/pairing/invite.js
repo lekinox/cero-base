@@ -16,24 +16,22 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  * @property {number} expires           Absolute expiry timestamp; `0` means never.
  * @property {Uint8Array} discoveryKey  Discovery key of the database the invite opens.
  * @property {Uint8Array} address       Where a knock is sent.
- * @property {Uint8Array[]} [mirrors]   Mirrors that hold a knock while every member is offline.
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a knock.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 
 /**
- * An invite: where to knock (its address and mirrors), the database it opens, and a seed
+ * An invite: where to knock (its address), the database it opens, and a seed
  * whose keypair proves the knocker holds the invite. Role and expiry are enforced by the member
  * that answers, from its own record; `expires` is here so a joiner fails fast.
  */
 export class Invite {
   /** @param {InviteFields & { _str?: string }} fields */
-  constructor({ expires, discoveryKey, address, mirrors = [], seed, data = null, _str = null }) {
+  constructor({ expires, discoveryKey, address, seed, data = null, _str = null }) {
     this.version = VERSION
     this.expires = expires
     this.discoveryKey = discoveryKey
     this.address = address
-    this.mirrors = mirrors
     this.seed = seed
     this.data = data
     this._str = _str
@@ -86,10 +84,10 @@ export class Invite {
   /**
    * A new invite with a fresh seed.
    *
-   * @param {{ ttl?: number | string, discoveryKey: Uint8Array, address: Uint8Array, mirrors?: Uint8Array[], data?: Uint8Array | null }} opts
+   * @param {{ ttl?: number | string, discoveryKey: Uint8Array, address: Uint8Array, data?: Uint8Array | null }} opts
    * @returns {Invite}
    */
-  static create({ ttl = 0, discoveryKey, address, mirrors = [], data = null }) {
+  static create({ ttl = 0, discoveryKey, address, data = null }) {
     if (discoveryKey?.byteLength !== 32) {
       throw CeroError.INVALID('discoveryKey must be a 32-byte buffer')
     }
@@ -100,7 +98,6 @@ export class Invite {
       expires,
       discoveryKey,
       address,
-      mirrors,
       seed: crypto.randomBytes(32),
       data
     })

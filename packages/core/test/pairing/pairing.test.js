@@ -50,8 +50,8 @@ async function makeHost(t, { mirrors, outbox } = {}) {
   return { pairing, mailbox, net, db, identity }
 }
 
-async function makeJoiner(t) {
-  const { mailbox, net, identity } = await makeMailbox(t)
+async function makeJoiner(t, { mirrors } = {}) {
+  const { mailbox, net, identity } = await makeMailbox(t, { mirrors })
   const join = (invite, opts = {}) => Pairing.join(mailbox, invite, { identity, ...opts })
   return { mailbox, net, identity, join }
 }
@@ -110,13 +110,12 @@ test('invite: ttl is ms or a duration', async (t) => {
   await t.exception(pairing.invite({ ttl: 'soon' }), /not a duration/)
 })
 
-test('Invite.parse round-trips: discovery key, address, mirrors, id', async (t) => {
-  const mirror = crypto.randomBytes(32)
-  const { pairing, db } = await makeHost(t, { mirrors: [mirror] })
+test('Invite.parse round-trips: discovery key, address, id', async (t) => {
+  const { pairing, db } = await makeHost(t, { mirrors: [crypto.randomBytes(32)] })
   const invite = await pairing.invite()
   const parsed = Invite.parse(invite)
   t.alike(parsed.discoveryKey, db.discoveryKey)
-  t.alike(parsed.mirrors, [mirror])
+  t.is(parsed.mirrors, undefined, "the mirrors are the app's, never in the invite")
   t.alike(Invite.parse(invite).id, parsed.id, 'the id is stable across parses')
   t.is(parsed.toString(), invite)
   t.is(parsed.data, null, 'no data unless given')
@@ -140,7 +139,6 @@ test('Invite.parse: rejects garbage with INVALID_INVITE', async (t) => {
 test('Invite.create: needs a 32-byte discovery key and address', (t) => {
   t.exception(() => Invite.create({ ...sample(), discoveryKey: b4a.alloc(8) }), /discoveryKey/)
   t.exception(() => Invite.create({ ...sample(), address: null }), /address/)
-  t.is(Invite.create(sample()).mirrors.length, 0, 'no mirrors by default')
   t.exception(() => Invite.create({ ...sample(), data: 'clinic' }), /data must be a buffer/)
 })
 
@@ -448,12 +446,12 @@ test('an invite is consumed only once its reply is kept', async (t) => {
 
 test('offline: member and joiner are never online together, the mirror carries both ways', async (t) => {
   const mirror = await makeBlindPeer(t, testnet)
-  // the member's database is mirrored, which keeps it connected to the mirror
+  // both run the app's mirror; the member's database is mirrored, which keeps it connected
   const host = await makeHost(t, { mirrors: [mirror.publicKey] })
   const invite = await host.pairing.invite()
   await host.net.suspend()
 
-  const joiner = await makeJoiner(t)
+  const joiner = await makeJoiner(t, { mirrors: [mirror.publicKey] })
   const knocked = holds(mirror, Invite.parse(invite).address)
   const joining = joiner.join(invite, { timeout: 60000 })
   await knocked

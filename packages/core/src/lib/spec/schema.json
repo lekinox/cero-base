@@ -1,11 +1,11 @@
 {
-  "version": 2,
+  "version": 1,
   "schema": [
     {
       "name": "invite",
       "namespace": "cero",
       "compact": false,
-      "flagsPosition": 4,
+      "flagsPosition": 5,
       "fields": [
         {
           "name": "version",
@@ -32,13 +32,6 @@
           "version": 1
         },
         {
-          "name": "mirrors",
-          "required": false,
-          "array": true,
-          "type": "fixed32",
-          "version": 1
-        },
-        {
           "name": "seed",
           "required": true,
           "type": "fixed32",
@@ -48,7 +41,7 @@
           "name": "data",
           "required": false,
           "type": "buffer",
-          "version": 2
+          "version": 1
         }
       ]
     },

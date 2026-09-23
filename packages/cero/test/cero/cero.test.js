@@ -43,16 +43,14 @@ test('mirrors: opt threads to the network and survives restore', async (t) => {
 test('mirrors: a joiner knocks while every member is offline or suspended, the mirror holds it', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)
-  const { me: owner } = await ceroOpen(t, {
-    testnet,
-    mirrors: [b4a.toString(mirror.publicKey, 'hex')]
-  })
+  const mirrors = [b4a.toString(mirror.publicKey, 'hex')]
+  const { me: owner } = await ceroOpen(t, { testnet, mirrors })
   const room = await open(owner.team, { name: 'clinic' })
   const invite = await room.invite()
   await owner.suspend()
 
-  // the joiner has no mirror config: the invite names the room's mirror
-  const { me: joiner } = await ceroOpen(t, { testnet })
+  // the same app, so the same mirrors
+  const { me: joiner } = await ceroOpen(t, { testnet, mirrors })
   const knocked = holds(mirror, Invite.parse(invite).address)
   const joining = open(joiner.team, invite)
   await knocked
@@ -83,8 +81,8 @@ test('mirrors: owner and joiner are never online together, across restarts', asy
   const invite = await room.invite()
   await owner.me.close()
 
-  // the joiner knocks alone and leaves: the knock waits on the mirror
-  const joiner = await ceroOpen(t, { testnet })
+  // the joiner knocks alone and leaves: the knock waits on the app's mirror
+  const joiner = await ceroOpen(t, { testnet, mirrors })
   const knocked = holds(mirror, Invite.parse(invite).address)
   joiner.me._join(invite, 'team', { timeout: 500 }).catch(() => {})
   await knocked
@@ -103,7 +101,7 @@ test('mirrors: owner and joiner are never online together, across restarts', asy
   await mirrored.close()
   await back.close()
 
-  const again = await reopen(t, joiner.dir, testnet)
+  const again = await reopen(t, joiner.dir, testnet, { mirrors })
   t.ok(await joined(again, id), 'joined with nobody else online')
 })
 

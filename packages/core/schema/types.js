@@ -13,7 +13,6 @@ export const types = [
       { name: 'expires', type: 'uint', required: true },
       { name: 'discoveryKey', type: 'fixed32', required: true },
       { name: 'address', type: 'fixed32', required: true },
-      { name: 'mirrors', type: 'fixed32', required: false, array: true },
       { name: 'seed', type: 'fixed32', required: true },
       { name: 'data', type: 'buffer', required: false }
     ]

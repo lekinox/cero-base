@@ -110,8 +110,7 @@ export class Pairing extends ReadyResource {
       ttl,
       data,
       discoveryKey: crypto.discoveryKey(this.db.key),
-      address: Mailbox.getAddress(secret),
-      mirrors: this.mailbox.network.mirrors
+      address: Mailbox.getAddress(secret)
     })
     const id = b4a.toHex(invite.id)
     await this.db.call('add-invite', {
@@ -278,10 +277,11 @@ export class Pairing extends ReadyResource {
 
     const { network } = mailbox
     const inbox = mailbox.receive(writer.secretKey, onreply)
-    // held out until the reply lands, not until read: it keeps us on the mirror the reply goes
-    // to. The invite's mirrors reach a database we know nothing of, ours reach it after it changed
-    const mirrors = union(parsed.mirrors, network.mirrors)
-    const post = new Post(network, parsed.address, c.encode(Knock, knock), { mirrors })
+    // held out until the reply lands, not until read: it keeps us on the app's mirrors, which the
+    // reply goes to as well
+    const post = new Post(network, parsed.address, c.encode(Knock, knock), {
+      mirrors: network.mirrors
+    })
 
     const onabort = () => fail(CeroError.CLOSED('join'))
     if (signal?.aborted) onabort()
@@ -334,10 +334,6 @@ function opens(response, discoveryKey) {
 
 function keysOf({ key, encryptionKey, epochs }, writer) {
   return { key, encryptionKey, epochs: epochs || [], writer }
-}
-
-function union(keys, more) {
-  return [...keys, ...more.filter((key) => !keys.some((k) => b4a.equals(k, key)))]
 }
 
 // anyone can send to an address: what does not decode is dropped, never thrown
