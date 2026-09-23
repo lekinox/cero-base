@@ -36,16 +36,12 @@ export declare const main: {
     };
     invite: {
         id: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
-        publicKey: import("@cero-base/core").Prim;
-        data: import("@cero-base/core").Prim;
-        sig: import("@cero-base/core").Prim;
+        secret: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        reuse: import("@cero-base/core").Prim;
         createdAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
-        seed: import("@cero-base/core").Prim;
-        reuse: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;
@@ -94,6 +90,22 @@ export declare const local: {
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
     };
+    join: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        publicKey: import("@cero-base/core").Prim;
+        secretKey: import("@cero-base/core").Prim;
+        key: import("@cero-base/core").Prim;
+        encryptionKey: import("@cero-base/core").Prim;
+        epochs: import("@cero-base/core").Prim;
+    };
+    mail: {
+        id: import("@cero-base/core").Prim;
+        address: import("@cero-base/core").Prim;
+        message: import("@cero-base/core").Prim;
+        mirrors: import("@cero-base/core").Prim;
+    };
     environment: {
         channel: import("@cero-base/core").Prim;
     };
@@ -132,8 +144,9 @@ export declare const rpc: {
     'req-invite': {
         handle: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
-        expiresIn: import("@cero-base/core").Prim;
+        ttl: import("@cero-base/core").Prim;
         reuse: import("@cero-base/core").Prim;
+        data: import("@cero-base/core").Prim;
     };
     'req-revoke': {
         handle: import("@cero-base/core").Prim;
@@ -142,6 +155,9 @@ export declare const rpc: {
     'req-join': {
         parent: import("@cero-base/core").Prim;
         ref: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+    };
+    'req-cancel': {
         invite: import("@cero-base/core").Prim;
     };
     'req-open': {
@@ -186,6 +202,9 @@ export declare const rpc: {
         deviceId: import("@cero-base/core").Prim;
         fileBase: import("@cero-base/core").Prim;
         fileToken: import("@cero-base/core").Prim;
+    };
+    'res-joining': {
+        invites: import("@cero-base/core").Prim;
     };
     'res-seed': {
         phrase: import("@cero-base/core").Prim;

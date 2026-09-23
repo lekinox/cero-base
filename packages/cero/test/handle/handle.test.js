@@ -23,7 +23,7 @@ const teamSpec = spec.handles.team
 
 async function ceroOpen(t, opts = {}) {
   const { store } = await makeStore(t)
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const testnet = opts.testnet || (await makeTestnet(t))
   const net = await makeNet(t, testnet)
   const discovery = net.join(identity.topic)
@@ -60,41 +60,6 @@ test('open: accept:false survives a reopen — the gate does not re-arm', async 
   await again.close()
   const armed = await open(me.team, { id })
   t.ok(armed.pair.listenerCount('candidate') > 0, 'and re-arms when the caller asks for it')
-})
-
-test('accept: rejects an expired invite', async (t) => {
-  const { me } = await ceroOpen(t)
-  const candidate = {
-    userData: b4a.alloc(64),
-    invite: { expired: true, role: 'member' },
-    confirm: async () => {}
-  }
-  await t.exception.all(me.accept(candidate), /expired/i)
-})
-
-test('accept: rejects a role exceeding the invite role', async (t) => {
-  const { me } = await ceroOpen(t)
-  const candidate = {
-    userData: b4a.alloc(64),
-    invite: { expired: false, role: 'member' },
-    confirm: async () => {}
-  }
-  await t.exception.all(me.accept(candidate, { role: 'owner' }), /exceeds/i)
-})
-
-test('accept: rejects a role that is not a rank, before any key is revealed', async (t) => {
-  const { me } = await ceroOpen(t)
-  let confirmed = false
-  const candidate = {
-    userData: b4a.alloc(64),
-    invite: { expired: false, role: '' },
-    confirm: async () => {
-      confirmed = true
-    }
-  }
-  // an app role name grants nothing at apply — it must fail loudly here
-  await t.exception.all(me.accept(candidate, { role: 'volunteer' }), /not a rank/i)
-  t.absent(confirmed, 'refused before confirm() handed over the keys')
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {
@@ -157,7 +122,7 @@ test('Handle: ref carries handle + name + kind', async (t) => {
 
 test('Handle: bootstrap on fresh', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const net = await makeNet(t, await makeTestnet(t))
   const me = new Handle({ store, identity, network: net, spec })
   await me.ready()
@@ -237,7 +202,7 @@ test('Handle: t.extend adds a field to the member builtin', async (t) => {
 
 test('Handle: second device claims and syncs', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
 
   const a = await ceroOpen(t, { testnet, identity })
   await a.me.bootstrap({ name: 'a' })
@@ -279,7 +244,7 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.generate()
+  const hostId = await Identity.create()
   const hostNet = await makeNet(t, testnet, hostId)
   const room = new Handle({
     store: hostStore,
@@ -304,7 +269,7 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
   })
 
   const inviteStr = await room.invite({ role: 'reader' })
-  const readerId = await Identity.generate()
+  const readerId = await Identity.create()
   const { store: readerStore } = await makeStore(t)
   const readerNet = await makeNet(t, testnet, readerId)
 
@@ -336,7 +301,7 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.generate()
+  const hostId = await Identity.create()
   const hostNet = await makeNet(t, testnet, hostId)
   const room = new Handle({
     store: hostStore,
@@ -360,7 +325,7 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
   room.pair.on('candidate', (cand) => room.accept(cand).catch((e) => t.fail(e.message)))
 
   const joinRoom = async (name) => {
-    const id = await Identity.generate()
+    const id = await Identity.create()
     const { store } = await makeStore(t)
     const net = await makeNet(t, testnet, id)
     const h = await Handle.join(await room.invite(), {
@@ -419,7 +384,7 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.generate()
+  const hostId = await Identity.create()
   const hostNet = await makeNet(t, testnet, hostId)
   const room = new Handle({
     store: hostStore,
@@ -628,7 +593,7 @@ test('Handle: nested files rotate with the child room', async (t) => {
 
 test('Handle: second device opens a rotated child by id and reads every era', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
 
   const a = await ceroOpen(t, { testnet, identity })
   await a.me.bootstrap({ name: 'device-1' })
@@ -957,7 +922,7 @@ test('Handle: invite + Handle.join + atomic admission', async (t) => {
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.generate()
+  const hostId = await Identity.create()
   const hostNet = await makeNet(t, testnet, hostId)
   const room = new Handle({
     store: hostStore,
@@ -981,9 +946,9 @@ test('Handle: invite + Handle.join + atomic admission', async (t) => {
     }
   })
 
-  const inviteStr = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const inviteStr = await room.invite({ role: 'member', ttl: 60_000 })
 
-  const joinerId = await Identity.generate()
+  const joinerId = await Identity.create()
   const { store: joinerStore } = await makeStore(t)
   const joinerNet = await makeNet(t, testnet, joinerId)
 
@@ -1015,7 +980,7 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.generate()
+  const hostId = await Identity.create()
   const hostNet = await makeNet(t, testnet, hostId)
   const room = new Handle({
     store: hostStore,
@@ -1030,11 +995,11 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
 
   await room.bootstrap({ name: 'host' })
 
-  const inviteStr = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const inviteStr = await room.invite({ role: 'member', ttl: 60_000 })
   t.is(await room.revoke(inviteStr), true, 'revoke returns true the first time')
   t.is(await room.revoke(inviteStr), false, 'revoke returns false the second time')
 
-  const joinerId = await Identity.generate()
+  const joinerId = await Identity.create()
   const { store: joinerStore } = await makeStore(t)
   const joinerNet = await makeNet(t, testnet, joinerId)
 
@@ -1114,7 +1079,7 @@ test('Handle: fileServer listens on the root, resolve maps coreKey→encryptionK
   )
   t.alike(resolved.key, me.store.key, 'echoes the coreKey back as key')
 
-  const stranger = await Identity.generate()
+  const stranger = await Identity.create()
   t.is(me._resolveCore(stranger.publicKey, {}), null, 'unknown core → null (404)')
 })
 
@@ -1220,7 +1185,7 @@ test('files: a reader cannot add a file', async (t) => {
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.generate()
+  const hostId = await Identity.create()
   const hostNet = await makeNet(t, testnet, hostId)
   const room = new Handle({
     store: hostStore,
@@ -1244,7 +1209,7 @@ test('files: a reader cannot add a file', async (t) => {
   })
 
   const inviteStr = await room.invite({ role: 'reader' })
-  const readerId = await Identity.generate()
+  const readerId = await Identity.create()
   const { store: readerStore } = await makeStore(t)
   const readerNet = await makeNet(t, testnet, readerId)
 

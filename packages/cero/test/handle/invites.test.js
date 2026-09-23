@@ -3,7 +3,7 @@ import test from 'brittle'
 import { Identity } from '@cero-base/core/identity'
 
 import { Handle } from '../../src/handle/index.js'
-import { get, open } from '../../src/lib/operators.js'
+import { get, open, del, rotate } from '../../src/lib/operators.js'
 import { spec } from '../fixtures/spec/index.js'
 import { makeStore, makeTestnet, makeNet, waitForConnection, waitUntil } from '../helpers/index.js'
 
@@ -11,7 +11,7 @@ test.configure({ timeout: 90000 })
 
 async function ceroOpen(t, opts = {}) {
   const { store } = await makeStore(t)
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const testnet = opts.testnet || (await makeTestnet(t))
   const net = await makeNet(t, testnet)
   const discovery = net.join(identity.topic)
@@ -168,4 +168,29 @@ test('invites: reuse admits multiple joiners and its row survives', async (t) =>
 
   const { data: rows } = await get(room.invites)
   t.is(rows.length, 1, 'reusable invite row still present after two admissions')
+})
+
+test('invites: after a removal and a rotation, old and new invites admit, and the removed member serves none', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await ceroOpen(t, { testnet })
+  await a.me.bootstrap({ name: 'a-root' })
+  const room = await open(a.me.team, { name: 'clinic' })
+  t.teardown(() => room.close().catch(() => {}))
+
+  const b = await joinAsRoot(t, testnet, await room.invite())
+  await waitForConnection(a.net)
+  const before = await room.invite()
+
+  await del(room.members, b.identity.id)
+  await rotate(room)
+  const after = await room.invite()
+
+  // the new invite's row, secret included, is sealed under an epoch the removed member never learns
+  t.is(b.room.store.keyring.entropy(room.store.keyring.current), null)
+  await waitUntil(() => (b.room.pair._invites.size === 0 ? true : null))
+  t.pass('the removed member stops serving invites')
+
+  await joinAsRoot(t, testnet, before)
+  await joinAsRoot(t, testnet, after)
+  await memberCount(room, 3)
 })

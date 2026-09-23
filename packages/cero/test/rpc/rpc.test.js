@@ -57,7 +57,7 @@ async function openPair(t, serverOpts = {}, clientOpts) {
     { order: 5 }
   )
 
-  return { me: server.me, server, client }
+  return { me: server.me, server, client, testnet }
 }
 
 // ─── bundleability ────────────────────────────────────────────────────────
@@ -126,7 +126,6 @@ test('client: the import graph stays free of native/server-only packages', (t) =
     'hyperdb',
     'hyperblobs',
     'hypercore-storage',
-    'blind-pairing',
     'blind-peering'
   ]
   const leaked = [...external.keys()].filter((e) => NATIVE.includes(e.split('/')[0]))
@@ -486,22 +485,57 @@ test('rpc: add-file uploads bytes and returns a file row with an id', async (t) 
   t.is(row.name, 'a.txt', 'name round-trips')
 })
 
-// invite({ expiresIn, reuse }) must cross the wire, or a "1 hour" invite
+// invite({ ttl, reuse }) must cross the wire, or a "1 hour" invite
 // minted through a client never expires
-test('rpc: invite carries expiresIn over the wire', async (t) => {
+test('rpc: invite carries ttl and data over the wire', async (t) => {
   const { client } = await openPair(t)
   const team = await open(client.team, { name: 'inviting' })
 
   const before = Date.now()
-  const limited = await team.invite({ role: 'member', expiresIn: 60_000 })
+  const limited = await team.invite({ role: 'member', ttl: 60_000 })
   const expires = Invite.parse(limited).expires
-  t.ok(
-    expires >= before + 60_000 && expires <= Date.now() + 60_000,
-    'expiry stamped from expiresIn'
-  )
+  t.ok(expires >= before + 60_000 && expires <= Date.now() + 60_000, 'expiry stamped from ttl')
 
   const forever = await team.invite({ role: 'member' })
-  t.is(Invite.parse(forever).expires, 0, 'no expiresIn still means never')
+  t.is(Invite.parse(forever).expires, 0, 'no ttl still means never')
+
+  const data = b4a.from('clinic')
+  t.alike(Invite.parse(await team.invite({ data })).data, data)
+  t.is(Invite.parse(forever).data, null, 'no data unless given')
+})
+
+test('rpc: a join that lands after the caller stopped waiting shows up in handles', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await room.invite()
+  await owner.suspend()
+
+  // the server's join times out the way a client's open does, only sooner
+  const err = await me._join(invite, 'team', { timeout: 500 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT')
+
+  const arrived = (async () => {
+    for await (const { data } of watch(client.handles)) {
+      if (data.some((row) => row.id === room.id)) return true
+    }
+  })()
+  await owner.resume()
+  t.ok(await arrived, 'the client sees the room once a member answers')
+  t.is((await open(client.team, { id: room.id })).id, room.id)
+})
+
+test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
+  const { client } = await openPair(t)
+  const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
+  const invite = Invite.create({ discoveryKey: random(), address: random() }).toString()
+  const joining = open(client.team, invite).catch((e) => e)
+  await waitUntil(async () => ((await client.joining()).length ? true : null))
+  t.alike(await client.joining(), [invite])
+  t.ok(await client.cancel(invite))
+  t.alike(await client.joining(), [])
+  t.is((await joining).code, 'CLOSED')
 })
 
 // only the files ref uploads: a user collection with its own `data` column

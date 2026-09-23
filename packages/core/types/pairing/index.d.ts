@@ -1,190 +1,165 @@
 import ReadyResource from 'ready-resource';
+import { Request } from './request.js';
+import { Mailbox } from '../mailbox/index.js';
+import { Identity } from '../identity/index.js';
+export type KeyPair = {
+    publicKey: Uint8Array;
+    secretKey: Uint8Array;
+};
 export type PairingOpts = {
     /**
-     * Network to host the BlindPairing member.
+     * The device's mailbox: knocks are received there, replies sent from there.
      */
-    network: import('../network/index.js').Network;
+    mailbox: Mailbox;
     /**
-     * Identity used to sign invites and derive the topic.
+     * The database the invites open. Its `invites` collection holds them, so every member serves them.
      */
-    identity: import('../identity/index.js').Identity;
-    /**
-     * Optional override topic; defaults to `identity.publicKey`.
-     */
-    topic?: Uint8Array;
-    /**
-     * Register the member listener that serves invites (default `true`). Join-only pairings pass `false` — a listener is one-per-topic, so a joiner registering one collides with any concurrent join.
-     */
-    host?: boolean;
-    /**
-     * compact-encoding type for the invite payload `data`.
-     */
-    inviteEncoding?: any;
-    /**
-     * compact-encoding type for the joiner-supplied `userData`.
-     */
-    joinerEncoding?: any;
-    /**
-     * Called when a background candidate fails to process.
-     */
-    onerror?: (err: Error) => void;
+    db: import('../database/index.js').Database;
 };
-export type CreateInviteOpts = {
+export type InviteOpts = {
     /**
-     * Role tag bound into the invite.
+     * Role granted, at most your own.
      */
     role?: string;
     /**
-     * TTL in ms; `0`/omitted = no expiry.
+     * How long it is valid: ms, or `'12h'`, `'2d'`… Never expires when omitted.
      */
-    expiresIn?: number;
+    ttl?: number | string;
     /**
-     * Arbitrary payload (encoded via `inviteEncoding` when set).
-     */
-    data?: any;
-    /**
-     * Reusable until expiry/revoke; default `false` (consumed on first settle).
+     * Admit more than one joiner. Otherwise consumed by the first.
      */
     reuse?: boolean;
+    /**
+     * The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
+     */
+    data?: Uint8Array | null;
+};
+export type Served = {
+    /**
+     * The invite's id, hex.
+     */
+    id: string;
+    /**
+     * Owns the address knocks arrive at; never the seed that proves one.
+     */
+    secret: Uint8Array;
+    role: string;
+    /**
+     * Absolute expiry; `0` never.
+     */
+    expires: number;
+    reuse: boolean;
+    expired: boolean;
 };
 export type JoinOpts = {
     /**
-     * Payload sent with the candidate request. Required: blind-pairing derives the handshake token from it, so a candidate without one is never served.
+     * Who joins: the member they become, and who signs the knock.
      */
-    userData: any;
+    identity: Identity;
     /**
-     * Deadline for the handshake, in ms. Defaults to 30000.
+     * Their writer keypair in the database, a fresh one by default. Its secret key owns the reply address: pass the same one to resume a join after a restart.
+     */
+    writer?: KeyPair;
+    /**
+     * Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
      */
     timeout?: number;
+    /**
+     * Stops the join, rejecting it with `CLOSED`.
+     */
+    signal?: AbortSignal;
 };
 export type JoinResult = {
     key: Uint8Array;
     encryptionKey: Uint8Array | null;
-    additional: Uint8Array | null;
+    epochs: Array<{
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }>;
+    /**
+     * The writer the member admitted: open the database with it.
+     */
+    writer: KeyPair;
 };
 /**
- * @typedef {object} PairingOpts
- * @property {import('../network/index.js').Network} network         Network to host the BlindPairing member.
- * @property {import('../identity/index.js').Identity} identity      Identity used to sign invites and derive the topic.
- * @property {Uint8Array} [topic]                                    Optional override topic; defaults to `identity.publicKey`.
- * @property {boolean} [host]                                        Register the member listener that serves invites (default `true`). Join-only pairings pass `false` — a listener is one-per-topic, so a joiner registering one collides with any concurrent join.
- * @property {any} [inviteEncoding]                                  compact-encoding type for the invite payload `data`.
- * @property {any} [joinerEncoding]                                  compact-encoding type for the joiner-supplied `userData`.
- * @property {(err: Error) => void} [onerror]                        Called when a background candidate fails to process.
+ * @typedef {{ publicKey: Uint8Array, secretKey: Uint8Array }} KeyPair
  *
- * @typedef {object} CreateInviteOpts
- * @property {string} [role]                                         Role tag bound into the invite.
- * @property {number} [expiresIn]                                    TTL in ms; `0`/omitted = no expiry.
- * @property {any} [data]                                            Arbitrary payload (encoded via `inviteEncoding` when set).
- * @property {boolean} [reuse]                                       Reusable until expiry/revoke; default `false` (consumed on first settle).
+ * @typedef {object} PairingOpts
+ * @property {Mailbox} mailbox                      The device's mailbox: knocks are received there, replies sent from there.
+ * @property {import('../database/index.js').Database} db  The database the invites open. Its `invites` collection holds them, so every member serves them.
+ *
+ * @typedef {object} InviteOpts
+ * @property {string} [role]                        Role granted, at most your own.
+ * @property {number | string} [ttl]                How long it is valid: ms, or `'12h'`, `'2d'`… Never expires when omitted.
+ * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise consumed by the first.
+ * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
+ *
+ * @typedef {object} Served                         An invite as the database keeps it.
+ * @property {string} id                            The invite's id, hex.
+ * @property {Uint8Array} secret                    Owns the address knocks arrive at; never the seed that proves one.
+ * @property {string} role
+ * @property {number} expires                       Absolute expiry; `0` never.
+ * @property {boolean} reuse
+ * @property {boolean} expired
  *
  * @typedef {object} JoinOpts
- * @property {any} userData                                          Payload sent with the candidate request. Required: blind-pairing derives the handshake token from it, so a candidate without one is never served.
- * @property {number} [timeout]                                      Deadline for the handshake, in ms. Defaults to 30000.
+ * @property {Identity} identity                    Who joins: the member they become, and who signs the knock.
+ * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. Its secret key owns the reply address: pass the same one to resume a join after a restart.
+ * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
+ * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`.
  *
- * @typedef {{ key: Uint8Array, encryptionKey: Uint8Array | null, additional: Uint8Array | null }} JoinResult
+ * @typedef {object} JoinResult
+ * @property {Uint8Array} key
+ * @property {Uint8Array | null} encryptionKey
+ * @property {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
+ * @property {KeyPair} writer                       The writer the member admitted: open the database with it.
  */
 /**
- * Blind-pairing membership wrapper. Hosts invites, dispatches incoming candidates to the
- * application for accept/deny, and provides the joiner side of the handshake.
+ * Invites into a database. It keeps them in the database, so every member serves them; each
+ * invite has its own address, and a knock there that proves both the invite and the joiner's
+ * identity becomes a `candidate`, kept in the mailbox until it is accepted or denied.
+ * `Pairing.join` is the other side: knock with an invite, wait for the reply.
  */
 export declare class Pairing extends ReadyResource {
-    network: import("../index.js").Network;
-    identity: import("../index.js").Identity;
-    topic: Uint8Array<ArrayBufferLike>;
-    host: boolean;
-    inviteEncoding: any;
-    joinerEncoding: any;
-    _onerror: (err: Error) => void;
-    onconsume: any;
-    _blind: any;
-    _member: any;
+    mailbox: Mailbox;
+    db: import("../index.js").Database;
+    /** @type {Set<Request>} candidates not settled yet: whoever attaches after one fired goes through these first */
+    pending: Set<Request>;
     _invites: Map<any, any>;
-    _candidates: Set<any>;
+    _inboxes: Map<any, any>;
+    _onupdate: (touched: any) => void;
     /** @param {PairingOpts} [opts] */
-    constructor({ network, identity, topic, host, inviteEncoding, joinerEncoding, onerror, onconsume }?: PairingOpts);
-    /**
-     * Whether the underlying blind-pairing layer is suspended.
-     *
-     * @returns {boolean}
-     */
-    get suspended(): boolean;
+    constructor({ mailbox, db }?: PairingOpts);
     _open(): Promise<void>;
     _close(): Promise<void>;
     /**
-     * Mint a new pairing invite. Returns its canonical wire form (z32 string).
+     * Mint an invite. Returns its wire form, a z32 string.
      *
-     * @param {CreateInviteOpts} [opts]
+     * @param {InviteOpts} [opts]
      * @returns {Promise<string>}
      */
-    createInvite({ role, expiresIn, data, reuse }?: CreateInviteOpts): Promise<string>;
+    invite({ role, ttl, reuse, data }?: InviteOpts): Promise<string>;
     /**
-     * Look up the in-memory record for a minted invite by its string form.
-     *
-     * @param {string} inviteStr
-     * @returns {{ id: Uint8Array, seed: Uint8Array, publicKey: Uint8Array, invite: import('./invite.js').Invite, reuse: boolean } | null}
-     */
-    recordOf(inviteStr: string): {
-        id: Uint8Array;
-        seed: Uint8Array;
-        publicKey: Uint8Array;
-        invite: import('./invite.js').Invite;
-        reuse: boolean;
-    } | null;
-    /**
-     * Reconcile the served-invite set with persisted rows (the room's `invites` collection).
-     *
-     * @param {Array<{ id: string, invite: Uint8Array, publicKey: Uint8Array, seed: Uint8Array, reuse?: boolean }>} rows
-     */
-    syncRows(rows: Array<{
-        id: string;
-        invite: Uint8Array;
-        publicKey: Uint8Array;
-        seed: Uint8Array;
-        reuse?: boolean;
-    }>): void;
-    /**
-     * Forget a previously-minted invite. New candidates carrying it will be
-     * dropped silently.
-     *
-     * @param {string} inviteStr
-     * @returns {boolean}
-     */
-    revoke(inviteStr: string): boolean;
-    /**
-     * Joiner side — start a pairing handshake against `inviteStr` and resolve
-     * with the host's response when the host confirms.
-     *
-     * @param {string} inviteStr
-     * @param {JoinOpts} [opts]
-     * @returns {Promise<JoinResult>}
-     */
-    join(inviteStr: string, { userData, timeout }?: JoinOpts): Promise<JoinResult>;
-    /**
-     * Pause blind-pairing — keeps state, drops sockets. Idempotent.
-     *
-     * @returns {Promise<void>}
-     */
-    suspend(): Promise<void>;
-    /**
-     * Resume a suspended blind-pairing layer. Idempotent.
-     *
-     * @returns {Promise<void>}
-     */
-    resume(): Promise<void>;
-    _oncandidate(req: any): Promise<void>;
-    /**
-     * Resolve the resource discovery key an invite targets — without pairing.
+     * Stop serving an invite, on every member. Needs the remove permission.
      *
      * @param {string} invite
-     * @returns {Uint8Array | null}
+     * @returns {Promise<boolean>}  Whether it was served.
      */
-    static inviteTopic(invite: string): Uint8Array | null;
+    revoke(invite: string): Promise<boolean>;
+    _sync(): Promise<void>;
+    _syncInboxes(): void;
+    _onknock(message: any): Promise<void>;
+    _consume(id: any): Promise<void>;
+    _me(): Promise<any>;
+    _checkGrant(role: any): Promise<void>;
     /**
-     * Cheap structural test for a candidate invite string.
+     * Knock with an invite and resolve with the database's keys once a member accepts.
      *
-     * @param {unknown} str
-     * @returns {boolean}
+     * @param {Mailbox} mailbox
+     * @param {string} invite
+     * @param {JoinOpts} opts
+     * @returns {Promise<JoinResult>}
      */
-    static isInvite(str: unknown): boolean;
+    static join(mailbox: Mailbox, invite: string, { identity, writer, timeout, signal }?: JoinOpts): Promise<JoinResult>;
 }

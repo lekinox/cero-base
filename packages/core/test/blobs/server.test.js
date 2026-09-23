@@ -8,7 +8,7 @@ import { makeStore, fetch } from '../helpers/index.js'
 
 async function putBytes(t, bytes) {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const blobs = new Blobs({ store, identity })
   await blobs.ready()
   t.teardown(() => blobs.close().catch(() => {}), { order: 10 })

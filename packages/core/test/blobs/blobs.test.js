@@ -21,7 +21,7 @@ const makeNet = (t, opts = {}) => makeNetBase(t, testnet, opts)
 
 async function makeBlobs(t, opts = {}) {
   const { store } = opts.store ? { store: opts.store } : await makeStore(t)
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const blobs = new Blobs({ store, identity, ...opts })
   await blobs.ready()
   t.teardown(() => blobs.close().catch(() => {}), { order: 1 })
@@ -42,7 +42,7 @@ test('construction: identity or encryptionKey is required', async (t) => {
 
 test('construction: accepts identity', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const blobs = new Blobs({ store, identity })
   t.is(blobs.opened, false)
   t.is(blobs.closed, false)
@@ -60,7 +60,7 @@ test('construction: accepts explicit encryptionKey', async (t) => {
 
 test('ready/close: opens and closes cleanly', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const blobs = new Blobs({ store, identity })
   await blobs.ready()
   t.is(blobs.opened, true)
@@ -81,7 +81,7 @@ test('ready is idempotent', async (t) => {
 
 test('close is idempotent', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const blobs = new Blobs({ store, identity })
   await blobs.ready()
   await blobs.close()
@@ -91,7 +91,7 @@ test('close is idempotent', async (t) => {
 
 test('id, key, discoveryKey are null before ready', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const blobs = new Blobs({ store, identity })
   t.is(blobs.id, null)
   t.is(blobs.key, null)
@@ -210,7 +210,7 @@ test('put: non-buffer non-stream input rejected', async (t) => {
 
 test('methods after close throw', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const blobs = new Blobs({ store, identity })
   await blobs.ready()
   const blobId = await blobs.put(b4a.from('ok'))
@@ -225,7 +225,7 @@ test('methods after close throw', async (t) => {
 
 test('open existing blob store by key on a separate store', async (t) => {
   const { store: storeA } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const a = new Blobs({ store: storeA, identity })
   await a.ready()
   await a.put(b4a.from('persist me'))
@@ -300,8 +300,8 @@ async function makeReplicationPair(t) {
   const netB = await makeNet(t)
   const { store: storeA } = await makeStore(t)
   const { store: storeB } = await makeStore(t)
-  const idA = await Identity.generate()
-  const idB = await Identity.generate()
+  const idA = await Identity.create()
+  const idB = await Identity.create()
 
   const blobsA = new Blobs({ store: storeA, identity: idA, network: netA })
   await blobsA.ready()

@@ -501,7 +501,7 @@ export class Database extends ReadyResource {
       }
       const onclose = () => done(CeroError.CLOSED('Database'))
       const timer =
-        timeout > 0 ? setTimeout(() => done(CeroError.TIMED_OUT('whenWritable')), timeout) : null
+        timeout > 0 ? setTimeout(() => done(CeroError.TIMEOUT('whenWritable')), timeout) : null
       bee.once('writable', done)
       this.once('close', onclose)
     })
@@ -836,7 +836,7 @@ export class Database extends ReadyResource {
       await this.bee.update()
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    throw CeroError.TIMED_OUT('recovery — no peer replicated')
+    throw CeroError.TIMEOUT('recovery — no peer replicated')
   }
 
   // the add-writer row for `writer`, appended by this device and signed by the identity

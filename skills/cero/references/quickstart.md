@@ -135,7 +135,7 @@ const { data: rooms } = await cero.get(me.room)
 // [{ id, type: 'room', name: 'team', ... }]  the laptop's rooms, replicated
 ```
 
-Underneath, the phone derived a pointer core from the phrase, read the root database key from a device of yours that is online, opened that database with a writer core of its own, pulled the history, and admitted itself with a signature only the phrase can produce. It never writes to a core the laptop wrote. If no device of yours is reachable it rejects with `TIMED_OUT` after `recoveryTimeout`, 30 seconds by default, rather than start a second history.
+Underneath, the phone derived a pointer core from the phrase, read the root database key from a device of yours that is online, opened that database with a writer core of its own, pulled the history, and admitted itself with a signature only the phrase can produce. It never writes to a core the laptop wrote. If no device of yours is reachable it rejects with `TIMEOUT` after `recoveryTimeout`, 30 seconds by default, rather than start a second history.
 
 A supplied phrase only ever recovers, it never creates an identity, so a typo cannot silently hand you an empty account.
 

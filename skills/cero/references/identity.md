@@ -84,14 +84,14 @@ a per-room keypair, claims writer capability and reads every era.
 try {
   await cero('./data', spec, { phrase, recoveryTimeout: 10_000 })
 } catch (err) {
-  if (err.code === 'TIMED_OUT') tell('none of your devices is online')
+  if (err.code === 'TIMEOUT') tell('none of your devices is online')
 }
 ```
 
 Recovery needs another device of the identity to be online, or a
 [mirror](network.md) holding the data. `recoveryTimeout` bounds the wait for the
 pointer, the backfill and the writer admission, and defaults to 30000 ms. When
-nothing answers, the open rejects with `TIMED_OUT`.
+nothing answers, the open rejects with `TIMEOUT`.
 
 A failed open closes everything it had opened, so the storage lock is not leaked
 and a retry on the same directory works.

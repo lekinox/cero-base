@@ -30,16 +30,12 @@ export * from './network/index.js';
 export * from './database/index.js';
 export * from './blobs/index.js';
 export * from './rpc/index.js';
+export * from './mailbox/index.js';
 export * from './pairing/index.js';
 export { Invite } from './pairing/invite.js';
-export type MintInviteOpts = import('./pairing/invite.js').CreateInviteOpts;
 export type InviteFields = import('./pairing/invite.js').InviteFields;
-export type ParseInviteOpts = import('./pairing/invite.js').ParseInviteOpts;
 /**
- * `CreateInviteOpts` is a typedef (not a runtime export); re-export it as a type alias.
- * @typedef {import('./pairing/invite.js').CreateInviteOpts} MintInviteOpts
  * @typedef {import('./pairing/invite.js').InviteFields} InviteFields
- * @typedef {import('./pairing/invite.js').ParseInviteOpts} ParseInviteOpts
  */
 export * from './lib/schema.js';
 export * from './lib/utils.js';

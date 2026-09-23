@@ -11,95 +11,121 @@ const VERSION = 2
 // eslint-disable-next-line no-unused-vars
 let version = VERSION
 
-// @cero/invite-body
+// @cero/invite.mirrors
+const encoding0_4 = c.array(c.fixed32)
+
+// @cero/invite
 const encoding0 = {
   preencode(state, m) {
     c.uint.preencode(state, m.version)
-    c.fixed32.preencode(state, m.publicKey)
-    c.string.preencode(state, m.role)
     c.uint.preencode(state, m.expires)
-    state.end++ // max flag is 1 so always one byte
+    c.fixed32.preencode(state, m.discoveryKey)
+    c.fixed32.preencode(state, m.address)
+    state.end++ // max flag is 2 so always one byte
 
-    if (m.data) c.buffer.preencode(state, m.data)
-    c.buffer.preencode(state, m.blind)
+    if (m.mirrors) encoding0_4.preencode(state, m.mirrors)
+    c.fixed32.preencode(state, m.seed)
+    if (version >= 2 && m.data) c.buffer.preencode(state, m.data)
   },
   encode(state, m) {
-    const flags = m.data ? 1 : 0
+    const flags = (m.mirrors ? 1 : 0) | (version >= 2 && m.data ? 2 : 0)
 
     c.uint.encode(state, m.version)
-    c.fixed32.encode(state, m.publicKey)
-    c.string.encode(state, m.role)
     c.uint.encode(state, m.expires)
+    c.fixed32.encode(state, m.discoveryKey)
+    c.fixed32.encode(state, m.address)
     c.uint.encode(state, flags)
 
-    if (m.data) c.buffer.encode(state, m.data)
-    c.buffer.encode(state, m.blind)
+    if (m.mirrors) encoding0_4.encode(state, m.mirrors)
+    c.fixed32.encode(state, m.seed)
+    if (version >= 2 && m.data) c.buffer.encode(state, m.data)
   },
   decode(state) {
     const r0 = c.uint.decode(state)
-    const r1 = c.fixed32.decode(state)
-    const r2 = c.string.decode(state)
-    const r3 = c.uint.decode(state)
+    const r1 = c.uint.decode(state)
+    const r2 = c.fixed32.decode(state)
+    const r3 = c.fixed32.decode(state)
     const flags = c.uint.decode(state)
 
     return {
       version: r0,
-      publicKey: r1,
-      role: r2,
-      expires: r3,
-      data: (flags & 1) !== 0 ? c.buffer.decode(state) : null,
-      blind: c.buffer.decode(state)
+      expires: r1,
+      discoveryKey: r2,
+      address: r3,
+      mirrors: (flags & 1) !== 0 ? encoding0_4.decode(state) : null,
+      seed: c.fixed32.decode(state),
+      data: version >= 2 && (flags & 2) !== 0 ? c.buffer.decode(state) : null
     }
   }
 }
 
-// @cero/invite
+// @cero/knock
 const encoding1 = {
   preencode(state, m) {
-    c.uint.preencode(state, m.version)
-    c.fixed32.preencode(state, m.publicKey)
-    c.string.preencode(state, m.role)
-    c.uint.preencode(state, m.expires)
-    state.end++ // max flag is 1 so always one byte
-
-    if (m.data) c.buffer.preencode(state, m.data)
-    c.buffer.preencode(state, m.blind)
-    c.fixed64.preencode(state, m.sig)
+    c.fixed32.preencode(state, m.id)
+    c.fixed32.preencode(state, m.reply)
+    c.fixed64.preencode(state, m.proof)
+    c.fixed32.preencode(state, m.identity)
+    c.fixed32.preencode(state, m.writer)
+    c.fixed64.preencode(state, m.signature)
   },
   encode(state, m) {
-    const flags = m.data ? 1 : 0
-
-    c.uint.encode(state, m.version)
-    c.fixed32.encode(state, m.publicKey)
-    c.string.encode(state, m.role)
-    c.uint.encode(state, m.expires)
-    c.uint.encode(state, flags)
-
-    if (m.data) c.buffer.encode(state, m.data)
-    c.buffer.encode(state, m.blind)
-    c.fixed64.encode(state, m.sig)
+    c.fixed32.encode(state, m.id)
+    c.fixed32.encode(state, m.reply)
+    c.fixed64.encode(state, m.proof)
+    c.fixed32.encode(state, m.identity)
+    c.fixed32.encode(state, m.writer)
+    c.fixed64.encode(state, m.signature)
   },
   decode(state) {
-    const r0 = c.uint.decode(state)
+    const r0 = c.fixed32.decode(state)
     const r1 = c.fixed32.decode(state)
-    const r2 = c.string.decode(state)
-    const r3 = c.uint.decode(state)
-    const flags = c.uint.decode(state)
+    const r2 = c.fixed64.decode(state)
+    const r3 = c.fixed32.decode(state)
+    const r4 = c.fixed32.decode(state)
+    const r5 = c.fixed64.decode(state)
 
     return {
-      version: r0,
-      publicKey: r1,
-      role: r2,
-      expires: r3,
-      data: (flags & 1) !== 0 ? c.buffer.decode(state) : null,
-      blind: c.buffer.decode(state),
-      sig: c.fixed64.decode(state)
+      id: r0,
+      reply: r1,
+      proof: r2,
+      identity: r3,
+      writer: r4,
+      signature: r5
     }
   }
 }
 
-// @cero/confirm
+// @cero/epoch
 const encoding2 = {
+  preencode(state, m) {
+    c.uint.preencode(state, m.epoch)
+    c.uint.preencode(state, m.stamp)
+    c.fixed32.preencode(state, m.entropy)
+  },
+  encode(state, m) {
+    c.uint.encode(state, m.epoch)
+    c.uint.encode(state, m.stamp)
+    c.fixed32.encode(state, m.entropy)
+  },
+  decode(state) {
+    const r0 = c.uint.decode(state)
+    const r1 = c.uint.decode(state)
+    const r2 = c.fixed32.decode(state)
+
+    return {
+      epoch: r0,
+      stamp: r1,
+      entropy: r2
+    }
+  }
+}
+
+// @cero/confirm.epochs
+const encoding3_4 = c.array(encoding2)
+
+// @cero/confirm
+const encoding3 = {
   preencode(state, m) {
     c.uint.preencode(state, m.status)
     state.end++ // max flag is 8 so always one byte
@@ -107,11 +133,11 @@ const encoding2 = {
     if (m.reason) c.string.preencode(state, m.reason)
     if (m.key) c.fixed32.preencode(state, m.key)
     if (m.encryptionKey) c.buffer.preencode(state, m.encryptionKey)
-    if (m.extra) c.buffer.preencode(state, m.extra)
+    if (m.epochs) encoding3_4.preencode(state, m.epochs)
   },
   encode(state, m) {
     const flags =
-      (m.reason ? 1 : 0) | (m.key ? 2 : 0) | (m.encryptionKey ? 4 : 0) | (m.extra ? 8 : 0)
+      (m.reason ? 1 : 0) | (m.key ? 2 : 0) | (m.encryptionKey ? 4 : 0) | (m.epochs ? 8 : 0)
 
     c.uint.encode(state, m.status)
     c.uint.encode(state, flags)
@@ -119,7 +145,7 @@ const encoding2 = {
     if (m.reason) c.string.encode(state, m.reason)
     if (m.key) c.fixed32.encode(state, m.key)
     if (m.encryptionKey) c.buffer.encode(state, m.encryptionKey)
-    if (m.extra) c.buffer.encode(state, m.extra)
+    if (m.epochs) encoding3_4.encode(state, m.epochs)
   },
   decode(state) {
     const r0 = c.uint.decode(state)
@@ -130,39 +156,70 @@ const encoding2 = {
       reason: (flags & 1) !== 0 ? c.string.decode(state) : null,
       key: (flags & 2) !== 0 ? c.fixed32.decode(state) : null,
       encryptionKey: (flags & 4) !== 0 ? c.buffer.decode(state) : null,
-      extra: (flags & 8) !== 0 ? c.buffer.decode(state) : null
+      epochs: (flags & 8) !== 0 ? encoding3_4.decode(state) : null
     }
   }
 }
 
 // @cero/rows.data
-const encoding3_0 = c.array(c.buffer)
+const encoding4_0 = c.array(c.buffer)
 
 // @cero/rows
-const encoding3 = {
+const encoding4 = {
   preencode(state, m) {
     state.end++ // max flag is 1 so always one byte
 
-    if (m.data) encoding3_0.preencode(state, m.data)
+    if (m.data) encoding4_0.preencode(state, m.data)
   },
   encode(state, m) {
     const flags = m.data ? 1 : 0
 
     c.uint.encode(state, flags)
 
-    if (m.data) encoding3_0.encode(state, m.data)
+    if (m.data) encoding4_0.encode(state, m.data)
   },
   decode(state) {
     const flags = c.uint.decode(state)
 
     return {
-      data: (flags & 1) !== 0 ? encoding3_0.decode(state) : null
+      data: (flags & 1) !== 0 ? encoding4_0.decode(state) : null
+    }
+  }
+}
+
+// @cero/changes.prev
+const encoding5_0 = encoding4_0
+// @cero/changes.next
+const encoding5_1 = encoding4_0
+
+// @cero/changes
+const encoding5 = {
+  preencode(state, m) {
+    state.end++ // max flag is 2 so always one byte
+
+    if (m.prev) encoding5_0.preencode(state, m.prev)
+    if (m.next) encoding5_1.preencode(state, m.next)
+  },
+  encode(state, m) {
+    const flags = (m.prev ? 1 : 0) | (m.next ? 2 : 0)
+
+    c.uint.encode(state, flags)
+
+    if (m.prev) encoding5_0.encode(state, m.prev)
+    if (m.next) encoding5_1.encode(state, m.next)
+  },
+  decode(state) {
+    const flags = c.uint.decode(state)
+
+    return {
+      prev: (flags & 1) !== 0 ? encoding5_0.decode(state) : null,
+      next: (flags & 2) !== 0 ? encoding5_1.decode(state) : null
     }
   }
 }
 
 // @cero/query
-const encoding4 = {
+const encoding6 = {
   preencode(state, m) {
     state.end++ // max flag is 64 so always one byte
 
@@ -208,7 +265,7 @@ const encoding4 = {
 }
 
 // @cero/create
-const encoding5 = {
+const encoding7 = {
   preencode(state, m) {
     state.end++ // max flag is 8 so always one byte
 
@@ -238,7 +295,7 @@ const encoding5 = {
 }
 
 // @cero/blob-id
-const encoding6 = {
+const encoding8 = {
   preencode(state, m) {
     c.fixed32.preencode(state, m.coreKey)
     c.uint.preencode(state, m.blockOffset)
@@ -274,37 +331,6 @@ const encoding6 = {
   }
 }
 
-// @cero/changes.prev
-const encoding7_0 = encoding3_0
-// @cero/changes.next
-const encoding7_1 = encoding3_0
-
-// @cero/changes
-const encoding7 = {
-  preencode(state, m) {
-    state.end++ // max flag is 2 so always one byte
-
-    if (version >= 2 && m.prev) encoding7_0.preencode(state, m.prev)
-    if (version >= 2 && m.next) encoding7_1.preencode(state, m.next)
-  },
-  encode(state, m) {
-    const flags = ((version >= 2 && m.prev) ? 1 : 0) | ((version >= 2 && m.next) ? 2 : 0)
-
-    c.uint.encode(state, flags)
-
-    if (version >= 2 && m.prev) encoding7_0.encode(state, m.prev)
-    if (version >= 2 && m.next) encoding7_1.encode(state, m.next)
-  },
-  decode(state) {
-    const flags = c.uint.decode(state)
-
-    return {
-      prev: (version >= 2 && (flags & 1) !== 0) ? encoding7_0.decode(state) : null,
-      next: (version >= 2 && (flags & 2) !== 0) ? encoding7_1.decode(state) : null
-    }
-  }
-}
-
 function setVersion(v) {
   version = v
 }
@@ -328,22 +354,24 @@ function getEnum(name) {
 
 function getEncoding(name) {
   switch (name) {
-    case '@cero/invite-body':
-      return encoding0
     case '@cero/invite':
+      return encoding0
+    case '@cero/knock':
       return encoding1
-    case '@cero/confirm':
+    case '@cero/epoch':
       return encoding2
-    case '@cero/rows':
+    case '@cero/confirm':
       return encoding3
-    case '@cero/query':
+    case '@cero/rows':
       return encoding4
-    case '@cero/create':
-      return encoding5
-    case '@cero/blob-id':
-      return encoding6
     case '@cero/changes':
+      return encoding5
+    case '@cero/query':
+      return encoding6
+    case '@cero/create':
       return encoding7
+    case '@cero/blob-id':
+      return encoding8
     default:
       throw new Error('Encoder not found ' + name)
   }

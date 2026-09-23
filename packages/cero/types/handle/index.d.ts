@@ -97,6 +97,10 @@ export type StaticJoinOpts = {
     spec?: any;
     namespace?: string;
     routes?: Record<string, Function>;
+    /**
+     * Writer keypair in the joined handle; a fresh one by default.
+     */
+    writer?: KeyPair;
     timeout?: number;
 };
 export type AcceptOpts = {
@@ -104,7 +108,6 @@ export type AcceptOpts = {
      * Role to grant the joining peer. Falls back to the invite's role, then `'member'`.
      */
     role?: string;
-    name?: string | null;
 };
 export type HandleExtra = {
     /**
@@ -164,11 +167,11 @@ export type CeroHandle = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {any} [spec]
  * @property {string} [namespace]
  * @property {Record<string, Function>} [routes]
+ * @property {KeyPair} [writer]                  Writer keypair in the joined handle; a fresh one by default.
  * @property {number} [timeout]
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]   Role to grant the joining peer. Falls back to the invite's role, then `'member'`.
- * @property {string | null} [name]
  *
  * @typedef {object} HandleExtra
  * @property {string | null} [name]                       Display name; set on child handles by the owner flow.
@@ -188,6 +191,7 @@ export declare class Handle extends ReadyResource {
     spec: any;
     parent: Handle;
     local: import("../index.js").Local;
+    mailbox: any;
     _storage: any;
     _discovery: any;
     _dir: string;
@@ -209,7 +213,6 @@ export declare class Handle extends ReadyResource {
     pair: Pairing;
     _wantsPair: boolean;
     _ac: AbortController;
-    _invitesSync: (touched: any) => void;
     /** @param {HandleOpts} [opts] */
     constructor(opts?: HandleOpts);
     /**
@@ -301,32 +304,27 @@ export declare class Handle extends ReadyResource {
      */
     setActive(active: boolean): void;
     /**
-     * Mint a pairing invite for this handle.
+     * Mint an invite into this handle.
      *
-     * @param {{ role?: string, expiresIn?: number, data?: any }} [opts]
+     * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
      * @returns {Promise<string>}  Z32-encoded invite string.
      */
-    invite(opts?: {
-        role?: string;
-        expiresIn?: number;
-        data?: any;
-    }): Promise<string>;
+    invite(opts?: import('@cero-base/core/pairing').InviteOpts): Promise<string>;
     /**
-     * Revoke a previously-minted invite by its string form.
+     * Revoke an invite, on every member.
      *
      * @param {string} invite
-     * @returns {Promise<boolean>}  `true` if the invite was found and removed.
+     * @returns {Promise<boolean>}  `true` if it was served.
      */
     revoke(invite: string): Promise<boolean>;
     /**
-     * Accept a paired candidate — adds them as a writer (or read-only member)
-     * and confirms the pairing so they receive this handle's keys.
+     * Accept a join request: admits the joiner, then sends it this handle's keys.
      *
-     * @param {any} candidate
+     * @param {import('@cero-base/core/pairing').Request} request
      * @param {AcceptOpts} [opts]
      * @returns {Promise<void>}
      */
-    accept(candidate: any, { role, name }?: AcceptOpts): Promise<void>;
+    accept(request: import('@cero-base/core/pairing').Request, opts?: AcceptOpts): Promise<void>;
     /**
      * Leave a child handle — removes it from the parent's `handles` collection
      * and closes the session. No-op on root handles.
@@ -365,8 +363,6 @@ export declare class Handle extends ReadyResource {
      */
     _registerBlobCore(id: string, stamp?: number): void;
     _blobCoreKey(stamp: any): Uint8Array<ArrayBufferLike>;
-    _syncInvites(): Promise<void>;
-    _checkGrant(role: any): Promise<void>;
     /**
      * Create a new child handle of `type`. Owner-flow — generates a fresh writer, adds it as a
      * writer + member, and registers the child on the parent's `handles` collection.
@@ -377,22 +373,42 @@ export declare class Handle extends ReadyResource {
      */
     _create(type: string, { name, routes, role, accept }?: CreateChildOpts): Promise<Handle>;
     /**
-     * Join a child handle by invite (joiner-flow).
+     * Join a child handle by invite. The caller waits up to `timeout`; the join itself goes on
+     * until it is admitted, denied or expired, across restarts, and the handle then arrives
+     * with the `handle` event.
      *
      * @param {string} invite
      * @param {string} type
      * @param {JoinChildOpts} [opts]
      * @returns {Promise<Handle>}
      */
-    _join(invite: string, type: string, opts?: JoinChildOpts): Promise<Handle>;
+    _join(invite: string, type: string, { routes, timeout }?: JoinChildOpts): Promise<Handle>;
+    _knock(invite: any, type: any, routes: any): any;
     /**
+     * The joins no member answered yet. Each is resumed on every boot until it is admitted,
+     * denied, expired or cancelled.
+     *
+     * @returns {Promise<string[]>}  Their invites.
+     */
+    joining(): Promise<string[]>;
+    /**
+     * Stop joining the handle an invite opens, for good: it is not resumed on the next boot.
+     *
      * @param {string} invite
+     * @returns {Promise<boolean>}  Whether a join was pending.
+     */
+    cancel(invite: string): Promise<boolean>;
+    _joined(type: any, target: any): Promise<Handle>;
+    /**
+     * Open a joined handle with the keys its reply delivered, once this writer is admitted.
+     *
      * @param {string} type
-     * @param {JoinChildOpts} [opts]
-     * @param {Uint8Array | null} [target]
+     * @param {import('@cero-base/core/pairing').JoinResult} reply
+     * @param {Record<string, Function>} [routes]
      * @returns {Promise<Handle>}
      */
-    _pair(invite: string, type: string, { routes, timeout }?: JoinChildOpts, target?: Uint8Array | null): Promise<Handle>;
+    _enter(type: string, reply: import('@cero-base/core/pairing').JoinResult, routes?: Record<string, Function>): Promise<Handle>;
+    _carryOn(): Promise<void>;
     /**
      * Get an open child by id, or re-open it. Concurrent calls for the same id share one
      * in-flight load, so the child is built — and `handle` emitted — exactly once.
@@ -440,12 +456,20 @@ export declare class Handle extends ReadyResource {
         secretKey: Uint8Array;
     } | null>;
     /**
-     * Pair into an existing handle via an invite, returning a brand-new
-     * `Handle` already configured with the resolved key + encryption key.
+     * Pair into an existing handle via an invite, returning a brand-new `Handle` opened with the
+     * delivered keys. A one-shot join: the root's `_join` is the one that survives restarts.
      *
      * @param {string} invite
      * @param {StaticJoinOpts} [opts]
      * @returns {Promise<Handle>}
      */
-    static join(invite: string, { parent, network, identity, store, spec, namespace, routes, timeout }?: StaticJoinOpts): Promise<Handle>;
+    static join(invite: string, { parent, network, identity, store, spec, namespace, routes, writer, timeout }?: StaticJoinOpts): Promise<Handle>;
+    /**
+     * A handle opened with the keys a pairing reply delivered.
+     *
+     * @param {import('@cero-base/core/pairing').JoinResult} reply
+     * @param {Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>} opts
+     * @returns {Handle}
+     */
+    static fromReply({ key, encryptionKey, epochs, writer }: import('@cero-base/core/pairing').JoinResult, opts: Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>): Handle;
 }

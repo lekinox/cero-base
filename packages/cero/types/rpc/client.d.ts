@@ -91,6 +91,19 @@ export declare class Client extends RPCClient {
     });
     _pumpErrors(): void;
     _open(): Promise<void>;
+    /**
+     * The joins no member answered yet, resumed on every boot.
+     *
+     * @returns {Promise<string[]>}  Their invites.
+     */
+    joining(): Promise<string[]>;
+    /**
+     * Stop joining the handle an invite opens, for good.
+     *
+     * @param {string} invite
+     * @returns {Promise<boolean>}  Whether a join was pending.
+     */
+    cancel(invite: string): Promise<boolean>;
     /** Pause networking and storage on the server. Idempotent. */
     suspend(): Promise<void>;
     /** Resume a suspended server. Idempotent. */

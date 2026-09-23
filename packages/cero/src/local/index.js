@@ -1,4 +1,5 @@
 import ReadyResource from 'ready-resource'
+import b4a from 'b4a'
 
 import { Storage } from '@cero-base/core/storage'
 import { CeroError } from '@cero-base/core/errors'
@@ -48,4 +49,25 @@ export class Local extends ReadyResource {
   async _close() {
     await this.store.close()
   }
+}
+
+/**
+ * One of the mailbox's boxes, kept in the local store so mail survives a restart.
+ *
+ * @param {import('@cero-base/core/storage').Storage} store
+ * @param {'inbox' | 'outbox'} name
+ * @returns {import('@cero-base/core/mailbox').Box}
+ */
+export function box(store, name) {
+  return {
+    list: async () => (await store.get(name)).data.map(unpack),
+    put: (mail) => store.put(name, { ...mail, mirrors: b4a.concat(mail.mirrors || []) }),
+    del: (id) => store.del(name, id)
+  }
+}
+
+function unpack({ id, address, message, mirrors }) {
+  const keys = []
+  for (let i = 0; i < (mirrors?.byteLength || 0); i += 32) keys.push(mirrors.subarray(i, i + 32))
+  return { id, address, message, mirrors: keys }
 }

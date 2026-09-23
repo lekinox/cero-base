@@ -242,7 +242,7 @@ export async function restore(me, phrase) {
   if (!me?._dir) throw CeroError.INVALID('me must be a cero instance')
   if (!phrase || typeof phrase !== 'string') throw CeroError.INVALID('phrase must be a string')
 
-  const current = await Identity.fromSeed(Identity.toSeed(phrase))
+  const current = await Identity.create({ seed: Identity.toSeed(phrase) })
   if (current.id === me.identity.id) return me
 
   // everything carries over except the identity, the channel above all
@@ -283,7 +283,7 @@ async function readPointer(pointer, timeout) {
   try {
     return c.decode(c.fixed32, await pointer.get(0, { timeout }))
   } catch {
-    throw CeroError.TIMED_OUT('recovery: finding a device of this identity')
+    throw CeroError.TIMEOUT('recovery: finding a device of this identity')
   }
 }
 
@@ -291,15 +291,8 @@ async function resolveIdentity(opts, local) {
   if (opts.identity) return { identity: opts.identity, fresh: false }
 
   const provided = opts.seed || (opts.phrase && Identity.toSeed(opts.phrase))
-  if (provided) {
-    if (local) await local.store.set('master', { seed: provided })
-    return { identity: await Identity.fromSeed(provided), fresh: false }
-  }
-
-  const stored = local && (await local.store.get('master')).data?.seed
-  if (stored) return { identity: await Identity.fromSeed(stored), fresh: false }
-
-  const identity = await Identity.generate({ words: opts.words })
-  if (local) await local.store.set('master', { seed: identity.seed })
-  return { identity, fresh: true }
+  const stored = !provided && local && (await local.store.get('master')).data?.seed
+  const identity = await Identity.create({ seed: provided || stored || null, words: opts.words })
+  if (local && !stored) await local.store.set('master', { seed: identity.seed })
+  return { identity, fresh: !provided && !stored }
 }

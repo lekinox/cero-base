@@ -101,7 +101,7 @@ the same user; `cero.open(me.room, { invite })` joins the handle.
 8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase
    mints an identity and you show `me.identity.toPhrase()` once. With a phrase
    and no stored writer, cero finds one of the user's devices and recovers;
-   with none reachable it rejects with `TIMED_OUT` after `recoveryTimeout`.
+   with none reachable it rejects with `TIMEOUT` after `recoveryTimeout`.
 9. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no
    `node:` prefix; the package maps them to `bare-*` under Bare.
 

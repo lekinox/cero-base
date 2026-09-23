@@ -37,3 +37,11 @@ export declare class Local extends ReadyResource {
     _open(): Promise<void>;
     _close(): Promise<void>;
 }
+/**
+ * One of the mailbox's boxes, kept in the local store so mail survives a restart.
+ *
+ * @param {import('@cero-base/core/storage').Storage} store
+ * @param {'inbox' | 'outbox'} name
+ * @returns {import('@cero-base/core/mailbox').Box}
+ */
+export declare function box(store: import('@cero-base/core/storage').Storage, name: 'inbox' | 'outbox'): import('@cero-base/core/mailbox').Box;

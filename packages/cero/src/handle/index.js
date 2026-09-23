@@ -1,7 +1,5 @@
 import AbortController from 'bare-abort-controller'
 import b4a from 'b4a'
-import c from 'compact-encoding'
-import Hypercore from 'hypercore'
 import { discoveryKey } from 'hypercore-crypto'
 import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
@@ -10,10 +8,12 @@ import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
-import { epochEntries, blobEpochKey } from '@cero-base/core/database/encryption'
+import { blobEpochKey } from '@cero-base/core/database/encryption'
 import { Pairing } from '@cero-base/core/pairing'
+import { Invite } from '@cero-base/core/invite'
+import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
-import { grants, can, isRank, admission, REMOVE, onAbort } from '@cero-base/core/utils'
+import { admission, onAbort } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -22,6 +22,8 @@ import { FileServer } from '@cero-base/core/blobs/server'
 import { NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
+import { Join, wait } from './join.js'
+import { box } from '../local/index.js'
 import { extensionsOf, operatorsOf, bind } from '../extensions/index.js'
 import { before, after } from '../lib/operators.js'
 
@@ -69,11 +71,11 @@ export { Ref } from '../lib/refs.js'
  * @property {any} [spec]
  * @property {string} [namespace]
  * @property {Record<string, Function>} [routes]
+ * @property {KeyPair} [writer]                  Writer keypair in the joined handle; a fresh one by default.
  * @property {number} [timeout]
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]   Role to grant the joining peer. Falls back to the invite's role, then `'member'`.
- * @property {string | null} [name]
  *
  * @typedef {object} HandleExtra
  * @property {string | null} [name]                       Display name; set on child handles by the owner flow.
@@ -110,6 +112,8 @@ export class Handle extends ReadyResource {
     this.parent = parent
 
     this.local = opts.local || null
+    // one per device: the root's, its boxes in the local store
+    this.mailbox = parent ? parent.root.mailbox : new Mailbox(network, boxes(this.local))
     this._storage = opts.storage || null
     this._discovery = opts.discovery || null
     this._dir = opts.dir || null
@@ -120,7 +124,7 @@ export class Handle extends ReadyResource {
     this.children = parent ? null : new Set()
     this._typeHooks = parent ? null : new Set()
     this._loading = parent ? null : new Map()
-    this._joining = parent ? null : new Map()
+    this._joining = parent ? null : new Map() // type/discovery key → Join
     this._coreKeys = parent ? null : new Map()
     this._fileServer = null
     this._blobs = null
@@ -229,26 +233,16 @@ export class Handle extends ReadyResource {
   async _open() {
     await this.store.ready()
     if (this._wantsPair) {
-      this.pair = new Pairing({
-        network: this.network,
-        identity: this.identity,
-        topic: this.store.key,
-        onerror: this._onerror,
-        onconsume: (id) => {
-          this.store.call('del-invite', { id }).catch(safetyCatch)
-        }
-      })
+      this.pair = new Pairing({ mailbox: this.mailbox, db: this.store })
       await this.pair.ready()
-      // serve invites persisted by any member, in step with the rows
-      await this._syncInvites().catch(safetyCatch)
-      this._invitesSync = (touched) => {
-        if (touched.has('*') || touched.has('invites')) this._syncInvites().catch(safetyCatch)
-      }
-      this.store.on('update', this._invitesSync)
     }
     Ref.attach(this, this.store.refs, this.spec.handles)
     this.root._coreKeys.set(b4a.toString(this.store.key, 'hex'), this.store.encryptionKey)
-    if (!this.parent) await this.fileServer.listen()
+    if (!this.parent) {
+      await this.fileServer.listen()
+      await this.mailbox.ready()
+      await this._carryOn().catch(this._onerror)
+    }
   }
 
   async _close() {
@@ -260,13 +254,10 @@ export class Handle extends ReadyResource {
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
     for (const r of [...this._owned]) r.destroy?.()
     this._owned.clear()
-    if (this._invitesSync) {
-      this.store.off('update', this._invitesSync)
-      this._invitesSync = null
-    }
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
     const steps = [
+      ...[...(this._joining?.values() || [])].map((join) => () => join.close()),
       () => this._blobs?.close(),
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
       ...[...(this.children || [])].map((c) => () => c.close()),
@@ -281,6 +272,7 @@ export class Handle extends ReadyResource {
     } else {
       const store = this.store.store
       steps.push(
+        () => this.mailbox.close(),
         () => this.bluetooth?.close(),
         () => this.local?.close(),
         async () => {
@@ -373,9 +365,9 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Mint a pairing invite for this handle.
+   * Mint an invite into this handle.
    *
-   * @param {{ role?: string, expiresIn?: number, data?: any }} [opts]
+   * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
    * @returns {Promise<string>}  Z32-encoded invite string.
    */
   async invite(opts) {
@@ -384,112 +376,29 @@ export class Handle extends ReadyResource {
         'invite() is not available on the root handle — open a child handle first'
       )
     }
-    // an invite is a capability, cap the rank or apply drops the mismatch silently
-    if (opts?.role !== undefined && opts.role !== '') await this._checkGrant(opts.role)
-    const str = await this.pair.createInvite(opts)
-    const record = this.pair.recordOf(str)
-    if (record) {
-      // persist so every member replica serves it across restarts
-      await this.store
-        .call('add-invite', {
-          id: b4a.toString(record.id, 'hex'),
-          invite: b4a.from(str),
-          publicKey: record.publicKey,
-          seed: record.seed,
-          role: record.invite.role || '',
-          expires: record.invite.expires || 0,
-          createdAt: Date.now(),
-          reuse: !!record.reuse
-        })
-        .catch(safetyCatch)
-    }
-    return str
+    return this.pair.invite(opts)
   }
 
   /**
-   * Revoke a previously-minted invite by its string form.
+   * Revoke an invite, on every member.
    *
    * @param {string} invite
-   * @returns {Promise<boolean>}  `true` if the invite was found and removed.
+   * @returns {Promise<boolean>}  `true` if it was served.
    */
   async revoke(invite) {
     if (!this.pair) throw CeroError.INVALID('revoke() is not available on the root handle')
-    // apply refuses revoke below REMOVE, and other members would keep serving it
-    const { data: me } = await this.store.get('members', this.identity.id)
-    if (me && !can(me.role, REMOVE)) {
-      throw CeroError.DENIED(null, 'revoking an invite needs the remove permission')
-    }
-    const record = this.pair.recordOf(invite)
-    const revoked = this.pair.revoke(invite)
-    if (revoked && record) {
-      // drop the persisted row so every other member stops serving it too
-      await this.store.call('del-invite', { id: b4a.toString(record.id, 'hex') })
-    }
-    return revoked
+    return this.pair.revoke(invite)
   }
 
   /**
-   * Accept a paired candidate — adds them as a writer (or read-only member)
-   * and confirms the pairing so they receive this handle's keys.
+   * Accept a join request: admits the joiner, then sends it this handle's keys.
    *
-   * @param {any} candidate
+   * @param {import('@cero-base/core/pairing').Request} request
    * @param {AcceptOpts} [opts]
    * @returns {Promise<void>}
    */
-  async accept(candidate, { role, name } = {}) {
-    const data = candidate.userData
-    if (!b4a.isBuffer(data) || data.length !== 64) {
-      throw CeroError.INVALID(
-        'candidate userData must be a 64-byte buffer (identity + writer pubkey)'
-      )
-    }
-    if (candidate.invite.expired) throw CeroError.EXPIRED()
-    role = role || candidate.invite.role || 'member'
-    if (candidate.invite.role && !grants(candidate.invite.role, role)) {
-      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${candidate.invite.role}'`)
-    }
-    // synchronous on purpose, the cap against our own rank is enforced at apply
-    if (!isRank(role)) {
-      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
-    }
-
-    // confirm must answer within the request's lifetime, so the key goes out before the membership
-    // writes land; epoch secrets ride along so a post-rotation joiner reads full history
-    const epochs = this.store.keyring.all()
-    await candidate.confirm({
-      key: this.store.key,
-      encryptionKey: this.store.encryptionKey,
-      additional: epochs.length ? c.encode(epochEntries, epochs) : null
-    })
-
-    const ts = Date.now()
-    const writerKey = Hypercore.key({ version: 2, signers: [{ publicKey: data.subarray(32, 64) }] })
-    const member = {
-      id: hid.encode(data.subarray(0, 32)),
-      key: writerKey,
-      role,
-      name: name || null,
-      createdAt: ts,
-      updatedAt: ts
-    }
-
-    if (role === 'reader') {
-      await this.store.call('add-member', member)
-      return
-    }
-
-    const sig = this.identity.sign(admission(this.store.key, writerKey, this.store.writerKey))
-    // one batch: the member row, then the writer that belongs to it; a refusal discards both
-    await this.store.tx(async (tx) => {
-      await tx.call('add-member', member)
-      await tx.call('add-writer', {
-        sig,
-        master: this.identity.publicKey,
-        writer: writerKey,
-        memberId: member.id,
-        ts: member.updatedAt || Date.now()
-      })
-    })
+  async accept(request, opts) {
+    return request.accept(opts)
   }
 
   /**
@@ -598,25 +507,6 @@ export class Handle extends ReadyResource {
     return entropy ? blobEpochKey(entropy) : null
   }
 
-  async _syncInvites() {
-    if (!this.pair) return
-    const { data } = await this.store.get('invites')
-    this.pair.syncRows(data || [])
-  }
-
-  // `grants` treats an unknown role as "no", so an app role name must fail loudly
-  async _checkGrant(role) {
-    if (!isRank(role)) {
-      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
-    }
-    const { data: me } = await this.store.get('members', this.identity.id)
-    // no member row yet = genesis, nothing to cap
-    if (!me) return
-    if (!grants(me.role, role)) {
-      throw CeroError.DENIED(null, `role '${role}' exceeds your own role '${me.role}'`)
-    }
-  }
-
   /**
    * Create a new child handle of `type`. Owner-flow — generates a fresh writer, adds it as a
    * writer + member, and registers the child on the parent's `handles` collection.
@@ -700,74 +590,108 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Join a child handle by invite (joiner-flow).
+   * Join a child handle by invite. The caller waits up to `timeout`; the join itself goes on
+   * until it is admitted, denied or expired, across restarts, and the handle then arrives
+   * with the `handle` event.
    *
    * @param {string} invite
    * @param {string} type
    * @param {JoinChildOpts} [opts]
    * @returns {Promise<Handle>}
    */
-  async _join(invite, type, opts = {}) {
-    // the pairing layer allows one candidate per invite, attach to the in-flight join
-    const target = Pairing.inviteTopic(invite)
-    const key = target && `${type}/${b4a.toString(target, 'hex')}`
-    if (!key) return this._pair(invite, type, opts, target)
-    const pending = this._joining.get(key)
-    if (pending) return pending
-    const joining = this._pair(invite, type, opts, target)
-    this._joining.set(key, joining)
+  async _join(invite, type, { routes, timeout = TIMEOUT } = {}) {
+    const known = await this._joined(type, Invite.parse(invite).discoveryKey)
+    if (known) return known
+
+    const join = this._knock(invite, type, routes)
+    join.waiting++
     try {
-      return await joining
+      return await wait(join.done, timeout)
     } finally {
-      this._joining.delete(key)
+      join.waiting--
     }
   }
 
+  _knock(invite, type, routes) {
+    const target = Invite.parse(invite).discoveryKey
+    const key = `${type}/${b4a.toHex(target)}`
+    let join = this._joining.get(key)
+    if (!join) {
+      join = new Join(this, {
+        type,
+        discoveryKey: target,
+        routes,
+        onend: () => this._joining.delete(key)
+      })
+      this._joining.set(key, join)
+    }
+    if (join.invite !== invite) join.knock(invite)
+    return join
+  }
+
   /**
+   * The joins no member answered yet. Each is resumed on every boot until it is admitted,
+   * denied, expired or cancelled.
+   *
+   * @returns {Promise<string[]>}  Their invites.
+   */
+  async joining() {
+    const { local } = this.root
+    if (!local) return []
+    const { data } = await local.store.get('joins')
+    return data.map((join) => join.invite)
+  }
+
+  /**
+   * Stop joining the handle an invite opens, for good: it is not resumed on the next boot.
+   *
    * @param {string} invite
+   * @returns {Promise<boolean>}  Whether a join was pending.
+   */
+  async cancel(invite) {
+    const id = b4a.toHex(Invite.parse(invite).discoveryKey)
+    const join = [...this.root._joining.values()].find((join) => join.id === id)
+    await join?.cancel()
+    return !!join
+  }
+
+  // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
+  // so that one pairs again with a fresh keypair
+  async _joined(type, target) {
+    const { data: joined } = await this.store.get('handles')
+    const existing = joined.find((h) => h.type === type && b4a.equals(discoveryKey(h.key), target))
+    if (!existing) return null
+    const known = await this._load(type, existing.id)
+    const { data: me } = await known.store.get('members', this.identity.id)
+    const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
+    if (me && device) return known
+    await known.close().catch(safetyCatch)
+    return null
+  }
+
+  /**
+   * Open a joined handle with the keys its reply delivered, once this writer is admitted.
+   *
    * @param {string} type
-   * @param {JoinChildOpts} [opts]
-   * @param {Uint8Array | null} [target]
+   * @param {import('@cero-base/core/pairing').JoinResult} reply
+   * @param {Record<string, Function>} [routes]
    * @returns {Promise<Handle>}
    */
-  async _pair(invite, type, { routes, timeout } = {}, target = null) {
-    const deadline = timeout || TIMEOUT
-
-    // a stored writer still admitted reopens without waiting; a removed writer's core is
-    // frozen, so fall through to a real pairing and a fresh keypair
-    if (target) {
-      const { data: joined } = await this.store.get('handles')
-      const existing = joined.find(
-        (h) => h.type === type && b4a.equals(discoveryKey(h.key), target)
-      )
-      if (existing) {
-        const known = await this._load(type, existing.id)
-        const { data: me } = await known.store.get('members', this.identity.id)
-        const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
-        if (me && device) return known
-        await known.close().catch(safetyCatch)
-      }
-    }
-
-    // offline join: rendezvous on the invite-derived BLE UUID for the join
-    const stopNearby = this.root.bluetooth ? this.root.bluetooth.announce(invite) : null
-
+  async _enter(type, reply, routes) {
     const child = /** @type {Child} */ (
-      await Handle.join(invite, {
+      Handle.fromReply(reply, {
         parent: this,
         spec: pickHandle(this.spec, type),
         namespace: `${NS}/handle/${type}/${randomNs()}`,
-        routes,
-        timeout
-      }).finally(() => stopNearby?.())
+        routes
+      })
     )
-    // whenWritable timing out (host offline) is normal, don't leak the opened child
     let publish = null
     let abort = null
     let inflightId = null
     try {
       await child.ready()
-      if (!child.store.writable) await child.store.whenWritable({ timeout: deadline })
+      if (!child.store.writable) await child.store.whenWritable({ timeout: 0 })
 
       const id = hid.encode(child.store.key)
       // same create/open race as _create, a concurrent _load must share this child
@@ -800,6 +724,19 @@ export class Handle extends ReadyResource {
       if (inflightId) this._loading?.delete(inflightId)
       await child.close().catch(safetyCatch)
       throw err
+    }
+  }
+
+  // joins not answered at the last close go on, with nobody waiting; the mailbox sends what its
+  // outbox kept
+  async _carryOn() {
+    if (!this.local) return
+    for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
+      if (await this._joined(type, Invite.parse(invite).discoveryKey)) {
+        await this.local.store.del('joins', id)
+        continue
+      }
+      this._knock(invite, type)
     }
   }
 
@@ -866,7 +803,6 @@ export class Handle extends ReadyResource {
 
   async _suspend() {
     if (this.closing || this.closed) return
-    await Promise.all([...this.children].map((c) => c.pair?.suspend().catch(this._onerror)))
     await this.bluetooth?.suspend().catch(this._onerror)
     await this.network.suspend().catch(this._onerror)
     await this.store.store.suspend().catch(this._onerror)
@@ -877,7 +813,6 @@ export class Handle extends ReadyResource {
     await this.store.store.resume().catch(this._onerror)
     await this.network.resume().catch(this._onerror)
     await this.bluetooth?.resume().catch(this._onerror)
-    await Promise.all([...this.children].map((c) => c.pair?.resume().catch(this._onerror)))
   }
 
   // a child is a child once it has its operators, the hooks declared for its type, and a slot
@@ -914,10 +849,13 @@ export class Handle extends ReadyResource {
    * @param {{ role?: string }} [opts]
    */
   _wireAccept(child, { role } = {}) {
-    child.pair.on('candidate', (cand) => {
+    const accept = (cand) => {
       if (this.closing || this.closed || child.closing || child.closed) return
-      child.accept(cand, { role }).catch(this._onerror)
-    })
+      cand.accept({ role }).catch(this._onerror)
+    }
+    // knocks kept from before a restart may already be waiting
+    for (const cand of child.pair.pending) accept(cand)
+    child.pair.on('candidate', accept)
   }
 
   /**
@@ -949,8 +887,8 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Pair into an existing handle via an invite, returning a brand-new
-   * `Handle` already configured with the resolved key + encryption key.
+   * Pair into an existing handle via an invite, returning a brand-new `Handle` opened with the
+   * delivered keys. A one-shot join: the root's `_join` is the one that survives restarts.
    *
    * @param {string} invite
    * @param {StaticJoinOpts} [opts]
@@ -958,7 +896,7 @@ export class Handle extends ReadyResource {
    */
   static async join(
     invite,
-    { parent, network, identity, store, spec, namespace, routes, timeout = TIMEOUT } = {}
+    { parent, network, identity, store, spec, namespace, routes, writer, timeout = TIMEOUT } = {}
   ) {
     const net = network || parent?.network
     const id = identity || parent?.identity
@@ -967,43 +905,37 @@ export class Handle extends ReadyResource {
     if (!store && !parent) throw CeroError.REQUIRED('store')
     if (!spec) throw CeroError.REQUIRED('spec')
 
-    const writer = Identity.randomKeyPair()
-    // join-only: a member listener here would collide with concurrent joins on the identity topic
-    const pair = new Pairing({ network: net, identity: id, host: false })
-    await pair.ready()
-
-    let key, encryptionKey, additional
+    // standalone, a mailbox of its own for this one join
+    const mailbox = parent ? null : new Mailbox(net)
     try {
-      const userData = b4a.concat([id.publicKey, writer.publicKey])
-      ;({ key, encryptionKey, additional } = await pair.join(invite, { userData, timeout }))
+      const reply = await Pairing.join(mailbox || parent.mailbox, invite, {
+        identity: id,
+        writer,
+        timeout
+      })
+      const opts = { parent, store, identity: id, network: net, spec, namespace, routes }
+      return Handle.fromReply(reply, opts)
     } finally {
-      await pair.close()
+      await mailbox?.close()
     }
-
-    let epochs = null
-    if (additional?.byteLength) {
-      // the epoch set is load-bearing, a malformed delivery must fail the join
-      try {
-        epochs = c.decode(epochEntries, additional)
-      } catch {
-        throw CeroError.INVALID('malformed epoch delivery in pairing confirm')
-      }
-    }
-
-    return new Handle({
-      parent,
-      store,
-      identity: id,
-      network: net,
-      spec,
-      namespace,
-      routes,
-      key,
-      encryptionKey,
-      epochs,
-      keyPair: writer
-    })
   }
+
+  /**
+   * A handle opened with the keys a pairing reply delivered.
+   *
+   * @param {import('@cero-base/core/pairing').JoinResult} reply
+   * @param {Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>} opts
+   * @returns {Handle}
+   */
+  static fromReply({ key, encryptionKey, epochs, writer }, opts) {
+    return new Handle({ ...opts, key, encryptionKey, epochs, keyPair: writer })
+  }
+}
+
+// a device without a local store keeps its mail in memory
+function boxes(local) {
+  if (!local) return {}
+  return { inbox: box(local.store, 'inbox'), outbox: box(local.store, 'outbox') }
 }
 
 function pickHandle(spec, type) {

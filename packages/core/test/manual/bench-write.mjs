@@ -18,7 +18,7 @@ test.configure({ timeout: 900000 })
 
 async function open(t) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const db = new Database({ store, identity, spec })
   await db.ready()
   await db.bootstrap({ name: 'bench', isMobile: false })

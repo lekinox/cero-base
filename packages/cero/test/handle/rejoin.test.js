@@ -14,7 +14,7 @@ test.configure({ timeout: 90000 })
 
 async function ceroOpen(t, opts = {}) {
   const { store } = await makeStore(t)
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const testnet = opts.testnet || (await makeTestnet(t))
   const net = await makeNet(t, testnet)
   const discovery = net.join(identity.topic)
@@ -44,11 +44,9 @@ async function room(t, testnet) {
   return { a, clinic }
 }
 
-// Apps hold a room OPEN while the user scans an invite for that same room. Only
-// ONE blind-pairing listener may exist per discovery key, so a second live
-// handle for the same room throws 'Active member already exist'. The idempotent
-// shortcut hides this while you are still a member — these cover the paths
-// where it does not apply.
+// Apps hold a room OPEN while the user scans an invite for that same room. The
+// idempotent shortcut returns the open handle while you are still a member —
+// these cover the paths where it does not apply.
 
 test('rejoin: joining a room that is already open returns it, no pairing conflict', async (t) => {
   const testnet = await makeTestnet(t)
@@ -280,21 +278,4 @@ test('rejoin: reuse invite admits two identities concurrently', async (t) => {
   t.teardown(() => two.close().catch(() => {}))
   t.is(one.id, clinic.id, 'first identity admitted')
   t.is(two.id, clinic.id, 'second identity admitted')
-})
-
-test('rejoin: a join-only Pairing refuses to mint invites', async (t) => {
-  const { Pairing } = await import('@cero-base/core/pairing')
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  const identity = await Identity.generate()
-
-  const pair = new Pairing({ network: net, identity, host: false })
-  await pair.ready()
-  t.teardown(() => pair.close().catch(() => {}))
-
-  await t.exception(
-    () => pair.createInvite(),
-    /join-only/,
-    'minting on a join-only pairing fails loudly instead of handing out a dead invite'
-  )
 })

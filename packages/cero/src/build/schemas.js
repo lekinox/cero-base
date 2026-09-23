@@ -2,6 +2,7 @@
 import { t } from '../lib/spec.js'
 
 const { string, bytes, int, uint, bool, required } = t
+const array = (m) => ({ ...m, array: true })
 
 export const main = {
   'del-by-id': {
@@ -42,16 +43,12 @@ export const main = {
   },
   invite: {
     id: required(string),
-    invite: required(bytes),
-    publicKey: required(bytes),
-    data: bytes,
-    sig: bytes,
+    secret: required(bytes),
     role: required(string),
     expires: int,
+    reuse: bool,
     createdAt: int,
-    index: uint,
-    seed: bytes,
-    reuse: bool
+    index: uint
   },
   handle: {
     id: required(string),
@@ -101,6 +98,27 @@ export const local = {
     secretKey: required(bytes),
     encryptionKey: bytes
   },
+  // a join not answered yet: the writer is fixed before the first knock, so a resumed one
+  // hears the reply to an earlier knock
+  join: {
+    id: required(string),
+    type: required(string),
+    invite: required(string),
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    // the reply, once it landed: the join then opens the room without knocking again
+    key: bytes,
+    encryptionKey: bytes,
+    epochs: bytes
+  },
+  // mail the device's mailbox keeps: received until handled, sent until read. `mirrors` are
+  // 32-byte keys back to back
+  mail: {
+    id: required(string),
+    address: required(bytes),
+    message: required(bytes),
+    mirrors: bytes
+  },
   environment: {
     channel: required(string)
   }
@@ -140,8 +158,10 @@ export const rpc = {
   'req-invite': {
     handle: required(string),
     role: string,
-    expiresIn: uint,
-    reuse: bool
+    // ms, or a duration like '12h'
+    ttl: string,
+    reuse: bool,
+    data: bytes
   },
   'req-revoke': {
     handle: required(string),
@@ -150,6 +170,9 @@ export const rpc = {
   'req-join': {
     parent: required(string),
     ref: required(string),
+    invite: required(string)
+  },
+  'req-cancel': {
     invite: required(string)
   },
   'req-open': {
@@ -194,6 +217,9 @@ export const rpc = {
     deviceId: string,
     fileBase: string,
     fileToken: string
+  },
+  'res-joining': {
+    invites: required(array(string))
   },
   'res-seed': {
     phrase: string

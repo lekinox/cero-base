@@ -100,7 +100,7 @@ flowchart TD
   App["your app<br/>cero.put · get · watch · open"] --> Handle["handles<br/>me · me.room · room.messages"]
   Identity["Identity<br/>a phrase: keys, id, topic"] -.-> Handle
   Handle --> DB["Database<br/>autobee log + hyperdb view"]
-  Handle --> Pairing["Pairing<br/>signed invites"]
+  Handle --> Pairing["Pairing<br/>invites over mailboxes"]
   Handle --> Blobs["Blobs<br/>files next to rows"]
   DB --> Net["Network<br/>hyperswarm DHT · mirrors · Bluetooth"]
   Pairing --> Net
@@ -119,7 +119,7 @@ Every op carries the app version its spec was built at, so old and new builds co
 
 ## Built on Pear
 
-Under the hood cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm), [blind-pairing](https://github.com/holepunchto/blind-pairing) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare), so the same code runs on desktop and mobile.
+Under the hood cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare), so the same code runs on desktop and mobile.
 
 ## Good to know
 

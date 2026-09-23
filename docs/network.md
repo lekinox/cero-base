@@ -39,6 +39,8 @@ const me = await cero('./data', spec, { mirrors: [mirrorKey] })
 
 Every handle and every file is mirrored, nothing else changes. Mirror keys carry through `restore`. Recovery of a second device works through a mirror too, so your data is reachable even when none of your devices is online.
 
+Invites go through the mirror as well. An invite names the room's mirrors, so a joiner's knock waits there until a member comes online, and the member's reply waits there for the joiner. The joiner needs no mirror config of its own.
+
 Running one is a few lines with `blind-peer`:
 
 ```js
@@ -89,8 +91,8 @@ Pass `{ autoStart: false }` to build `me.bluetooth` without turning the radio on
 An invite works offline too. The host announces it while the QR code is on screen, and the joiner runs the same `open` as online:
 
 ```js
-const invite = await room.invite({ role: 'member', expiresIn: 3600_000 })
-const stop = me.bluetooth.announce(invite) // stops by itself at expiresIn
+const invite = await room.invite({ role: 'member', ttl: '1h' })
+const stop = me.bluetooth.announce(invite) // stops by itself at the ttl
 // later, or when the QR closes
 stop()
 ```

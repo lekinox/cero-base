@@ -2,7 +2,7 @@
 
 The building blocks `cero` is made of. Use them when `cero` is too high-level — when you want just an autobee, just a swarm, or just signed pairing.
 
-Seven primitives, one subpath each: identity, storage, network, database, blobs, pairing, rpc. `ReadyResource`-shaped where it makes sense (`.ready()` + `.close()`).
+Eight primitives, one subpath each: identity, storage, network, database, blobs, mailbox, pairing, rpc. `ReadyResource`-shaped where it makes sense (`.ready()` + `.close()`).
 
 ```js
 // Barrel import — everything in one place
@@ -12,6 +12,7 @@ import {
   Network,
   Database,
   Blobs,
+  Mailbox,
   Pairing,
   Invite,
   RPCServer,
@@ -34,13 +35,13 @@ A keypair backed by a 12- or 24-word phrase. Signs and verifies. Derives a topic
 ```js
 import { Identity } from '@cero-base/core/identity'
 
-const me = await Identity.generate() // fresh random
-const me2 = await Identity.fromPhrase('twelve words …') // restore
-const sig = me.sign(message)
-Identity.verify(me.publicKey, message, sig) // → true / false
-me.id // z32-encoded public key
-me.topic // 32-byte buffer for swarm.join(...)
-me.toPhrase() // back to words
+const identity = await Identity.create()
+const restored = await Identity.create({ seed: Identity.toSeed(phrase) })
+
+const signature = identity.sign(message)
+Identity.verify(identity.publicKey, message, signature) // true
+identity.id // z32 public key
+identity.topic // swarm topic
 ```
 
 ## Storage
@@ -103,24 +104,36 @@ const id = await blobs.put(Buffer.from('hello'))
 const bytes = await blobs.get(id)
 ```
 
-## Pairing
+## Mailbox
 
-BlindPairing wrapper with signed invites. `createInvite()` mints, `join(invite)` consumes. The host gets a `candidate` event; call `candidate.confirm({ key, encryptionKey })` to admit.
+Receives at the addresses it holds the secret of, sends to any address. A message is delivered directly, or waits on a mirror while its owner is offline; the outbox keeps it until it is read, the inbox until it is handled.
 
 ```js
-import { Pairing } from '@cero-base/core/pairing'
+import { Identity, Mailbox } from '@cero-base/core'
 
-const pair = new Pairing({ network, identity, topic: myBeeKey })
-await pair.ready()
+const mailbox = new Mailbox(network, { inbox, outbox }) // boxes: optional { list, put, del }, persist mail
+await mailbox.ready()
 
-const invite = await pair.createInvite({ role: 'write' })
-// host side:
-pair.on('candidate', async (c) => {
-  await c.confirm({ key: bee.key, encryptionKey: bee.encryptionKey })
-})
+const secret = Identity.randomBytes(32) // keep it: whoever holds it receives
+const address = Mailbox.getAddress(secret) // share this
+mailbox.receive(secret, (message) => {})
+await mailbox.send(address, message)
+```
 
-// joiner side:
-const { key, encryptionKey } = await pair.join(invite, { userData, timeout: 30000 })
+## Pairing
+
+Invites over mailboxes. A database's `Pairing` serves its invites, `Pairing.join` knocks with one.
+
+```js
+import { Pairing } from '@cero-base/core'
+
+// a member
+const pairing = new Pairing({ mailbox, db })
+const invite = await pairing.invite({ role: 'member', ttl: '2d' })
+pairing.on('candidate', (request) => request.accept())
+
+// the joiner
+const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, { identity })
 ```
 
 ## RPC
@@ -174,7 +187,7 @@ try {
     case 'DENIED':
       return showToast(`Denied${e.reason ? `: ${e.reason}` : ''}`)
     case 'TIMEOUT':
-      return retry()
+      return showToast('Waiting for a member to answer')
     default:
       return reportError(e)
   }
@@ -194,20 +207,19 @@ Generic:
 | `DESTROYED`        | A `Discovery` is destroyed                                                     |
 | `UNKNOWN`          | Asked for a `ref`, `handle`, or other thing that doesn't exist                 |
 | `NOT_WRITABLE`     | Tried to write to a `Database` whose local writer isn't admitted yet           |
-| `TIMED_OUT`        | A bounded wait elapsed (`until(...)` etc.)                                     |
+| `TIMEOUT`          | A bounded wait elapsed (`whenWritable`, a join nobody answered yet, …)         |
 | `UNSUPPORTED`      | Feature not yet wired (nested handles, …)                                      |
 | `CHANNEL_MISMATCH` | Storage stamped with one `channel` reopened under another (or none)            |
 | `CONFLICT`         | The operation raced an existing state (e.g. double init)                       |
 
 Pairing-specific:
 
-| Code             | Thrown when                                                 | Extra fields |
-| ---------------- | ----------------------------------------------------------- | ------------ |
-| `INVALID_INVITE` | Invite string is malformed, wrong version, or signature bad | —            |
-| `EXPIRED`        | Invite past its `expiresIn`                                 | —            |
-| `DENIED`         | Host rejected the candidate                                 | `reason`     |
-| `TIMEOUT`        | Pairing didn't complete in time                             | —            |
-| `NETWORK_ERROR`  | Underlying swarm/blind-pairing failure                      | —            |
+| Code             | Thrown when                                         | Extra fields |
+| ---------------- | --------------------------------------------------- | ------------ |
+| `INVALID_INVITE` | Invite string is malformed or of an unknown version | —            |
+| `EXPIRED`        | Invite past its `ttl`                               | —            |
+| `DENIED`         | Host rejected the candidate                         | `reason`     |
+| `NETWORK_ERROR`  | Underlying swarm/mailbox failure                    | —            |
 
 Every factory produces a `CeroError` with `name === 'CeroError'`, `isCeroError === true`, the listed `.code`, and (where applicable) the extra fields above. Pattern-match on `.code`, not on the message.
 

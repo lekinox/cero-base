@@ -69,7 +69,7 @@ That is a working, encrypted, offline-first, peer-to-peer app. Your phrase, `me.
 | `@cero-base/cero/client`     | `connect(ipc, spec)`, `Client`, `restore` and the operators for a UI process |
 | `@cero-base/cero/extensions` | `profileSync`, `handleSync`                                                  |
 
-Built on the [Pear](https://pears.com) stack by [Holepunch](https://holepunch.to): Hypercore, Autobee, HyperDB, Hyperblobs, Hyperswarm, blind-pairing, blind-peering and Bare. Runs on Node and Bare, with TypeScript declarations.
+Built on the [Pear](https://pears.com) stack by [Holepunch](https://holepunch.to): Hypercore, Autobee, HyperDB, Hyperblobs, Hyperswarm, blind-peering and Bare. Runs on Node and Bare, with TypeScript declarations.
 
 ## License
 

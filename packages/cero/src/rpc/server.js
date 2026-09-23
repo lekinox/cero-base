@@ -276,12 +276,13 @@ export class Server extends RPCServer {
 
   /** Register invite/revoke/join RPC handlers. */
   _wirePairing() {
-    this.rpc.onInvite(async ({ handle, role, expiresIn, reuse }) => {
+    this.rpc.onInvite(async ({ handle, role, ttl, reuse, data }) => {
       const h = this._resolve(handle)
       const invite = await h.invite({
         role: role || undefined,
-        expiresIn: expiresIn || undefined,
-        reuse: reuse === true
+        ttl: ttl || undefined,
+        reuse: reuse === true,
+        data: data || null
       })
       return { invite }
     })
@@ -310,6 +311,10 @@ export class Server extends RPCServer {
       await this.me.resume()
       return {}
     })
+
+    this.rpc.onJoining(async () => ({ invites: await this.me.joining() }))
+
+    this.rpc.onCancel(async ({ invite }) => ({ ok: await this.me.cancel(invite) }))
 
     this.rpc.onJoin(async ({ parent, ref, invite }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')

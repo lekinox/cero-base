@@ -33,7 +33,7 @@ async function store() {
 }
 
 async function main() {
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
 
   const aStore = await store()
   const aNet = new Network({ store: aStore, mirrors: [MIRROR] }) // no bootstrap = real DHT
@@ -53,7 +53,7 @@ async function main() {
   await bNet.ready()
   const b = new Database({
     store: bStore,
-    identity: await Identity.generate(),
+    identity: await Identity.create(),
     network: bNet,
     spec,
     key: a.key,

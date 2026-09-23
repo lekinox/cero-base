@@ -3,13 +3,17 @@ import process from 'process'
 import fs from 'fs'
 import path from 'path'
 import b4a from 'b4a'
+import c from 'compact-encoding'
 
 import { Identity } from '@cero-base/core/identity'
 import { decodeId } from '@cero-base/core/blobs/codec'
+import { Invite } from '@cero-base/core/invite'
+import { Pairing } from '@cero-base/core/pairing'
+import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { cero, put, set, get, open, peek, restore } from '../src/index.js'
 import { spec } from './fixtures/spec/index.js'
-import { makeTestnet, waitForConnection, waitUntil } from './helpers/index.js'
+import { makeTestnet, makeMirror, holds, waitForConnection, waitUntil } from './helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -34,6 +38,230 @@ test('mirrors: opt threads to the network and survives restore', async (t) => {
   t.ok(me.network._blindPeering, 'blind peering constructed when mirrors are passed')
   t.alike(me.network.mirrors[0], b4a.alloc(32, 1), 'mirror key decoded from hex')
   t.alike(me._opts.mirrors, [key], 'mirrors retained on opts for restore')
+})
+
+test('mirrors: a joiner knocks while every member is offline, the mirror holds it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const { me: owner } = await ceroOpen(t, {
+    testnet,
+    mirrors: [b4a.toString(mirror.publicKey, 'hex')]
+  })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await room.invite()
+  await owner.suspend()
+
+  // the joiner has no mirror config: the invite names the room's mirror
+  const { me: joiner } = await ceroOpen(t, { testnet })
+  const knocked = holds(mirror, Invite.parse(invite).address)
+  const joining = open(joiner.team, invite)
+  await knocked
+
+  await owner.resume()
+  const joined = await joining
+  t.is(joined.id, room.id, 'admitted once the owner came back')
+})
+
+// a device coming back: cero() again on the same directory
+async function reopen(t, dir, testnet, opts = {}) {
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  return me
+}
+
+const joined = (me, id) =>
+  waitUntil(() => [...me.children].find((child) => child.id === id) || null)
+
+test('invites: a join survives the joiner restarting, and lands once a member is back', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await room.invite()
+  await owner.suspend()
+
+  const joiner = await ceroOpen(t, { testnet })
+  const err = await joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT', 'the caller stops waiting')
+  await joiner.me.close()
+
+  await owner.resume()
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, room.id), 'the join went on after the restart')
+})
+
+test('invites: a reply survives the member restarting', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const { id } = room
+  const invite = await room.invite()
+
+  // the joiner knocks, then leaves before the member answers
+  const joiner = await ceroOpen(t, { testnet })
+  const knocked = new Promise((resolve) => room.pair.once('candidate', resolve))
+  const waiting = joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
+  const candidate = await knocked
+  await waiting
+  await joiner.me.close()
+
+  // admitted while the joiner is away, and the invite consumed: only the kept reply can get
+  // the joiner in, the outbox has to carry it across the restart
+  await room.accept(candidate)
+  await waitUntil(async () => ((await get(room.invites)).data.length === 0 ? true : null))
+  await owner.me.close()
+  const back = await reopen(t, owner.dir, testnet)
+  await open(back.team, { id })
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, id), 'the kept reply reached the joiner')
+})
+
+test('invites: a joiner restarting after the reply landed opens the room from the kept keys', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await room.invite()
+
+  // the reply landed and the writer was admitted, then the joiner stopped: nothing left to knock for
+  const joiner = await ceroOpen(t, { testnet })
+  const { identity, mailbox } = joiner.me
+  const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, { identity })
+  await room.revoke(invite)
+  const { discoveryKey } = Invite.parse(invite)
+  await joiner.me.local.store.put('joins', {
+    id: b4a.toHex(discoveryKey),
+    type: 'team',
+    invite,
+    publicKey: writer.publicKey,
+    secretKey: writer.secretKey,
+    key,
+    encryptionKey,
+    epochs: c.encode(epochEntries, epochs)
+  })
+  await joiner.me.close()
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, room.id), 'opened from the kept keys')
+})
+
+test('invites: a join request waiting for approval survives the member restarting', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const { id } = room
+  const invite = await room.invite()
+
+  // the joiner knocks and leaves; only the member's inbox still has the request
+  const joiner = await ceroOpen(t, { testnet })
+  const knocked = new Promise((resolve) => room.pair.once('candidate', resolve))
+  const waiting = joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
+  await knocked
+  await waiting
+  await joiner.me.close()
+
+  // the member restarts before approving, and still sees the request
+  await owner.me.close()
+  const back = await reopen(t, owner.dir, testnet)
+  const again = await open(back.team, { id, accept: false })
+  await waitUntil(() => again.pair.pending.size > 0 || null)
+  await again.accept([...again.pair.pending][0])
+
+  const returned = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(returned, id), 'approved while the joiner was away')
+})
+
+// an invite nobody serves: the join stays pending
+function nowhere(opts) {
+  const random = () => Identity.randomBytes(32)
+  return Invite.create({ discoveryKey: random(), address: random(), ...opts }).toString()
+}
+
+test('invites: a pending join is listed, survives a restart, and a cancel ends it for good', async (t) => {
+  const joiner = await ceroOpen(t)
+  const invite = nowhere()
+  const err = await joiner.me._join(invite, 'team', { timeout: 500 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT')
+  t.alike(await joiner.me.joining(), [invite])
+  await joiner.me.close()
+
+  const again = await reopen(t, joiner.dir, joiner.testnet)
+  t.alike(await again.joining(), [invite], 'still pending after the restart')
+  t.ok(await again.cancel(invite))
+  t.alike(await again.joining(), [])
+  t.absent(await again.cancel(invite), 'nothing left to cancel')
+  await again.close()
+
+  const last = await reopen(t, joiner.dir, joiner.testnet)
+  t.alike(await last.joining(), [], 'not resumed')
+  t.is(last._joining.size, 0)
+})
+
+test('invites: a join row left behind for a handle already open is dropped at boot', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await room.invite()
+  const joiner = await ceroOpen(t, { testnet })
+  await open(joiner.me.team, invite)
+
+  // stopped between opening the handle and forgetting the join
+  const id = b4a.toHex(Invite.parse(invite).discoveryKey)
+  const { publicKey, secretKey } = Identity.randomKeyPair()
+  await joiner.me.local.store.put('joins', { id, type: 'team', invite, publicKey, secretKey })
+  await joiner.me.close()
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.alike(await again.joining(), [])
+  t.is(again._joining.size, 0, 'no knock')
+})
+
+test('invites: a caller waiting on a cancelled join hears CLOSED', async (t) => {
+  const { me } = await ceroOpen(t)
+  const invite = nowhere()
+  const waiting = me._join(invite, 'team', { timeout: 0 }).catch((e) => e)
+  await waitUntil(async () => ((await me.joining()).length ? true : null))
+  await me.cancel(invite)
+  t.is((await waiting).code, 'CLOSED')
+})
+
+test('invites: a pending join ends when its invite expires, and says so', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const invite = nowhere({ ttl: 1500 })
+  const err = await me._join(invite, 'team', { timeout: 200 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT', 'the caller stops waiting first')
+  await waitUntil(() => errors.length || null)
+  t.is(errors[0].code, 'EXPIRED', 'nobody waits, so onerror hears it')
+  t.alike(await me.joining(), [])
+})
+
+test('invites: a denial reaches the caller, or onerror once nobody waits', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const candidates = []
+  room.pair.on('candidate', (candidate) => candidates.push(candidate))
+
+  const errors = []
+  const onerror = (err) => errors.push(err)
+  const waited = await ceroOpen(t, { testnet, onerror })
+  const joining = waited.me._join(await room.invite(), 'team', { timeout: 0 }).catch((e) => e)
+  await waitUntil(() => candidates.length || null)
+  await candidates[0].deny('not now')
+  t.is((await joining).code, 'DENIED', 'the caller hears it')
+  t.is(errors.length, 0, 'and onerror does not')
+
+  // the joiner knocks and leaves; the denial waits in the member's outbox for its return
+  const away = await ceroOpen(t, { testnet })
+  await away.me._join(await room.invite(), 'team', { timeout: 1000 }).catch((e) => e)
+  await waitUntil(() => candidates.length === 2 || null)
+  await away.me.close()
+  await candidates[1].deny('not now')
+
+  const back = await reopen(t, away.dir, testnet, { onerror })
+  await waitUntil(() => errors.length || null)
+  t.is(errors[0].code, 'DENIED', 'a resumed join reports to onerror')
+  t.alike(await back.joining(), [])
 })
 
 test('mirrors: absent opt leaves blind peering off', async (t) => {
@@ -288,7 +516,7 @@ test('restore(): keeps channel isolation from peers on another channel', async (
 
   await t.exception(
     () => restore(b, phrase),
-    /TIMED_OUT/,
+    /TIMEOUT/,
     'cross-channel recovery finds no peer and times out'
   )
 })
@@ -629,7 +857,7 @@ test('cero(): two identities sync on a public scope via invite', async (t) => {
   })
   await put(team.messages, { text: 'from-host' })
 
-  const inviteStr = await team.invite({ role: 'member', expiresIn: 60_000 })
+  const inviteStr = await team.invite({ role: 'member', ttl: 60_000 })
 
   const joiner = await ceroOpen(t, { testnet })
   const teamB = await open(joiner.me.team, inviteStr)
@@ -820,16 +1048,6 @@ test('cero(): suspend()/resume() is idempotent', async (t) => {
   await me.resume()
   await me.resume() // no-op
   t.absent(me.suspended)
-})
-
-test('cero(): suspend() suspends child handle pairing', async (t) => {
-  const { me } = await ceroOpen(t)
-  const team = await open(me.team)
-  t.absent(team.pair.suspended, 'child pair starts active')
-  await me.suspend()
-  t.ok(team.pair.suspended, 'child pair suspended via composer')
-  await me.resume()
-  t.absent(team.pair.suspended, 'child pair resumed via composer')
 })
 
 test('cero(): writes work after suspend()+resume() cycle', async (t) => {

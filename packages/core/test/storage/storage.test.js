@@ -103,6 +103,15 @@ for (const backend of backends) {
     t.is(data.text, 'hello')
   })
 
+  test(`[${backend}] concurrent writes all land`, async (t) => {
+    const { storage } = await make(t, backend)
+    const ids = Array.from({ length: 20 }, (_, i) => `d${i}`)
+    await Promise.all(ids.map((id) => storage.put('drafts', { id, text: id })))
+    await Promise.all(ids.slice(0, 10).map((id) => storage.del('drafts', id)))
+    const { data } = await storage.get('drafts')
+    t.alike(data.map((d) => d.id).sort(), ids.slice(10).sort())
+  })
+
   test(`[${backend}] put on collection: respects given id`, async (t) => {
     const { storage } = await make(t, backend)
     const { data } = await storage.put('drafts', { id: 'fixed-id', text: 'hi' })

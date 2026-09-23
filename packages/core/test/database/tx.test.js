@@ -9,7 +9,7 @@ test.configure({ timeout: 60000 })
 
 async function open(t, role = 'owner') {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const db = new Database({ store, identity, spec })
   await db.ready()
   await db.bootstrap({ name: 'tx', isMobile: false })
@@ -95,7 +95,7 @@ test('tx: one refused op takes its allowed siblings with it', async (t) => {
   const { db } = await open(t, 'member')
 
   // a member may add a reader, and may write messages — but may not evict
-  const reader = await Identity.generate()
+  const reader = await Identity.create()
   await db.call('add-member', {
     id: reader.id,
     key: Identity.randomKeyPair().publicKey,

@@ -111,100 +111,48 @@ export class Identity {
    * @returns {string}
    */
   toPhrase() {
-    return bip39.entropyToMnemonic(this.seed)
+    return Identity.toPhrase(this.seed)
   }
 
   /**
-   * Build an identity from 16- or 32-byte entropy.
+   * An identity from its seed, 16 or 32 bytes; a fresh one without.
    *
-   * @param {Uint8Array} seed
+   * @param {{ seed?: Uint8Array | null, words?: 12 | 24 }} [opts]  `words` sizes a fresh one.
    * @returns {Promise<Identity>}
    */
-  static async fromSeed(seed) {
-    if (!Identity.isSeed(seed)) throw CeroError.INVALID('seed must be a 16- or 32-byte buffer')
-    const mnemonic = bip39.entropyToMnemonic(seed)
-    const id = await IdentityKey.from({ mnemonic })
+  static async create({ seed = null, words = 12 } = {}) {
+    seed ??= randomSeed(words)
+    if (!b4a.isBuffer(seed) || (seed.byteLength !== 16 && seed.byteLength !== 32)) {
+      throw CeroError.INVALID('seed must be 16 or 32 bytes')
+    }
+    const id = await IdentityKey.from({ mnemonic: bip39.entropyToMnemonic(seed) })
     const { publicKey, secretKey } = id.identityKeyPair
     const encryptionKey = id.keyChain.getSymmetricKey([...DERIVE_PATH, 'encryption'])
     return new Identity({ publicKey, secretKey, encryptionKey, seed })
   }
 
   /**
-   * Build an identity from a BIP-39 mnemonic.
-   *
-   * @param {string} phrase
-   * @returns {Promise<Identity>}
-   */
-  static async fromPhrase(phrase) {
-    if (!Identity.isPhrase(phrase)) throw CeroError.INVALID('phrase must be a valid BIP39 mnemonic')
-    return Identity.fromSeed(bip39.mnemonicToEntropy(phrase))
-  }
-
-  /**
-   * Generate a fresh identity from CSPRNG entropy.
-   *
-   * @param {{ words?: 12 | 24 }} [opts]
-   * @returns {Promise<Identity>}
-   */
-  static async generate({ words = 12 } = {}) {
-    return Identity.fromSeed(Identity.randomSeed(words))
-  }
-
-  /**
-   * Generate a random BIP-39 mnemonic.
-   *
-   * @param {12 | 24} [words]
-   * @returns {string}
-   */
-  static genPhrase(words = 12) {
-    return bip39.entropyToMnemonic(Identity.randomSeed(words))
-  }
-
-  /**
-   * Phrase → seed entropy.
+   * The seed a BIP-39 phrase writes out.
    *
    * @param {string} phrase
    * @returns {Uint8Array}
    */
   static toSeed(phrase) {
-    return bip39.mnemonicToEntropy(phrase)
+    try {
+      return bip39.mnemonicToEntropy(phrase)
+    } catch {
+      throw CeroError.INVALID('phrase must be a BIP-39 mnemonic')
+    }
   }
 
   /**
-   * Seed entropy → phrase.
+   * A seed written out as a BIP-39 phrase.
    *
    * @param {Uint8Array} seed
    * @returns {string}
    */
   static toPhrase(seed) {
     return bip39.entropyToMnemonic(seed)
-  }
-
-  /**
-   * Validate that a value is a 16- or 32-byte buffer.
-   *
-   * @param {any} x
-   * @returns {x is Uint8Array}
-   */
-  static isSeed(x) {
-    if (!b4a.isBuffer(x)) return false
-    return x.length === 16 || x.length === 32
-  }
-
-  /**
-   * Validate that a string is a BIP-39 mnemonic.
-   *
-   * @param {unknown} x
-   * @returns {x is string}
-   */
-  static isPhrase(x) {
-    if (typeof x !== 'string') return false
-    try {
-      bip39.mnemonicToEntropy(x)
-      return true
-    } catch {
-      return false
-    }
   }
 
   /**
@@ -258,17 +206,11 @@ export class Identity {
     sodium.randombytes_buf(buf)
     return buf
   }
+}
 
-  /**
-   * Fresh seed entropy sized for the chosen mnemonic length.
-   *
-   * @param {12 | 24} [words]
-   * @returns {Uint8Array}
-   */
-  static randomSeed(words = 12) {
-    if (words !== 12 && words !== 24) throw CeroError.INVALID('words must be 12 or 24')
-    return Identity.randomBytes((words / 3) * 4)
-  }
+function randomSeed(words) {
+  if (words !== 12 && words !== 24) throw CeroError.INVALID('words must be 12 or 24')
+  return Identity.randomBytes((words / 3) * 4)
 }
 
 function topicOf(publicKey) {

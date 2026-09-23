@@ -63,6 +63,7 @@ export class Storage extends ReadyResource {
     this.root = root || null
     this.store = store || null
     this.db = null
+    this._writing = null
   }
 
   async _open() {
@@ -93,7 +94,8 @@ export class Storage extends ReadyResource {
 
   async _close() {
     if (this.db) {
-      if (this.db.flush) await this.db.flush()
+      // after the writes already queued
+      if (this.db.flush) await this._serial(() => this.db.flush())
       await this.db.close()
       this.db = null
     }
@@ -161,8 +163,10 @@ export class Storage extends ReadyResource {
     this._guard()
     const ref = this._ref(name)
     const col = this._col(ref)
-    await this.db.delete(col, id != null ? { id } : {})
-    await this.db.flush()
+    await this._serial(async () => {
+      await this.db.delete(col, id != null ? { id } : {})
+      await this.db.flush()
+    })
   }
 
   /**
@@ -251,8 +255,23 @@ export class Storage extends ReadyResource {
 
   /** @param {Ref} ref @param {Record<string, any>} row @returns {Promise<void>} */
   async _write(ref, row) {
-    await this.db.insert(this._col(ref), row)
-    await this.db.flush()
+    await this._serial(async () => {
+      await this.db.insert(this._col(ref), row)
+      await this.db.flush()
+    })
+  }
+
+  // one write at a time: hyperdb refuses a flush while another write is in progress
+  async _serial(write) {
+    const previous = this._writing
+    const current = (async () => {
+      try {
+        await previous
+      } catch {}
+      await write()
+    })()
+    this._writing = current
+    await current
   }
 
   /**

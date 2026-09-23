@@ -28,6 +28,15 @@ export declare const defs: {
         'handle-keypairs': {
             type: string;
         };
+        joins: {
+            type: string;
+        };
+        inbox: {
+            type: string;
+        };
+        outbox: {
+            type: string;
+        };
         environment: {
             type: string;
             kind: string;
@@ -38,6 +47,7 @@ export declare function fields(map: any): {
     name: string;
     type: any;
     required: boolean;
+    array: boolean;
 }[];
 export declare function types(scope: any, extend?: {}): {
     name: string;
@@ -46,6 +56,7 @@ export declare function types(scope: any, extend?: {}): {
         name: string;
         type: any;
         required: boolean;
+        array: boolean;
     }[];
 }[];
 export declare function refs(ns: any, scope: any): {

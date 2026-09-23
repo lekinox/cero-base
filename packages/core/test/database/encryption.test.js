@@ -233,7 +233,7 @@ test.configure({ timeout: 120000 })
 
 async function makePeer(t, testnet, topic, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const network = new Network({ bootstrap: testnet.bootstrap, store, mirrors: opts.mirrors })
   await network.ready()
   const discovery = network.join(topic)
@@ -468,7 +468,7 @@ test('rotate: seed-phrase recovery re-derives everything — reads, claims, writ
   // a fresh device with nothing but the seed: identity re-derived, own device
   // writer (as the cero layer always mints), no userData, no delivered
   // epochs — the log replay alone must hydrate keys
-  const recoveredId = await Identity.fromSeed(a.identity.seed)
+  const recoveredId = await Identity.create({ seed: a.identity.seed })
   const rec = await makePeer(t, testnet, topic, {
     identity: recoveredId,
     keyPair: Identity.randomKeyPair(),
@@ -496,7 +496,7 @@ test('rotate: seed-phrase recovery re-derives everything — reads, claims, writ
 
 test('rotate: reader-role member (no writer) follows rotations on every device', async (t) => {
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
-  const readerId = await Identity.generate()
+  const readerId = await Identity.create()
   await a.db.call('add-member', {
     id: readerId.id,
     key: Identity.randomBytes(32),
@@ -520,7 +520,7 @@ test('rotate: reader-role member (no writer) follows rotations on every device',
 
   // second device, same reader identity, joining after the rotation
   const laptop = await makePeer(t, testnet, topic, {
-    identity: await Identity.fromSeed(readerId.seed),
+    identity: await Identity.create({ seed: readerId.seed }),
     encryptionKey,
     key: a.db.key
   })
@@ -535,7 +535,7 @@ test('rotate: a member syncs a rotated room through a blind mirror, writer offli
   const encryptionKey = Identity.randomBytes(32)
 
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const aId = await Identity.generate()
+  const aId = await Identity.create()
   const aNet = new Network({ bootstrap: testnet.bootstrap, store, mirrors: [mirror] })
   await aNet.ready()
   const aDisc = aNet.join(topic)
@@ -557,7 +557,7 @@ test('rotate: a member syncs a rotated room through a blind mirror, writer offli
     createdAt: Date.now(),
     updatedAt: Date.now()
   })
-  const bId = await Identity.generate()
+  const bId = await Identity.create()
   await a.call('add-member', {
     id: bId.id,
     key: Identity.randomBytes(32),
@@ -918,7 +918,7 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
   // epochs. Cutting a device off requires excluding its identity entirely.
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
 
-  const memberId = await Identity.generate()
+  const memberId = await Identity.create()
   const dev1 = await makePeer(t, testnet, topic, {
     identity: memberId,
     keyPair: Identity.randomKeyPair(),

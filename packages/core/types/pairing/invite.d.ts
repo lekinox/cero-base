@@ -1,157 +1,98 @@
 export type InviteFields = {
     /**
-     * Signer's long-lived public key.
-     */
-    publicKey: Uint8Array;
-    /**
-     * Optional role tag baked into the signed body.
-     */
-    role: string;
-    /**
      * Absolute expiry timestamp; `0` means never.
      */
     expires: number;
     /**
-     * Encoded payload (raw or via `encoding`).
+     * Discovery key of the database the invite opens.
      */
-    data: Uint8Array | null;
+    discoveryKey: Uint8Array;
     /**
-     * Raw blind-pairing invite handed to candidates.
+     * Where a knock is sent.
      */
-    blind: Uint8Array;
+    address: Uint8Array;
     /**
-     * Ed25519 signature over the canonical body.
+     * Mirrors that hold a knock while every member is offline.
      */
-    sig?: Uint8Array;
+    mirrors?: Uint8Array[];
     /**
-     * Cached z32 string form.
+     * The invite's secret; its keypair proves a knock.
      */
-    _str?: string | null;
-};
-export type CreateInviteOpts = {
+    seed: Uint8Array;
     /**
-     * 64-byte Ed25519 secret key used to sign.
+     * The app's payload, readable before joining. Unsigned: a hint, not proof.
      */
-    secretKey: Uint8Array;
-    /**
-     * 32-byte Ed25519 public key matching `secretKey`.
-     */
-    publicKey: Uint8Array;
-    /**
-     * Optional role tag for the joiner.
-     */
-    role: string;
-    /**
-     * TTL in ms from now; `0` means never expires.
-     */
-    expiresIn: number;
-    /**
-     * Caller payload; encoded via `encoding` when provided.
-     */
-    data: any;
-    /**
-     * Raw blind-pairing invite to wrap.
-     */
-    blind: Uint8Array;
-    /**
-     * compact-encoding type used to encode `data`.
-     */
-    encoding?: any;
-};
-export type ParseInviteOpts = {
-    /**
-     * compact-encoding type used to decode the embedded payload.
-     */
-    encoding?: any;
+    data?: Uint8Array | null;
 };
 /**
  * @typedef {object} InviteFields
- * @property {Uint8Array} publicKey                 Signer's long-lived public key.
- * @property {string} role                          Optional role tag baked into the signed body.
- * @property {number} expires                       Absolute expiry timestamp; `0` means never.
- * @property {Uint8Array | null} data               Encoded payload (raw or via `encoding`).
- * @property {Uint8Array} blind                     Raw blind-pairing invite handed to candidates.
- * @property {Uint8Array} [sig]                     Ed25519 signature over the canonical body.
- * @property {string | null} [_str]                 Cached z32 string form.
- *
- * @typedef {object} CreateInviteOpts
- * @property {Uint8Array} secretKey                 64-byte Ed25519 secret key used to sign.
- * @property {Uint8Array} publicKey                 32-byte Ed25519 public key matching `secretKey`.
- * @property {string} role                          Optional role tag for the joiner.
- * @property {number} expiresIn                     TTL in ms from now; `0` means never expires.
- * @property {any} data                             Caller payload; encoded via `encoding` when provided.
- * @property {Uint8Array} blind                     Raw blind-pairing invite to wrap.
- * @property {any} [encoding]                       compact-encoding type used to encode `data`.
- *
- * @typedef {object} ParseInviteOpts
- * @property {any} [encoding]                       compact-encoding type used to decode the embedded payload.
+ * @property {number} expires           Absolute expiry timestamp; `0` means never.
+ * @property {Uint8Array} discoveryKey  Discovery key of the database the invite opens.
+ * @property {Uint8Array} address       Where a knock is sent.
+ * @property {Uint8Array[]} [mirrors]   Mirrors that hold a knock while every member is offline.
+ * @property {Uint8Array} seed          The invite's secret; its keypair proves a knock.
+ * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 /**
- * Signed, expirable pairing invite. Wraps a blind-pairing invite with a role, optional
- * payload and an Ed25519 signature so the host can be authenticated by the joiner before
- * any handshake happens.
- *
- * @property {any} [_rawData]                         Decoded payload kept alongside the encoded `data` for convenience.
- * @property {Uint8Array} _discoveryKey               Cached discovery key of the wrapped blind invite.
+ * An invite: where to knock (its address and mirrors), the database it opens, and a seed
+ * whose keypair proves the knocker holds the invite. Role and expiry are enforced by the member
+ * that answers, from its own record; `expires` is here so a joiner fails fast.
  */
 export declare class Invite {
     version: number;
-    publicKey: Uint8Array<ArrayBufferLike>;
-    role: string;
     expires: number;
+    discoveryKey: Uint8Array<ArrayBufferLike>;
+    address: Uint8Array<ArrayBufferLike>;
+    mirrors: Uint8Array<ArrayBufferLike>[];
+    seed: Uint8Array<ArrayBufferLike>;
     data: Uint8Array<ArrayBufferLike>;
-    blind: Uint8Array<ArrayBufferLike>;
-    sig: Uint8Array<ArrayBufferLike>;
     _str: string;
-    _discoveryKey: any;
-    /** @param {InviteFields} fields */
-    constructor(fields: InviteFields);
-    /**
-     * Whether the invite is past its TTL (always `false` when `expires === 0`).
-     *
-     * @returns {boolean}
-     */
+    _keyPair: any;
+    /** @param {InviteFields & { _str?: string }} fields */
+    constructor({ expires, discoveryKey, address, mirrors, seed, data, _str }: InviteFields & {
+        _str?: string;
+    });
+    /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */
     get expired(): boolean;
+    /** @returns {Uint8Array} The invite's id: the public key of its seed's keypair. */
+    get id(): Uint8Array;
     /**
-     * Discovery key of the wrapped blind-pairing invite — the topic it targets.
+     * Sign a reply address with the invite's key, proving the knock comes from its holder.
      *
+     * @param {Uint8Array} reply
      * @returns {Uint8Array}
      */
-    get discoveryKey(): Uint8Array;
+    prove(reply: Uint8Array): Uint8Array;
+    /** @returns {string} The z32 wire form. */
+    toString(): string;
+    _pair(): any;
     /**
-     * Verify the embedded signature against the encoded body.
+     * Whether `proof` is the invite `id`'s signature over `reply`.
      *
+     * @param {Uint8Array} id
+     * @param {Uint8Array} reply
+     * @param {Uint8Array} proof
      * @returns {boolean}
      */
-    verify(): boolean;
+    static proven(id: Uint8Array, reply: Uint8Array, proof: Uint8Array): boolean;
     /**
-     * Serialise to the canonical z32 wire form (cached).
+     * A new invite with a fresh seed.
      *
-     * @returns {string}
-     */
-    toString(): string;
-    /**
-     * Build and sign a new invite envelope wrapping a blind-pairing invite.
-     *
-     * @param {CreateInviteOpts} opts
+     * @param {{ ttl?: number | string, discoveryKey: Uint8Array, address: Uint8Array, mirrors?: Uint8Array[], data?: Uint8Array | null }} opts
      * @returns {Invite}
      */
-    static create({ secretKey, publicKey, role, expiresIn, data, blind, encoding }: CreateInviteOpts): Invite;
+    static create({ ttl, discoveryKey, address, mirrors, data }: {
+        ttl?: number | string;
+        discoveryKey: Uint8Array;
+        address: Uint8Array;
+        mirrors?: Uint8Array[];
+        data?: Uint8Array | null;
+    }): Invite;
     /**
-     * Parse a z32 invite string, verify its signature and (optionally) decode
-     * its payload.
+     * Parse an invite string.
      *
      * @param {string} str
-     * @param {ParseInviteOpts} [opts]
      * @returns {Invite}
      */
-    static parse(str: string, { encoding }?: ParseInviteOpts): Invite;
-    /**
-     * Cheap structural test — does `str` decode as an invite envelope? Does not
-     * verify the signature.
-     *
-     * @param {unknown} str
-     * @returns {boolean}
-     */
-    static isInvite(str: unknown): boolean;
+    static parse(str: string): Invite;
 }

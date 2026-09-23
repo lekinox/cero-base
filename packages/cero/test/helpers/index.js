@@ -1,7 +1,9 @@
 import ReadyResource from 'ready-resource'
+import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import createTestnet from '@hyperswarm/testnet'
+import BlindPeer from 'blind-peer'
 
 import { Network } from '@cero-base/core/network'
 
@@ -31,13 +33,39 @@ export async function makeTestnet(t, size = 3) {
   return net
 }
 
+// a store like cero() gives it: pairing posts its mailbox cores there
 export async function makeNet(t, testnet, identity = null) {
-  const opts = { bootstrap: testnet.bootstrap }
+  const { store } = await makeStore(t)
+  const opts = { bootstrap: testnet.bootstrap, store }
   if (identity) opts.identity = identity
   const net = new Network(opts)
   await net.ready()
   t.teardown(() => net.close().catch(() => {}), { order: 1 })
   return net
+}
+
+// a real blind-peer mirror, in process
+export async function makeMirror(t, testnet) {
+  const mirror = new BlindPeer(await t.tmp(), { bootstrap: testnet.bootstrap })
+  await mirror.listen()
+  t.teardown(() => mirror.close().catch(() => {}), { order: 80 })
+  return mirror
+}
+
+// resolves once the mirror stores the whole core posted to `referrer`
+export async function holds(mirror, referrer) {
+  const key = await new Promise((resolve) => {
+    const onadd = (record) => {
+      if (!record.referrer || !b4a.equals(record.referrer, referrer)) return
+      mirror.off('add-core', onadd)
+      resolve(record.key)
+    }
+    mirror.on('add-core', onadd)
+  })
+  const core = mirror.store.get({ key })
+  await core.ready()
+  await waitUntil(() => core.length > 0 && core.contiguousLength === core.length)
+  await core.close()
 }
 
 export async function waitForConnection(net, timeout = 30000) {

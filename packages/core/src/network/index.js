@@ -1,6 +1,5 @@
 import NoiseSecretStream from '@hyperswarm/secret-stream'
 import Autobee from 'autobee'
-import BlindPairing from 'blind-pairing'
 import BlindPeering from 'blind-peering'
 import Protomux from 'protomux'
 import ProtomuxWakeup from 'protomux-wakeup'
@@ -76,7 +75,6 @@ export class Network extends ReadyResource {
     this._replicateables = new Set()
     this._discoveries = new Set()
     this._injected = new Set()
-    this._blind = null
     this._blindPeering = null
     this._onerror = onerror
   }
@@ -124,12 +122,11 @@ export class Network extends ReadyResource {
       this.emit('connection', stream, info)
     })
 
-    if (this.store && this.mirrors.length) {
-      this._blindPeering = new BlindPeering(swarm.dht, this.store, {
-        blindPeers: this.mirrors.map((key) => ({ key })),
-        wakeup: this.wakeup,
-        pick: 2
-      })
+    if (this.store) {
+      // mailbox cores live in the store: every connection replicates it, so a listener can fetch them
+      const store = this.store
+      this._replicateables.add({ store, replicate: (stream) => store.replicate(stream) })
+      if (this.mirrors.length) this.peering()
     }
   }
 
@@ -168,15 +165,6 @@ export class Network extends ReadyResource {
       this._blindPeering = null
     }
 
-    if (this._blind) {
-      try {
-        await (await this._blind).close()
-      } catch (err) {
-        safetyCatch(err)
-      }
-      this._blind = null
-    }
-
     if (this.wakeup) {
       try {
         await this.wakeup.destroy()
@@ -206,9 +194,6 @@ export class Network extends ReadyResource {
         ? stream
         : new NoiseSecretStream(isInitiator === true, stream, keyPair ? { keyPair } : undefined)
 
-    // blind-pairing sends on the lowest-rtt channel; an injected duplex has no rtt, so give it one
-    if (conn.rawStream && conn.rawStream.rtt === undefined) conn.rawStream.rtt = 0
-
     this._injected.add(conn)
     conn.on('close', () => this._injected.delete(conn))
     conn.on('error', safetyCatch) // a dropped radio link must not crash the host
@@ -221,37 +206,22 @@ export class Network extends ReadyResource {
   }
 
   /**
-   * Lazily create the network-shared BlindPairing.
+   * The blind-peering client, built on first use: a mailbox post names mirrors this network
+   * may not have been given.
    *
-   * @returns {Promise<any>}
+   * @returns {any}
    */
-  async blind() {
+  peering() {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
-    if (!this._blind) {
-      const blind = new BlindPairing(this.swarm)
-      this._blind = blind.ready().then(() => {
-        // blind-pairing only watches the swarm; injected connections must reach it too
-        this.on('connection', (conn, info) => {
-          if (info?.injected) blind._onconnection(conn)
-        })
-        for (const conn of this._injected) blind._onconnection(conn)
-        return blind
+    if (!this.store) throw CeroError.REQUIRED('store')
+    if (!this._blindPeering) {
+      this._blindPeering = new BlindPeering(this.swarm.dht, this.store, {
+        blindPeers: this.mirrors.map((key) => ({ key })),
+        wakeup: this.wakeup,
+        pick: 2
       })
     }
-    return this._blind
-  }
-
-  /**
-   * Re-attach pairing channels on injected connections. blind-pairing only auto-attaches
-   * refs that existed when a connection arrived — swarm peers meet again over topic joins,
-   * injected links (Bluetooth,.
-   *
-   * @returns {Promise<void>}
-   */
-  async refreshInjected() {
-    if (!this._blind || !this._injected.size) return
-    const blind = await this._blind
-    for (const conn of this._injected) blind._onconnection(conn)
+    return this._blindPeering
   }
 
   /**

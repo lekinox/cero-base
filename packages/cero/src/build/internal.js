@@ -15,6 +15,9 @@ export const defs = {
     master: { type: 'master', kind: 'single' },
     keypair: { type: 'keypair', kind: 'single' },
     'handle-keypairs': { type: 'handle-keypair' },
+    joins: { type: 'join' },
+    inbox: { type: 'mail' },
+    outbox: { type: 'mail' },
     environment: { type: 'environment', kind: 'single' }
   }
 }
@@ -26,7 +29,8 @@ export function fields(map) {
   return Object.entries(map).map(([name, m]) => ({
     name,
     type: COLUMN[m.prim] || m.prim,
-    required: m.required === true
+    required: m.required === true,
+    ...(m.array && { array: true })
   }))
 }
 
@@ -104,6 +108,8 @@ const COMMANDS = [
   ['invite', 'req-invite', 'res-invite'],
   ['revoke', 'req-revoke', 'res-ok'],
   ['join', 'req-join', 'res-handle'],
+  ['joining', 'req-empty', 'res-joining'],
+  ['cancel', 'req-cancel', 'res-ok'],
   ['open-handle', 'req-open', 'res-handle'],
   ['close-handle', 'req-handle', 'res-ok'],
   ['leave', 'req-handle', 'res-ok'],

@@ -57,15 +57,15 @@ never opens another.
 `room.invite(opts)` mints a z32 string. It is a child-handle method. Calling it
 on the root throws `INVALID`.
 
-| option      | type      | default | meaning                                                   |
-| ----------- | --------- | ------- | --------------------------------------------------------- |
-| `role`      | `string`  | `''`    | Role granted. Must be a rank, and cannot exceed your own. |
-| `expiresIn` | `number`  | `0`     | TTL in ms from now. `0` never expires.                    |
-| `reuse`     | `boolean` | `false` | Admit more than one joiner. Otherwise single use.         |
-| `data`      | `any`     | `null`  | Caller payload carried inside the signed invite.          |
+| option  | type               | default | meaning                                                                                                      |
+| ------- | ------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `role`  | `string`           | `''`    | Role granted. Must be a rank, and cannot exceed your own.                                                    |
+| `ttl`   | `number \| string` | `0`     | How long it is valid: ms, or `'12h'`, `'2d'`. `0` never expires.                                             |
+| `reuse` | `boolean`          | `false` | Admit more than one joiner. Otherwise single use.                                                            |
+| `data`  | `Uint8Array`       | `null`  | A payload for the joiner, read with `Invite.parse(invite).data` before joining. Unsigned: a hint, not proof. |
 
 ```js
-const invite = await room.invite({ role: 'member', expiresIn: 24 * 60 * 60 * 1000 })
+const invite = await room.invite({ role: 'member', ttl: '1d' })
 ```
 
 Every minted invite is also a row in the room's `invites` collection. The row
@@ -88,8 +88,18 @@ coalesced by room, not by invite string: two joins in flight for the same room
 resolve to one handle, and joining a room you already have open returns that
 handle instead of pairing again.
 
-An unserved invite rejects with `TIMED_OUT` after the join timeout, 30000 ms by
-default. A failed join does not poison a later one with a fresh invite.
+`cero.open` waits up to the join timeout, 30000 ms by default, then rejects with
+`TIMEOUT`. The join itself goes on: it is saved on the device, survives a restart,
+and once a member answers, even if every member was offline when you joined, the
+room is added to `me.handles`. Watch it to see the room arrive, the same way over
+`connect()`; in the same process the `handle` event also fires. It ends admitted,
+denied, expired or cancelled, and once nobody waits on it, a denial or expiry
+reaches `onerror`. A fresh invite for the same room takes over from the old one.
+
+```js
+const pending = await me.joining() // the invites still waiting for an answer
+await me.cancel(invite) // stop for good, it is not resumed on the next boot
+```
 
 `room.revoke(invite)` returns `true` the first time and `false` afterwards. It
 needs the remove permission, and refuses a plain member before dropping anything
@@ -149,20 +159,27 @@ appended under an epoch they can still read.
 ## Accepting joiners
 
 A created or reopened room auto-accepts candidates by calling
-`room.accept(candidate, { role, name })` for you. `role` defaults to the
-invite's role, then `'member'`. `accept` refuses before it hands over any key
-when the candidate data is not a 64-byte buffer, the invite has expired, the
-role exceeds the invite's role, or the role is not a rank.
+`candidate.accept({ role })` for you, which `room.accept(candidate)` also does. `role` defaults to the
+invite's role, then `'member'`. `accept` refuses when the invite has expired,
+the role exceeds the invite's role, or the role is not a rank, and it hands over
+the keys only once the admission landed.
 
 To gate joins yourself, open with `accept: false` and handle the candidate.
 
 ```js
 const room = await cero.open(me.room, { name: 'gated', accept: false })
 
-room.pair.on('candidate', async (cand) => {
-  if (await approve(cand)) await room.accept(cand, { role: 'member' })
-})
+const review = async (cand) => {
+  if (await approve(cand)) await room.accept(cand)
+  else await cand.deny('not now')
+}
+// requests still waiting, some from before a restart, then the new ones
+for (const cand of room.pair.pending) review(cand)
+room.pair.on('candidate', review)
 ```
+
+A request stays pending until you accept or deny it, across restarts: the
+joiner may be long gone, the reply waits in your mailbox until it comes back.
 
 The gate does not re-arm behind your back. Reopening by id with `accept: false`
 stays gated. Errors thrown by an auto-accept go to `onerror`, not to the caller.

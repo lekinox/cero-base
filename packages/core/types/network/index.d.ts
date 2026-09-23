@@ -94,7 +94,6 @@ export declare class Network extends ReadyResource {
     _replicateables: Set<any>;
     _discoveries: Set<any>;
     _injected: Set<any>;
-    _blind: any;
     _blindPeering: any;
     _onerror: (err: any) => void;
     /** @param {NetworkOpts} [opts] */
@@ -121,19 +120,12 @@ export declare class Network extends ReadyResource {
         isInitiator?: boolean;
     }): any;
     /**
-     * Lazily create the network-shared BlindPairing.
+     * The blind-peering client, built on first use: a mailbox post names mirrors this network
+     * may not have been given.
      *
-     * @returns {Promise<any>}
+     * @returns {any}
      */
-    blind(): Promise<any>;
-    /**
-     * Re-attach pairing channels on injected connections. blind-pairing only auto-attaches
-     * refs that existed when a connection arrived — swarm peers meet again over topic joins,
-     * injected links (Bluetooth,.
-     *
-     * @returns {Promise<void>}
-     */
-    refreshInjected(): Promise<void>;
+    peering(): any;
     /**
      * Declare this peer's self-reported info ({ name, ... }).
      *

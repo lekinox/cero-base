@@ -118,7 +118,7 @@ me.device // { id, name }
 me.identity.toPhrase() // the twelve words
 
 const room = await cero.open(me.room, { name: 'general' })
-const invite = await room.invite({ role: 'member', expiresIn: 3600_000 })
+const invite = await room.invite({ role: 'member', ttl: '1h' })
 await room.revoke(invite)
 room.store.on('unwritable', () => showRemoved())
 await room.leave()
@@ -130,26 +130,28 @@ await me.close()
 
 The root handle and every child handle are the same class.
 
-| Member                    | Meaning                                                                       |
-| ------------------------- | ----------------------------------------------------------------------------- |
-| `id`                      | Identity id on the root, the database key on a child. Both z32.               |
-| `device`                  | `{ id, name }` for this device. `null` on a child.                            |
-| `identity`                | The `Identity`. `identity.toPhrase()` returns the mnemonic.                   |
-| `name`                    | Display name, on child handles.                                               |
-| `root` / `parent`         | Top of the chain, and the immediate parent (`null` on the root).              |
-| `store`                   | The underlying `Database`. `store.tx(fn)` batches writes atomically.          |
-| `signal` / `suspended`    | An `AbortSignal` that fires on close, and whether the root is suspended.      |
-| `blobs` / `fileServer`    | This handle's blob store, and the identity's file server.                     |
-| `invite(opts)`            | Mint an invite. `{ role, expiresIn, data, reuse }`, resolves to a z32 string. |
-| `revoke(invite)`          | Drop an invite everywhere. `true` if it was found.                            |
-| `accept(candidate, opts)` | Admit a candidate. `{ role, name }`. Only needed with `accept: false`.        |
-| `leave()`                 | Drop membership of a child handle and close it.                               |
-| `close()`                 | Close this handle and everything under it.                                    |
-| `suspend()` / `resume()`  | Pause and restore networking and storage. Root only, idempotent.              |
-| `setActive(active)`       | `true` ranks the handle as just updated, `false` takes it off the swarm.      |
-| `getLink(id)`             | Local, ephemeral download url for a file id.                                  |
-| `own(resource)`           | Destroy `resource` when this handle closes.                                   |
-| `on(event, fn, opts)`     | Listener with an optional `{ signal }`.                                       |
+| Member                    | Meaning                                                                  |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `id`                      | Identity id on the root, the database key on a child. Both z32.          |
+| `device`                  | `{ id, name }` for this device. `null` on a child.                       |
+| `identity`                | The `Identity`. `identity.toPhrase()` returns the mnemonic.              |
+| `name`                    | Display name, on child handles.                                          |
+| `root` / `parent`         | Top of the chain, and the immediate parent (`null` on the root).         |
+| `store`                   | The underlying `Database`. `store.tx(fn)` batches writes atomically.     |
+| `signal` / `suspended`    | An `AbortSignal` that fires on close, and whether the root is suspended. |
+| `blobs` / `fileServer`    | This handle's blob store, and the identity's file server.                |
+| `invite(opts)`            | Mint an invite. `{ role, ttl, reuse, data }` , resolves to a z32 string. |
+| `revoke(invite)`          | Drop an invite everywhere. `true` if it was found.                       |
+| `accept(candidate, opts)` | Admit a candidate. `{ role }`. Only needed with `accept: false`.         |
+| `leave()`                 | Drop membership of a child handle and close it.                          |
+| `close()`                 | Close this handle and everything under it.                               |
+| `suspend()` / `resume()`  | Pause and restore networking and storage. Root only, idempotent.         |
+| `joining()`               | The invites of the joins no member answered yet. Root only.              |
+| `cancel(invite)`          | Stop a pending join for good. `true` if one was pending. Root only.      |
+| `setActive(active)`       | `true` ranks the handle as just updated, `false` takes it off the swarm. |
+| `getLink(id)`             | Local, ephemeral download url for a file id.                             |
+| `own(resource)`           | Destroy `resource` when this handle closes.                              |
+| `on(event, fn, opts)`     | Listener with an optional `{ signal }`.                                  |
 
 A handle emits `'handle'` with `(child, opts)` when a child opens, and `'close'`.
 Writability and app-version events live on `handle.store`: `'writable'`,
@@ -234,7 +236,7 @@ const me = await connect(ipc, spec)
 as a local root handle. `cero(ipc, spec)` is an alias, so app code runs on either
 side. The subpath also re-exports the operators, `t`, `schema` and `restore`.
 Handle stubs expose `invite`, `revoke`, `rotate`, `setActive`, `close`
-and `leave`, the root also `suspend` and `resume`, and `me.identity.toPhrase()` is
+and `leave`, the root also `suspend`, `resume`, `joining` and `cancel`, and `me.identity.toPhrase()` is
 async here. `before`, `after`, `peek` and
 `store.tx` are not on a client: hooks run where the data lives, so register them
 on the backend.

@@ -149,7 +149,7 @@ test('invite + join replicates both ways', async (t) => {
 
 The first device mints the identity; the phrase alone recovers a second one. Never open a
 first device with a supplied phrase: on a device with no writer a phrase means recover, and
-with no reachable device it rejects with `TIMED_OUT`.
+with no reachable device it rejects with `TIMEOUT`.
 
 ```js
 const a = await peer(t, testnet, 'laptop')

@@ -347,15 +347,16 @@ const operators = {
   /**
    * Mint a pairing invite for this handle.
    *
-   * @param {{ role?: string }} [opts]
+   * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async invite({ role, expiresIn, reuse } = {}) {
+  async invite({ role, ttl, reuse, data } = {}) {
     const { invite } = await this.rpc.invite({
       handle: this.id,
       role: role || '',
-      expiresIn: expiresIn || 0,
-      reuse: reuse === true
+      ttl: ttl ? String(ttl) : '',
+      reuse: reuse === true,
+      data: data || null
     })
     return invite
   },
@@ -483,6 +484,25 @@ export class Client extends RPCClient {
     bind(this, null, this.operators)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
     this._pumpErrors()
+  }
+
+  /**
+   * The joins no member answered yet, resumed on every boot.
+   *
+   * @returns {Promise<string[]>}  Their invites.
+   */
+  async joining() {
+    return (await this.rpc.joining({})).invites
+  }
+
+  /**
+   * Stop joining the handle an invite opens, for good.
+   *
+   * @param {string} invite
+   * @returns {Promise<boolean>}  Whether a join was pending.
+   */
+  async cancel(invite) {
+    return (await this.rpc.cancel({ invite })).ok
   }
 
   /** Pause networking and storage on the server. Idempotent. */

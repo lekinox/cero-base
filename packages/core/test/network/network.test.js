@@ -95,7 +95,7 @@ test('close() is idempotent', async (t) => {
 // ─── identity opt ─────────────────────────────────────────────────────────
 
 test('identity opt: swarm keyPair matches identity publicKey', async (t) => {
-  const id = await Identity.generate()
+  const id = await Identity.create()
   const net = new Network({ identity: id, bootstrap: testnet.bootstrap })
   await net.ready()
   t.alike(b4a.toBuffer(net.swarm.keyPair.publicKey), b4a.toBuffer(id.publicKey))
@@ -252,10 +252,14 @@ test('channel: leaving a topic removes its swarm discovery — no announce leak'
   t.is(a.swarm._discovery.size, 0, 'left — the discovery entry is gone, topic unannounced')
 })
 
-test('blind(): refuses on a closed network', async (t) => {
-  const a = await makeNet(t)
+test('peering(): needs a store, built once, refused on a closed network', async (t) => {
+  const bare = await makeNet(t)
+  t.exception(() => bare.peering(), /store/)
+  const { store } = await makeStore(t)
+  const a = await makeNet(t, { store })
+  t.is(a.peering(), a.peering(), 'one client per network')
   await a.close()
-  await t.exception(a.blind(), /closed/i, 'no BlindPairing is built on a dead swarm')
+  t.exception(() => a.peering(), /closed/i, 'no client on a dead swarm')
 })
 
 test('attach/detach: no errors and idempotent', async (t) => {
@@ -789,8 +793,8 @@ test('inject: replication + writer admission over an injected duplex, no shared 
   await netB.ready()
   t.teardown(() => Promise.all([netA.close(), netB.close()]).catch(() => {}), { order: 9 })
 
-  const idA = await Identity.generate()
-  const idB = await Identity.generate()
+  const idA = await Identity.create()
+  const idB = await Identity.create()
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
@@ -839,8 +843,8 @@ test('inject: a core attached AFTER the injected connection still replicates', a
   netB.inject(s2, { isInitiator: false })
   t.is(netA.connections.size, 1, 'injected link counted as a connection')
 
-  const idA = await Identity.generate()
-  const idB = await Identity.generate()
+  const idA = await Identity.create()
+  const idB = await Identity.create()
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 

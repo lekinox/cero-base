@@ -1,4 +1,6 @@
 import createTestnet from '@hyperswarm/testnet'
+import Hyperswarm from 'hyperswarm'
+import BlindPeer from 'blind-peer'
 import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
@@ -227,8 +229,10 @@ export function replay(batches) {
 // ─── blind-peer mirror (real, in-process) ─────────────────────────────────
 
 export async function makeMirror(t, testnet) {
-  const { default: Hyperswarm } = await import('hyperswarm')
-  const { default: BlindPeer } = await import('blind-peer')
+  return (await makeBlindPeer(t, testnet)).publicKey
+}
+
+export async function makeBlindPeer(t, testnet) {
   const swarm = new Hyperswarm({ bootstrap: testnet.bootstrap })
   const dir = await t.tmp()
   const mirror = new BlindPeer(dir, { swarm })
@@ -244,7 +248,7 @@ export async function makeMirror(t, testnet) {
     },
     { order: 80 }
   )
-  return mirror.publicKey
+  return mirror
 }
 
 // the mirror holds every block of what joiners need: the writer core, the bootstrap core and each view

@@ -2,50 +2,6 @@
   "version": 2,
   "schema": [
     {
-      "name": "invite-body",
-      "namespace": "cero",
-      "compact": false,
-      "flagsPosition": 4,
-      "fields": [
-        {
-          "name": "version",
-          "required": true,
-          "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "publicKey",
-          "required": true,
-          "type": "fixed32",
-          "version": 1
-        },
-        {
-          "name": "role",
-          "required": true,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "expires",
-          "required": true,
-          "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "data",
-          "required": false,
-          "type": "buffer",
-          "version": 1
-        },
-        {
-          "name": "blind",
-          "required": true,
-          "type": "buffer",
-          "version": 1
-        }
-      ]
-    },
-    {
       "name": "invite",
       "namespace": "cero",
       "compact": false,
@@ -58,39 +14,110 @@
           "version": 1
         },
         {
-          "name": "publicKey",
-          "required": true,
-          "type": "fixed32",
-          "version": 1
-        },
-        {
-          "name": "role",
-          "required": true,
-          "type": "string",
-          "version": 1
-        },
-        {
           "name": "expires",
           "required": true,
           "type": "uint",
           "version": 1
         },
         {
+          "name": "discoveryKey",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "address",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "mirrors",
+          "required": false,
+          "array": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "seed",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
           "name": "data",
           "required": false,
           "type": "buffer",
-          "version": 1
-        },
+          "version": 2
+        }
+      ]
+    },
+    {
+      "name": "knock",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": -1,
+      "fields": [
         {
-          "name": "blind",
+          "name": "id",
           "required": true,
-          "type": "buffer",
+          "type": "fixed32",
           "version": 1
         },
         {
-          "name": "sig",
+          "name": "reply",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "proof",
           "required": true,
           "type": "fixed64",
+          "version": 1
+        },
+        {
+          "name": "identity",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "writer",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "signature",
+          "required": true,
+          "type": "fixed64",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "epoch",
+      "namespace": "cero",
+      "compact": true,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "epoch",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "stamp",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "entropy",
+          "required": true,
+          "type": "fixed32",
           "version": 1
         }
       ]
@@ -126,9 +153,10 @@
           "version": 1
         },
         {
-          "name": "extra",
+          "name": "epochs",
           "required": false,
-          "type": "buffer",
+          "array": true,
+          "type": "@cero/epoch",
           "version": 1
         }
       ]
@@ -141,6 +169,28 @@
       "fields": [
         {
           "name": "data",
+          "required": false,
+          "array": true,
+          "type": "buffer",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "changes",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 0,
+      "fields": [
+        {
+          "name": "prev",
+          "required": false,
+          "array": true,
+          "type": "buffer",
+          "version": 1
+        },
+        {
+          "name": "next",
           "required": false,
           "array": true,
           "type": "buffer",
@@ -271,28 +321,6 @@
           "required": true,
           "type": "string",
           "version": 1
-        }
-      ]
-    },
-    {
-      "name": "changes",
-      "namespace": "cero",
-      "compact": false,
-      "flagsPosition": 0,
-      "fields": [
-        {
-          "name": "prev",
-          "required": false,
-          "array": true,
-          "type": "buffer",
-          "version": 2
-        },
-        {
-          "name": "next",
-          "required": false,
-          "array": true,
-          "type": "buffer",
-          "version": 2
         }
       ]
     }

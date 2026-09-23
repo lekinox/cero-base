@@ -188,7 +188,7 @@ test('after(ref): a derived row written through ctx.put lands on every peer', as
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
-  const invite = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const invite = await room.invite({ role: 'member', ttl: 60_000 })
   const joined = await open(joiner.room, invite)
   await waitForConnection(host.network)
   await waitForConnection(joiner.network)
@@ -260,7 +260,7 @@ test('before(ref): a mutated row lands identically on every peer', async (t) => 
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
-  const invite = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const invite = await room.invite({ role: 'member', ttl: 60_000 })
   const joined = await open(joiner.room, invite)
   await waitForConnection(host.network)
   await waitForConnection(joiner.network)
@@ -729,7 +729,7 @@ test('profileSync: a joiner profile is visible on the host member list', async (
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
-  const invite = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const invite = await room.invite({ role: 'member', ttl: 60_000 })
 
   await set(joiner.profile, { name: 'guest', avatar: 'g.png' })
   const joined = await open(joiner.room, invite)
@@ -847,7 +847,7 @@ test('handleSync: a joiner handles row gets named from the handle profile', asyn
 
   const room = await open(host.room)
   await set(room.profile, { name: 'general' })
-  const invite = await room.invite({ role: 'member', expiresIn: 60_000 })
+  const invite = await room.invite({ role: 'member', ttl: 60_000 })
   await open(joiner.room, invite)
   await waitForConnection(host.network)
   await waitForConnection(joiner.network)

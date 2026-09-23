@@ -4,7 +4,6 @@ import crypto from 'hypercore-crypto'
 import safetyCatch from 'safety-catch'
 import b4a from 'b4a'
 
-import { Pairing } from '@cero-base/core/pairing'
 import { Invite } from '@cero-base/core/invite'
 
 /**
@@ -109,20 +108,24 @@ export class Bluetooth extends ReadyResource {
     if (this.state !== 'on' && this.state !== 'waiting' && this.state !== 'starting') {
       return () => {}
     }
-    const topic = Pairing.inviteTopic(invite)
-    if (!topic) return () => {}
+    let parsed
+    try {
+      parsed = Invite.parse(invite)
+    } catch {
+      return () => {}
+    }
 
-    const hex = b4a.toString(topic, 'hex')
+    const hex = b4a.toHex(parsed.discoveryKey)
     if (this._announce && this._announce.hex !== hex) this._stopAnnounce()
     if (!this._announce) {
       const entry = { hex, count: 0, timer: null }
-      const { expires } = Invite.parse(invite)
+      const { expires } = parsed
       if (expires > 0) {
         entry.timer = setTimeout(() => this._stopAnnounce(), Math.max(0, expires - Date.now()))
       }
       this._announce = entry
       this._restorePending = false
-      this.swarm.setTopic(topic).catch(safetyCatch)
+      this.swarm.setTopic(parsed.discoveryKey).catch(safetyCatch)
     }
     const entry = this._announce
     entry.count++

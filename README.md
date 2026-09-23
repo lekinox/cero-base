@@ -72,7 +72,7 @@ That is a working, encrypted, offline-first, peer-to-peer chat. The [quickstart]
 
 ## Built on Pear
 
-Under the hood cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm), [blind-pairing](https://github.com/holepunchto/blind-pairing) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
+Under the hood cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
 
 ## Docs
 
@@ -88,7 +88,7 @@ Start with the [quickstart](docs/quickstart.md), then follow the guides in order
 
 ## Related
 
-[`@cero-base/core`](packages/core) holds the seven primitives cero is built from: identity, database, network, pairing, storage, blobs and rpc. Reach for it when cero is too high level. See [Core primitives](docs/core.md).
+[`@cero-base/core`](packages/core) holds the eight primitives cero is built from: identity, database, network, mailbox, pairing, storage, blobs and rpc. Reach for it when cero is too high level. See [Core primitives](docs/core.md).
 
 ## Develop
 

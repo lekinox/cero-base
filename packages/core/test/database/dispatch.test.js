@@ -16,7 +16,7 @@ test.configure({ timeout: 60000 })
 
 async function bootstrapped(t, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const db = new Database({ store, identity, spec, ...opts })
   await db.ready()
   await db.bootstrap({ name: 'first', isMobile: false })
@@ -132,6 +132,24 @@ test('admission signed for another db is rejected (domain separation)', async (t
   )
 })
 
+test('admission signed for another appender is rejected (appender binding)', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const wrongAppender = b4a.alloc(32, 9)
+
+  const writer = Identity.randomKeyPair()
+  await db.call('add-writer', {
+    master: identity.publicKey,
+    writer: writer.publicKey,
+    sig: identity.sign(admission(db.key, writer.publicKey, wrongAppender)),
+    name: 'replayed',
+    isMobile: false
+  })
+  t.absent(
+    (await db.get('devices', z32.encode(writer.publicKey))).data,
+    'admission signed for different appender rejected'
+  )
+})
+
 // ─── role hierarchy: can only grant a role you hold ───────────────────────
 
 function inviteOp(role) {
@@ -185,7 +203,7 @@ test('set-member: an admin cannot promote a member to owner', async (t) => {
 
 test('del-member: only an owner can evict (a member cannot)', async (t) => {
   const victimMember = async (db) => {
-    const v = await Identity.generate()
+    const v = await Identity.create()
     await db.call('add-member', {
       id: v.id,
       key: Identity.randomKeyPair().publicKey,
@@ -298,7 +316,7 @@ test('fast-forward: an empty reference trusts only the genesis writer', async (t
 
   // a fresh db pre-bootstrap: its view has no device rows yet
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const fresh = new Database({ store, identity, spec })
   await fresh.ready()
   t.teardown(() => fresh.close().catch(() => {}), { order: 5 })
@@ -362,7 +380,7 @@ test('claim-writer without a matching member is rejected even with valid signatu
 
 test("opening a bee with the wrong encryption key cannot decode another peer's rows", async (t) => {
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const idA = await Identity.generate()
+  const idA = await Identity.create()
   const a = new Database({
     store: storeA,
     identity: idA,
@@ -375,7 +393,7 @@ test("opening a bee with the wrong encryption key cannot decode another peer's r
   await a.put('messages', { text: 'secret' })
 
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const idB = await Identity.generate()
+  const idB = await Identity.create()
   const wrongKey = Identity.randomBytes(32)
   const b = new Database({
     store: storeB,
@@ -395,7 +413,7 @@ test("opening a bee with the wrong encryption key cannot decode another peer's r
 // ─── identity verification: tamper detection ──────────────────────────────
 
 test('Identity.verify rejects a signature signed over different bytes', async (t) => {
-  const id = await Identity.generate()
+  const id = await Identity.create()
   const original = b4a.from('hello world')
   const tampered = b4a.from('hello WORLD')
   const sig = id.sign(original)
@@ -625,7 +643,7 @@ test('apply: one refused op discards its whole batch, on every peer', async (t) 
     updatedAt: 1
   })
 
-  const bIdentity = await Identity.generate()
+  const bIdentity = await Identity.create()
   const b = await makeNetworked(t, testnet, {
     identity: bIdentity,
     topic,
@@ -688,7 +706,7 @@ test('apply: a discarded batch admits no writer — host effects roll back with 
     updatedAt: 1
   })
 
-  const bIdentity = await Identity.generate()
+  const bIdentity = await Identity.create()
   const b = await makeNetworked(t, testnet, {
     identity: bIdentity,
     topic,
@@ -805,8 +823,7 @@ async function withMember(t) {
 
 const inviteRow = (id, extra = {}) => ({
   id,
-  invite: b4a.alloc(8, 1),
-  publicKey: b4a.alloc(32, 2),
+  secret: b4a.alloc(32, 1),
   role: 'member',
   createdAt: 1,
   ...extra
@@ -819,13 +836,9 @@ test('add-invite: a member may mint, but an existing invite is never overwritten
   t.absent(await as('add-invite', inviteRow('fresh')), 'a member mints its own invite')
   t.ok((await db.get('invites', 'fresh')).data, 'and the row landed')
 
-  const err = await as('add-invite', inviteRow('inv', { publicKey: b4a.alloc(32, 9) }))
+  const err = await as('add-invite', inviteRow('inv', { role: 'reader' }))
   t.is(err?.code, 'REFUSED', 'an existing id is refused')
-  t.alike(
-    (await db.get('invites', 'inv')).data.publicKey,
-    b4a.alloc(32, 2),
-    'and the row is untouched'
-  )
+  t.is((await db.get('invites', 'inv')).data.role, 'admin', 'and the row is untouched')
 })
 
 test('del-invite / set-invite: revoking or altering a shared invite needs REMOVE', async (t) => {
@@ -1018,7 +1031,7 @@ test('add-file: a member (WRITE) can add a file', async (t) => {
 
 async function makeNetworked(t, testnet, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const network = new Network({ bootstrap: testnet.bootstrap })
   await network.ready()
   const discovery = network.join(opts.topic)
@@ -1061,7 +1074,7 @@ test('poison op: garbage bytes from an admitted writer are skipped on every peer
   const a = await makeNetworked(t, testnet, { topic, onerror: (err) => aErrs.push(err) })
   await a.db.bootstrap({ name: 'a' })
 
-  const bIdentity = await Identity.generate()
+  const bIdentity = await Identity.create()
   const b = await makeNetworked(t, testnet, {
     identity: bIdentity,
     topic,
@@ -1100,7 +1113,7 @@ test('missing route: a replicated action surfaces via onerror, apply continues',
   })
   await a.db.bootstrap({ name: 'a' })
 
-  const bIdentity = await Identity.generate()
+  const bIdentity = await Identity.create()
   const b = await makeNetworked(t, testnet, {
     identity: bIdentity,
     topic,

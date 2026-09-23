@@ -85,6 +85,7 @@ export declare class Storage extends ReadyResource {
     root: any;
     store: any;
     db: any;
+    _writing: Promise<void>;
     /**
      * @param {string} dir
      * @param {StorageOpts} [opts]
@@ -146,6 +147,7 @@ export declare class Storage extends ReadyResource {
     _read(ref: Ref, id?: string): Promise<any | null>;
     /** @param {Ref} ref @param {Record<string, any>} row @returns {Promise<void>} */
     _write(ref: Ref, row: Record<string, any>): Promise<void>;
+    _serial(write: any): Promise<void>;
     /**
      * Construct a RocksDB-backed Storage.
      *
