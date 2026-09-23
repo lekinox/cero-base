@@ -178,6 +178,34 @@ test('handshake: accept admits the joiner and sends the keys and epochs', async 
   t.is(member.role, 'member', 'admitted before the reply went out')
 })
 
+test('invite: a rank above member is single-use', async (t) => {
+  const { pairing } = await makeHost(t)
+  await t.exception(pairing.invite({ role: 'admin', reuse: true }), /at most member/)
+  t.ok(await pairing.invite({ role: 'member', reuse: true }))
+  t.ok(await pairing.invite({ role: 'admin' }))
+})
+
+test('handshake: after its first use an invite admits at most member', async (t) => {
+  const host = await makeHost(t)
+  const [one, two] = [await makeJoiner(t), await makeJoiner(t)]
+  const invite = await host.pairing.invite({ role: 'admin' })
+  const requests = []
+  host.pairing.on('candidate', (request) => requests.push(request))
+
+  // two requests racing the same single-use invite, both in before either is settled
+  const joining = [one.join(invite), two.join(invite)]
+  await waitFor(() => requests.length === 2)
+  await requests[0].accept()
+  await requests[1].accept()
+  await Promise.all(joining)
+
+  const roles = []
+  for (const { identity } of [one, two]) {
+    roles.push((await host.db.get('members', hid.encode(identity.publicKey))).data.role)
+  }
+  t.alike(roles.sort(), ['admin', 'member'])
+})
+
 test('handshake: a knock delivered again leaves the member row as it is', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite({ role: 'member', reuse: true })

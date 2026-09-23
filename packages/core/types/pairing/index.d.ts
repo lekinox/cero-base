@@ -51,6 +51,10 @@ export type Served = {
     reuse: boolean;
     expired: boolean;
     /**
+     * Accepted once already: from then on it admits at most member.
+     */
+    used: boolean;
+    /**
      * Where its knocks arrive, on this member.
      */
     inbox: {
@@ -108,6 +112,7 @@ export type JoinResult = {
  * @property {number} expires                       Absolute expiry; `0` never.
  * @property {boolean} reuse
  * @property {boolean} expired
+ * @property {boolean} used                         Accepted once already: from then on it admits at most member.
  * @property {{ close: () => Promise<void> }} inbox  Where its knocks arrive, on this member.
  *
  * @typedef {object} JoinOpts

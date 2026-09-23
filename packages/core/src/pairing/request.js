@@ -53,14 +53,18 @@ export class Request {
     if (this._settled) return
     const { invite } = this
     if (invite.expired) throw CeroError.EXPIRED()
-    role = role || invite.role || 'member'
-    if (invite.role && !grants(invite.role, role)) {
-      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
+    // after its first use an invite admits at most member: a second request racing a single-use
+    // one does not get the rank the first one got
+    const cap = invite.used && !grants('member', invite.role || 'member') ? 'member' : invite.role
+    role = role || cap || 'member'
+    if (cap && !grants(cap, role)) {
+      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${cap}'`)
     }
     // checked here, the cap against our own rank is enforced at apply
     if (!isRank(role)) {
       throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
     }
+    invite.used = true
 
     const { db } = this.pairing
     await admit(db, { identity: this.identity, writer: this.writer, role })

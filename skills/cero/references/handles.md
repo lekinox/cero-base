@@ -61,7 +61,7 @@ on the root throws `INVALID`.
 | ------- | ------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
 | `role`  | `string`           | `''`    | Role granted. Must be a rank, and cannot exceed your own.                                                    |
 | `ttl`   | `number \| string` | `0`     | How long it is valid: ms, or `'12h'`, `'2d'`. `0` never expires.                                             |
-| `reuse` | `boolean`          | `false` | Admit more than one joiner. Otherwise single use.                                                            |
+| `reuse` | `boolean`          | `false` | Admit more than one joiner, at most `member`. Otherwise single use.                                          |
 | `data`  | `Uint8Array`       | `null`  | A payload for the joiner, read with `Invite.parse(invite).data` before joining. Unsigned: a hint, not proof. |
 
 ```js
@@ -98,6 +98,10 @@ room is added to `me.handles`. Watch it to see the room arrive, the same way ove
 `connect()`; in the same process the `handle` event also fires. It ends admitted,
 denied, expired or cancelled, and once nobody waits on it, a denial or expiry
 reaches `onerror`. A fresh invite for the same room takes over from the old one.
+
+An admin or owner invite hands its rank out once. A reusable invite admits at most
+`member`, and after a single-use invite's first accept, any request racing it
+joins as `member`.
 
 ```js
 const pending = await me.joining() // the invites still waiting for an answer

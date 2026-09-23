@@ -37,6 +37,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {number} expires                       Absolute expiry; `0` never.
  * @property {boolean} reuse
  * @property {boolean} expired
+ * @property {boolean} used                         Accepted once already: from then on it admits at most member.
  * @property {{ close: () => Promise<void> }} inbox  Where its knocks arrive, on this member.
  *
  * @typedef {object} JoinOpts
@@ -103,6 +104,10 @@ export class Pairing extends ReadyResource {
     if (!this.opened) await this.ready()
     // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently
     if (role) await this._checkGrant(role)
+    // a rank above member is handed out once
+    if (reuse && !grants('member', role || 'member')) {
+      throw CeroError.INVALID(`a reusable invite admits at most member, not '${role}'`)
+    }
 
     const secret = crypto.randomBytes(32)
     const invite = Invite.create({
@@ -314,6 +319,7 @@ function served({ id, secret, role = '', expires = 0, reuse = false }, inbox) {
     expires,
     reuse,
     inbox,
+    used: false,
     get expired() {
       return expired(this)
     }
