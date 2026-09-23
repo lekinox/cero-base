@@ -13,17 +13,16 @@ import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { cero, put, set, get, open, peek, restore } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
-import { makeTestnet, makeMirror, holds, waitForConnection, waitUntil } from '../helpers/index.js'
+import {
+  makeTestnet,
+  makeMirror,
+  holds,
+  waitForConnection,
+  waitUntil,
+  ceroOpen
+} from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
-
-async function ceroOpen(t, opts = {}) {
-  const testnet = opts.testnet || (await makeTestnet(t))
-  const dir = await t.tmp()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  return { me, dir, testnet }
-}
 
 // ─── channel ──────────────────────────────────────────────────────────────
 

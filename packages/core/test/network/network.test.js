@@ -817,17 +817,17 @@ test('inject: replication + writer admission over an injected duplex, no shared 
   netB.inject(s2, { isInitiator: false })
 
   const { data: row } = await a.put('messages', { text: 'over-the-pipe' })
-  const onB = await waitUntil(async () => (await b.get('messages', row.id)).data)
+  const onB = await waitFor(async () => (await b.get('messages', row.id)).data)
   t.is(onB.text, 'over-the-pipe', 'A row replicated to B over the injected stream')
 
   t.is(b.writable, false, 'B is not a writer yet — guards intact')
 
   await a.addWriter(b.keyPair.publicKey)
-  await waitUntil(() => b.writable)
+  await waitFor(() => b.writable)
   t.ok(b.writable, 'admission replicated over the injected stream (wakeup working)')
 
   const { data: back } = await b.put('messages', { text: 'reply' })
-  const onA = await waitUntil(async () => (await a.get('messages', back.id)).data)
+  const onA = await waitFor(async () => (await a.get('messages', back.id)).data)
   t.is(onA.text, 'reply', 'B writes converge back on A')
 })
 
@@ -863,16 +863,6 @@ test('inject: a core attached AFTER the injected connection still replicates', a
   t.teardown(() => Promise.all([a.close(), b.close()]).catch(() => {}), { order: 5 })
 
   const { data: row } = await a.put('messages', { text: 'late-attach' })
-  const onB = await waitUntil(async () => (await b.get('messages', row.id)).data)
+  const onB = await waitFor(async () => (await b.get('messages', row.id)).data)
   t.is(onB.text, 'late-attach', 'attach() reached the pre-existing injected link')
 })
-
-async function waitUntil(fn, { timeout = 15000, interval = 50 } = {}) {
-  const started = Date.now()
-  while (Date.now() - started < timeout) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, interval))
-  }
-  throw new Error('waitUntil: condition not met before timeout')
-}

@@ -1,40 +1,19 @@
 import test from 'brittle'
 
-import { Identity } from '@cero-base/core/identity'
-
-import { Handle } from '../../src/handle/index.js'
 import { get, open, del, rotate } from '../../src/lib/operators.js'
-import { spec } from '../fixtures/spec/index.js'
-import { makeStore, makeTestnet, makeNet, waitForConnection, waitUntil } from '../helpers/index.js'
+import {
+  makeStore,
+  makeTestnet,
+  makeNet,
+  waitForConnection,
+  waitUntil,
+  openHandle
+} from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
-async function ceroOpen(t, opts = {}) {
-  const { store } = await makeStore(t)
-  const identity = opts.identity || (await Identity.create())
-  const testnet = opts.testnet || (await makeTestnet(t))
-  const net = await makeNet(t, testnet)
-  const discovery = net.join(identity.topic)
-  await discovery.flush()
-  const me = new Handle({ store, identity, network: net, spec, ...opts })
-  await me.ready()
-  if (!opts.key) await me.bootstrap({ name: opts.name || null })
-  t.teardown(
-    async () => {
-      try {
-        await me.close()
-      } catch {}
-      try {
-        await discovery.destroy()
-      } catch {}
-    },
-    { order: 5 }
-  )
-  return { me, store, identity, net, testnet, discovery }
-}
-
 async function joinAsRoot(t, testnet, inviteStr) {
-  const peer = await ceroOpen(t, { testnet })
+  const peer = await openHandle(t, { testnet })
   await peer.me.bootstrap({ name: 'peer-root' })
   const child = await open(peer.me.team, inviteStr)
   t.teardown(() => child.close().catch(() => {}))
@@ -49,7 +28,7 @@ const memberCount = (room, n) =>
 
 test('invites: a member cannot mint an invite above its own rank', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
 
   const room = await open(a.me.team, { name: 'clinic' })
@@ -64,7 +43,7 @@ test('invites: a member cannot mint an invite above its own rank', async (t) => 
 
 test('invites: a member cannot revoke — an owner can, and every replica stops serving', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   const b = await joinAsRoot(t, testnet, await room.invite({ role: 'member' }))
@@ -86,7 +65,7 @@ test('invites: a member cannot revoke — an owner can, and every replica stops 
 
 test('invites: survive a close/reopen — served by a fresh handle', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
 
   const room = await open(a.me.team, { name: 'clinic' })
@@ -113,7 +92,7 @@ test('invites: survive a close/reopen — served by a fresh handle', async (t) =
 
 test('invites: any member replica serves an invite after the minter goes offline', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
@@ -134,7 +113,7 @@ test('invites: any member replica serves an invite after the minter goes offline
 
 test('invites: revoke propagates — other members stop serving', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
@@ -156,7 +135,7 @@ test('invites: revoke propagates — other members stop serving', async (t) => {
 
 test('invites: reuse admits multiple joiners and its row survives', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
@@ -172,7 +151,7 @@ test('invites: reuse admits multiple joiners and its row survives', async (t) =>
 
 test('invites: after a removal and a rotation, old and new invites admit, and the removed member serves none', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))

@@ -224,7 +224,7 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
   })
   await waitForConnection(a.network)
   await waitForConnection(o.network)
-  await waitUntil(async () => {
+  await waitFor(async () => {
     const { data } = await o.db.get('messages')
     return data.length === 1 || null
   })
@@ -245,7 +245,7 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
   t.is(rows.length, 1, 'recovered the pre-disaster data')
   await b.db.put('messages', { text: 'post-recovery' })
 
-  const seen = await waitUntil(async () => {
+  const seen = await waitFor(async () => {
     const { data } = await o.db.get('messages')
     return data.length === 2 ? data : null
   })
@@ -677,7 +677,7 @@ test('apply event: fires for REMOTE ops with the remote writerKey (two-peer)', a
   b.db.on('apply', (e) => seen.push(e))
   await a.db.put('messages', { text: 'from-a' })
 
-  const e = await waitUntil(
+  const e = await waitFor(
     () => seen.find((x) => x.name === 'messages' && x.row?.text === 'from-a') || null
   )
   t.ok(e, "B observed A's op via apply on the merged log")
@@ -1000,7 +1000,7 @@ test('watch: a write to another collection does not re-run the watcher query', a
   const stream = db.watch('profile')
   t.teardown(() => stream.destroy())
   stream.on('data', (s) => snaps.push(s))
-  await waitUntil(() => snaps.length > 0 || null)
+  await waitFor(() => snaps.length > 0 || null)
 
   gets.length = 0
   for (let i = 0; i < 3; i++) await db.put('messages', { text: `m${i}` })
@@ -1008,7 +1008,7 @@ test('watch: a write to another collection does not re-run the watcher query', a
   t.is(gets.filter((n) => n === 'profile').length, 0, 'profile watcher stayed asleep')
 
   await db.set('profile', { name: 'after' })
-  const snap = await waitUntil(() => snaps.find((s) => s.data.name === 'after') || null)
+  const snap = await waitFor(() => snaps.find((s) => s.data.name === 'after') || null)
   t.is(snap.data.name, 'after', 'its own ref still wakes it')
 })
 
@@ -1119,7 +1119,7 @@ test('claim: same identity on second db admits writer via add-member then claim'
   // Wait until b sees the bootstrap state from a.
   await waitForConnection(a.network)
   await waitForConnection(b.network)
-  await waitUntil(async () => (await b.db.get('members', identity.id)).data)
+  await waitFor(async () => (await b.db.get('members', identity.id)).data)
 
   // claim admits the writer; the device is named by a later set-device, which
   // the bootstrap tests cover
@@ -1380,10 +1380,10 @@ test('a hook write wakes watchers of the collection it wrote', async (t) => {
   const stream = db.watch('records')
   stream.on('data', ({ data }) => seen.push(data.length))
   t.teardown(() => stream.destroy())
-  await waitUntil(() => seen.length > 0 || null)
+  await waitFor(() => seen.length > 0 || null)
 
   await db.put('messages', { text: 'x' })
-  await waitUntil(() => (seen.includes(1) ? true : null))
+  await waitFor(() => (seen.includes(1) ? true : null))
   t.pass('the derived row reached a subscriber')
 })
 
@@ -1432,18 +1432,6 @@ test('"update" event fires on commit', async (t) => {
 // concurrent writes, writer admission/removal, recovery, and hook behavior
 // across the network boundary.
 
-async function waitUntil(fn, { timeout = 15000, interval = 50 } = {}) {
-  const deadline = Date.now() + timeout
-  while (Date.now() < deadline) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, interval))
-  }
-  // throw, not return null — a timed-out wait must fail loud, not let the test
-  // continue as if the condition held (masking the real cause behind a later error)
-  throw new Error('waitUntil: condition not met before timeout')
-}
-
 test('replication: two databases converge on testnet', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.create()
@@ -1459,7 +1447,7 @@ test('replication: two databases converge on testnet', async (t) => {
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const hit = await waitUntil(async () => {
+  const hit = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length > 0 ? data : null
   })
@@ -1482,7 +1470,7 @@ test('replication: put propagates A → B', async (t) => {
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const seen = await waitUntil(async () => {
+  const seen = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data || null
   })
@@ -1505,7 +1493,7 @@ test('replication: set on single propagates A → B', async (t) => {
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const profile = await waitUntil(async () => {
+  const profile = await waitFor(async () => {
     const { data } = await b.db.get('profile')
     return data && data.name === 'alice' ? data : null
   })
@@ -1529,7 +1517,7 @@ test('replication: del propagates A → B (row disappears)', async (t) => {
   await waitForConnection(b.network)
 
   // First confirm B saw the row.
-  const before = await waitUntil(async () => {
+  const before = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data || null
   })
@@ -1537,7 +1525,7 @@ test('replication: del propagates A → B (row disappears)', async (t) => {
 
   await a.db.del('messages', row.id)
 
-  const gone = await waitUntil(async () => {
+  const gone = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data === null ? true : null
   })
@@ -1568,7 +1556,7 @@ test('replication: concurrent puts from two writers — both rows visible to bot
   await a.db.addWriter(b.db.keyPair.publicKey)
 
   // Wait for B to become writable.
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b became writable after addWriter')
 
   // Each side writes concurrently.
@@ -1579,11 +1567,11 @@ test('replication: concurrent puts from two writers — both rows visible to bot
   t.ok(ra.data.id && rb.data.id)
 
   // Both rows should land on both peers.
-  const onA = await waitUntil(async () => {
+  const onA = await waitFor(async () => {
     const { data } = await a.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
-  const onB = await waitUntil(async () => {
+  const onB = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
@@ -1616,12 +1604,12 @@ test('replication: addWriter promotes B → B can put → A sees', async (t) => 
   t.is(b.db.writable, false, 'b is not writable before addWriter')
 
   await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b became writable after admission')
 
   const { data: row } = await b.db.put('messages', { text: 'from-b' })
 
-  const onA = await waitUntil(async () => {
+  const onA = await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1657,12 +1645,12 @@ test('replication: removeWriter — B can no longer write', async (t) => {
   await waitForConnection(b.network)
 
   await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b writable after add')
 
   // B writes once successfully so we have a baseline.
   const { data: r1 } = await b.db.put('messages', { text: 'still-allowed' })
-  await waitUntil(async () => {
+  await waitFor(async () => {
     const { data } = await a.db.get('messages', r1.id)
     return data || null
   })
@@ -1670,7 +1658,7 @@ test('replication: removeWriter — B can no longer write', async (t) => {
   await a.db.removeWriter(b.db.keyPair.publicKey)
 
   // B should observe its writer admission revoked.
-  const lostWritable = await waitUntil(() => b.db.writable === false)
+  const lostWritable = await waitFor(() => b.db.writable === false)
   t.ok(lostWritable, 'b became non-writable after removeWriter')
 })
 
@@ -1695,7 +1683,7 @@ test('replication: bootstrap recovery — same identity, second device, no fork'
   // B writes; A should see it (no fork).
   const { data: row } = await b.db.put('messages', { text: 'after-recovery' })
 
-  const seenOnA = await waitUntil(async () => {
+  const seenOnA = await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1703,11 +1691,11 @@ test('replication: bootstrap recovery — same identity, second device, no fork'
   t.is(seenOnA.text, 'after-recovery')
 
   // Both sides converge on both messages.
-  const onA = await waitUntil(async () => {
+  const onA = await waitFor(async () => {
     const { data } = await a.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
-  const onB = await waitUntil(async () => {
+  const onB = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
@@ -1741,7 +1729,7 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   await waitForConnection(b.network)
 
   // Wait until B sees the member entry.
-  const member = await waitUntil(async () => {
+  const member = await waitFor(async () => {
     const { data } = await b.db.get('members', identity.id)
     return data || null
   })
@@ -1750,12 +1738,12 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   await b.db.claim()
 
   // A admits the new writer; b becomes writable.
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b writable after claim()')
 
   // And b's writes flow to a.
   const { data: row } = await b.db.put('messages', { text: 'claimed' })
-  const seen = await waitUntil(async () => {
+  const seen = await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1782,7 +1770,7 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   await waitForConnection(b.network)
 
   await enroll(a.db, bIdentity, 'member', b.db.writerKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
 
   const seen = []
   a.db.after('put', (ctx) => {
@@ -1790,7 +1778,7 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   })
 
   const { data: row } = await b.db.put('messages', { text: 'from-b' })
-  await waitUntil(async () => {
+  await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1817,7 +1805,7 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   await waitForConnection(b.network)
 
   await enroll(a.db, bIdentity, 'member', b.db.writerKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
 
   // only b has the rule
   b.db.before('put', (ctx) => ctx.row.text !== 'blocked')
@@ -1835,12 +1823,12 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   })
 
   const { data: kept } = await a.db.put('messages', { text: 'kept' })
-  await waitUntil(async () => (await b.db.get('messages', kept.id)).data || null)
+  await waitFor(async () => (await b.db.get('messages', kept.id)).data || null)
 
   const { data: blocked } = await a.db.put('messages', { text: 'blocked' })
   t.ok((await a.db.get('messages', blocked.id)).data, 'a applied its own write, it has no rule')
 
-  await waitUntil(() => applied.includes('blocked') || null)
+  await waitFor(() => applied.includes('blocked') || null)
   t.absent((await b.db.get('messages', blocked.id)).data, 'b refused what its rule rejects')
   t.absent(rows.includes('blocked'), 'and never handed it to a subscriber')
 
@@ -1867,7 +1855,7 @@ test('replication: eventually-consistent — B sees all 5 rows put by A before j
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const rows = await waitUntil(async () => {
+  const rows = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length >= 5 ? data : null
   })
@@ -1905,16 +1893,16 @@ test('replication: three-peer — A puts, both B and C receive', async (t) => {
 
   await a.db.addWriter(b.db.keyPair.publicKey)
   await a.db.addWriter(c.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
-  await waitUntil(() => c.db.writable)
+  await waitFor(() => b.db.writable)
+  await waitFor(() => c.db.writable)
 
   const { data: row } = await a.db.put('messages', { text: 'broadcast' })
 
-  const onB = await waitUntil(async () => {
+  const onB = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data || null
   })
-  const onC = await waitUntil(async () => {
+  const onC = await waitFor(async () => {
     const { data } = await c.db.get('messages', row.id)
     return data || null
   })
@@ -2089,7 +2077,7 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   await waitForConnection(x.network)
   await waitForConnection(y.network)
   await quiet.put('messages', { text: 'over the shared connection' })
-  await waitUntil(async () => (await yQuiet.get('messages')).data.length > 0)
+  await waitFor(async () => (await yQuiet.get('messages')).data.length > 0)
   t.is(mode(yQuiet, y.network), 'active', 'the replicated update ranked quiet')
   await waitFor(() => mode(y.db, y.network) === null)
   t.pass('shared slid out')

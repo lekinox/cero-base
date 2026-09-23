@@ -309,3 +309,26 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, ...opts }
   )
   return { db, store, identity, network, discovery, topic, errors }
 }
+
+// genesis admits the first member at any rank
+export async function withRole(t, role) {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const db = new Database({ store, identity, spec })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 5 })
+  const ts = Date.now()
+  const member = {
+    id: identity.id,
+    key: db.writerKey,
+    role,
+    name: 'me',
+    createdAt: ts,
+    updatedAt: ts
+  }
+  await db.write([
+    ['add-writer', db._admission(db.writerKey, ts)],
+    ['add-member', member]
+  ])
+  return { db, identity }
+}

@@ -6,6 +6,12 @@ import createTestnet from '@hyperswarm/testnet'
 import BlindPeer from 'blind-peer'
 
 import { Network } from '@cero-base/core/network'
+import { Identity } from '@cero-base/core/identity'
+
+import { cero } from '../../src/index.js'
+import { Handle } from '../../src/handle/index.js'
+import { Local } from '../../src/local/index.js'
+import { spec } from '../fixtures/spec/index.js'
 
 export async function makeStore(t) {
   const dir = await t.tmp()
@@ -159,4 +165,39 @@ export class FakeStore extends ReadyResource {
 export async function fetch(...args) {
   const f = globalThis.fetch || (await import('bare-fetch')).default
   return f(...args)
+}
+
+// a cero instance in its own directory
+export async function ceroOpen(t, opts = {}) {
+  const testnet = opts.testnet || (await makeTestnet(t))
+  const dir = await t.tmp()
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  return { me, dir, testnet }
+}
+
+// a bare root handle on its own network, bootstrapped unless it opens a key; `local` adds the
+// device store, which keeps per-handle keypairs and joins
+export async function openHandle(t, { local, ...opts } = {}) {
+  const { store } = await makeStore(t)
+  const identity = opts.identity || (await Identity.create())
+  const testnet = opts.testnet || (await makeTestnet(t))
+  const net = await makeNet(t, testnet)
+  const discovery = net.join(identity.topic)
+  await discovery.flush()
+  if (local) {
+    opts.local = new Local(null, spec, { store })
+    await opts.local.ready()
+  }
+  const me = new Handle({ store, identity, network: net, spec, ...opts })
+  await me.ready()
+  if (!opts.key) await me.bootstrap({ name: opts.name || null })
+  t.teardown(
+    async () => {
+      await me.close().catch(() => {})
+      await discovery.destroy().catch(() => {})
+    },
+    { order: 5 }
+  )
+  return { me, store, identity, net, testnet, discovery }
 }

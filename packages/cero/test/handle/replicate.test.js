@@ -5,18 +5,16 @@ import { Duplex } from 'streamx'
 import { encodeId, decodeId } from '@cero-base/core/blobs'
 
 import { cero, put, get, del, watch, open } from '../../src/index.js'
-import { spec } from '../fixtures/spec/index.js'
-import { makeTestnet, waitForConnection, waitUntil, observe, fetch } from '../helpers/index.js'
+import {
+  makeTestnet,
+  waitForConnection,
+  waitUntil,
+  observe,
+  fetch,
+  ceroOpen
+} from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
-
-async function ceroOpen(t, opts = {}) {
-  const testnet = opts.testnet || (await makeTestnet(t))
-  const dir = await t.tmp()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  return { me, dir, testnet }
-}
 
 async function publishMember(me) {
   await me.store.call('add-member', {

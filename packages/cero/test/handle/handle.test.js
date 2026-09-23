@@ -12,7 +12,8 @@ import {
   makeNet,
   waitForConnection,
   waitUntil,
-  fetch
+  fetch,
+  openHandle
 } from '../helpers/index.js'
 
 // ─── Phase 4: root getter, fileServer, blobs, files ops ─────────────────────
@@ -21,34 +22,10 @@ test.configure({ timeout: 90000 })
 
 const teamSpec = spec.handles.team
 
-async function ceroOpen(t, opts = {}) {
-  const { store } = await makeStore(t)
-  const identity = opts.identity || (await Identity.create())
-  const testnet = opts.testnet || (await makeTestnet(t))
-  const net = await makeNet(t, testnet)
-  const discovery = net.join(identity.topic)
-  await discovery.flush()
-  const me = new Handle({ store, identity, network: net, spec, ...opts })
-  await me.ready()
-  if (!opts.key) await me.bootstrap({ name: opts.name || null })
-  t.teardown(
-    async () => {
-      try {
-        await me.close()
-      } catch {}
-      try {
-        await discovery.destroy()
-      } catch {}
-    },
-    { order: 5 }
-  )
-  return { me, store, identity, net, testnet, discovery }
-}
-
 // ─── admission guards (B3.2) ──────────────────────────────────────────────
 
 test('open: accept:false survives a reopen — the gate does not re-arm', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   const room = await open(me.team, { name: 'gated', accept: false })
   t.is(room.pair.listenerCount('candidate'), 0, 'created with no auto-accept')
 
@@ -63,7 +40,7 @@ test('open: accept:false survives a reopen — the gate does not re-arm', async 
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   const room = await open(me.team, { name: 'capped' })
   await t.exception(room.invite({ role: 'volunteer' }), /not a rank/i)
 })
@@ -92,7 +69,7 @@ test('Handle: rejects missing spec', async (t) => {
 // ─── lifecycle ────────────────────────────────────────────────────────────
 
 test('Handle: opens and closes', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   t.is(me.opened, true)
   t.ok(me.pair, 'pair instance attached')
   await me.close()
@@ -102,7 +79,7 @@ test('Handle: opens and closes', async (t) => {
 // ─── ref attachment ───────────────────────────────────────────────────────
 
 test('Handle: attaches user + builtin + handle-kind refs', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   t.ok(me.profile instanceof Ref, 'user single')
   t.ok(me.messages instanceof Ref, 'user collection')
   t.ok(me.members instanceof Ref, 'builtin members')
@@ -112,7 +89,7 @@ test('Handle: attaches user + builtin + handle-kind refs', async (t) => {
 })
 
 test('Handle: ref carries handle + name + kind', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   t.is(me.messages.handle, me)
   t.is(me.messages.name, 'messages')
   t.is(me.messages.kind, 'collection')
@@ -135,7 +112,7 @@ test('Handle: bootstrap on fresh', async (t) => {
 // ─── operators ────────────────────────────────────────────────────────────
 
 test('Handle: put/get on a collection', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap()
   const { data: row } = await put(me.messages, { text: 'hi' })
   t.ok(row.id)
@@ -145,7 +122,7 @@ test('Handle: put/get on a collection', async (t) => {
 })
 
 test('Handle: operators reject CLOSED after close', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.close()
   await t.exception.all(() => get(me.messages), /closed/i)
   await t.exception.all(() => put(me.messages, { text: 'x' }), /closed/i)
@@ -159,7 +136,7 @@ test('Handle: operators reject CLOSED after close', async (t) => {
 })
 
 test('Handle: set/get on a single', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap()
   await set(me.profile, { name: 'jb' })
   const { data } = await get(me.profile)
@@ -167,7 +144,7 @@ test('Handle: set/get on a single', async (t) => {
 })
 
 test('Handle: a named child names the room, not the creator device', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap({ name: 'my-laptop' })
   const team = await open(me.team, { name: 'General' })
   t.teardown(() => team.close().catch(() => {}))
@@ -180,7 +157,7 @@ test('Handle: a named child names the room, not the creator device', async (t) =
 })
 
 test('Handle: t.extend adds a field to the member builtin', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap()
   const avatar = b4a.from([7, 8, 9])
   await me.store.call('set-member', {
@@ -204,7 +181,7 @@ test('Handle: second device claims and syncs', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.create()
 
-  const a = await ceroOpen(t, { testnet, identity })
+  const a = await openHandle(t, { testnet, identity })
   await a.me.bootstrap({ name: 'a' })
   await a.me.store.call('add-member', {
     id: identity.id,
@@ -216,7 +193,7 @@ test('Handle: second device claims and syncs', async (t) => {
   })
   await put(a.me.messages, { text: 'from-a' })
 
-  const b = await ceroOpen(t, { testnet, identity, key: a.me.store.key })
+  const b = await openHandle(t, { testnet, identity, key: a.me.store.key })
 
   await waitForConnection(a.net)
   await waitForConnection(b.net)
@@ -410,7 +387,7 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
   // the reader is a proper root + child room: its ROOT key differs from the
   // room key, which is exactly the shape where blob cores must resolve with
   // the room's key (registering them under the root key serves garbage)
-  const m = await ceroOpen(t, { testnet })
+  const m = await openHandle(t, { testnet })
   await m.me.bootstrap({ name: 'member-root' })
   const member = await open(m.me.team, await room.invite())
   t.teardown(() => member.close().catch(() => {}))
@@ -457,13 +434,13 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
 test('Handle: rotation works on nested child rooms — remove, late join, reopen by id', async (t) => {
   const testnet = await makeTestnet(t)
 
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
   const joinAsRoot = async () => {
-    const peer = await ceroOpen(t, { testnet })
+    const peer = await openHandle(t, { testnet })
     await peer.me.bootstrap({ name: 'peer-root' })
     const child = await open(peer.me.team, await room.invite())
     t.teardown(() => child.close().catch(() => {}))
@@ -514,12 +491,12 @@ test('Handle: rotation works on nested child rooms — remove, late join, reopen
 // ─── nested rotation: healer, files, devices, watch ────────────────────────
 
 async function nestedRoom(t, testnet) {
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'owner-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
   const joinAsRoot = async () => {
-    const peer = await ceroOpen(t, { testnet })
+    const peer = await openHandle(t, { testnet })
     await peer.me.bootstrap({ name: 'peer-root' })
     const child = await open(peer.me.team, await room.invite())
     t.teardown(() => child.close().catch(() => {}))
@@ -595,7 +572,7 @@ test('Handle: second device opens a rotated child by id and reads every era', as
   const testnet = await makeTestnet(t)
   const identity = await Identity.create()
 
-  const a = await ceroOpen(t, { testnet, identity })
+  const a = await openHandle(t, { testnet, identity })
   await a.me.bootstrap({ name: 'device-1' })
   await a.me.store.call('add-member', {
     id: identity.id,
@@ -611,7 +588,7 @@ test('Handle: second device opens a rotated child by id and reads every era', as
   await rotate(room)
   await put(room.messages, { text: 'after' })
 
-  const b = await ceroOpen(t, { testnet, identity, key: a.me.store.key })
+  const b = await openHandle(t, { testnet, identity, key: a.me.store.key })
   await waitForConnection(a.net)
   await waitForConnection(b.net)
   await b.me.bootstrap({ recovering: true })
@@ -847,7 +824,7 @@ test('Handle: an invite minted before a rotation still works after it', async (t
   await rotate(room)
   await put(room.messages, { text: 'after' })
 
-  const peer = await ceroOpen(t, { testnet })
+  const peer = await openHandle(t, { testnet })
   await peer.me.bootstrap({ name: 'late' })
   const joined = await open(peer.me.team, invite) // redeemed at epoch 1
   t.teardown(() => joined.close().catch(() => {}))
@@ -885,7 +862,7 @@ test('Handle: self-removal in a rotated room — the healer cuts the leaver off'
 
 test('Handle: sibling rooms rotate independently under one root', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await ceroOpen(t, { testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'root' })
   const clinic = await open(a.me.team, { name: 'clinic' })
   const admin = await open(a.me.team, { name: 'admin' })
@@ -1019,7 +996,7 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
 // ─── Phase 4: root getter + coreKey→handle registry ──────────────────────────
 
 test('Handle: root getter — root returns self, child returns the root', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
   t.is(me.root, me, 'root handle is its own root')
 
@@ -1030,7 +1007,7 @@ test('Handle: root getter — root returns self, child returns the root', async 
 })
 
 test('Handle: root owns the coreKey→encryptionKey registry', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
   const child = await me._create('team', { name: 'T' })
 
@@ -1048,7 +1025,7 @@ test('Handle: root owns the coreKey→encryptionKey registry', async (t) => {
 })
 
 test('Handle: each created room gets its own random encryption key', async (t) => {
-  const { me, identity } = await ceroOpen(t)
+  const { me, identity } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
 
   const a = await me._create('team', { name: 'A' })
@@ -1064,7 +1041,7 @@ test('Handle: each created room gets its own random encryption key', async (t) =
 // ─── Phase 4: fileServer ──────────────────────────────────────────────────────
 
 test('Handle: fileServer listens on the root, resolve maps coreKey→encryptionKey', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
 
   const fs = me.fileServer
@@ -1084,7 +1061,7 @@ test('Handle: fileServer listens on the root, resolve maps coreKey→encryptionK
 })
 
 test('Handle: fileServer closes with the root', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
   const fs = me.fileServer
   t.ok(fs.port > 0)
@@ -1095,7 +1072,7 @@ test('Handle: fileServer closes with the root', async (t) => {
 // ─── Phase 4: blobs ───────────────────────────────────────────────────────────
 
 test('Handle: blobs — lazy, per-handle, round-trips bytes', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
 
   const b = me.blobs
@@ -1131,7 +1108,7 @@ test('files: put(handle.files, { data, type }) uploads and returns a resolved fi
 // ─── Phase 4: file() field resolution on get/watch ───────────────────────────
 
 async function bootstrapWithMember(t) {
-  const { me, identity } = await ceroOpen(t)
+  const { me, identity } = await openHandle(t)
   await me.bootstrap({ name: 'desktop' })
   const ts = Date.now()
   await me.store.call('add-member', {
@@ -1276,7 +1253,7 @@ test('changes: deltas flow with file fields resolved on both sides', async (t) =
 })
 
 test('Handle: open by id while its create is still in flight shares the child', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await openHandle(t)
   await me.bootstrap()
 
   // The add-handle row lands mid-create, so a watcher can see the id before

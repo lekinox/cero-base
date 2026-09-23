@@ -14,7 +14,9 @@ import {
   makeTestnet,
   randomTopic,
   waitForConnection,
-  makePeer
+  makePeer,
+  waitFor,
+  withRole
 } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
 import { genId } from '../../src/lib/ids.js'
@@ -53,29 +55,6 @@ test('add-writer with a forged signature is rejected (no device row, writer not 
 })
 
 // ─── writer/member authorization ──────────────────────────────────────────
-
-// genesis admits the first member at any rank
-async function withRole(t, role) {
-  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.create()
-  const db = new Database({ store, identity, spec })
-  await db.ready()
-  t.teardown(() => db.close().catch(() => {}), { order: 5 })
-  const ts = Date.now()
-  const member = {
-    id: identity.id,
-    key: db.writerKey,
-    role,
-    name: 'me',
-    createdAt: ts,
-    updatedAt: ts
-  }
-  await db.write([
-    ['add-writer', db._admission(db.writerKey, ts)],
-    ['add-member', member]
-  ])
-  return { db, identity }
-}
 
 function addWriterOp(identity, appenderKey, dbKey) {
   const writer = Identity.randomKeyPair()
@@ -675,10 +654,10 @@ test('apply: one refused op discards its whole batch, on every peer', async (t) 
     createdAt: 1,
     updatedAt: 1
   })
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
 
   const { data: owned } = await a.db.put('records', { text: 'owner-note' })
-  await waitUntil(async () => (await b.db.get('records', owned.id)).data)
+  await waitFor(async () => (await b.db.get('records', owned.id)).data)
 
   // A modified peer skips its own dry-run, so the batch reaches apply. The
   // ALLOWED op goes first: it has already written into the transaction by the
@@ -690,7 +669,7 @@ test('apply: one refused op discards its whole batch, on every peer', async (t) 
   ])
 
   // let the batch replicate and apply on A
-  await waitUntil(
+  await waitFor(
     async () => ((await a.db.get('records', 'sibling')).data ? true : null),
     3000
   ).catch(() => null)
@@ -736,9 +715,9 @@ test('apply: a discarded batch admits no writer — host effects roll back with 
     createdAt: 1,
     updatedAt: 1
   })
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   const { data: owned } = await a.db.put('records', { text: 'owner-note' })
-  await waitUntil(async () => (await b.db.get('records', owned.id)).data)
+  await waitFor(async () => (await b.db.get('records', owned.id)).data)
 
   // B may admit a writer (INVITE) — and in the same batch touches a row it
   // may not. The batch is discarded. `addWriter` is a host call, not a row:
@@ -768,7 +747,7 @@ test('apply: a discarded batch admits no writer — host effects roll back with 
 
   // a marker appended after the batch: once A has it, A has applied the batch too
   const { data: marker } = await b.db.put('messages', { text: 'after' })
-  await waitUntil(async () => (await a.db.get('messages', marker.id)).data)
+  await waitFor(async () => (await a.db.get('messages', marker.id)).data)
 
   t.absent(
     await a.db.bee.system.get(joiner.publicKey, { unflushed: true }),
@@ -800,7 +779,7 @@ test('apply: an undecodable node skips alone — it must not take the batch with
   )
   await db.bee.append([b4a.from('garbage'), good])
 
-  const row = await waitUntil(async () => (await db.get('messages', 'survivor')).data)
+  const row = await waitFor(async () => (await db.get('messages', 'survivor')).data)
   t.is(row.text, 'alive', 'the valid sibling applied despite its poisoned batch-mate')
 })
 
@@ -1037,16 +1016,6 @@ test('add-file: a member (WRITE) can add a file', async (t) => {
 
 // ─── poison ops: malformed nodes must not crash peers ─────────────────────
 
-async function waitUntil(fn, { timeout = 15000, interval = 50 } = {}) {
-  const deadline = Date.now() + timeout
-  while (Date.now() < deadline) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, interval))
-  }
-  throw new Error('waitUntil: condition not met before timeout')
-}
-
 test('poison op: garbage bytes from an admitted writer are skipped on every peer', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
@@ -1068,13 +1037,13 @@ test('poison op: garbage bytes from an admitted writer are skipped on every peer
   await waitForConnection(b.network)
 
   await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
 
   await b.db.bee.append(b4a.from('garbage'))
   const { data: row } = await b.db.put('messages', { text: 'alive' })
 
-  const onB = await waitUntil(async () => (await b.db.get('messages', row.id)).data)
-  const onA = await waitUntil(async () => (await a.db.get('messages', row.id)).data)
+  const onB = await waitFor(async () => (await b.db.get('messages', row.id)).data)
+  const onA = await waitFor(async () => (await a.db.get('messages', row.id)).data)
   t.is(onB.text, 'alive', 'B skipped the poison node and applied the next valid op')
   t.is(onA.text, 'alive', 'A skipped the poison node and applied the next valid op')
   t.ok(bErrs.length > 0, 'B surfaced the skip via onerror')
@@ -1110,7 +1079,7 @@ test('missing route: a replicated action surfaces via onerror, apply continues',
   await a.db.call('promote', { memberId: 'm', role: 'admin' })
   const { data: row } = await a.db.put('messages', { text: 'alive' })
 
-  const onB = await waitUntil(async () => (await b.db.get('messages', row.id)).data)
+  const onB = await waitFor(async () => (await b.db.get('messages', row.id)).data)
   t.is(onB.text, 'alive', 'B kept applying past the routeless action')
   t.ok(
     bErrs.some((e) => e.code === 'UNKNOWN'),
