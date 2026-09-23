@@ -43,11 +43,11 @@ async function bootstrapped(t, opts = {}) {
 }
 
 // every real open lands the member row with the writer; the fixture does the same
-async function enroll(db, identity, role = 'owner') {
+async function enroll(db, identity, role = 'owner', key = db.writerKey) {
   const ts = Date.now()
   await db.call('add-member', {
     id: identity.id,
-    key: db.writerKey,
+    key,
     role,
     createdAt: ts,
     updatedAt: ts
@@ -1819,8 +1819,8 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
   await enroll(a.db, bIdentity, 'member', b.db.writerKey)
+  await a.db.addWriter(b.db.keyPair.publicKey, bIdentity.id)
   await waitUntil(() => b.db.writable)
 
   const seen = []
@@ -1855,8 +1855,8 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
   await enroll(a.db, bIdentity, 'member', b.db.writerKey)
+  await a.db.addWriter(b.db.keyPair.publicKey, bIdentity.id)
   await waitUntil(() => b.db.writable)
 
   // only b has the rule

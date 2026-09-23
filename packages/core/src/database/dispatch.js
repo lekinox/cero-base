@@ -67,6 +67,11 @@ export function makeDispatcher({
     return d?.memberId ? ((await getMember(view, d.memberId))?.role ?? null) : null
   }
   const isGenesis = async (view) => !(await view.findOne(`@${ns}/members`, {}))
+  // a writer stays with the member it was admitted for: nothing moves it to another
+  const boundElsewhere = async (view, writer, memberId) => {
+    const device = await getDevice(view, hid.encode(writer))
+    return !!device && device.memberId !== memberId
+  }
   const getSignerMember = async (view, key) =>
     (key ? (await getDevice(view, hid.encode(key)))?.memberId : null) ?? null
   const canRemoveMember = async (view, signerKey, targetMemberId) => {
@@ -244,9 +249,15 @@ export function makeDispatcher({
     // Always an indexer: autobee gc's caught-up non-indexer sessions and they miss later appends
     // a writer belongs to a member: its own identity, or the member named by the op
     const memberId = op.memberId || hid.encode(op.master)
-    if (op.memberId && !(await getMember(ctx.view, op.memberId))) {
-      throw CeroError.REFUSED('member')
+    if (op.memberId) {
+      const target = await getMember(ctx.view, op.memberId)
+      if (!target) throw CeroError.REFUSED('member')
+      // a writer for someone else, only for a rank you could have admitted
+      if (op.memberId !== hid.encode(op.master) && !genesis && !grants(inviter, target.role)) {
+        throw CeroError.REFUSED('invite')
+      }
     }
+    if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
     await ctx.host.addWriter(op.writer, { isIndexer: true })
     const ts = op.ts || 0
     await insert(ctx.view, 'devices', `@${ns}/devices`, {
@@ -292,6 +303,9 @@ export function makeDispatcher({
       const r = await getSignerRole(ctx.view, ctx.key)
       if (!can(r, INVITE) || !grants(r, op.role)) throw CeroError.REFUSED('invite')
     }
+    // an existing member keeps its row: its rank changes only through set-member
+    if (await getMember(ctx.view, op.id)) return
+    if (await boundElsewhere(ctx.view, op.key, op.id)) throw CeroError.REFUSED('member')
     await insert(ctx.view, 'members', `@${ns}/members`, op)
     const deviceId = hid.encode(op.key)
     const existingDevice = await getDevice(ctx.view, deviceId)
@@ -326,15 +340,15 @@ export function makeDispatcher({
       next.role = op.role
     }
     await insert(ctx.view, 'members', `@${ns}/members`, next)
-    // a demotion that takes WRITE away takes the writer seat with it
-    if (can(existing.role, WRITE) && !can(next.role, WRITE)) {
-      if (next.key) await ctx.host.removeWriter(next.key)
-      for (const device of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
-        if (device.memberId !== next.id) continue
-        await ctx.host.removeWriter(hid.decode(device.id))
-      }
-      // device rows stay: an unresolvable writer would read as not yet enrolled and pass the gate
-    }
+    // WRITE decides the writer seats: a demotion takes them, a promotion gives them back.
+    // Device rows stay: an unresolvable writer would read as not yet enrolled and pass the gate
+    const writes = can(next.role, WRITE)
+    if (can(existing.role, WRITE) === writes) return
+    const devices = await ctx.view.find(`@${ns}/devices`, {}).toArray()
+    const seats = devices.filter((d) => d.memberId === next.id).map((d) => hid.decode(d.id))
+    // only enrolled devices come back: a revoked writer has no device row
+    if (writes) for (const key of seats) await ctx.host.addWriter(key, { isIndexer: true })
+    else for (const key of next.key ? [next.key, ...seats] : seats) await ctx.host.removeWriter(key)
   })
 
   add('del-member', async (op, ctx) => {

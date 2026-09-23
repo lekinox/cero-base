@@ -289,6 +289,23 @@ test('invites: a reader invite joins through cero() and reads', async (t) => {
   t.is(row.text, 'hello')
 })
 
+test('roles: a reader promoted to member can write', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  const joined = await open(joiner.me.team, await room.invite({ role: 'reader' }))
+  t.absent(joined.store.writable)
+
+  await set(room.members, { id: joiner.me.identity.id, role: 'member' })
+  await waitUntil(() => joined.store.writable || null)
+  await put(joined.messages, { text: 'promoted' })
+  const row = await waitUntil(
+    async () => (await get(room.messages)).data.find((m) => m.text === 'promoted') || null
+  )
+  t.ok(row, 'its write reaches the owner')
+})
+
 test('invites: an admin invite joins through cero() with admin rights', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })

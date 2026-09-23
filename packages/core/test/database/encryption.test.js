@@ -287,18 +287,19 @@ async function makeRoom(t, memberRoles = []) {
     const m = await makePeer(t, testnet, topic, { encryptionKey, key: a.db.key })
     const sig = a.identity.sign(admission(a.db.key, m.db.writerKey, a.db.writerKey))
     await a.db.tx(async (tx) => {
-      await tx.call('add-writer', {
-        master: a.identity.publicKey,
-        writer: m.db.writerKey,
-        sig,
-        ts: Date.now()
-      })
       await tx.call('add-member', {
         id: m.identity.id,
         key: m.db.writerKey,
         role,
         createdAt: Date.now(),
         updatedAt: Date.now()
+      })
+      await tx.call('add-writer', {
+        master: a.identity.publicKey,
+        writer: m.db.writerKey,
+        memberId: m.identity.id,
+        sig,
+        ts: Date.now()
       })
     })
     members.push(m)
@@ -749,18 +750,19 @@ test('rotate: divergent offline removals converge — no data loss, both targets
   const admit = async (peer, role) => {
     const sig = a.identity.sign(admission(a.db.key, peer.db.writerKey, a.db.writerKey))
     await a.db.tx(async (tx) => {
-      await tx.call('add-writer', {
-        master: a.identity.publicKey,
-        writer: peer.db.writerKey,
-        sig,
-        ts: Date.now()
-      })
       await tx.call('add-member', {
         id: peer.identity.id,
         key: peer.db.writerKey,
         role,
         createdAt: Date.now(),
         updatedAt: Date.now()
+      })
+      await tx.call('add-writer', {
+        master: a.identity.publicKey,
+        writer: peer.db.writerKey,
+        sig,
+        ts: Date.now(),
+        memberId: peer.identity.id
       })
     })
   }
@@ -936,6 +938,7 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
     await a.db.call('add-writer', {
       master: a.identity.publicKey,
       writer: db.writerKey,
+      memberId: memberId.id,
       sig,
       ts: Date.now()
     })
@@ -949,12 +952,6 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
   })
   await admitWriter(dev1.db)
   await admitWriter(dev2.db)
-  // reattach dev2's device row to the member (add-writer attributed it to the admitter)
-  await a.db.call('set-device', {
-    id: hid.encode(dev2.db.writerKey),
-    memberId: memberId.id,
-    updatedAt: Date.now()
-  })
 
   await a.db.put('messages', { text: 'pre' })
   await waitFor(async () => (await texts(dev1.db)).includes('pre'))

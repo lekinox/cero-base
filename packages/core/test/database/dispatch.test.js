@@ -1,6 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import z32 from 'z32'
+import crypto from 'hypercore-crypto'
 
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
@@ -45,16 +46,26 @@ test('add-writer with a forged signature is rejected (no device row, writer not 
 
 // ─── writer/member authorization ──────────────────────────────────────────
 
+// genesis admits the first member at any rank
 async function withRole(t, role) {
-  const { db, identity } = await bootstrapped(t)
-  await db.call('add-member', {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const db = new Database({ store, identity, spec })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 5 })
+  const ts = Date.now()
+  const member = {
     id: identity.id,
     key: db.writerKey,
     role,
     name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
+    createdAt: ts,
+    updatedAt: ts
+  }
+  await db.write([
+    ['add-writer', db._admission(db.writerKey, ts)],
+    ['add-member', member]
+  ])
   return { db, identity }
 }
 
@@ -429,10 +440,10 @@ test("collections: a demoted writer cannot overwrite or delete another member's 
   // admit a second member, then demote them to reader (they keep the writer
   // seat — set-member does not revoke it, which is exactly why apply must gate)
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   const memberId = hid.encode(writer.publicKey)
   const row = { id: memberId, key: writer.publicKey, name: 'b', createdAt: 1, updatedAt: 1 }
   await db.call('add-member', { ...row, role: 'member' })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
   await db.call('set-member', { ...row, role: 'reader', updatedAt: Date.now() })
   t.is((await db.get('members', memberId)).data.role, 'reader', 'demoted')
   t.ok((await db.get('devices', memberId)).data, 'but still holds a writer seat')
@@ -466,7 +477,6 @@ test('collections: memberId is derived from the signer, never merged off the wir
   const { db, identity } = await withRole(t, 'owner')
 
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   const attacker = hid.encode(writer.publicKey)
   await db.call('add-member', {
     id: attacker,
@@ -476,6 +486,7 @@ test('collections: memberId is derived from the signer, never merged off the wir
     createdAt: 1,
     updatedAt: 1
   })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
 
   const { data: mine } = await db.put('messages', { text: 'owner-phi' })
 
@@ -500,7 +511,6 @@ test('set-member: a member cannot rename another member or overwrite their key',
   const { db, identity } = await withRole(t, 'owner')
 
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   const attacker = hid.encode(writer.publicKey)
   await db.call('add-member', {
     id: attacker,
@@ -510,6 +520,7 @@ test('set-member: a member cannot rename another member or overwrite their key',
     createdAt: 1,
     updatedAt: 1
   })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
 
   const { data: before } = await db.get('members', identity.id)
 
@@ -549,7 +560,6 @@ test("own: a member cannot edit or delete another member's row", async (t) => {
   const { db, identity } = await withRole(t, 'owner')
 
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   await db.call('add-member', {
     id: hid.encode(writer.publicKey),
     key: writer.publicKey,
@@ -558,6 +568,7 @@ test("own: a member cannot edit or delete another member's row", async (t) => {
     createdAt: 1,
     updatedAt: 1
   })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
 
   const { data: mine } = await db.put('records', { text: 'owner-note' })
 
@@ -593,7 +604,6 @@ test('own: the author edits its own row, and REMOVE moderates the rest', async (
   const { db, identity } = await withRole(t, 'owner')
 
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   await db.call('add-member', {
     id: hid.encode(writer.publicKey),
     key: writer.publicKey,
@@ -602,6 +612,7 @@ test('own: the author edits its own row, and REMOVE moderates the rest', async (
     createdAt: 1,
     updatedAt: 1
   })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
 
   const asMember = (verb, payload) =>
     db.dispatcher.dispatch(db.spec.dispatch.encode(`@${db.ns}/${verb}`, payload), {
@@ -653,8 +664,6 @@ test('apply: one refused op discards its whole batch, on every peer', async (t) 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
   await a.db.call('add-member', {
     id: bIdentity.id,
     key: b.db.writerKey,
@@ -663,6 +672,8 @@ test('apply: one refused op discards its whole batch, on every peer', async (t) 
     createdAt: 1,
     updatedAt: 1
   })
+  await a.db.addWriter(b.db.keyPair.publicKey, bIdentity.id)
+  await waitUntil(() => b.db.writable)
 
   const { data: owned } = await a.db.put('records', { text: 'owner-note' })
   await waitUntil(async () => (await b.db.get('records', owned.id)).data)
@@ -715,8 +726,6 @@ test('apply: a discarded batch admits no writer — host effects roll back with 
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
-  await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
   await a.db.call('add-member', {
     id: bIdentity.id,
     key: b.db.writerKey,
@@ -725,6 +734,8 @@ test('apply: a discarded batch admits no writer — host effects roll back with 
     createdAt: 1,
     updatedAt: 1
   })
+  await a.db.addWriter(b.db.keyPair.publicKey, bIdentity.id)
+  await waitUntil(() => b.db.writable)
   const { data: owned } = await a.db.put('records', { text: 'owner-note' })
   await waitUntil(async () => (await b.db.get('records', owned.id)).data)
 
@@ -794,23 +805,28 @@ test('apply: an undecodable node skips alone — it must not take the batch with
 
 // ─── invite rows: members mint, moderators alter and revoke ─────────────
 
-async function withMember(t) {
+const noHost = { addWriter: async () => {}, removeWriter: async () => {} }
+
+// the owner, plus a second member at `role` with its own writer; `as` applies an op signed by it
+async function withMember(t, role = 'member') {
   const { db, identity } = await withRole(t, 'owner')
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
+  const id = hid.encode(writer.publicKey)
+  const ts = Date.now()
   await db.call('add-member', {
-    id: hid.encode(writer.publicKey),
+    id,
     key: writer.publicKey,
-    role: 'member',
+    role,
     name: 'b',
-    createdAt: 1,
-    updatedAt: 1
+    createdAt: ts,
+    updatedAt: ts
   })
+  await db.call('add-writer', { ...op, memberId: id, ts })
   const as = (verb, payload) =>
     db.dispatcher
       .dispatch(db.spec.dispatch.encode(`@${db.ns}/${verb}`, payload), {
         view: db.view,
-        host: {},
+        host: noHost,
         key: writer.publicKey,
         dbKey: db.key
       })
@@ -818,7 +834,9 @@ async function withMember(t) {
         () => null,
         (err) => err
       )
-  return { db, as }
+  // the second member signing as an identity: its keypair stands for both
+  const sign = (message) => crypto.sign(message, writer.secretKey)
+  return { db, owner: identity, id, writer, as, sign }
 }
 
 const inviteRow = (id, extra = {}) => ({
@@ -928,7 +946,6 @@ test('add-device: a writer cannot re-point its device row at another member', as
 
   // admit a second writer as a plain member
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   const attackerMemberId = hid.encode(writer.publicKey)
   await db.call('add-member', {
     id: attackerMemberId,
@@ -938,6 +955,7 @@ test('add-device: a writer cannot re-point its device row at another member', as
     createdAt: Date.now(),
     updatedAt: Date.now()
   })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
 
   const deviceId = hid.encode(writer.publicKey)
   t.is(
@@ -968,7 +986,6 @@ test('set-member: demoting below WRITE revokes the writer seat', async (t) => {
 
   // admit a second member as a writer
   const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
-  await db.call('add-writer', { ...op, ts: Date.now() })
   const memberId = hid.encode(writer.publicKey)
   await db.call('add-member', {
     id: memberId,
@@ -978,6 +995,7 @@ test('set-member: demoting below WRITE revokes the writer seat', async (t) => {
     createdAt: Date.now(),
     updatedAt: Date.now()
   })
+  await db.call('add-writer', { ...op, memberId: hid.encode(writer.publicKey), ts: Date.now() })
   t.ok((await db.get('devices', hid.encode(writer.publicKey))).data, 'admitted as a writer')
 
   // demote them to reader, watching what the demotion asks the host to revoke
@@ -1189,4 +1207,144 @@ test('poison op: wrong-length key/sig fields are skipped, not crashed', async (t
 
   const { data } = await db.put('messages', { text: 'alive' })
   t.ok((await db.get('messages', data.id)).data, 'db still applies valid ops after poison ops')
+})
+
+// ─── roles: who may change whose rank, and no way around it ───────────────
+
+const RANKS = ['owner', 'admin', 'member', 'reader']
+
+async function addTarget(db, role) {
+  const row = {
+    id: genId(),
+    key: Identity.randomKeyPair().publicKey,
+    role,
+    name: 't',
+    createdAt: 1,
+    updatedAt: 1
+  }
+  await db.call('add-member', row)
+  return row
+}
+
+const allowed = (signer, from, to) =>
+  ['owner', 'admin'].includes(signer) &&
+  RANKS.indexOf(signer) <= RANKS.indexOf(to) &&
+  RANKS.indexOf(signer) < RANKS.indexOf(from)
+
+for (const signer of RANKS) {
+  test(`roles: what a ${signer} may change, by rank`, async (t) => {
+    const { db, as, id } = await withMember(t, signer)
+    for (const from of RANKS) {
+      for (const to of RANKS) {
+        if (from === to) continue
+        const target = await addTarget(db, from)
+        const err = await as('set-member', { ...target, role: to, updatedAt: Date.now() })
+        const { role } = (await db.get('members', target.id)).data
+        if (allowed(signer, from, to)) t.is(role, to, `${from} → ${to}`)
+        else t.ok(err?.code === 'REFUSED' && role === from, `${from} → ${to} refused`)
+      }
+    }
+    for (const to of RANKS) {
+      if (to === signer) continue
+      const { data: self } = await db.get('members', id)
+      const err = await as('set-member', { ...self, role: to, updatedAt: Date.now() })
+      t.ok(err?.code === 'REFUSED', `its own rank: ${signer} → ${to} refused`)
+    }
+  })
+}
+
+test('roles: a promotion gives the writer seats back, a demotion takes them', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const { op, writer } = addWriterOp(identity, db.writerKey, db.key)
+  const id = hid.encode(writer.publicKey)
+  const row = { id, key: writer.publicKey, name: 'b', createdAt: 1, updatedAt: 1 }
+  await db.call('add-member', { ...row, role: 'member' })
+  await db.call('add-writer', { ...op, memberId: id, ts: Date.now() })
+
+  const seats = { added: [], removed: [] }
+  const host = {
+    addWriter: async (k) => seats.added.push(z32.encode(k)),
+    removeWriter: async (k) => seats.removed.push(z32.encode(k))
+  }
+  const asOwner = (payload) =>
+    db.dispatcher.dispatch(db.spec.dispatch.encode(`@${db.ns}/set-member`, payload), {
+      view: db.view,
+      host,
+      key: db.writerKey,
+      dbKey: db.key
+    })
+  await asOwner({ ...row, role: 'reader', updatedAt: Date.now() })
+  t.ok(seats.removed.includes(id), 'demoted below write: its writer goes')
+  await asOwner({ ...row, role: 'member', updatedAt: Date.now() })
+  t.ok(seats.added.includes(id), 'promoted back: its writer returns')
+})
+
+test('escalation: admitting an existing member again does not change its rank', async (t) => {
+  const { db, as, owner } = await withMember(t, 'admin')
+  const { data: before } = await db.get('members', owner.id)
+  await as('add-member', { ...before, role: 'reader', updatedAt: Date.now() })
+  const { data: after } = await db.get('members', owner.id)
+  t.is(after.role, 'owner', 'the owner stays owner')
+  t.alike(after.key, before.key)
+})
+
+test('escalation: add-member cannot move a writer to another member', async (t) => {
+  const { db, as, owner, id, writer } = await withMember(t, 'member')
+  const err = await as('add-member', {
+    id: genId(),
+    key: writer.publicKey,
+    role: 'member',
+    name: 'x',
+    createdAt: 1,
+    updatedAt: 1
+  })
+  t.is(err?.code, 'REFUSED')
+  t.is((await db.get('devices', id)).data.memberId, id, 'the writer stays with its member')
+  t.is((await db.get('members', owner.id)).data.role, 'owner')
+})
+
+test('escalation: add-writer cannot attach a writer to a higher rank', async (t) => {
+  const { db, as, owner, writer, sign } = await withMember(t, 'member')
+  const extra = Identity.randomKeyPair()
+  const err = await as('add-writer', {
+    master: writer.publicKey,
+    writer: extra.publicKey,
+    sig: sign(admission(db.key, extra.publicKey, writer.publicKey)),
+    memberId: owner.id,
+    ts: Date.now()
+  })
+  t.is(err?.code, 'REFUSED')
+  t.absent(
+    (await db.get('devices', hid.encode(extra.publicKey))).data,
+    'no writer acts as the owner'
+  )
+})
+
+test('escalation: add-writer cannot move an enrolled writer to another member', async (t) => {
+  const { db, as, id, writer, sign } = await withMember(t, 'admin')
+  const target = await addTarget(db, 'member')
+  const err = await as('add-writer', {
+    master: writer.publicKey,
+    writer: writer.publicKey,
+    sig: sign(admission(db.key, writer.publicKey, writer.publicKey)),
+    memberId: target.id,
+    ts: Date.now()
+  })
+  t.is(err?.code, 'REFUSED')
+  t.is((await db.get('devices', id)).data.memberId, id)
+})
+
+test('escalation: a member may still add a writer for a member it outranks or equals', async (t) => {
+  const { db, as, writer, sign } = await withMember(t, 'member')
+  const target = await addTarget(db, 'member')
+  const extra = Identity.randomKeyPair()
+  const err = await as('add-writer', {
+    master: writer.publicKey,
+    writer: extra.publicKey,
+    sig: sign(admission(db.key, extra.publicKey, writer.publicKey)),
+    memberId: target.id,
+    ts: Date.now()
+  })
+  t.is(err, null)
+  t.is((await db.get('devices', hid.encode(extra.publicKey))).data.memberId, target.id)
 })

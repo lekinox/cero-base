@@ -183,7 +183,7 @@ test('Handle: t.extend adds a field to the member builtin', async (t) => {
   const { me } = await ceroOpen(t)
   await me.bootstrap()
   const avatar = b4a.from([7, 8, 9])
-  await me.store.call('add-member', {
+  await me.store.call('set-member', {
     id: me.id,
     key: me.store.writerKey,
     role: 'owner',

@@ -12,15 +12,14 @@ async function open(t, role = 'owner') {
   const identity = await Identity.create()
   const db = new Database({ store, identity, spec })
   await db.ready()
-  await db.bootstrap({ name: 'tx', isMobile: false })
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey,
-    role,
-    name: 'me',
-    createdAt: 1,
-    updatedAt: 1
-  })
+  // genesis admits the first member at any rank
+  await db.write([
+    ['add-writer', db._admission(db.writerKey)],
+    [
+      'add-member',
+      { id: identity.id, key: db.writerKey, role, name: 'me', createdAt: 1, updatedAt: 1 }
+    ]
+  ])
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
   return { db, identity }
 }
