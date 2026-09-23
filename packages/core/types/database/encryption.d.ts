@@ -14,6 +14,7 @@ export declare function loadEpochs(keyring: any, local: any): Promise<void>;
  * Wire codec for a rotation announcement's envelope list — one sealed box
  * per remaining member, addressed by member id.
  */
+export declare function seal(members: any, secret: any): any;
 export declare const wraps: c.Encoder<any[], {
     id: string;
     box: Uint8Array<ArrayBufferLike>;

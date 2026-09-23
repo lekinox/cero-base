@@ -38,7 +38,6 @@ export declare class Rotation {
     heal(): void;
     _rotate(retried: any): any;
     _members(): Promise<any[]>;
-    _seal(members: any, entropy: any): any;
     _announce(stamp: any, entropy: any, wrapped: any): Promise<number>;
     _mint(): number;
     _taken(stamp: any): Promise<any>;

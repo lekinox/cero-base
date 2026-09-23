@@ -66,7 +66,6 @@ export function makeDispatcher({
     const d = await getDevice(view, hid.encode(writerKey))
     return d?.memberId ? ((await getMember(view, d.memberId))?.role ?? null) : null
   }
-  const isGenesis = async (view) => !(await view.findOne(`@${ns}/members`, {}))
   const isIdentity = (id) => {
     try {
       return isKey(hid.decode(id))
@@ -249,7 +248,7 @@ export function makeDispatcher({
   add('add-writer', async (op, ctx) => {
     if (!isKey(op.master) || !isKey(op.writer) || !isSig(op.sig)) return
     if (!Identity.verify(op.master, admission(ctx.dbKey, op.writer, ctx.key), op.sig)) return
-    const genesis = await isGenesis(ctx.view)
+    const { genesis } = ctx.host
     const inviter = await getRole(ctx.view, op.master)
     if (!genesis && !can(inviter, INVITE)) throw CeroError.REFUSED('invite')
     // the rank is add-member's decision in the same transaction: a refused grant discards this admission.
@@ -304,7 +303,7 @@ export function makeDispatcher({
     if (!isKey(op.key)) return
     // every member id is an identity key: rotation seals to it
     if (!isIdentity(op.id)) throw CeroError.REFUSED('member')
-    if (!(await isGenesis(ctx.view))) {
+    if (!ctx.host.genesis) {
       const r = await getSignerRole(ctx.view, ctx.key)
       if (!can(r, INVITE) || !grants(r, op.role)) throw CeroError.REFUSED('invite')
     }
@@ -452,8 +451,8 @@ export function makeDispatcher({
     if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
     const existing = await ctx.view.get(invites, { id: op.id })
     if (!existing) return
-    // its secret owns the address knocks arrive at: changing it would redirect them
-    const next = { ...existing, ...op, secret: existing.secret }
+    // the sealed secret owns the address knocks arrive at
+    const next = { ...existing, ...op, wrapped: existing.wrapped }
     if (!capped(r, next)) throw CeroError.REFUSED('invite')
     await insert(ctx.view, 'invites', invites, next)
   })

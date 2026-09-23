@@ -43,7 +43,7 @@ export const main = {
   },
   invite: {
     id: required(string),
-    secret: required(bytes),
+    wrapped: required(bytes),
     role: required(string),
     expires: int,
     reuse: bool,

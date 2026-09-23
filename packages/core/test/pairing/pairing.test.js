@@ -16,6 +16,7 @@ import { STATUS_ACCEPTED } from '../../src/pairing/request.js'
 import { Mailbox } from '../../src/mailbox/index.js'
 import { Post } from '../../src/mailbox/post.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
+import { wraps } from '../../src/database/encryption.js'
 import { CeroError } from '../../src/lib/errors.js'
 import { spec } from '../fixtures/spec/index.js'
 
@@ -84,17 +85,38 @@ test('ready() + close() lifecycle, both idempotent', async (t) => {
 // ─── invites ───────────────────────────────────────────────────────────────
 
 test('invite: a z32 string, kept in the database', async (t) => {
-  const { pairing, db } = await makeHost(t)
+  const { pairing, db, identity } = await makeHost(t)
   const invite = await pairing.invite({ role: 'reader', ttl: '1h', reuse: true })
   t.ok(/^[ybndrfg8ejkmcpqxot1uwisza345h769]+$/.test(invite))
 
   const [record] = await invites(db)
   const parsed = Invite.parse(invite)
   t.is(record.id, idOf(invite))
-  t.alike(Mailbox.getAddress(record.secret), parsed.address, 'the record owns its address')
+  const mine = c.decode(wraps, record.wrapped).find((w) => w.id === identity.id)
+  t.alike(
+    Mailbox.getAddress(identity.unseal(mine.box)),
+    parsed.address,
+    'its sealed secret owns its address'
+  )
   t.is(record.role, 'reader')
   t.is(record.reuse, true)
   t.ok(Math.abs(parsed.expires - Date.now() - 3600_000) < 5000, "'1h' reads as an hour")
+})
+
+test('invite: its secret is sealed only to members who can invite', async (t) => {
+  const { pairing, db, identity } = await makeHost(t)
+  const reader = await Identity.create()
+  await db.call('add-member', {
+    id: reader.id,
+    key: reader.publicKey,
+    role: 'reader',
+    createdAt: 1,
+    updatedAt: 1
+  })
+  await pairing.invite()
+  const [record] = await invites(db)
+  const ids = c.decode(wraps, record.wrapped).map((w) => w.id)
+  t.alike(ids, [identity.id], 'the owner can open it, the reader cannot')
 })
 
 test('invite: the role is a rank', async (t) => {

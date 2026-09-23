@@ -9,6 +9,7 @@ import { Request, Response, STATUS_DENIED } from './request.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { Identity } from '../identity/index.js'
+import { wraps, seal } from '../database/encryption.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, INVITE, REMOVE } from '../lib/utils.js'
@@ -32,7 +33,6 @@ const MAX_DELAY = 2 ** 31 - 1
  *
  * @typedef {object} Served                         An invite as the database keeps it.
  * @property {string} id                            The invite's id, hex.
- * @property {Uint8Array} secret                    Owns the address knocks arrive at; never the seed that proves one.
  * @property {string} role
  * @property {number} expires                       Absolute expiry; `0` never.
  * @property {boolean} reuse
@@ -117,9 +117,16 @@ export class Pairing extends ReadyResource {
       address: Mailbox.getAddress(secret)
     })
     const id = b4a.toHex(invite.id)
+    const { data: members } = await this.db.get('members')
     await this.db.call('add-invite', {
       id,
-      secret,
+      wrapped: c.encode(
+        wraps,
+        seal(
+          members.filter((m) => can(m.role, INVITE)),
+          secret
+        )
+      ),
       role,
       reuse,
       expires: invite.expires,
@@ -164,7 +171,9 @@ export class Pairing extends ReadyResource {
     for (const id of this._invites.keys()) if (!ids.has(id)) this._drop(id)
     for (const row of rows) {
       if (this._invites.has(row.id) || expired(row)) continue
-      const inbox = this.mailbox.receive(row.secret, (knock) => this._onknock(knock))
+      const secret = opened(this.db.identity, row.wrapped)
+      if (!secret) continue
+      const inbox = this.mailbox.receive(secret, (knock) => this._onknock(knock))
       this._invites.set(row.id, served(row, inbox))
     }
     this.emit('serving', this.serving)
@@ -307,14 +316,13 @@ export class Pairing extends ReadyResource {
 }
 
 /**
- * @param {{ id: string, secret: Uint8Array, role?: string, expires?: number, reuse?: boolean }} row
+ * @param {{ id: string, role?: string, expires?: number, reuse?: boolean }} row
  * @param {{ close: () => Promise<void> }} inbox
  * @returns {Served}
  */
-function served({ id, secret, role = '', expires = 0, reuse = false }, inbox) {
+function served({ id, role = '', expires = 0, reuse = false }, inbox) {
   return {
     id,
-    secret,
     role,
     expires,
     reuse,
@@ -324,6 +332,11 @@ function served({ id, secret, role = '', expires = 0, reuse = false }, inbox) {
       return expired(this)
     }
   }
+}
+
+function opened(identity, wrapped) {
+  const box = c.decode(wraps, wrapped).find((w) => w.id === identity.id)?.box
+  return box ? identity.unseal(box) : null
 }
 
 function expired({ expires }) {

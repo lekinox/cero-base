@@ -36,7 +36,7 @@ export declare const main: {
     };
     invite: {
         id: import("@cero-base/core").Prim;
-        secret: import("@cero-base/core").Prim;
+        wrapped: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
         reuse: import("@cero-base/core").Prim;

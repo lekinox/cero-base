@@ -4,7 +4,10 @@ import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 import b4a from 'b4a'
 
+import hid from 'hypercore-id-encoding'
+
 import { CeroError } from '../lib/errors.js'
+import { Identity } from '../identity/index.js'
 
 const { AutobeeEncryption, WriterEncryption } = autobeeEncryption
 
@@ -66,6 +69,18 @@ AutobeeEncryption.prototype.update = async function (ctx) {
  * Wire codec for a rotation announcement's envelope list — one sealed box
  * per remaining member, addressed by member id.
  */
+export function seal(members, secret) {
+  return members.map((m) => {
+    let key
+    try {
+      key = hid.decode(m.id)
+    } catch {
+      throw CeroError.INVALID(`member id is not an identity key: ${m.id}`)
+    }
+    return { id: m.id, box: Identity.seal(key, secret) }
+  })
+}
+
 export const wraps = c.array({
   preencode(state, w) {
     c.string.preencode(state, w.id)

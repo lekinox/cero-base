@@ -39,10 +39,6 @@ export type Served = {
      * The invite's id, hex.
      */
     id: string;
-    /**
-     * Owns the address knocks arrive at; never the seed that proves one.
-     */
-    secret: Uint8Array;
     role: string;
     /**
      * Absolute expiry; `0` never.
@@ -107,7 +103,6 @@ export type JoinResult = {
  *
  * @typedef {object} Served                         An invite as the database keeps it.
  * @property {string} id                            The invite's id, hex.
- * @property {Uint8Array} secret                    Owns the address knocks arrive at; never the seed that proves one.
  * @property {string} role
  * @property {number} expires                       Absolute expiry; `0` never.
  * @property {boolean} reuse

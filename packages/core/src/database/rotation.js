@@ -5,7 +5,7 @@ import hid from 'hypercore-id-encoding'
 
 import { REMOVE } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
-import { wraps, epochEntries } from './encryption.js'
+import { wraps, epochEntries, seal } from './encryption.js'
 import { Identity } from '../identity/index.js'
 import { CeroError } from '../lib/errors.js'
 
@@ -96,7 +96,7 @@ export class Rotation {
     const stamp = this._mint()
     this.current = { entropy, stamp, epoch: 0 }
     try {
-      const wrapped = this._seal(await this._members(), entropy)
+      const wrapped = seal(await this._members(), entropy)
       const epoch = await this._announce(stamp, entropy, wrapped)
       if (!epoch) {
         // a stamp collision (~2^-32, or an adversarial pre-claim) is not a refusal
@@ -121,19 +121,6 @@ export class Rotation {
       throw CeroError.INVALID('cannot rotate a database with no members')
     }
     return members
-  }
-
-  // one sealed copy of the secret per member, addressed by member id
-  _seal(members, entropy) {
-    return members.map((m) => {
-      let key
-      try {
-        key = hid.decode(m.id)
-      } catch {
-        throw CeroError.INVALID(`member id is not an identity key: ${m.id}`)
-      }
-      return { id: m.id, box: Identity.seal(key, entropy) }
-    })
   }
 
   // resolves the sequence apply assigned, 0 if it never applied

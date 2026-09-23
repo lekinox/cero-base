@@ -826,7 +826,7 @@ async function withMember(t, role = 'member') {
 
 const inviteRow = (id, extra = {}) => ({
   id,
-  secret: b4a.alloc(32, 1),
+  wrapped: b4a.alloc(32, 1),
   role: 'member',
   createdAt: 1,
   ...extra
@@ -1333,30 +1333,30 @@ test('escalation: add-writer never seats another member device', async (t) => {
 
 test('invites: an invite grants at most its minter rank', async (t) => {
   const { db, as } = await withMember(t, 'member')
-  const secret = b4a.alloc(32, 1)
-  const refused = await as('add-invite', { id: 'up', secret, role: 'owner', createdAt: 1 })
+  const wrapped = b4a.alloc(32, 1)
+  const refused = await as('add-invite', { id: 'up', wrapped, role: 'owner', createdAt: 1 })
   t.is(refused?.code, 'REFUSED')
   t.absent((await db.get('invites', 'up')).data, 'no owner invite from a member')
-  t.is(await as('add-invite', { id: 'ok', secret, role: 'member', createdAt: 1 }), null)
+  t.is(await as('add-invite', { id: 'ok', wrapped, role: 'member', createdAt: 1 }), null)
 })
 
 test('invites: altering one keeps its rank capped and its secret', async (t) => {
   const { db, as } = await withMember(t, 'admin')
-  await db.call('add-invite', { id: 'i', secret: b4a.alloc(32, 1), role: 'member', createdAt: 1 })
-  const record = { id: 'i', secret: b4a.alloc(32, 1), role: 'member', createdAt: 1 }
+  await db.call('add-invite', { id: 'i', wrapped: b4a.alloc(32, 1), role: 'member', createdAt: 1 })
+  const record = { id: 'i', wrapped: b4a.alloc(32, 1), role: 'member', createdAt: 1 }
   const raised = await as('set-invite', { ...record, role: 'owner' })
   t.is(raised?.code, 'REFUSED')
-  await as('set-invite', { ...record, secret: b4a.alloc(32, 2) })
+  await as('set-invite', { ...record, wrapped: b4a.alloc(32, 2) })
   const { data } = await db.get('invites', 'i')
   t.is(data.role, 'member')
-  t.alike(data.secret, b4a.alloc(32, 1), 'knocks still arrive where they did')
+  t.alike(data.wrapped, b4a.alloc(32, 1), 'knocks still arrive where they did')
 })
 
 test('invites: consuming one needs a rank that could grant it', async (t) => {
   const { db, as } = await withMember(t, 'member')
-  const secret = b4a.alloc(32, 1)
-  await db.call('add-invite', { id: 'admin', secret, role: 'admin', createdAt: 1 })
-  await db.call('add-invite', { id: 'member', secret, role: 'member', createdAt: 1 })
+  const wrapped = b4a.alloc(32, 1)
+  await db.call('add-invite', { id: 'admin', wrapped, role: 'admin', createdAt: 1 })
+  await db.call('add-invite', { id: 'member', wrapped, role: 'member', createdAt: 1 })
   t.is((await as('del-invite', { id: 'admin' }))?.code, 'REFUSED')
   t.ok((await db.get('invites', 'admin')).data, 'a member cannot drop an admin invite')
   t.is(await as('del-invite', { id: 'member' }), null, 'but consumes one it could grant')
@@ -1455,4 +1455,21 @@ test('escalation: claim-writer cannot move a seated writer to another identity',
   })
   t.is(err?.code, 'REFUSED')
   t.is((await db.get('devices', id)).data.memberId, id)
+})
+
+test('genesis: a room emptied of members is not new again', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const self = by(db, db.writerKey)
+  t.is(await self('del-member', { id: identity.id }), null)
+  t.absent((await db.get('members', identity.id)).data, 'no member left')
+  const founder = Identity.randomKeyPair()
+  const record = {
+    id: hid.encode(founder.publicKey),
+    key: founder.publicKey,
+    role: 'owner',
+    createdAt: 1,
+    updatedAt: 1
+  }
+  t.is((await self('add-member', record))?.code, 'REFUSED')
+  t.absent((await db.get('members', record.id)).data, 'nobody re-founds it')
 })

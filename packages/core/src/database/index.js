@@ -762,7 +762,11 @@ export class Database extends ReadyResource {
   // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the write
   async _dryRun(encoded) {
     const tx = this.view.transaction()
-    const host = { addWriter: async () => {}, removeWriter: async () => {} }
+    const host = {
+      addWriter: async () => {},
+      removeWriter: async () => {},
+      genesis: this.bee.system.isGenesis()
+    }
     try {
       for (const value of encoded) {
         await this.dispatcher.dispatch(value, {
