@@ -206,7 +206,7 @@ export class Rotation {
   }
 }
 
-// the epoch stamp autobee-encryption writes into every block header
+// the epoch stamp autobee's encryption writes into every block header
 function stampOf(raw) {
   return b4a.readUInt32LE(raw, 4)
 }
