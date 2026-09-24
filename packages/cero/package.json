@@ -105,7 +105,7 @@
     "bare-crypto": "^1.15.3",
     "bare-fs": "^4.8.1",
     "bare-path": "^3.1.2",
-    "ble-swarm": "^2.3.0",
+    "ble-swarm": "^2.3.2",
     "compact-encoding": "^3.5.2",
     "corestore": "^7.12.6",
     "hrpc": "^4.3.1",
