@@ -9,6 +9,7 @@ import { Identity } from '@cero-base/core/identity'
 import { decodeId } from '@cero-base/core/blobs/codec'
 import { Invite } from '@cero-base/core/invite'
 import { Pairing } from '@cero-base/core/pairing'
+import { Mailbox } from '@cero-base/core/mailbox'
 import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { cero, put, set, get, open, peek, restore } from '../../src/index.js'
@@ -32,17 +33,17 @@ test('channel: opt threads to the network', async (t) => {
 })
 
 test('mirrors: opt threads to the network and survives restore', async (t) => {
-  const key = b4a.toString(b4a.alloc(32, 1), 'hex')
+  const key = b4a.toHex(b4a.alloc(32, 1))
   const { me } = await ceroOpen(t, { mirrors: [key] })
   t.ok(me.network._blindPeering, 'blind peering constructed when mirrors are passed')
   t.alike(me.network.mirrors[0], b4a.alloc(32, 1), 'mirror key decoded from hex')
   t.alike(me._opts.mirrors, [key], 'mirrors retained on opts for restore')
 })
 
-test('mirrors: a joiner knocks while every member is offline or suspended, the mirror holds it', async (t) => {
+test('mirrors: a joiner joins while every member is offline or suspended, the mirror holds it', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)
-  const mirrors = [b4a.toString(mirror.publicKey, 'hex')]
+  const mirrors = [b4a.toHex(mirror.publicKey)]
   const { me: owner } = await ceroOpen(t, { testnet, mirrors })
   const room = await open(owner.team, { name: 'clinic' })
   const invite = await room.invite()
@@ -50,9 +51,9 @@ test('mirrors: a joiner knocks while every member is offline or suspended, the m
 
   // the same app, so the same mirrors
   const { me: joiner } = await ceroOpen(t, { testnet, mirrors })
-  const knocked = holds(mirror, Invite.parse(invite).address)
+  const held = holds(mirror, Invite.parse(invite).key)
   const joining = open(joiner.team, invite)
-  await knocked
+  await held
   t.is((await get(room.members)).data.length, 1, 'a suspended owner admits nobody')
 
   await owner.resume()
@@ -73,26 +74,28 @@ const joined = (me, id) =>
 test('mirrors: owner and joiner are never online together, across restarts', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)
-  const mirrors = [b4a.toString(mirror.publicKey, 'hex')]
+  const mirrors = [b4a.toHex(mirror.publicKey)]
   const owner = await ceroOpen(t, { testnet, mirrors })
   const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
   const invite = await room.invite()
   await owner.me.close()
 
-  // the joiner knocks alone and leaves: the knock waits on the app's mirror
+  // the joiner joins alone and leaves: its join waits on the app's mirror
   const joiner = await ceroOpen(t, { testnet, mirrors })
-  const knocked = holds(mirror, Invite.parse(invite).address)
+  const held = holds(mirror, Invite.parse(invite).key)
   joiner.me._join(invite, 'team', { timeout: 500 }).catch(() => {})
-  await knocked
+  await held
+  const [{ secretKey }] = (await joiner.me.local.store.get('joins')).data
   await joiner.me.close()
 
   // the owner comes back alone, admits it, and leaves once the reply and the admission are on
   // the mirror
+  const replied = holds(mirror, Mailbox.getAddress(secretKey))
   const back = await reopen(t, owner.dir, testnet, { mirrors })
   const reopened = await open(back.team, { id })
   await waitUntil(async () => ((await get(reopened.members)).data.length === 2 ? true : null))
-  await waitUntil(async () => ((await back.mailbox.outbox.list()).length === 0 ? true : null))
+  await replied
   const { writerKey, bee } = reopened.store
   const mirrored = mirror.store.get({ key: writerKey })
   await mirrored.ready()
@@ -124,15 +127,15 @@ test('invites: a join survives the joiner restarting, and lands once a member is
 test('invites: a reply survives the member restarting', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
-  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite()
+  const invite = await room.invite({ confirm: true })
 
-  // the joiner knocks, then leaves before the member answers
+  // the joiner joins, then leaves before a member accepts
   const joiner = await ceroOpen(t, { testnet })
-  const knocked = new Promise((resolve) => room.pair.once('candidate', resolve))
+  const asked = new Promise((resolve) => room.pair.once('candidate', resolve))
   const waiting = joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
-  const candidate = await knocked
+  const candidate = await asked
   await waiting
   await joiner.me.close()
 
@@ -154,10 +157,11 @@ test('invites: a joiner restarting after the reply landed opens the room from th
   const room = await open(owner.me.team, { name: 'clinic' })
   const invite = await room.invite()
 
-  // the reply landed and the writer was admitted, then the joiner stopped: nothing left to knock for
+  // the reply landed and the writer was admitted, then the joiner stopped: nothing left to join
   const joiner = await ceroOpen(t, { testnet })
   const { identity, mailbox } = joiner.me
-  const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, { identity })
+  const opts = { identity, spec: spec.handles.team }
+  const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, opts)
   await room.revoke(invite)
   const { discoveryKey } = Invite.parse(invite)
   await joiner.me.local.store.put('joins', {
@@ -179,22 +183,22 @@ test('invites: a joiner restarting after the reply landed opens the room from th
 test('invites: a join request waiting for approval survives the member restarting', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
-  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite()
+  const invite = await room.invite({ confirm: true })
 
-  // the joiner knocks and leaves; only the member's inbox still has the request
+  // the joiner joins and leaves; its request waits in the room
   const joiner = await ceroOpen(t, { testnet })
-  const knocked = new Promise((resolve) => room.pair.once('candidate', resolve))
+  const asked = new Promise((resolve) => room.pair.once('candidate', resolve))
   const waiting = joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
-  await knocked
+  await asked
   await waiting
   await joiner.me.close()
 
   // the member restarts before approving, and still sees the request
   await owner.me.close()
   const back = await reopen(t, owner.dir, testnet)
-  const again = await open(back.team, { id, accept: false })
+  const again = await open(back.team, { id })
   await waitUntil(() => again.pair.pending.size > 0 || null)
   await again.accept([...again.pair.pending][0])
 
@@ -205,10 +209,10 @@ test('invites: a join request waiting for approval survives the member restartin
 // an invite nobody serves: the join stays pending
 function nowhere(opts) {
   const random = () => Identity.randomBytes(32)
-  return Invite.create({ discoveryKey: random(), address: random(), ...opts }).toString()
+  return Invite.create({ key: random(), address: random(), ...opts }).toString()
 }
 
-test('invites: an owner back online serves its invites without opening the room', async (t) => {
+test('invites: an owner back online answers its invites without opening the room', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
@@ -224,12 +228,12 @@ test('invites: an owner back online serves its invites without opening the room'
   t.ok(await joined(joiner.me, id), 'admitted by the room reopened at boot')
 })
 
-test('invites: a gated room reopened at boot stays gated', async (t) => {
+test('invites: a confirm invite reopened at boot still waits for the app', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
-  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite()
+  const invite = await room.invite({ confirm: true })
   await owner.me.close()
 
   const joiner = await ceroOpen(t, { testnet })
@@ -257,7 +261,7 @@ test('invites: a room with no invite left is not reopened at boot', async (t) =>
   t.pass('the used invite takes the room off the list')
 })
 
-test('invites: a room left with invites still served is dropped from the list at boot', async (t) => {
+test('invites: a room left with invites is dropped from the list at boot', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
@@ -354,7 +358,7 @@ test('invites: a join row left behind for a handle already open is dropped at bo
 
   const again = await reopen(t, joiner.dir, testnet)
   t.alike(await again.joining(), [])
-  t.is(again._joining.size, 0, 'no knock')
+  t.is(again._joining.size, 0, 'nothing resumed')
 })
 
 test('invites: a caller waiting on a cancelled join hears CLOSED', async (t) => {
@@ -380,22 +384,23 @@ test('invites: a pending join ends when its invite expires, and says so', async 
 test('invites: a denial reaches the caller, or onerror once nobody waits', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
-  const room = await open(owner.me.team, { name: 'clinic', accept: false })
+  const room = await open(owner.me.team, { name: 'clinic' })
   const candidates = []
   room.pair.on('candidate', (candidate) => candidates.push(candidate))
+  const invite = () => room.invite({ confirm: true })
 
   const errors = []
   const onerror = (err) => errors.push(err)
   const waited = await ceroOpen(t, { testnet, onerror })
-  const joining = waited.me._join(await room.invite(), 'team', { timeout: 0 }).catch((e) => e)
+  const joining = waited.me._join(await invite(), 'team', { timeout: 0 }).catch((e) => e)
   await waitUntil(() => candidates.length || null)
   await candidates[0].deny('not now')
   t.is((await joining).code, 'DENIED', 'the caller hears it')
   t.is(errors.length, 0, 'and onerror does not')
 
-  // the joiner knocks and leaves; the denial waits in the member's outbox for its return
+  // the joiner joins and leaves; the denial waits in the member's outbox for its return
   const away = await ceroOpen(t, { testnet })
-  await away.me._join(await room.invite(), 'team', { timeout: 1000 }).catch((e) => e)
+  await away.me._join(await invite(), 'team', { timeout: 1000 }).catch((e) => e)
   await waitUntil(() => candidates.length === 2 || null)
   await away.me.close()
   await candidates[1].deny('not now')
@@ -613,7 +618,7 @@ test('closing a child prunes its blob core keys from the root', async (t) => {
 
   const { data: file } = await put(room.files, { data: b4a.from('x'), type: 'text/plain' })
   await get(room.files, file.id)
-  const hex = b4a.toString(decodeId(file.id).coreKey, 'hex')
+  const hex = b4a.toHex(decodeId(file.id).coreKey)
   t.ok(me._coreKeys.has(hex), 'blob core registered while open')
 
   await room.close()
@@ -1035,8 +1040,8 @@ test('cero(): a phrase alone recovers a second device — no flag, no new histor
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   t.is(b.id, a.id, 'same identity')
-  t.is(b.store.key.toString('hex'), a.store.key.toString('hex'), 'same root database')
-  t.not(b.store.writerKey.toString('hex'), a.store.writerKey.toString('hex'), 'its own writer core')
+  t.is(b4a.toHex(b.store.key), b4a.toHex(a.store.key), 'same root database')
+  t.not(b4a.toHex(b.store.writerKey), b4a.toHex(a.store.writerKey), 'its own writer core')
   t.ok(b.store.writable, 'admitted as a writer')
 
   const row = await waitUntil(async () => {
@@ -1177,7 +1182,7 @@ test('cero(): a blob core resolving after close does not re-register its key', a
 
   t.ok(blobs.key, 'the blob core did open')
   t.absent(
-    me._coreKeys.has(b4a.toString(blobs.key, 'hex')),
+    me._coreKeys.has(b4a.toHex(blobs.key)),
     "a late blob open must not resurrect the closed handle's key on the root"
   )
 })

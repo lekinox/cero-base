@@ -157,7 +157,7 @@ const phrase = a.identity.toPhrase()
 
 const b = await cero(await t.tmp(), spec, { phrase, bootstrap: testnet.bootstrap })
 t.is(b.id, a.id)
-t.not(b.store.writerKey.toString('hex'), a.store.writerKey.toString('hex')) // its own writer
+t.not(b4a.toHex(b.store.writerKey), b4a.toHex(a.store.writerKey)) // its own writer
 await waitUntil(async () => (await cero.get(b.notes)).data.find((n) => n.text === 'from-a'))
 ```
 

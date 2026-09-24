@@ -17,6 +17,7 @@ import { Identity } from '../identity/index.js'
 import { Rotation } from './rotation.js'
 import { makeChanges } from './changes.js'
 import { makeDispatcher } from './dispatch.js'
+import { keyPair } from '../mailbox/inbox.js'
 
 /**
  * @typedef {object} DatabaseOpts
@@ -94,6 +95,8 @@ export class Database extends ReadyResource {
 
     this._onerror = opts.onerror || ((err) => console.error(err))
     this._seating = false
+    // a join is sealed to the address the encryption key owns: every member opens it, no one else
+    this._room = this.encryptionKey ? keyPair(this.encryptionKey) : null
     this.bee = null
     this.dispatcher = null
     this._presence = null
@@ -113,6 +116,11 @@ export class Database extends ReadyResource {
   /** @returns {Uint8Array | null} discovery key of the underlying bee */
   get discoveryKey() {
     return this.bee?.discoveryKey || null
+  }
+
+  /** @returns {Uint8Array | null} where a join is sealed to: the address the encryption key owns */
+  get address() {
+    return this._room?.publicKey || null
   }
 
   /** @returns {Uint8Array | null} this device's local writer key */
@@ -146,6 +154,8 @@ export class Database extends ReadyResource {
       onerror: this._onerror,
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
+      room: () => this._room,
+      onjoin: (join) => this.emit('join', join),
       hooks: (phase, op) => this._hooks(phase, op),
       inHook: (fn) => this._inHook(fn),
       touch: (name) => this._touched.add(name),

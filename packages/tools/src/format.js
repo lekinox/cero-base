@@ -24,7 +24,7 @@ function shortRow(row) {
 
 function shortKey(key) {
   if (key == null) return ''
-  if (b4a.isBuffer(key)) return b4a.toString(key, 'hex').slice(0, 8)
+  if (b4a.isBuffer(key)) return b4a.toHex(key).slice(0, 8)
   return String(key).slice(0, 8)
 }
 

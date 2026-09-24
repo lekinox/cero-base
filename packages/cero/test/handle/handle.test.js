@@ -24,19 +24,21 @@ const teamSpec = spec.handles.team
 
 // ─── admission guards (B3.2) ──────────────────────────────────────────────
 
-test('open: accept:false survives a reopen — the gate does not re-arm', async (t) => {
-  const { me } = await openHandle(t)
-  const room = await open(me.team, { name: 'gated', accept: false })
-  t.is(room.pair.listenerCount('candidate'), 0, 'created with no auto-accept')
+test('invite: a confirm invite waits for the app to accept', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'gated' })
+  const asked = new Promise((resolve) => room.pair.once('candidate', resolve))
+  const invite = await room.invite({ role: 'reader', confirm: true })
 
-  const id = room.id
-  await room.close()
-  const again = await open(me.team, { id, accept: false })
-  t.is(again.pair.listenerCount('candidate'), 0, 'still gated after a reopen')
-
-  await again.close()
-  const armed = await open(me.team, { id })
-  t.ok(armed.pair.listenerCount('candidate') > 0, 'and re-arms when the caller asks for it')
+  const peer = await openHandle(t, { testnet })
+  const joining = open(peer.me.team, invite)
+  const request = await asked
+  t.absent((await get(room.members, peer.identity.id)).data, 'nobody admitted yet')
+  await room.accept(request)
+  const joined = await joining
+  t.teardown(() => joined.close().catch(() => {}))
+  t.is((await get(room.members, peer.identity.id)).data.role, 'reader')
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {
@@ -100,7 +102,7 @@ test('Handle: ref carries handle + name + kind', async (t) => {
 test('Handle: bootstrap on fresh', async (t) => {
   const { store } = await makeStore(t)
   const identity = await Identity.create()
-  const net = await makeNet(t, await makeTestnet(t))
+  const net = await makeNet(t, await makeTestnet(t), null, store)
   const me = new Handle({ store, identity, network: net, spec })
   await me.ready()
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
@@ -222,7 +224,7 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
 
   const { store: hostStore } = await makeStore(t)
   const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId)
+  const hostNet = await makeNet(t, testnet, hostId, hostStore)
   const room = new Handle({
     store: hostStore,
     identity: hostId,
@@ -237,18 +239,10 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
   await room.bootstrap({ name: 'host' })
   await put(room.messages, { text: 'host-msg' })
 
-  room.pair.on('candidate', async (cand) => {
-    try {
-      await room.accept(cand, { role: 'reader' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
-
   const inviteStr = await room.invite({ role: 'reader' })
   const readerId = await Identity.create()
   const { store: readerStore } = await makeStore(t)
-  const readerNet = await makeNet(t, testnet, readerId)
+  const readerNet = await makeNet(t, testnet, readerId, readerStore)
 
   const reader = await Handle.join(inviteStr, {
     network: readerNet,
@@ -279,7 +273,7 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
 
   const { store: hostStore } = await makeStore(t)
   const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId)
+  const hostNet = await makeNet(t, testnet, hostId, hostStore)
   const room = new Handle({
     store: hostStore,
     identity: hostId,
@@ -299,12 +293,11 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
     createdAt: Date.now(),
     updatedAt: Date.now()
   })
-  room.pair.on('candidate', (cand) => room.accept(cand).catch((e) => t.fail(e.message)))
 
   const joinRoom = async (name) => {
     const id = await Identity.create()
     const { store } = await makeStore(t)
-    const net = await makeNet(t, testnet, id)
+    const net = await makeNet(t, testnet, id, store)
     const h = await Handle.join(await room.invite(), {
       network: net,
       identity: id,
@@ -362,7 +355,7 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
 
   const { store: hostStore } = await makeStore(t)
   const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId)
+  const hostNet = await makeNet(t, testnet, hostId, hostStore)
   const room = new Handle({
     store: hostStore,
     identity: hostId,
@@ -382,7 +375,6 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
     createdAt: Date.now(),
     updatedAt: Date.now()
   })
-  room.pair.on('candidate', (cand) => room.accept(cand).catch((e) => t.fail(e.message)))
 
   // the reader is a proper root + child room: its ROOT key differs from the
   // room key, which is exactly the shape where blob cores must resolve with
@@ -900,7 +892,7 @@ test('Handle: invite + Handle.join + atomic admission', async (t) => {
 
   const { store: hostStore } = await makeStore(t)
   const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId)
+  const hostNet = await makeNet(t, testnet, hostId, hostStore)
   const room = new Handle({
     store: hostStore,
     identity: hostId,
@@ -915,19 +907,11 @@ test('Handle: invite + Handle.join + atomic admission', async (t) => {
   await room.bootstrap({ name: 'host' })
   await put(room.messages, { text: 'from-host' })
 
-  room.pair.on('candidate', async (cand) => {
-    try {
-      await room.accept(cand, { role: 'member' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
-
   const inviteStr = await room.invite({ role: 'member', ttl: 60_000 })
 
   const joinerId = await Identity.create()
   const { store: joinerStore } = await makeStore(t)
-  const joinerNet = await makeNet(t, testnet, joinerId)
+  const joinerNet = await makeNet(t, testnet, joinerId, joinerStore)
 
   const joiner = await Handle.join(inviteStr, {
     network: joinerNet,
@@ -958,7 +942,7 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
 
   const { store: hostStore } = await makeStore(t)
   const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId)
+  const hostNet = await makeNet(t, testnet, hostId, hostStore)
   const room = new Handle({
     store: hostStore,
     identity: hostId,
@@ -978,7 +962,7 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
 
   const joinerId = await Identity.create()
   const { store: joinerStore } = await makeStore(t)
-  const joinerNet = await makeNet(t, testnet, joinerId)
+  const joinerNet = await makeNet(t, testnet, joinerId, joinerStore)
 
   await t.exception.all(
     Handle.join(inviteStr, {
@@ -1012,7 +996,7 @@ test('Handle: root owns the coreKey→encryptionKey registry', async (t) => {
   const child = await me._create('team', { name: 'T' })
 
   const key = child.store.key
-  const hex = b4a.toString(key, 'hex')
+  const hex = b4a.toHex(key)
   t.alike(
     me._coreKeys.get(hex),
     child.store.encryptionKey,
@@ -1163,7 +1147,7 @@ test('files: a reader cannot add a file', async (t) => {
 
   const { store: hostStore } = await makeStore(t)
   const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId)
+  const hostNet = await makeNet(t, testnet, hostId, hostStore)
   const room = new Handle({
     store: hostStore,
     identity: hostId,
@@ -1177,18 +1161,10 @@ test('files: a reader cannot add a file', async (t) => {
 
   await room.bootstrap({ name: 'owner' })
 
-  room.pair.on('candidate', async (cand) => {
-    try {
-      await room.accept(cand, { role: 'reader' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
-
   const inviteStr = await room.invite({ role: 'reader' })
   const readerId = await Identity.create()
   const { store: readerStore } = await makeStore(t)
-  const readerNet = await makeNet(t, testnet, readerId)
+  const readerNet = await makeNet(t, testnet, readerId, readerStore)
 
   const reader = await Handle.join(inviteStr, {
     network: readerNet,

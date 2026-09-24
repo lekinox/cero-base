@@ -34,7 +34,7 @@ export class Presence {
    * @returns {Slot}
    */
   add(topic, { pinned = false } = {}) {
-    const id = b4a.toString(topic, 'hex')
+    const id = b4a.toHex(topic)
     let e = this.entries.get(id)
     if (!e) {
       e = {
@@ -78,7 +78,7 @@ export class Presence {
    * @returns {'active' | 'passive' | null}
    */
   mode(topic) {
-    const e = this.entries.get(b4a.toString(topic, 'hex'))
+    const e = this.entries.get(b4a.toHex(topic))
     return e?.discovery ? e.discovery.mode : null
   }
 

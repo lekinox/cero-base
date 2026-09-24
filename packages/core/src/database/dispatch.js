@@ -15,10 +15,13 @@ import {
   ASSIGN,
   WRITE
 } from '../lib/constants.js'
-import { can, grants, outranks, admission, ownership } from '../lib/utils.js'
+import { can, grants, outranks, admission, ownership, joining } from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
+import { getEncoding } from '../lib/spec/index.js'
 import { Identity } from '../identity/index.js'
-import { wraps } from './encryption.js'
+import { Invite } from '../pairing/invite.js'
+
+const Join = getEncoding('@cero/join')
 
 // wire fields are variable-length: reject wrong sizes before sodium and hid throw on them
 const isKey = (b) => b?.byteLength === 32
@@ -35,6 +38,8 @@ const isSig = (b) => b?.byteLength === 64
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
+ * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
+ * @param {(join: { identity: Uint8Array, writer: Uint8Array, reply: Uint8Array, expires: number }) => void} opts.onjoin  Per-peer side of an admission, once its batch committed.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} [opts.hooks]  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} [opts.touch]  Marks a ref written by a hook, so its watchers tick.
  * @param {(view: object, name: string, query?: any) => Promise<any>} [opts.read]  Planned read against a given view, for a hook's `ctx.get`.
@@ -48,6 +53,8 @@ export function makeDispatcher({
   onerror,
   key,
   onepoch,
+  room,
+  onjoin,
   hooks,
   touch,
   read,
@@ -157,6 +164,8 @@ export function makeDispatcher({
     const memberId = await getSignerMember(ctx.view, ctx.key)
     const role = memberId ? (await getMember(ctx.view, memberId))?.role : null
     if (!memberId || !role) throw CeroError.REFUSED('member')
+    // a reader's device has a row too, and its optimistic ops still reach apply
+    if (!can(role, WRITE)) throw CeroError.REFUSED('write')
     return { memberId, role }
   }
 
@@ -439,7 +448,8 @@ export function makeDispatcher({
   // any WRITE member mints an invite, its rank capped at admission; an existing row is never
   // overwritten, and altering or revoking one needs REMOVE
   const invites = `@${ns}/invites`
-  // an invite grants at most its minter's rank, or the member that answers it would grant more
+  const requests = `@${ns}/requests`
+  // an invite grants at most its minter's rank, or the join it admits would grant more
   const capped = (r, record) => !record.role || grants(r, record.role)
   add('add-invite', async (op, ctx) => {
     await requireWrite(ctx)
@@ -447,44 +457,115 @@ export function makeDispatcher({
     if (!capped(await getSignerRole(ctx.view, ctx.key), op)) throw CeroError.REFUSED('invite')
     await insert(ctx.view, 'invites', invites, op)
   })
-  const appendsCopies = async (view, existing, op) => {
-    let kept, next
-    try {
-      kept = c.decode(wraps, existing.wrapped)
-      next = c.decode(wraps, op.wrapped)
-    } catch {
-      return false
-    }
-    if (next.length <= kept.length) return false
-    if (!kept.every((w, i) => w.id === next[i].id && b4a.equals(w.box, next[i].box))) return false
-    const ids = new Set(kept.map((w) => w.id))
-    for (const { id } of next.slice(kept.length)) {
-      if (ids.has(id) || !can((await getMember(view, id))?.role, INVITE)) return false
-      ids.add(id)
-    }
-    return true
-  }
-  // an inviter may seal it for later inviters; anything else is moderation, and needs REMOVE
   add('set-invite', async (op, ctx) => {
     const r = await getSignerRole(ctx.view, ctx.key)
     const existing = await ctx.view.get(invites, { id: op.id })
     if (!existing) return
-    const copies = await appendsCopies(ctx.view, existing, op)
-    const next = can(r, REMOVE) ? { ...existing, ...op } : { ...existing }
-    next.wrapped = copies ? op.wrapped : existing.wrapped
-    if (!can(r, copies ? INVITE : REMOVE) || !capped(r, next)) throw CeroError.REFUSED('invite')
+    const next = { ...existing, ...op }
+    if (!can(r, REMOVE) || !capped(r, next)) throw CeroError.REFUSED('invite')
     await insert(ctx.view, 'invites', invites, next)
   })
-  // revoking needs REMOVE; consuming a single-use invite is done by whichever replica served the join
   add('del-invite', async (op, ctx) => {
     const existing = await ctx.view.get(invites, { id: op.id })
     if (!existing) return
-    const consume = existing.reuse !== true
     const r = await getSignerRole(ctx.view, ctx.key)
-    if (!capped(r, existing) || !(can(r, REMOVE) || (consume && can(r, INVITE)))) {
+    if (!can(r, REMOVE) || !capped(r, existing)) throw CeroError.REFUSED('invite')
+    await spend(ctx.view, existing)
+  })
+  // its waiting joins go with it
+  async function spend(view, invite) {
+    await view.delete(invites, { id: invite.id })
+    for (const request of await view.find(requests, {}).toArray()) {
+      if (request.invite === invite.id) await view.delete(requests, { id: request.id })
+    }
+  }
+
+  // the member, when new, and its device; seated when the member writes. The invite is spent
+  // unless it is reusable
+  async function admit(ctx, { invite, identity, writer, reply, role, ts }) {
+    const memberId = hid.encode(identity)
+    if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
+    const existing = await getMember(ctx.view, memberId)
+    if (!existing) {
+      const member = { id: memberId, key: writer, role, createdAt: ts, updatedAt: ts }
+      await insert(ctx.view, 'members', `@${ns}/members`, member)
+    }
+    if (can(existing?.role ?? role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
+    await insert(ctx.view, 'devices', devices, {
+      id: hid.encode(writer),
+      memberId,
+      createdAt: ts,
+      updatedAt: ts
+    })
+    if (!invite.reuse) await spend(ctx.view, invite)
+    ctx.joined?.({ identity, writer, reply, expires: invite.expires || 0 })
+  }
+
+  // null when it does not open: anyone may append a join
+  function open(box) {
+    const pair = room()
+    if (!pair || !box?.byteLength) return null
+    try {
+      const plain = crypto.decrypt(box, pair)
+      return plain && c.decode(Join, plain)
+    } catch {
+      return null
+    }
+  }
+
+  // the joiner's own core asks in: the invite proves it may, its identity signs where the keys go
+  add('join', async (op, ctx) => {
+    const join = open(op.box)
+    if (!join || !ctx.key) return
+    if (!Invite.proven(join.invite, ctx.key, join.proof)) return
+    const signed = joining(ctx.dbKey, join.invite, ctx.key, join.reply)
+    if (!Identity.verify(join.identity, signed, join.signature)) return
+    const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
+    if (!invite) return
+    const ts = join.ts || 0
+    const known = await getMember(ctx.view, hid.encode(join.identity))
+    if (invite.confirm && !known) {
+      return insert(ctx.view, 'requests', requests, {
+        id: hid.encode(ctx.key),
+        identity: join.identity,
+        invite: invite.id,
+        reply: join.reply,
+        createdAt: ts
+      })
+    }
+    const role = invite.role || 'member'
+    await admit(ctx, {
+      invite,
+      identity: join.identity,
+      writer: ctx.key,
+      reply: join.reply,
+      role,
+      ts
+    })
+  })
+  // a waiting join, admitted at a role within the invite's and the accepter's
+  add('accept', async (op, ctx) => {
+    const request = await ctx.view.get(requests, { id: op.id })
+    if (!request) return
+    const invite = await ctx.view.get(invites, { id: request.invite })
+    const r = await getSignerRole(ctx.view, ctx.key)
+    const role = op.role || invite?.role || 'member'
+    if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role || 'member', role)) {
       throw CeroError.REFUSED('invite')
     }
-    return ctx.view.delete(invites, op)
+    await ctx.view.delete(requests, { id: op.id })
+    const { identity, reply, createdAt: ts = 0 } = request
+    await admit(ctx, { invite, identity, writer: hid.decode(op.id), reply, role, ts })
+  })
+  // only a join writes a request
+  const joinsOnly = async () => {
+    throw CeroError.REFUSED('request')
+  }
+  add('add-request', joinsOnly)
+  add('set-request', joinsOnly)
+  add('del-request', async (op, ctx) => {
+    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    await ctx.view.delete(requests, op)
   })
 
   const files = `@${ns}/files`
@@ -559,6 +640,7 @@ export function makeDispatcher({
       const tx = view.transaction()
       // host calls survive a discarded transaction, so they replay once the batch commits
       const calls = []
+      const joins = []
       const deferred = Object.create(host)
       deferred.addWriter = (...args) => void calls.push(['addWriter', args])
       deferred.removeWriter = (...args) => void calls.push(['removeWriter', args])
@@ -571,7 +653,8 @@ export function makeDispatcher({
             host: deferred,
             key: node.key,
             dbKey,
-            seed
+            seed,
+            joined: (join) => void joins.push(join)
           })
         } catch (err) {
           // anything but a refusal skips one node, so an older peer never drops a batch its newer neighbour applies
@@ -590,6 +673,7 @@ export function makeDispatcher({
         await tx.flush()
         // before apply() returns: autobee clears host.applying right after, and addWriter reads it
         for (const [fn, args] of calls) await host[fn](...args)
+        for (const join of joins) onjoin(join)
       }
       await view.flush()
     }

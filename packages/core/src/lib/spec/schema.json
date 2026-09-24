@@ -20,7 +20,7 @@
           "version": 1
         },
         {
-          "name": "discoveryKey",
+          "name": "key",
           "required": true,
           "type": "fixed32",
           "version": 1
@@ -46,13 +46,13 @@
       ]
     },
     {
-      "name": "knock",
+      "name": "join",
       "namespace": "cero",
       "compact": false,
-      "flagsPosition": -1,
+      "flagsPosition": 5,
       "fields": [
         {
-          "name": "id",
+          "name": "invite",
           "required": true,
           "type": "fixed32",
           "version": 1
@@ -76,15 +76,15 @@
           "version": 1
         },
         {
-          "name": "writer",
-          "required": true,
-          "type": "fixed32",
-          "version": 1
-        },
-        {
           "name": "signature",
           "required": true,
           "type": "fixed64",
+          "version": 1
+        },
+        {
+          "name": "ts",
+          "required": false,
+          "type": "uint",
           "version": 1
         }
       ]
@@ -257,18 +257,6 @@
           "name": "name",
           "required": false,
           "type": "string",
-          "version": 1
-        },
-        {
-          "name": "role",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "noAccept",
-          "required": false,
-          "type": "bool",
           "version": 1
         }
       ]

@@ -39,9 +39,9 @@ export async function makeTestnet(t, size = 3) {
   return net
 }
 
-// a store like cero() gives it: pairing posts its mailbox cores there
-export async function makeNet(t, testnet, identity = null) {
-  const { store } = await makeStore(t)
+// the store its handle opens from, as cero() gives it: mailbox cores and a join live there
+export async function makeNet(t, testnet, identity = null, store = null) {
+  store ??= (await makeStore(t)).store
   const opts = { bootstrap: testnet.bootstrap, store }
   if (identity) opts.identity = identity
   const net = new Network(opts)
@@ -182,7 +182,7 @@ export async function openHandle(t, { local, ...opts } = {}) {
   const { store } = await makeStore(t)
   const identity = opts.identity || (await Identity.create())
   const testnet = opts.testnet || (await makeTestnet(t))
-  const net = await makeNet(t, testnet)
+  const net = await makeNet(t, testnet, null, store)
   const discovery = net.join(identity.topic)
   await discovery.flush()
   if (local) {

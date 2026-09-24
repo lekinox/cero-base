@@ -165,14 +165,10 @@ test('rpc: client exposes refs lifted from the spec', async (t) => {
   t.is(client.profile.kind, 'single')
 })
 
-test('rpc: create envelope carries role + accept across the wire', (t) => {
+test('rpc: create envelope carries the name across the wire', (t) => {
   bindCodec(spec)
-  const dec = spec.codec.decodeCreate(
-    spec.codec.encodeCreate({ name: 'general', role: 'member', noAccept: true })
-  )
+  const dec = spec.codec.decodeCreate(spec.codec.encodeCreate({ name: 'general' }))
   t.is(dec.name, 'general', 'name preserved')
-  t.is(dec.role, 'member', 'role no longer dropped')
-  t.is(dec.noAccept, true, 'accept:false (noAccept) crosses the wire')
 })
 
 test('rpc: set { upsert: false } is honored over the wire', async (t) => {
@@ -541,7 +537,7 @@ test('rpc: a join that lands after the caller stopped waiting shows up in handle
 test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const { client } = await openPair(t)
   const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
-  const invite = Invite.create({ discoveryKey: random(), address: random() }).toString()
+  const invite = Invite.create({ key: random(), address: random() }).toString()
   const joining = open(client.team, invite).catch((e) => e)
   await waitUntil(async () => ((await client.joining()).length ? true : null))
   t.alike(await client.joining(), [invite])

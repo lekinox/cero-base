@@ -312,13 +312,13 @@ function snapshotStream(src, map) {
  * Open (or create / join / load) a child handle through a `handle`-kind ref.
  *
  * @param {Ref} ref
- * @param {string | { invite?: string, id?: string, name?: string, routes?: any, role?: string, accept?: boolean } | undefined} [arg]
+ * @param {string | { invite?: string, id?: string, name?: string, routes?: any } | undefined} [arg]
  * @returns {Promise<CeroHandle>}  The resolved child handle.
  */
 export function open(ref, arg) {
   if (typeof arg === 'string') return ref.handle._join(arg, ref.name)
   if (arg && typeof arg.invite === 'string') return ref.handle._join(arg.invite, ref.name)
-  if (arg && typeof arg.id === 'string') return ref.handle._load(ref.name, arg.id, arg)
+  if (arg && typeof arg.id === 'string') return ref.handle._load(ref.name, arg.id)
   return ref.handle._create(ref.name, arg)
 }
 

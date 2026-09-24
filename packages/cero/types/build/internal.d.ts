@@ -15,6 +15,9 @@ export declare const defs: {
         files: {
             type: string;
         };
+        requests: {
+            type: string;
+        };
     };
     local: {
         master: {

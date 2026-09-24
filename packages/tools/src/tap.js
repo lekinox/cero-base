@@ -1,3 +1,4 @@
+import b4a from 'b4a'
 import crypto from 'crypto'
 
 import { stats } from './stats.js'
@@ -32,8 +33,7 @@ export function devtools(opts = {}) {
       const sampler = new Sampler(me, opts.sampleInterval ?? 1000)
       const redactor = makeRedactor(opts.redact)
       // any local process can dial the port, so a per-run token gates the tap
-      const token =
-        opts.token === false ? null : opts.token || crypto.randomBytes(16).toString('hex')
+      const token = opts.token === false ? null : opts.token || b4a.toHex(crypto.randomBytes(16))
       const transport =
         opts.transport || loopback({ port: opts.port ?? 9111, host: opts.host, token })
       const offs = []

@@ -217,6 +217,10 @@ export declare class Database extends ReadyResource {
     keyPair: import("../index.js").KeyPair;
     _onerror: (err: Error) => void;
     _seating: boolean;
+    _room: {
+        publicKey: Uint8Array;
+        secretKey: Uint8Array;
+    };
     bee: EpochAutobee;
     dispatcher: {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
@@ -238,6 +242,8 @@ export declare class Database extends ReadyResource {
     constructor(opts?: Partial<DatabaseOpts>);
     /** @returns {Uint8Array | null} discovery key of the underlying bee */
     get discoveryKey(): Uint8Array | null;
+    /** @returns {Uint8Array | null} where a join is sealed to: the address the encryption key owns */
+    get address(): Uint8Array | null;
     /** @returns {Uint8Array | null} this device's local writer key */
     get writerKey(): Uint8Array | null;
     /** @returns {boolean} whether the bee accepts local writes */

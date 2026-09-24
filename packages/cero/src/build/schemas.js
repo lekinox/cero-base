@@ -43,12 +43,13 @@ export const main = {
   },
   invite: {
     id: required(string),
-    wrapped: required(bytes),
     role: required(string),
     expires: int,
     reuse: bool,
     createdAt: int,
-    index: uint
+    index: uint,
+    // its joins wait for a member to accept them
+    confirm: bool
   },
   handle: {
     id: required(string),
@@ -81,6 +82,23 @@ export const main = {
     createdAt: int,
     commit: bytes,
     stamp: uint
+  },
+  // appended by the joiner's own writer core, sealed to the database's address
+  join: {
+    box: required(bytes)
+  },
+  accept: {
+    id: required(string),
+    role: string
+  },
+  // a join on a confirm invite, waiting for a member: `id` is the joiner's writer
+  request: {
+    id: required(string),
+    identity: required(bytes),
+    invite: required(string),
+    reply: required(bytes),
+    createdAt: int,
+    index: uint
   }
 }
 
@@ -98,22 +116,20 @@ export const local = {
     secretKey: required(bytes),
     encryptionKey: bytes
   },
-  // a room serving invites, reopened at boot the way the app last opened it
+  // a room with invites, reopened at boot so its joins are answered
   serving: {
     id: required(string),
-    type: required(string),
-    accept: bool,
-    role: string
+    type: required(string)
   },
-  // a join not answered yet: the writer is fixed before the first knock, so a resumed one
-  // hears the reply to an earlier knock
+  // a join not answered yet: the writer is fixed before the join is written, so a resumed one
+  // hears the reply to it
   join: {
     id: required(string),
     type: required(string),
     invite: required(string),
     publicKey: required(bytes),
     secretKey: required(bytes),
-    // the reply, once it landed: the join then opens the room without knocking again
+    // the reply, once it landed: the join then opens the room without joining again
     key: bytes,
     encryptionKey: bytes,
     epochs: bytes
@@ -168,7 +184,8 @@ export const rpc = {
     // ms, or a duration like '12h'
     ttl: string,
     reuse: bool,
-    data: bytes
+    data: bytes,
+    confirm: bool
   },
   'req-revoke': {
     handle: required(string),

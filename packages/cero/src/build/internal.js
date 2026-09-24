@@ -9,7 +9,8 @@ export const defs = {
     devices: { type: 'device' },
     invites: { type: 'invite' },
     handles: { type: 'handle' },
-    files: { type: 'file' }
+    files: { type: 'file' },
+    requests: { type: 'request' }
   },
   local: {
     master: { type: 'master', kind: 'single' },
@@ -88,7 +89,9 @@ export function dispatches(ns) {
       { name: `add-${type}`, requestType: `@${ns}/${type}` },
       { name: `set-${type}`, requestType: `@${ns}/${type}` },
       { name: `del-${type}`, requestType: `@${ns}/del-by-id` }
-    ])
+    ]),
+    { name: 'join', requestType: `@${ns}/join` },
+    { name: 'accept', requestType: `@${ns}/accept` }
   ]
 }
 

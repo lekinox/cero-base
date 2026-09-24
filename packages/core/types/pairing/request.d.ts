@@ -4,12 +4,12 @@ export declare const Response: {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
-        id: any;
+        invite: any;
         reply: any;
         proof: any;
         identity: any;
-        writer: any;
         signature: any;
+        ts: any;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -48,8 +48,6 @@ export declare const Response: {
     decode(state: any): {
         id: any;
         name: any;
-        role: any;
-        noAccept: boolean;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -69,25 +67,21 @@ export type RequestOpts = {
      */
     pairing: import('./index.js').Pairing;
     /**
-     * Invite the joiner knocked with.
+     * The record of the invite the joiner used.
      */
-    invite: import('./index.js').Served;
+    invite: {
+        id: string;
+        role: string;
+        expires?: number;
+    };
     /**
-     * The joiner's reply address.
+     * The waiting join, as the database keeps it.
      */
-    reply: Uint8Array;
-    /**
-     * The joiner's identity key.
-     */
-    identity: Uint8Array;
-    /**
-     * The joiner's writer key in the database.
-     */
-    writer: Uint8Array;
-    /**
-     * Called once when the request is accepted or denied.
-     */
-    onsettle: () => unknown;
+    row: {
+        id: string;
+        identity: Uint8Array;
+        reply: Uint8Array;
+    };
 };
 export type AcceptOpts = {
     /**
@@ -98,31 +92,31 @@ export type AcceptOpts = {
 /**
  * @typedef {object} RequestOpts
  * @property {import('./index.js').Pairing} pairing                  Owning Pairing instance.
- * @property {import('./index.js').Served} invite                    Invite the joiner knocked with.
- * @property {Uint8Array} reply                                      The joiner's reply address.
- * @property {Uint8Array} identity                                   The joiner's identity key.
- * @property {Uint8Array} writer                                     The joiner's writer key in the database.
- * @property {() => unknown} onsettle                                Called once when the request is accepted or denied.
+ * @property {{ id: string, role: string, expires?: number }} invite  The record of the invite the joiner used.
+ * @property {{ id: string, identity: Uint8Array, reply: Uint8Array }} row  The waiting join, as the database keeps it.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                                         Role granted: the invite's by default, at most the invite's.
  */
 /**
- * A joiner's knock, waiting to be accepted or denied.
+ * A join on a `confirm` invite, waiting in the database for a member to accept or deny it.
  */
 export declare class Request {
     pairing: import("./index.js").Pairing;
-    _replyTo: Uint8Array<ArrayBufferLike>;
-    _settled: boolean;
-    _onsettle: () => unknown;
-    invite: import("./index.js").Served;
+    invite: {
+        id: string;
+        role: string;
+        expires?: number;
+    };
+    id: string;
     identity: Uint8Array<ArrayBufferLike>;
-    writer: Uint8Array<ArrayBufferLike>;
+    writer: any;
+    _reply: Uint8Array<ArrayBufferLike>;
+    _settled: boolean;
     /** @param {RequestOpts} opts */
-    constructor(opts: RequestOpts);
+    constructor({ pairing, invite, row }: RequestOpts);
     /**
-     * Admit the joiner, then send it the database's keys and epochs, so it reads the history from
-     * before it joined. The keys go out only once the admission landed. Idempotent.
+     * Admit the joiner. Every device of an inviter then replies with the keys. Idempotent.
      *
      * @param {AcceptOpts} [opts]
      * @returns {Promise<void>}
@@ -135,5 +129,4 @@ export declare class Request {
      * @returns {Promise<void>}
      */
     deny(reason?: string): Promise<void>;
-    _respond(envelope: any): Promise<void>;
 }

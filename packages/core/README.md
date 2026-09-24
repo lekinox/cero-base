@@ -126,7 +126,7 @@ await mailbox.send(address, message)
 
 ## Pairing
 
-Invites over mailboxes. A database's `Pairing` serves its invites, `Pairing.join` knocks with one.
+Invites into a database. The joiner writes one signed `join` op into its own writer core, and apply admits it: no member has to accept. A `confirm` invite waits for one.
 
 ```js
 import { Pairing } from '@cero-base/core'
@@ -134,10 +134,16 @@ import { Pairing } from '@cero-base/core'
 // a member
 const pairing = new Pairing({ mailbox, db })
 const invite = await pairing.invite({ role: 'member', ttl: '2d' })
-pairing.on('candidate', (request) => request.accept())
 
 // the joiner
-const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, { identity })
+const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, {
+  identity,
+  spec
+})
+
+// a join that waits for a member
+const gated = await pairing.invite({ confirm: true })
+pairing.on('candidate', (request) => request.accept())
 ```
 
 ## RPC
@@ -222,7 +228,7 @@ Pairing-specific:
 | ---------------- | --------------------------------------------------- | ------------ |
 | `INVALID_INVITE` | Invite string is malformed or of an unknown version | —            |
 | `EXPIRED`        | Invite past its `ttl`                               | —            |
-| `DENIED`         | Host rejected the candidate                         | `reason`     |
+| `DENIED`         | A member denied the join                            | `reason`     |
 | `NETWORK_ERROR`  | Underlying swarm/mailbox failure                    | —            |
 
 Every factory produces a `CeroError` with `name === 'CeroError'`, `isCeroError === true`, the listed `.code`, and (where applicable) the extra fields above. Pattern-match on `.code`, not on the message.

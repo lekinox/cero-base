@@ -41,7 +41,7 @@ test('invites: a member cannot mint an invite above its own rank', async (t) => 
   t.ok(await b.room.invite({ role: 'member' }), 'its own rank is fine')
 })
 
-test('invites: a member cannot revoke — an owner can, and every replica stops serving', async (t) => {
+test('invites: a member cannot revoke — an owner can, and every replica drops it', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
@@ -53,17 +53,16 @@ test('invites: a member cannot revoke — an owner can, and every replica stops 
   const rows = async (h) => (await get(h.invites)).data.length
   t.is(await rows(room), 1, 'one live invite')
 
-  // refused before anything is revoked locally — otherwise b would stop serving
-  // it while every other replica kept doing so
+  // refused before anything reaches the log
   await t.exception(b.room.revoke(inv), /remove permission/i, 'a member is refused')
   t.is(await rows(room), 1, 'the invite row is untouched')
 
   t.ok(await room.revoke(inv), 'the owner revokes it')
   await waitUntil(async () => ((await rows(b.room)) === 0 ? true : null))
-  t.is(await rows(b.room), 0, "and the member's replica stops serving it")
+  t.is(await rows(b.room), 0, "and the member's replica drops it")
 })
 
-test('invites: survive a close/reopen — served by a fresh handle', async (t) => {
+test('invites: survive a close/reopen — answered by a fresh handle', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
@@ -73,8 +72,7 @@ test('invites: survive a close/reopen — served by a fresh handle', async (t) =
   const roomId = room.id
   await room.close()
 
-  // fresh handle, fresh Pairing, empty in-memory invite map — the invite must
-  // come back from the persisted row
+  // fresh handle, fresh Pairing: the invite comes back from its row
   const reopened = await open(a.me.team, { id: roomId })
   t.teardown(() => reopened.close().catch(() => {}))
 
@@ -90,7 +88,7 @@ test('invites: survive a close/reopen — served by a fresh handle', async (t) =
   t.pass('consumed single-use invite dropped from the collection')
 })
 
-test('invites: any member replica serves an invite after the minter goes offline', async (t) => {
+test('invites: any member replica answers an invite after the minter goes offline', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
@@ -101,17 +99,17 @@ test('invites: any member replica serves an invite after the minter goes offline
   await waitForConnection(a.net)
 
   const invite2 = await room.invite()
-  // the persisted row must land in B's replica AND its served set before A leaves
-  await waitUntil(() => (b.room.pair._invites.size >= 1 ? true : null))
+  // the invite must land in B's replica before A leaves
+  await waitUntil(() => (b.room.pair.serving ? true : null))
   await room.close()
 
   const c = await joinAsRoot(t, testnet, invite2)
   t.ok(c.room, 'joiner admitted while the minting device is offline')
   await memberCount(c.room, 3)
-  t.pass('member B served an invite it never minted')
+  t.pass('member B answered an invite it never minted')
 })
 
-test('invites: revoke propagates — other members stop serving', async (t) => {
+test('invites: revoke propagates — other members stop answering', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
@@ -122,15 +120,15 @@ test('invites: revoke propagates — other members stop serving', async (t) => {
   await waitForConnection(a.net)
 
   const invite3 = await room.invite()
-  await waitUntil(() => (b.room.pair._invites.size >= 1 ? true : null))
+  await waitUntil(() => (b.room.pair.serving ? true : null))
 
   t.ok(room.revoke(invite3), 'revoke found the live invite')
   await waitUntil(async () => {
     const { data } = await get(b.room.invites)
     return data.length === 0 ? true : null
   })
-  await waitUntil(() => (b.room.pair._invites.size === 0 ? true : null))
-  t.pass('replicated revoke cleared the served set on the other member')
+  await waitUntil(() => (b.room.pair.serving ? null : true))
+  t.pass('the other member no longer answers it')
 })
 
 test('invites: reuse admits multiple joiners and its row survives', async (t) => {
@@ -149,7 +147,7 @@ test('invites: reuse admits multiple joiners and its row survives', async (t) =>
   t.is(rows.length, 1, 'reusable invite row still present after two admissions')
 })
 
-test('invites: after a removal and a rotation, old and new invites admit, and the removed member serves none', async (t) => {
+test('invites: after a removal and a rotation, old and new invites admit, and the removed member answers none', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
@@ -164,10 +162,10 @@ test('invites: after a removal and a rotation, old and new invites admit, and th
   await rotate(room)
   const after = await room.invite()
 
-  // the new invite's row, secret included, is sealed under an epoch the removed member never learns
+  // the new invite's row is sealed under an epoch the removed member never learns
   t.is(b.room.store.keyring.entropy(room.store.keyring.current), null)
-  await waitUntil(() => (b.room.pair._invites.size === 0 ? true : null))
-  t.pass('the removed member stops serving invites')
+  await waitUntil(() => (b.room.pair.serving ? null : true))
+  t.pass('the removed member stops answering joins')
 
   await joinAsRoot(t, testnet, before)
   await joinAsRoot(t, testnet, after)

@@ -102,9 +102,8 @@ deterministic, and registered in the process that owns the data before any op
 applies. See [Hooks](data.md#hooks).
 
 `cero.open(ref, arg)` dispatches on `arg`: a string or `{ invite }` joins, `{ id }`
-loads an existing child, anything else creates one. Create options are `name`,
-`routes`, `role` (what auto-accepted candidates get) and `accept: false`, which
-turns auto-accept off so you answer `handle.pair` yourself.
+loads an existing child, anything else creates one. Create options are `name`
+and `routes`.
 
 In a query `q`, any key that is not reserved is an equality filter on that field.
 The reserved keys are `gt`, `gte`, `lt`, `lte` (bounds on `id`), `reverse`,
@@ -140,9 +139,9 @@ The root handle and every child handle are the same class.
 | `store`                   | The underlying `Database`. `store.tx(fn)` batches writes atomically.     |
 | `signal` / `suspended`    | An `AbortSignal` that fires on close, and whether the root is suspended. |
 | `blobs` / `fileServer`    | This handle's blob store, and the identity's file server.                |
-| `invite(opts)`            | Mint an invite. `{ role, ttl, reuse, data }` , resolves to a z32 string. |
+| `invite(opts)`            | Mint an invite. `{ role, ttl, reuse, confirm, data }`, a z32 string.     |
 | `revoke(invite)`          | Drop an invite everywhere. `true` if it was found.                       |
-| `accept(candidate, opts)` | Admit a candidate. `{ role }`. Only needed with `accept: false`.         |
+| `accept(candidate, opts)` | Admit a join on a `confirm` invite. `{ role }`.                          |
 | `leave()`                 | Drop membership of a child handle and close it.                          |
 | `close()`                 | Close this handle and everything under it.                               |
 | `suspend()` / `resume()`  | Pause and restore networking and storage. Root only, idempotent.         |

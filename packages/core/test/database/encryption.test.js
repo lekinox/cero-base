@@ -99,12 +99,12 @@ test('canary: epoch derivation matches the golden vector (independent of shared 
   auto.keyring.add(1, crypto.hash(b4a.from('epoch-1-secret')), 1)
   const keys = await new WriterEncryption(auto).getKeys(1, fakeCtx())
   t.is(
-    b4a.toString(keys.block, 'hex'),
+    b4a.toHex(keys.block),
     '4d309cddcdb9be0044267b0957b5cb1bbbb9fb241f55ee52d6bf4398205f9448',
     'block key'
   )
   t.is(
-    b4a.toString(keys.hash, 'hex'),
+    b4a.toHex(keys.hash),
     'de72c857c3fc024e858e07d0ff3d13b0490d487b436c3e7b80bbb53f41afd957',
     'hash key'
   )

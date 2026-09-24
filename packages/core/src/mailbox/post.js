@@ -6,15 +6,16 @@ import b4a from 'b4a'
  * One sealed message on its way to an address: written to a fresh core, announced to peers
  * receiving at the address, and deposited on `mirrors` for an owner who is offline.
  * `delivered` resolves on the first read, by the owner or by a mirror holding it for them.
+ * Given a `core` instead, it announces that core as it is.
  */
 export class Post extends ReadyResource {
   /**
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} address
-   * @param {Uint8Array} message
-   * @param {{ mirrors?: Uint8Array[] }} [opts]
+   * @param {Uint8Array | null} message
+   * @param {{ mirrors?: Uint8Array[], core?: any }} [opts]
    */
-  constructor(network, address, message, { mirrors = [] } = {}) {
+  constructor(network, address, message, { mirrors = [], core = null } = {}) {
     super()
     this.network = network
     this.address = address
@@ -23,18 +24,18 @@ export class Post extends ReadyResource {
     this.delivered = new Promise((resolve) => {
       this._ondelivered = resolve
     })
-    this._core = null
+    this._core = core
     this._session = null
     this._discovery = null
   }
 
   async _open() {
     const { network, address } = this
-    const core = network.store.get({ name: b4a.toHex(crypto.randomBytes(32)) })
+    const core = this._core || network.store.get({ name: b4a.toHex(crypto.randomBytes(32)) })
     this._core = core
     await core.ready()
     core.once('upload', () => this._ondelivered())
-    await core.append(crypto.encrypt(this.message, address))
+    if (this.message) await core.append(crypto.encrypt(this.message, address))
 
     const wakeup = [{ key: core.key, length: core.length }]
     const session = network.wakeup.session(address, {

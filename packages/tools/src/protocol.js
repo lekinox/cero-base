@@ -5,7 +5,7 @@ const BYTES = '$b'
 const MAX_FRAME = 16 * 1024 * 1024
 
 function toWire(v) {
-  if (b4a.isBuffer(v)) return { [BYTES]: b4a.toString(v, 'hex') }
+  if (b4a.isBuffer(v)) return { [BYTES]: b4a.toHex(v) }
   if (Array.isArray(v)) return v.map(toWire)
   if (v && typeof v === 'object') {
     const o = {}

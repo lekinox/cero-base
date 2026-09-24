@@ -1,4 +1,3 @@
-import Hypercore from 'hypercore'
 import hid from 'hypercore-id-encoding'
 import c from 'compact-encoding'
 
@@ -15,35 +14,30 @@ export const Response = getEncoding('@cero/confirm')
 /**
  * @typedef {object} RequestOpts
  * @property {import('./index.js').Pairing} pairing                  Owning Pairing instance.
- * @property {import('./index.js').Served} invite                    Invite the joiner knocked with.
- * @property {Uint8Array} reply                                      The joiner's reply address.
- * @property {Uint8Array} identity                                   The joiner's identity key.
- * @property {Uint8Array} writer                                     The joiner's writer key in the database.
- * @property {() => unknown} onsettle                                Called once when the request is accepted or denied.
+ * @property {{ id: string, role: string, expires?: number }} invite  The record of the invite the joiner used.
+ * @property {{ id: string, identity: Uint8Array, reply: Uint8Array }} row  The waiting join, as the database keeps it.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                                         Role granted: the invite's by default, at most the invite's.
  */
 
 /**
- * A joiner's knock, waiting to be accepted or denied.
+ * A join on a `confirm` invite, waiting in the database for a member to accept or deny it.
  */
 export class Request {
   /** @param {RequestOpts} opts */
-  constructor(opts) {
-    this.pairing = opts.pairing
-    this._replyTo = opts.reply
+  constructor({ pairing, invite, row }) {
+    this.pairing = pairing
+    this.invite = invite
+    this.id = row.id
+    this.identity = row.identity
+    this.writer = hid.decode(row.id)
+    this._reply = row.reply
     this._settled = false
-    this._onsettle = opts.onsettle
-
-    this.invite = opts.invite
-    this.identity = opts.identity
-    this.writer = opts.writer
   }
 
   /**
-   * Admit the joiner, then send it the database's keys and epochs, so it reads the history from
-   * before it joined. The keys go out only once the admission landed. Idempotent.
+   * Admit the joiner. Every device of an inviter then replies with the keys. Idempotent.
    *
    * @param {AcceptOpts} [opts]
    * @returns {Promise<void>}
@@ -51,29 +45,16 @@ export class Request {
   async accept({ role } = {}) {
     if (this._settled) return
     const { invite } = this
-    if (invite.expired) throw CeroError.EXPIRED()
-    // after its first use an invite admits at most member: a second request racing a single-use
-    // one does not get the rank the first one got
-    const cap = invite.used && !grants('member', invite.role || 'member') ? 'member' : invite.role
-    role = role || cap || 'member'
-    if (cap && !grants(cap, role)) {
-      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${cap}'`)
-    }
-    // checked here, the cap against our own rank is enforced at apply
+    if (invite.expires > 0 && Date.now() > invite.expires) throw CeroError.EXPIRED()
+    role = role || invite.role || 'member'
     if (!isRank(role)) {
       throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
     }
-    invite.used = true
-
-    const { db } = this.pairing
-    await admit(db, { identity: this.identity, writer: this.writer, role })
-    await this._respond({
-      status: STATUS_ACCEPTED,
-      reason: '',
-      key: db.key,
-      encryptionKey: db.encryptionKey,
-      epochs: db.keyring.all()
-    })
+    if (!grants(invite.role || 'member', role)) {
+      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
+    }
+    this._settled = true
+    await this.pairing.db.call('accept', { id: this.id, role })
   }
 
   /**
@@ -84,30 +65,10 @@ export class Request {
    */
   async deny(reason = '') {
     if (this._settled) return
-    await this._respond({
-      status: STATUS_DENIED,
-      reason,
-      key: null,
-      encryptionKey: null,
-      epochs: null
-    })
-  }
-
-  // the reply is kept before the invite is consumed: if we die in between, the invite is still
-  // live and the joiner's next knock is answered again
-  async _respond(envelope) {
     this._settled = true
-    await this.pairing.mailbox.send(this._replyTo, c.encode(Response, envelope))
-    await this._onsettle()
+    const { db, mailbox } = this.pairing
+    await db.call('del-request', { id: this.id })
+    const denied = { status: STATUS_DENIED, reason, key: null, encryptionKey: null, epochs: null }
+    await mailbox.send(this._reply, c.encode(Response, denied))
   }
-}
-
-// the member record only: the joiner's device claims its own seat once it sees it
-async function admit(db, { identity, writer, role }) {
-  const ts = Date.now()
-  const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer }] })
-  const member = { id: hid.encode(identity), key, role, createdAt: ts, updatedAt: ts }
-  // already a member (a knock delivered again, a fresh device of theirs): only the reply goes out
-  if ((await db.get('members', member.id)).data) return
-  await db.call('add-member', member)
 }

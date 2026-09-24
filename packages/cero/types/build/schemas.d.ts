@@ -36,12 +36,12 @@ export declare const main: {
     };
     invite: {
         id: import("@cero-base/core").Prim;
-        wrapped: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
         reuse: import("@cero-base/core").Prim;
         createdAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+        confirm: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;
@@ -75,6 +75,21 @@ export declare const main: {
         commit: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
     };
+    join: {
+        box: import("@cero-base/core").Prim;
+    };
+    accept: {
+        id: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
+    };
+    request: {
+        id: import("@cero-base/core").Prim;
+        identity: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        reply: import("@cero-base/core").Prim;
+        createdAt: import("@cero-base/core").Prim;
+        index: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {
@@ -93,8 +108,6 @@ export declare const local: {
     serving: {
         id: import("@cero-base/core").Prim;
         type: import("@cero-base/core").Prim;
-        accept: import("@cero-base/core").Prim;
-        role: import("@cero-base/core").Prim;
     };
     join: {
         id: import("@cero-base/core").Prim;
@@ -153,6 +166,7 @@ export declare const rpc: {
         ttl: import("@cero-base/core").Prim;
         reuse: import("@cero-base/core").Prim;
         data: import("@cero-base/core").Prim;
+        confirm: import("@cero-base/core").Prim;
     };
     'req-revoke': {
         handle: import("@cero-base/core").Prim;

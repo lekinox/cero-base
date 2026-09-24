@@ -9,26 +9,27 @@ import { CeroError } from '@cero-base/core/errors'
 import { epochEntries } from '@cero-base/core/database/encryption'
 
 /**
- * One handle being joined. It knocks with the latest invite and waits as long as it takes: the
+ * One handle being joined. It joins with the latest invite and waits as long as it takes: the
  * caller's timeout only ends the caller's wait. What it learns is saved as it goes, the writer
- * before the first knock and the keys once the reply lands, so a join resumed after a restart
+ * before the join is written and the keys once the reply lands, so a join resumed after a restart
  * picks up where it stopped. It ends admitted, denied, expired or cancelled; a close only pauses
  * it. How it ends reaches the caller, or `onerror` once nobody waits.
  */
 export class Join {
   /**
    * @param {import('./index.js').Handle} root
-   * @param {{ type: string, discoveryKey: Uint8Array, routes?: Record<string, Function>, onend: () => void }} opts
+   * @param {{ type: string, spec: any, discoveryKey: Uint8Array, routes?: Record<string, Function>, onend: () => void }} opts
    */
-  constructor(root, { type, discoveryKey, routes, onend }) {
+  constructor(root, { type, spec, discoveryKey, routes, onend }) {
     this.root = root
     this.type = type
+    this.spec = spec
     this.id = b4a.toHex(discoveryKey)
     this.routes = routes
     this.invite = null
     this.waiting = 0
     this.cancelled = false
-    this._knocking = null // aborts the knock in flight
+    this._running = null // aborts the attempt in flight
     this._row = null
     this.done = new Promise((resolve, reject) => {
       this._resolve = resolve
@@ -39,29 +40,29 @@ export class Join {
   }
 
   /**
-   * Knock with `invite`, taking over from an older knock: the writer stays, so a reply to the
+   * Join with `invite`, taking over from an older attempt: the writer stays, so a reply to the
    * older one still lands.
    *
    * @param {string} invite
    */
-  async knock(invite) {
+  async start(invite) {
     this.invite = invite
-    this._knocking?.abort()
-    const knocking = new AbortController()
-    this._knocking = knocking
+    this._running?.abort()
+    const running = new AbortController()
+    this._running = running
     const nearby = this.root.bluetooth?.announce(invite)
     try {
       const row = await this._save({ invite })
       const writer = { publicKey: row.publicKey, secretKey: row.secretKey }
       const { mailbox, identity } = this.root
-      const opts = { identity, writer, timeout: 0, signal: knocking.signal }
+      const opts = { identity, spec: this.spec, writer, timeout: 0, signal: running.signal }
       const reply = row.key
         ? unpack(row)
         : await this._keep(await Pairing.join(mailbox, invite, opts))
       this._end(this._resolve, await this.root._enter(this.type, reply, this.routes))
       await this._forget()
     } catch (err) {
-      if (knocking !== this._knocking) return
+      if (running !== this._running) return
       // a close pauses the join, anything else ends it
       if (err.code !== 'CLOSED' || this.cancelled) await this._forget()
       if (err.code !== 'CLOSED' && !this.waiting) this.root._onerror(err)
@@ -72,13 +73,13 @@ export class Join {
   }
 
   close() {
-    this._knocking?.abort()
+    this._running?.abort()
   }
 
-  // ends it for good: the knock forgets its row as it unwinds, so no restart resumes it
+  // ends it for good: the attempt forgets its row as it unwinds, so no restart resumes it
   async cancel() {
     this.cancelled = true
-    this._knocking?.abort()
+    this._running?.abort()
     await this.done.catch(safetyCatch)
   }
 
@@ -91,7 +92,7 @@ export class Join {
     return this._row
   }
 
-  // the reply, kept so a restart opens the handle without knocking again
+  // the reply, kept so a restart opens the handle without joining again
   async _keep(reply) {
     const { key, encryptionKey, epochs } = reply
     await this._save({ key, encryptionKey, epochs: c.encode(epochEntries, epochs) })

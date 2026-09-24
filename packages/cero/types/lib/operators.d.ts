@@ -133,7 +133,7 @@ export declare function changes(ref: any, q: any, opts: any): any;
  * Open (or create / join / load) a child handle through a `handle`-kind ref.
  *
  * @param {Ref} ref
- * @param {string | { invite?: string, id?: string, name?: string, routes?: any, role?: string, accept?: boolean } | undefined} [arg]
+ * @param {string | { invite?: string, id?: string, name?: string, routes?: any } | undefined} [arg]
  * @returns {Promise<CeroHandle>}  The resolved child handle.
  */
 export declare function open(ref: Ref, arg?: string | {
@@ -141,8 +141,6 @@ export declare function open(ref: Ref, arg?: string | {
     id?: string;
     name?: string;
     routes?: any;
-    role?: string;
-    accept?: boolean;
 } | undefined): Promise<CeroHandle>;
 /**
  * Rotate a handle's encryption epoch. A fresh secret is sealed to every current member and

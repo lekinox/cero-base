@@ -350,12 +350,13 @@ const operators = {
    * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async invite({ role, ttl, reuse, data } = {}) {
+  async invite({ role, ttl, reuse, confirm, data } = {}) {
     const { invite } = await this.rpc.invite({
       handle: this.id,
       role: role || '',
       ttl: ttl ? String(ttl) : '',
       reuse: reuse === true,
+      confirm: confirm === true,
       data: data || null
     })
     return invite
@@ -524,11 +525,10 @@ export class Client extends RPCClient {
    */
   async _create(type, opts = {}) {
     // routes are functions and cannot cross the wire
-    const wire = { ...opts, noAccept: opts.accept === false || undefined }
     const stub = await this.rpc.addHandle({
       ref: type,
       handle: this.id,
-      data: this.spec.codec.encodeCreate(wire)
+      data: this.spec.codec.encodeCreate({ name: opts.name })
     })
     return new Handle(this, stub.id, stub.type, stub.name || null)
   }

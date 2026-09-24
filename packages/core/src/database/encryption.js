@@ -39,7 +39,7 @@ AutobeeEncryption.prototype.getKeys = async function (id, ctx) {
   if (!entropy) {
     // a writer autobee freezes over this throw and only wakeup() re-adds it
     if (ctx?.key && this.auto?._epochStalled) {
-      this.auto._epochStalled.add(b4a.toString(ctx.key, 'hex'))
+      this.auto._epochStalled.add(b4a.toHex(ctx.key))
       this.auto._scheduleEpochRetry()
     }
     throw CeroError.UNKNOWN_EPOCH(id)

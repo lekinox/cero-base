@@ -82,8 +82,6 @@ export type HandleOpts = {
 export type CreateChildOpts = {
     name?: string | null;
     routes?: Record<string, Function>;
-    role?: string;
-    accept?: boolean;
 };
 export type JoinChildOpts = {
     routes?: Record<string, Function>;
@@ -152,8 +150,6 @@ export type CeroHandle = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @typedef {object} CreateChildOpts
  * @property {string | null} [name]
  * @property {Record<string, Function>} [routes]
- * @property {string} [role]
- * @property {boolean} [accept]
  *
  * @typedef {object} JoinChildOpts
  * @property {Record<string, Function>} [routes]
@@ -371,7 +367,7 @@ export declare class Handle extends ReadyResource {
      * @param {CreateChildOpts} [opts]
      * @returns {Promise<Handle>}
      */
-    _create(type: string, { name, routes, role, accept }?: CreateChildOpts): Promise<Handle>;
+    _create(type: string, { name, routes }?: CreateChildOpts): Promise<Handle>;
     /**
      * Join a child handle by invite. The caller waits up to `timeout`; the join itself goes on
      * until it is admitted, denied or expired, across restarts, and the handle then arrives
@@ -383,7 +379,7 @@ export declare class Handle extends ReadyResource {
      * @returns {Promise<Handle>}
      */
     _join(invite: string, type: string, { routes, timeout }?: JoinChildOpts): Promise<Handle>;
-    _knock(invite: any, type: any, routes: any): any;
+    _start(invite: any, type: any, routes: any): any;
     /**
      * The joins no member answered yet. Each is resumed on every boot until it is admitted,
      * denied, expired or cancelled.
@@ -417,7 +413,7 @@ export declare class Handle extends ReadyResource {
      * @param {string} id
      * @returns {Promise<Handle>}
      */
-    _load(type: string, id: string, opts: any): Promise<Handle>;
+    _load(type: string, id: string): Promise<Handle>;
     /**
      * Reconstruct a child handle by id. Reuses the stored writer keypair if
      * available; otherwise generates a fresh one and claims writer capability.
@@ -426,18 +422,13 @@ export declare class Handle extends ReadyResource {
      * @param {string} id
      * @returns {Promise<Handle>}
      */
-    _reopen(type: string, id: string, opts: any): Promise<Handle>;
+    _reopen(type: string, id: string): Promise<Handle>;
     _suspend(): Promise<void>;
     _resume(): Promise<void>;
     _adopt(child: any, info: any): void;
     _hookType(op: any, ref: any, fn: any, opts: any): () => void;
-    /**
-     * @param {Handle} child
-     * @param {{ role?: string }} [opts]
-     */
-    _serve(child: Handle): void;
+    _serve(child: any): void;
     _reserve(): Promise<void>;
-    _wireAccept(child: any, { role }?: {}): void;
     /**
      * @param {string} id
      * @param {KeyPair | { publicKey: Uint8Array, secretKey: Uint8Array } | null} keyPair

@@ -67,7 +67,7 @@ test('topic is deterministic per identity', async (t) => {
 test('topic differs for different identities', async (t) => {
   const a = await Identity.create()
   const b = await Identity.create()
-  t.unlike(b4a.toString(a.topic, 'hex'), b4a.toString(b.topic, 'hex'))
+  t.unlike(b4a.toHex(a.topic), b4a.toHex(b.topic))
 })
 
 // ─── sign / verify ────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ test('randomBytes: returns the requested size', (t) => {
 test('randomBytes: returns different bytes on each call', (t) => {
   const a = Identity.randomBytes(32)
   const b = Identity.randomBytes(32)
-  t.unlike(b4a.toString(a, 'hex'), b4a.toString(b, 'hex'))
+  t.unlike(b4a.toHex(a), b4a.toHex(b))
 })
 
 test('randomKeyPair: returns valid ed25519 keypair', (t) => {
@@ -134,7 +134,7 @@ test('randomKeyPair: different on each call', (t) => {
 test('encryptionKey is derived independently from publicKey', async (t) => {
   const me = await Identity.create({ seed: Identity.toSeed(KNOWN_PHRASE) })
   // Encryption key shouldn't equal publicKey
-  t.unlike(b4a.toString(me.publicKey, 'hex'), b4a.toString(me.encryptionKey, 'hex'))
+  t.unlike(b4a.toHex(me.publicKey), b4a.toHex(me.encryptionKey))
   // But it should be deterministic
   const other = await Identity.create({ seed: Identity.toSeed(KNOWN_PHRASE) })
   t.alike(b4a.toBuffer(me.encryptionKey), b4a.toBuffer(other.encryptionKey))
@@ -184,7 +184,7 @@ test('serialization redacts key material', async (t) => {
 
   const shown = id[Symbol.for('nodejs.util.inspect.custom')]()
   t.is(shown, `Identity(${id.id})`, 'inspect shows only the id')
-  t.absent(shown.includes(b4a.toString(id.secretKey, 'hex')), 'no secret bytes in inspect')
+  t.absent(shown.includes(b4a.toHex(id.secretKey)), 'no secret bytes in inspect')
 
   t.ok(b4a.isBuffer(id.secretKey), 'direct property access still works internally')
 })

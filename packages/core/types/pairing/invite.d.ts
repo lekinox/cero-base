@@ -4,15 +4,15 @@ export type InviteFields = {
      */
     expires: number;
     /**
-     * Discovery key of the database the invite opens.
+     * Key of the database the invite opens.
      */
-    discoveryKey: Uint8Array;
+    key: Uint8Array;
     /**
-     * Where a knock is sent.
+     * The database's address: a join is sealed to it.
      */
     address: Uint8Array;
     /**
-     * The invite's secret; its keypair proves a knock.
+     * The invite's secret; its keypair proves a join.
      */
     seed: Uint8Array;
     /**
@@ -23,61 +23,64 @@ export type InviteFields = {
 /**
  * @typedef {object} InviteFields
  * @property {number} expires           Absolute expiry timestamp; `0` means never.
- * @property {Uint8Array} discoveryKey  Discovery key of the database the invite opens.
- * @property {Uint8Array} address       Where a knock is sent.
- * @property {Uint8Array} seed          The invite's secret; its keypair proves a knock.
+ * @property {Uint8Array} key           Key of the database the invite opens.
+ * @property {Uint8Array} address       The database's address: a join is sealed to it.
+ * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 /**
- * An invite: where to knock (its address), the database it opens, and a seed
- * whose keypair proves the knocker holds the invite. Role and expiry are enforced by the member
- * that answers, from its own record; `expires` is here so a joiner fails fast.
+ * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
+ * proves the joiner holds the invite. Role and expiry come from the database's own record;
+ * `expires` is here so a joiner fails fast.
  */
 export declare class Invite {
     version: number;
     expires: number;
-    discoveryKey: Uint8Array<ArrayBufferLike>;
+    key: Uint8Array<ArrayBufferLike>;
     address: Uint8Array<ArrayBufferLike>;
     seed: Uint8Array<ArrayBufferLike>;
     data: Uint8Array<ArrayBufferLike>;
     _str: string;
     _keyPair: any;
     /** @param {InviteFields & { _str?: string }} fields */
-    constructor({ expires, discoveryKey, address, seed, data, _str }: InviteFields & {
+    constructor({ expires, key, address, seed, data, _str }: InviteFields & {
         _str?: string;
     });
     /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */
     get expired(): boolean;
+    /** @returns {Uint8Array} Discovery key of the database the invite opens. */
+    get discoveryKey(): Uint8Array;
     /** @returns {Uint8Array} The invite's id: the public key of its seed's keypair. */
     get id(): Uint8Array;
     /**
-     * Sign a reply address with the invite's key, proving the knock comes from its holder.
+     * Sign a writer with the invite's key, proving the join in that writer's core comes from its
+     * holder.
      *
-     * @param {Uint8Array} reply
+     * @param {Uint8Array} writer
      * @returns {Uint8Array}
      */
-    prove(reply: Uint8Array): Uint8Array;
+    prove(writer: Uint8Array): Uint8Array;
     /** @returns {string} The z32 wire form. */
     toString(): string;
     _pair(): any;
     /**
-     * Whether `proof` is the invite `id`'s signature over `reply`.
+     * Whether `proof` is the invite `id`'s signature over `writer`.
      *
      * @param {Uint8Array} id
-     * @param {Uint8Array} reply
+     * @param {Uint8Array} writer
      * @param {Uint8Array} proof
      * @returns {boolean}
      */
-    static proven(id: Uint8Array, reply: Uint8Array, proof: Uint8Array): boolean;
+    static proven(id: Uint8Array, writer: Uint8Array, proof: Uint8Array): boolean;
     /**
      * A new invite with a fresh seed.
      *
-     * @param {{ ttl?: number | string, discoveryKey: Uint8Array, address: Uint8Array, data?: Uint8Array | null }} opts
+     * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, data?: Uint8Array | null }} opts
      * @returns {Invite}
      */
-    static create({ ttl, discoveryKey, address, data }: {
+    static create({ ttl, key, address, data }: {
         ttl?: number | string;
-        discoveryKey: Uint8Array;
+        key: Uint8Array;
         address: Uint8Array;
         data?: Uint8Array | null;
     }): Invite;

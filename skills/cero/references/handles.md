@@ -47,7 +47,7 @@ const again = await cero.open(me.room, { id: room.id }) // reopen
 | `cero.open(me.room, { id })`     | Reopens one already in your list.  |
 | `cero.open(me.room)`             | Creates an unnamed one.            |
 
-Create options are `{ name, routes, role, accept }`. An unknown handle type
+Create options are `{ name, routes }`. An unknown handle type
 throws `UNKNOWN`. `room.id` is the z32 database key. Handles are isolated:
 `me.messages` and `room.messages` are different collections, and one room's key
 never opens another.
@@ -57,24 +57,24 @@ never opens another.
 `room.invite(opts)` mints a z32 string. It is a child-handle method. Calling it
 on the root throws `INVALID`.
 
-| option  | type               | default | meaning                                                                                                      |
-| ------- | ------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `role`  | `string`           | `''`    | Role granted. Must be a rank, and cannot exceed your own.                                                    |
-| `ttl`   | `number \| string` | `0`     | How long it is valid: ms, or `'12h'`, `'2d'`. `0` never expires.                                             |
-| `reuse` | `boolean`          | `false` | Admit more than one joiner, at most `member`. Otherwise single use.                                          |
-| `data`  | `Uint8Array`       | `null`  | A payload for the joiner, read with `Invite.parse(invite).data` before joining. Unsigned: a hint, not proof. |
+| option    | type               | default | meaning                                                                                                      |
+| --------- | ------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `role`    | `string`           | `''`    | Role granted. Must be a rank, and cannot exceed your own.                                                    |
+| `ttl`     | `number \| string` | `0`     | How long it is valid: ms, or `'12h'`, `'2d'`. `0` never expires.                                             |
+| `reuse`   | `boolean`          | `false` | Admit more than one joiner, at most `member`. Otherwise single use.                                          |
+| `confirm` | `boolean`          | `false` | Its joins wait for a member to accept them. See [Accepting joiners](#accepting-joiners).                     |
+| `data`    | `Uint8Array`       | `null`  | A payload for the joiner, read with `Invite.parse(invite).data` before joining. Unsigned: a hint, not proof. |
 
 ```js
 const invite = await room.invite({ role: 'member', ttl: '1d' })
 ```
 
 Every minted invite is also a row in the room's `invites` collection. The row
-replicates, so any member's replica serves the invite after the minting device
-goes offline, and the invite survives a close and reopen. A device serves its rooms'
-invites whenever it is online, not only while the app has the room open: at boot
-cero reopens every room that still has invites, the way the app last opened it,
-so a gated room stays gated. A single-use row
-disappears everywhere once consumed. A `reuse` row stays.
+replicates, so any member's device answers a join after the minting device goes
+offline, and the invite survives a close and reopen. A device answers its rooms'
+joins whenever it is online, not only while the app has the room open: at boot
+cero reopens every room that still has invites. A single-use row disappears
+everywhere once a join spends it. A `reuse` row stays.
 
 ## Joining
 
@@ -82,7 +82,7 @@ disappears everywhere once consumed. A `reuse` row stays.
 const room = await cero.open(me.room, { invite })
 await cero.put(room.messages, { text: 'hi, I am in' })
 
-await room.revoke(invite) // on the host, stop serving it
+await room.revoke(invite) // on the host: it admits nobody from now on
 ```
 
 `cero.open(me.room, invite)` on the joiner's side pairs and returns the room. It
@@ -100,8 +100,8 @@ denied, expired or cancelled, and once nobody waits on it, a denial or expiry
 reaches `onerror`. A fresh invite for the same room takes over from the old one.
 
 An admin or owner invite hands its rank out once. A reusable invite admits at most
-`member`, and after a single-use invite's first accept, any request racing it
-joins as `member`.
+`member`, and the first join to land spends a single-use invite, so one racing it
+admits nobody.
 
 ```js
 const pending = await me.joining() // the invites still waiting for an answer
@@ -109,9 +109,8 @@ await me.cancel(invite) // stop for good, it is not resumed on the next boot
 ```
 
 `room.revoke(invite)` returns `true` the first time and `false` afterwards. It
-needs the remove permission, and refuses a plain member before dropping anything
-locally, otherwise that replica alone would stop serving an invite every other
-replica kept serving.
+needs the remove permission, and refuses a plain member before anything reaches
+the log. It also drops the joins still waiting on a `confirm` invite.
 
 ## Roles
 
@@ -165,16 +164,15 @@ appended under an epoch they can still read.
 
 ## Accepting joiners
 
-A created or reopened room auto-accepts candidates by calling
-`candidate.accept({ role })` for you, which `room.accept(candidate)` also does. `role` defaults to the
-invite's role, then `'member'`. `accept` refuses when the invite has expired,
-the role exceeds the invite's role, or the role is not a rank, and it hands over
-the keys only once the admission landed.
+The room admits a join itself: the joiner writes it into its own core, signed
+with the invite, and any member device with the room open applies it. Nobody has
+to accept.
 
-To gate joins yourself, open with `accept: false` and handle the candidate.
+To approve joins yourself, mint the invite with `confirm: true`. Its joins wait
+as candidates on every member device that can invite.
 
 ```js
-const room = await cero.open(me.room, { name: 'gated', accept: false })
+const invite = await room.invite({ role: 'member', confirm: true })
 
 const review = async (cand) => {
   if (await approve(cand)) await room.accept(cand)
@@ -185,11 +183,12 @@ for (const cand of room.pair.pending) review(cand)
 room.pair.on('candidate', review)
 ```
 
-A request stays pending until you accept or deny it, across restarts: the
-joiner may be long gone, the reply waits in your mailbox until it comes back.
-
-The gate does not re-arm behind your back. Reopening by id with `accept: false`
-stays gated. Errors thrown by an auto-accept go to `onerror`, not to the caller.
+`room.accept(candidate, { role })` admits it. `role` defaults to the invite's
+role and cannot exceed it, nor your own rank. `accept` refuses when the invite
+has expired or the role is not a rank. A request stays pending until a member
+accepts or denies it, across restarts: it lives in the room. The joiner may be
+long gone; the reply waits in your mailbox until it comes back. Another member
+settling it takes it out of `room.pair.pending` here too.
 
 ## Listing your handles
 

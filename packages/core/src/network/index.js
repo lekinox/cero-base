@@ -242,7 +242,7 @@ export class Network extends ReadyResource {
    * @returns {object | null}
    */
   getInfo(key) {
-    const hex = typeof key === 'string' ? key : b4a.toString(key, 'hex')
+    const hex = typeof key === 'string' ? key : b4a.toHex(key)
     return this._peerInfo.get(hex) ?? null
   }
 
@@ -374,7 +374,7 @@ export class Network extends ReadyResource {
           encoding: c.json,
           onmessage: (info) => {
             if (!info || typeof info !== 'object') return
-            const hex = b4a.toString(conn.remotePublicKey, 'hex')
+            const hex = b4a.toHex(conn.remotePublicKey)
             this._peerInfo.set(hex, info)
             this.emit('peer-info', hex, info)
           }

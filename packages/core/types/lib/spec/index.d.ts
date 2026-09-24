@@ -7,12 +7,12 @@ declare function getEncoding(name: any): {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
-        id: any;
+        invite: any;
         reply: any;
         proof: any;
         identity: any;
-        writer: any;
         signature: any;
+        ts: any;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -51,8 +51,6 @@ declare function getEncoding(name: any): {
     decode(state: any): {
         id: any;
         name: any;
-        role: any;
-        noAccept: boolean;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -70,12 +68,12 @@ declare function getStruct(name: any, v?: number): {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
-        id: any;
+        invite: any;
         reply: any;
         proof: any;
         identity: any;
-        writer: any;
         signature: any;
+        ts: any;
     } | {
         epoch: any;
         stamp: any;
@@ -94,8 +92,6 @@ declare function getStruct(name: any, v?: number): {
     } | {
         id: any;
         name: any;
-        role: any;
-        noAccept: boolean;
     } | {
         coreKey: any;
         blockOffset: any;

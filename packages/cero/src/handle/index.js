@@ -56,8 +56,6 @@ export { Ref } from '../lib/refs.js'
  * @typedef {object} CreateChildOpts
  * @property {string | null} [name]
  * @property {Record<string, Function>} [routes]
- * @property {string} [role]
- * @property {boolean} [accept]
  *
  * @typedef {object} JoinChildOpts
  * @property {Record<string, Function>} [routes]
@@ -231,13 +229,11 @@ export class Handle extends ReadyResource {
   }
 
   async _open() {
+    if (this._wantsPair) this.pair = new Pairing({ mailbox: this.mailbox, db: this.store })
     await this.store.ready()
-    if (this._wantsPair) {
-      this.pair = new Pairing({ mailbox: this.mailbox, db: this.store })
-      await this.pair.ready()
-    }
+    await this.pair?.ready()
     Ref.attach(this, this.store.refs, this.spec.handles)
-    this.root._coreKeys.set(b4a.toString(this.store.key, 'hex'), this.store.encryptionKey)
+    this.root._coreKeys.set(b4a.toHex(this.store.key), this.store.encryptionKey)
     if (!this.parent) {
       await this.fileServer.listen()
       await this.mailbox.ready()
@@ -247,10 +243,10 @@ export class Handle extends ReadyResource {
   }
 
   async _close() {
-    this.root._coreKeys.delete(b4a.toString(this.store.key, 'hex'))
-    if (this._blobs?.key) this.root._coreKeys.delete(b4a.toString(this._blobs.key, 'hex'))
+    this.root._coreKeys.delete(b4a.toHex(this.store.key))
+    if (this._blobs?.key) this.root._coreKeys.delete(b4a.toHex(this._blobs.key))
     for (const b of this._epochBlobs?.values() || []) {
-      if (b.key) this.root._coreKeys.delete(b4a.toString(b.key, 'hex'))
+      if (b.key) this.root._coreKeys.delete(b4a.toHex(b.key))
     }
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
     for (const r of [...this._owned]) r.destroy?.()
@@ -438,7 +434,7 @@ export class Handle extends ReadyResource {
    * @returns {{ key: Uint8Array, encryptionKey: Uint8Array } | null}
    */
   _resolveCore(coreKey, info) {
-    const hex = b4a.toString(coreKey, 'hex')
+    const hex = b4a.toHex(coreKey)
     const encryptionKey = this.root._coreKeys.get(hex)
     if (encryptionKey !== undefined) return { key: coreKey, encryptionKey }
     return null
@@ -462,7 +458,7 @@ export class Handle extends ReadyResource {
       .then(() => {
         // close prunes _coreKeys first, a late ready() must not re-insert the entry
         if (this.closing || this.closed || !blobs.key) return
-        this.root._coreKeys.set(b4a.toString(blobs.key, 'hex'), encryptionKey)
+        this.root._coreKeys.set(b4a.toHex(blobs.key), encryptionKey)
       })
       .catch(this._onerror)
     return blobs
@@ -478,7 +474,7 @@ export class Handle extends ReadyResource {
     if (!id || !this.root?._coreKeys) return
     try {
       const { coreKey } = decodeId(id)
-      const hex = b4a.toString(coreKey, 'hex')
+      const hex = b4a.toHex(coreKey)
       if (!this.root._coreKeys.has(hex)) {
         // no stamp on a file-field value, look it up (fire-and-forget, idempotent)
         if (stamp === undefined) {
@@ -516,7 +512,7 @@ export class Handle extends ReadyResource {
    * @param {CreateChildOpts} [opts]
    * @returns {Promise<Handle>}
    */
-  async _create(type, { name = null, routes, role, accept } = {}) {
+  async _create(type, { name = null, routes } = {}) {
     const writer = Identity.randomKeyPair()
     const child = /** @type {Child} */ (
       new Handle({
@@ -550,7 +546,7 @@ export class Handle extends ReadyResource {
 
       const ts = Date.now()
       const writerKey = child.store.writerKey
-      // same shape as accept(), so a room's first two ops land together
+      // one batch, so a room's first two ops land together
       await child.store.tx(async (tx) => {
         await tx.call('add-writer', {
           master: this.identity.publicKey,
@@ -577,8 +573,7 @@ export class Handle extends ReadyResource {
         updatedAt: ts
       })
 
-      if (accept !== false) this._wireAccept(child, { role })
-      this._adopt(child, { name, role })
+      this._adopt(child, { name })
       publish(child)
       this._loading?.delete(id)
       return child
@@ -604,7 +599,7 @@ export class Handle extends ReadyResource {
     const known = await this._joined(type, Invite.parse(invite).discoveryKey)
     if (known) return known
 
-    const join = this._knock(invite, type, routes)
+    const join = this._start(invite, type, routes)
     join.waiting++
     try {
       return await wait(join.done, timeout)
@@ -613,20 +608,21 @@ export class Handle extends ReadyResource {
     }
   }
 
-  _knock(invite, type, routes) {
+  _start(invite, type, routes) {
     const target = Invite.parse(invite).discoveryKey
     const key = `${type}/${b4a.toHex(target)}`
     let join = this._joining.get(key)
     if (!join) {
       join = new Join(this, {
         type,
+        spec: pickHandle(this.spec, type),
         discoveryKey: target,
         routes,
         onend: () => this._joining.delete(key)
       })
       this._joining.set(key, join)
     }
-    if (join.invite !== invite) join.knock(invite)
+    if (join.invite !== invite) join.start(invite)
     return join
   }
 
@@ -693,9 +689,8 @@ export class Handle extends ReadyResource {
     let inflightId = null
     try {
       await child.ready()
-      // admitted once our member row lands; a writer rides the same batch, a reader has none
+      // admitted once our member row lands; the same apply seats a writer, a reader has no seat
       const member = await admitted(child.store, this.identity.id)
-      // the device seats itself once it sees its member record (Database claims it)
       if (member.role !== 'reader' && !child.store.writable) {
         await child.store.whenWritable({ timeout: 0 })
       }
@@ -721,7 +716,6 @@ export class Handle extends ReadyResource {
         createdAt: ts,
         updatedAt: ts
       })
-      this._wireAccept(child)
       this._adopt(child, {})
       publish(child)
       this._loading?.delete(id)
@@ -743,7 +737,7 @@ export class Handle extends ReadyResource {
         await this.local.store.del('joins', id)
         continue
       }
-      this._knock(invite, type)
+      this._start(invite, type)
     }
   }
 
@@ -755,11 +749,11 @@ export class Handle extends ReadyResource {
    * @param {string} id
    * @returns {Promise<Handle>}
    */
-  async _load(type, id, opts) {
+  async _load(type, id) {
     for (const c of this.children) if (c.id === id) return c
     const existing = this._loading.get(id)
     if (existing) return existing
-    const loading = this._reopen(type, id, opts)
+    const loading = this._reopen(type, id)
     this._loading.set(id, loading)
     try {
       return await loading
@@ -776,7 +770,7 @@ export class Handle extends ReadyResource {
    * @param {string} id
    * @returns {Promise<Handle>}
    */
-  async _reopen(type, id, opts) {
+  async _reopen(type, id) {
     const { data } = await this.store.get('handles', id)
     if (!data) throw CeroError.UNKNOWN('handle', id)
     if (data.type !== type) {
@@ -802,8 +796,6 @@ export class Handle extends ReadyResource {
     if (firstTime) {
       await this._saveKeyPair(id, writer)
     }
-    // `accept: false` is a host-approval gate, re-arming it silently is worse
-    if (opts?.accept !== false) this._wireAccept(child, { role: opts?.role })
     this._adopt(child, {})
     return child
   }
@@ -852,11 +844,7 @@ export class Handle extends ReadyResource {
     return off
   }
 
-  /**
-   * @param {Handle} child
-   * @param {{ role?: string }} [opts]
-   */
-  // a room that serves invites is reopened at boot, so they are served whenever we are online,
+  // a room with invites is reopened at boot, so its joins are answered whenever we are online,
   // not only while the app has the room open
   _serve(child) {
     if (!this.local || !child.pair) return
@@ -865,38 +853,20 @@ export class Handle extends ReadyResource {
       if (serving === child._serving) return
       child._serving = serving
       if (!serving) return this.local.store.del('serving', child.id)
-      const { role = '' } = child._accepting || {}
-      await this.local.store.put('serving', {
-        id: child.id,
-        type: child.type,
-        accept: !!child._accepting,
-        role
-      })
+      await this.local.store.put('serving', { id: child.id, type: child.type })
     }
     child.pair.on('serving', () => save().catch(this._onerror))
     save().catch(this._onerror)
   }
 
-  // gated rooms stay gated: their requests wait for the app
   async _reserve() {
     if (!this.local) return
-    for (const { id, type, accept, role } of (await this.local.store.get('serving')).data) {
-      this._load(type, id, { accept, role: role || undefined }).catch((err) => {
+    for (const { id, type } of (await this.local.store.get('serving')).data) {
+      this._load(type, id).catch((err) => {
         if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
         this._onerror(err)
       })
     }
-  }
-
-  _wireAccept(child, { role } = {}) {
-    child._accepting = { role: role || '' }
-    const accept = (cand) => {
-      if (this.closing || this.closed || child.closing || child.closed) return
-      cand.accept({ role }).catch(this._onerror)
-    }
-    // knocks kept from before a restart may already be waiting
-    for (const cand of child.pair.pending) accept(cand)
-    child.pair.on('candidate', accept)
   }
 
   /**
@@ -951,6 +921,7 @@ export class Handle extends ReadyResource {
     try {
       const reply = await Pairing.join(mailbox || parent.mailbox, invite, {
         identity: id,
+        spec,
         writer,
         timeout
       })

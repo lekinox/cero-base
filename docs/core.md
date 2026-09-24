@@ -101,7 +101,7 @@ db.before('put', (ctx) => {
 
 `spec` is one built scope: `spec.main` or `spec.handles.room` from a cero build, with `database`, `dispatch` and `meta` on it. `db.key` identifies the database, `db.writerKey` this device's core.
 
-A second device of the same identity opens the same key and enrolls with `db.bootstrap({ recovering: true })`: it waits for the others' state, admits itself with an add-writer signed by the identity, and records its device row. A member admitted through pairing needs nothing: its device seats itself (`claim-writer`, signed by its identity) once it sees its member record, and `db.whenWritable()` resolves then. Nobody seats a writer for another identity. `db.addWriter(key)` admits another device of your own identity, `db.removeWriter(key)` removes one, `db.rotate()` starts a new encryption epoch.
+A second device of the same identity opens the same key and enrolls with `db.bootstrap({ recovering: true })`: it waits for the others' state, admits itself with an add-writer signed by the identity, and records its device row. A member admitted through pairing needs nothing: the join its device wrote into its own core seats it, and `db.whenWritable()` resolves once that lands. A member record added directly, with no join, is seated by its device (`claim-writer`, signed by its identity) once it sees the record. Nobody seats a writer for another identity. `db.addWriter(key)` admits another device of your own identity, `db.removeWriter(key)` removes one, `db.rotate()` starts a new encryption epoch.
 
 ## Mailbox
 
@@ -129,7 +129,7 @@ Both ends keep their mail until it is done with: the outbox until someone reads 
 
 ## Pairing
 
-Invites over mailboxes. A database's `Pairing` serves its invites; `Pairing.join` is the other side.
+Invites into a database. An invite is a record in the database, and joining is one op the joiner writes into its own writer core: the database pulls it in and apply admits it. `Pairing.join` is the joiner's side.
 
 ```js
 import { Identity, Network, Database, Mailbox, Pairing } from '@cero-base/core'
@@ -137,15 +137,16 @@ import { Identity, Network, Database, Mailbox, Pairing } from '@cero-base/core'
 // a member
 const mailbox = new Mailbox(network)
 const pairing = new Pairing({ mailbox, db })
-
 const invite = await pairing.invite({ role: 'member', ttl: '1h' })
-pairing.on('candidate', (request) => request.accept())
 
 // the joiner
 const identity = await Identity.create()
 const network = new Network({ identity, store })
 const mailbox = new Mailbox(network)
-const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, { identity })
+const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, {
+  identity,
+  spec
+})
 const db = new Database({
   store,
   identity,
@@ -156,12 +157,14 @@ const db = new Database({
   epochs,
   keyPair: writer
 })
-await db.whenWritable() // once the member's admission replicates
+await db.whenWritable() // a reader never becomes writable
 ```
 
-Each invite has its own address. Its secret is sealed in the invite's row to each member who can invite, so every one of them serves it, while readers and members removed before it was minted cannot read its knocks. The invite string carries no keys, no signature and no mirrors: `{ expires, discoveryKey, address, seed, data }`, where `data` is an optional payload the app reads before joining. The knock and the reply wait on each side's own network mirrors, so the app gives every device the same ones. Its seed proves a knock, the joiner's identity signs it, and the member that answers enforces role and expiry from its own row. `ttl` is ms or a duration like `'12h'` or `'2d'`.
+The invite string is `{ expires, key, address, seed, data }`: the database's key, the address its encryption key owns, a seed whose keypair proves the join, and `data`, an optional payload the app reads before joining. It names no mirrors: the join and the reply wait on each side's own network mirrors, so the app gives every device the same ones. The database keeps the invite's public id, role, expiry and whether it is reusable, never its seed. `ttl` is ms or a duration like `'12h'` or `'2d'`. A reusable invite grants member at most, so a higher rank is handed out once.
 
-`request.accept({ role })` admits the joiner, the member row and its writer in one batch, and only then replies; `role` defaults to the invite's and cannot exceed it. `request.identity` and `request.writer` are the joiner's keys, `request.deny(reason)` refuses, and `pairing.pending` holds the requests not settled yet, including ones kept from before a restart. The reply leaves through the mailbox's outbox before the invite is consumed, and it comes back to the address the joiner's writer owns, so a join resumed with the same `writer` option still hears it. `Pairing.join` takes a `timeout` (`0` waits until the invite expires, or for good when it never does) and a `signal` to stop it; closing the mailbox stops it too. `pairing.revoke(invite)` stops it on every member, and `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
+`Pairing.join` writes the join as the first block of the joiner's writer core, in the network's store, so open the database from that same store. The join is sealed to the invite's address, so only members read who joins, and it carries two signatures: the invite's over the writer, and the joiner identity's over the invite, the writer and the reply address. The core is announced to the database's peers and left on the mirrors, and any member device with the database open pulls it in. Apply checks both signatures and the invite's record, then adds the member and the device, seats the writer when the role writes, and spends a single-use invite, all in one step. Every device of a member that can invite then replies with the keys and epochs. Apply has no clock, so past an invite's expiry the keys stay home, and a member that can remove drops the record. The reply comes back to the address the joiner's writer owns, so a join resumed with the same `writer` still hears it. `Pairing.join` takes a `timeout` (`0` waits until the invite expires, or for good when it never does) and a `signal` to stop it; closing the mailbox stops it too.
+
+`invite({ confirm: true })` makes its joins wait: apply stores a request and `pairing` emits `candidate`. `request.accept({ role })` admits it, `role` defaulting to the invite's and never above it or the accepter's rank, and `request.deny(reason)` drops it and tells the joiner. `pairing.pending` holds the requests not settled yet; they live in the database, so they survive a restart. `pairing.revoke(invite)` needs the remove permission and drops the invite's waiting requests too, and `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
 
 ## Storage
 
@@ -218,7 +221,7 @@ await client.rpc.ping('hi') // 'pong:hi'
 
 ## What you give up
 
-No refs, so collection names are strings. No handle list, no auto-accept, no joins kept across a restart, no extensions, no operators over the channel, no file urls. You write the composition yourself, which is the point.
+No refs, so collection names are strings. No handle list, no joins kept across a restart, no extensions, no operators over the channel, no file urls. You write the composition yourself, which is the point.
 
 ## Next
 

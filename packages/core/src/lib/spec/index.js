@@ -16,7 +16,7 @@ const encoding0 = {
   preencode(state, m) {
     c.uint.preencode(state, m.version)
     c.uint.preencode(state, m.expires)
-    c.fixed32.preencode(state, m.discoveryKey)
+    c.fixed32.preencode(state, m.key)
     c.fixed32.preencode(state, m.address)
     c.fixed32.preencode(state, m.seed)
     state.end++ // max flag is 1 so always one byte
@@ -28,7 +28,7 @@ const encoding0 = {
 
     c.uint.encode(state, m.version)
     c.uint.encode(state, m.expires)
-    c.fixed32.encode(state, m.discoveryKey)
+    c.fixed32.encode(state, m.key)
     c.fixed32.encode(state, m.address)
     c.fixed32.encode(state, m.seed)
     c.uint.encode(state, flags)
@@ -46,7 +46,7 @@ const encoding0 = {
     return {
       version: r0,
       expires: r1,
-      discoveryKey: r2,
+      key: r2,
       address: r3,
       seed: r4,
       data: (flags & 1) !== 0 ? c.buffer.decode(state) : null
@@ -54,39 +54,45 @@ const encoding0 = {
   }
 }
 
-// @cero/knock
+// @cero/join
 const encoding1 = {
   preencode(state, m) {
-    c.fixed32.preencode(state, m.id)
+    c.fixed32.preencode(state, m.invite)
     c.fixed32.preencode(state, m.reply)
     c.fixed64.preencode(state, m.proof)
     c.fixed32.preencode(state, m.identity)
-    c.fixed32.preencode(state, m.writer)
     c.fixed64.preencode(state, m.signature)
+    state.end++ // max flag is 1 so always one byte
+
+    if (m.ts) c.uint.preencode(state, m.ts)
   },
   encode(state, m) {
-    c.fixed32.encode(state, m.id)
+    const flags = m.ts ? 1 : 0
+
+    c.fixed32.encode(state, m.invite)
     c.fixed32.encode(state, m.reply)
     c.fixed64.encode(state, m.proof)
     c.fixed32.encode(state, m.identity)
-    c.fixed32.encode(state, m.writer)
     c.fixed64.encode(state, m.signature)
+    c.uint.encode(state, flags)
+
+    if (m.ts) c.uint.encode(state, m.ts)
   },
   decode(state) {
     const r0 = c.fixed32.decode(state)
     const r1 = c.fixed32.decode(state)
     const r2 = c.fixed64.decode(state)
     const r3 = c.fixed32.decode(state)
-    const r4 = c.fixed32.decode(state)
-    const r5 = c.fixed64.decode(state)
+    const r4 = c.fixed64.decode(state)
+    const flags = c.uint.decode(state)
 
     return {
-      id: r0,
+      invite: r0,
       reply: r1,
       proof: r2,
       identity: r3,
-      writer: r4,
-      signature: r5
+      signature: r4,
+      ts: (flags & 1) !== 0 ? c.uint.decode(state) : 0
     }
   }
 }
@@ -262,29 +268,25 @@ const encoding6 = {
 // @cero/create
 const encoding7 = {
   preencode(state, m) {
-    state.end++ // max flag is 8 so always one byte
+    state.end++ // max flag is 2 so always one byte
 
     if (m.id) c.string.preencode(state, m.id)
     if (m.name) c.string.preencode(state, m.name)
-    if (m.role) c.string.preencode(state, m.role)
   },
   encode(state, m) {
-    const flags = (m.id ? 1 : 0) | (m.name ? 2 : 0) | (m.role ? 4 : 0) | (m.noAccept ? 8 : 0)
+    const flags = (m.id ? 1 : 0) | (m.name ? 2 : 0)
 
     c.uint.encode(state, flags)
 
     if (m.id) c.string.encode(state, m.id)
     if (m.name) c.string.encode(state, m.name)
-    if (m.role) c.string.encode(state, m.role)
   },
   decode(state) {
     const flags = c.uint.decode(state)
 
     return {
       id: (flags & 1) !== 0 ? c.string.decode(state) : null,
-      name: (flags & 2) !== 0 ? c.string.decode(state) : null,
-      role: (flags & 4) !== 0 ? c.string.decode(state) : null,
-      noAccept: (flags & 8) !== 0
+      name: (flags & 2) !== 0 ? c.string.decode(state) : null
     }
   }
 }
@@ -351,7 +353,7 @@ function getEncoding(name) {
   switch (name) {
     case '@cero/invite':
       return encoding0
-    case '@cero/knock':
+    case '@cero/join':
       return encoding1
     case '@cero/epoch':
       return encoding2

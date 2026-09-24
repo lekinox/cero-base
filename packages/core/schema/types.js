@@ -4,31 +4,31 @@
 export const NS = 'cero'
 
 export const types = [
-  // Pairing invite, z32-encoded as the wire form: where to knock and the seed that proves it.
+  // Pairing invite, z32-encoded as the wire form: the room, its address and the seed that proves it.
   {
     name: 'invite',
     compact: false,
     fields: [
       { name: 'version', type: 'uint', required: true },
       { name: 'expires', type: 'uint', required: true },
-      { name: 'discoveryKey', type: 'fixed32', required: true },
+      { name: 'key', type: 'fixed32', required: true },
       { name: 'address', type: 'fixed32', required: true },
       { name: 'seed', type: 'fixed32', required: true },
       { name: 'data', type: 'buffer', required: false }
     ]
   },
-  // Pairing knock — sealed to the invite's address. `proof` is the invite's signature over `reply`,
-  // `signature` the joiner identity's over the knock, so the member it becomes is proven.
+  // Pairing join — sealed to the room's address, in the joiner's own writer core. `proof` is the
+  // invite's signature over that writer, `signature` the joiner identity's over the join.
   {
-    name: 'knock',
+    name: 'join',
     compact: false,
     fields: [
-      { name: 'id', type: 'fixed32', required: true },
+      { name: 'invite', type: 'fixed32', required: true },
       { name: 'reply', type: 'fixed32', required: true },
       { name: 'proof', type: 'fixed64', required: true },
       { name: 'identity', type: 'fixed32', required: true },
-      { name: 'writer', type: 'fixed32', required: true },
-      { name: 'signature', type: 'fixed64', required: true }
+      { name: 'signature', type: 'fixed64', required: true },
+      { name: 'ts', type: 'uint', required: false }
     ]
   },
   // One encryption epoch a new member needs to read the history before it joined.
@@ -95,10 +95,7 @@ export const types = [
     compact: false,
     fields: [
       { name: 'id', type: 'string', required: false },
-      { name: 'name', type: 'string', required: false },
-      { name: 'role', type: 'string', required: false },
-      // inverted so the non-default (accept: false) survives truthy-presence encoding
-      { name: 'noAccept', type: 'bool', required: false }
+      { name: 'name', type: 'string', required: false }
     ]
   },
 

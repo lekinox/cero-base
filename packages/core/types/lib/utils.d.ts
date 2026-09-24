@@ -3,6 +3,8 @@ export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js';
 export declare function admission(dbKey: Uint8Array<ArrayBufferLike>, writer: Uint8Array<ArrayBufferLike>, appender: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike>;
 /** @type {(dbKey: Uint8Array, writer: Uint8Array) => Uint8Array} */
 export declare function ownership(dbKey: Uint8Array<ArrayBufferLike>, writer: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike>;
+/** @type {(dbKey: Uint8Array, invite: Uint8Array, writer: Uint8Array, reply: Uint8Array) => Uint8Array} */
+export declare function joining(dbKey: Uint8Array<ArrayBufferLike>, invite: Uint8Array<ArrayBufferLike>, writer: Uint8Array<ArrayBufferLike>, reply: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike>;
 /**
  * Whether `role` is granted `perm` under the default policy.
  *

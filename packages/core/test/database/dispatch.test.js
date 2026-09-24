@@ -5,7 +5,6 @@ import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 
 import { Database } from '../../src/database/index.js'
-import { wraps, seal } from '../../src/database/encryption.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import { wrap } from '../../src/database/envelope.js'
@@ -20,7 +19,9 @@ import {
 } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
 import { genId } from '../../src/lib/ids.js'
-import { admission, ownership } from '../../src/lib/utils.js'
+import { admission, ownership, joining } from '../../src/lib/utils.js'
+import { getEncoding } from '../../src/lib/spec/index.js'
+import { Invite } from '../../src/pairing/invite.js'
 import { spec } from '../fixtures/spec/index.js'
 
 test.configure({ timeout: 60000 })
@@ -812,7 +813,6 @@ async function withMember(t, role = 'member') {
 
 const inviteRow = (id, extra = {}) => ({
   id,
-  wrapped: b4a.alloc(32, 1),
   role: 'member',
   createdAt: 1,
   ...extra
@@ -842,19 +842,220 @@ test('del-invite / set-invite: revoking or altering a shared invite needs REMOVE
   t.absent((await db.get('invites', 'inv')).data, 'an owner revokes it')
 })
 
-test('del-invite: a single-use invite is consumed by whichever member served the join', async (t) => {
+test('del-invite: a member cannot revoke, not even a single-use invite', async (t) => {
   const { db, as } = await withMember(t)
   await db.call('add-invite', inviteRow('once'))
-  await db.call('add-invite', inviteRow('many', { reuse: true }))
+  t.is((await as('del-invite', { id: 'once' }))?.code, 'REFUSED')
+  t.ok((await db.get('invites', 'once')).data, 'a join spends it, in apply')
+})
 
-  t.absent(await as('del-invite', { id: 'once' }), 'a member consumes the single-use invite')
-  t.absent((await db.get('invites', 'once')).data, 'and it is gone')
-  t.is(
-    (await as('del-invite', { id: 'many' }))?.code,
-    'REFUSED',
-    'but cannot revoke a reusable one'
-  )
-  t.ok((await db.get('invites', 'many')).data, 'which stays')
+// ─── joins: the joiner's own core asks in, apply admits ─────────────────
+
+const Join = getEncoding('@cero/join')
+
+// an invite the database holds; the seed stays with whoever joins with it
+async function minted(db, record = {}) {
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', inviteRow(b4a.toHex(invite.id), record))
+  return invite
+}
+
+// the join a joiner's writer appends: proven by the invite, signed by the identity, sealed to the room
+function joinOp(db, invite, { identity, writer, proof, signature, address = db.address }) {
+  const reply = crypto.randomBytes(32)
+  const join = {
+    invite: invite.id,
+    reply,
+    proof: proof ?? invite.prove(writer),
+    identity: identity.publicKey,
+    signature: signature ?? identity.sign(joining(db.key, invite.id, writer, reply)),
+    ts: 1
+  }
+  return { box: crypto.encrypt(c.encode(Join, join), address) }
+}
+
+function seating() {
+  const seated = []
+  const host = {
+    addWriter: async (key) => void seated.push(hid.encode(key)),
+    removeWriter: noHost.removeWriter
+  }
+  return { seated, host }
+}
+
+test('join: apply admits the member, seats its writer and spends the invite', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const { seated, host } = seating()
+  t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }), host), null)
+  t.is((await db.get('members', identity.id)).data?.role, 'member')
+  t.is((await db.get('devices', hid.encode(writer))).data?.memberId, identity.id)
+  t.alike(seated, [hid.encode(writer)], 'the device seats itself: the join is in its own core')
+  t.absent((await db.get('invites', b4a.toHex(invite.id))).data, 'single-use: spent')
+})
+
+test('join: a reader gets a device record, no seat', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db, { role: 'reader' })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const { seated, host } = seating()
+  t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }), host), null)
+  t.is((await db.get('members', identity.id)).data?.role, 'reader')
+  t.is((await db.get('devices', hid.encode(writer))).data?.memberId, identity.id)
+  t.alike(seated, [], 'a promotion seats it from its record')
+})
+
+test('join: a forged join admits nobody', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db, { reuse: true })
+  const identity = await Identity.create()
+  const victim = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const other = Invite.create({ key: db.key, address: db.address })
+  const forged = {
+    'without the invite proof': joinOp(db, invite, {
+      identity,
+      writer,
+      proof: other.prove(writer)
+    }),
+    'for an identity it cannot sign for': joinOp(db, invite, {
+      identity: victim,
+      writer,
+      signature: identity.sign(b4a.alloc(32))
+    }),
+    'not sealed to this database': joinOp(db, invite, {
+      identity,
+      writer,
+      address: crypto.encryptionKeyPair().publicKey
+    }),
+    'with an invite the database does not hold': joinOp(db, other, { identity, writer })
+  }
+  for (const [why, op] of Object.entries(forged)) {
+    t.is(await apply(db, writer, 'join', op), null, `${why}: skipped, not refused`)
+  }
+  const elsewhere = Identity.randomKeyPair().publicKey
+  t.is(await apply(db, elsewhere, 'join', joinOp(db, invite, { identity, writer })), null)
+  t.absent((await db.get('members', identity.id)).data, 'nobody admitted')
+  t.absent((await db.get('members', victim.id)).data, 'nor the identity it claimed')
+  t.absent((await db.get('devices', hid.encode(elsewhere))).data, 'a join proves only its own core')
+})
+
+test('join: a writer bound to another member is refused', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db, { reuse: true })
+  const identity = await Identity.create()
+  const writer = db.writerKey
+  const err = await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+  t.is(err?.code, 'REFUSED')
+  t.absent((await db.get('members', identity.id)).data)
+  t.is((await db.get('devices', hid.encode(writer))).data.memberId, db.identity.id)
+})
+
+test('join: a known member on another device keeps its record; a reusable invite stays', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db, { reuse: true })
+  const identity = await Identity.create()
+  const first = Identity.randomKeyPair().publicKey
+  await apply(db, first, 'join', joinOp(db, invite, { identity, writer: first }))
+  const record = (await db.get('members', identity.id)).data
+  await apply(db, db.writerKey, 'set-member', { ...record, role: 'admin', updatedAt: 2 })
+
+  const second = Identity.randomKeyPair().publicKey
+  t.is(await apply(db, second, 'join', joinOp(db, invite, { identity, writer: second })), null)
+  const after = (await db.get('members', identity.id)).data
+  t.is(after.role, 'admin', 'the rank it was given since')
+  t.alike(after.key, record.key, 'its first writer stays its key')
+  t.is((await db.get('devices', hid.encode(second))).data?.memberId, identity.id)
+  t.ok((await db.get('invites', b4a.toHex(invite.id))).data)
+})
+
+test('confirm: a join waits as a request; accepting it is capped by the invite and the accepter', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const invite = await minted(db, { role: 'member', confirm: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity, writer })), null)
+  t.absent((await db.get('members', identity.id)).data, 'not admitted yet')
+  t.is((await db.get('requests', id)).data?.invite, b4a.toHex(invite.id))
+
+  const above = await apply(db, db.writerKey, 'accept', { id, role: 'admin' })
+  t.is(above?.code, 'REFUSED', 'the owner may grant admin, the invite may not')
+  t.is(await as('accept', { id, role: 'reader' }), null, 'within it')
+  t.is((await db.get('members', identity.id)).data?.role, 'reader')
+  t.absent((await db.get('requests', id)).data, 'settled')
+  t.absent((await db.get('invites', b4a.toHex(invite.id))).data, 'spent')
+})
+
+test('confirm: an invite above the accepter admits at most its rank', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const invite = await minted(db, { role: 'admin', confirm: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+  t.is((await as('accept', { id }))?.code, 'REFUSED', 'a member cannot hand out admin')
+  t.is(await as('accept', { id, role: 'member' }), null)
+  t.is((await db.get('members', identity.id)).data?.role, 'member')
+})
+
+test('confirm: accepting or denying needs INVITE; only a join writes a request', async (t) => {
+  const { db, as } = await withMember(t, 'reader')
+  const invite = await minted(db, { confirm: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+
+  t.is((await as('accept', { id, role: 'reader' }))?.code, 'REFUSED', 'even at its own rank')
+  t.is((await as('del-request', { id }))?.code, 'REFUSED')
+  const forged = {
+    id: 'x',
+    identity: identity.publicKey,
+    invite: b4a.toHex(invite.id),
+    reply: b4a.alloc(32)
+  }
+  t.is((await apply(db, db.writerKey, 'add-request', forged))?.code, 'REFUSED')
+  t.is((await apply(db, db.writerKey, 'set-request', forged))?.code, 'REFUSED')
+  t.ok((await db.get('requests', id)).data, 'still waiting')
+  t.is(await apply(db, db.writerKey, 'del-request', { id }), null)
+  t.absent((await db.get('requests', id)).data, 'denied by the owner')
+})
+
+test('join: a reader writes nothing, not through an optimistic op either', async (t) => {
+  const routes = { promote: async () => {} }
+  const { db } = await withRole(t, 'owner', { spec: spec.handles.team, routes })
+  // minted first: a write through db rebuilds the view without the joins applied straight into it
+  const readers = await minted(db, { role: 'reader' })
+  const gated = await minted(db, { confirm: true })
+  const reader = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', joinOp(db, readers, { identity: reader, writer }))
+  const { data: device } = await db.get('devices', hid.encode(writer))
+  t.is(device?.memberId, reader.id, 'its device has a row')
+
+  const identity = await Identity.create()
+  const joiner = Identity.randomKeyPair().publicKey
+  const id = hid.encode(joiner)
+  await apply(db, joiner, 'join', joinOp(db, gated, { identity, writer: joiner }))
+  const accepted = await apply(db, writer, 'accept', { id, role: 'reader' })
+  t.is(accepted?.code, 'REFUSED', 'no accepting, even at its own rank')
+  const promoted = await apply(db, writer, 'promote', { memberId: reader.id, role: 'owner' })
+  t.is(promoted?.code, 'REFUSED', 'no actions')
+  t.is((await apply(db, writer, 'add-messages', { id: 'm', text: 'x' }))?.code, 'REFUSED')
+})
+
+test('confirm: revoking the invite drops its requests', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db, { confirm: true, reuse: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+  t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(invite.id) }), null)
+  t.alike((await db.get('requests')).data, [])
 })
 
 // ─── admission is one decision: no grant, no writer ───────────────────────
@@ -1280,70 +1481,27 @@ test('escalation: add-writer never seats another member device', async (t) => {
 
 test('invites: an invite grants at most its minter rank', async (t) => {
   const { db, as } = await withMember(t, 'member')
-  const wrapped = b4a.alloc(32, 1)
-  const refused = await as('add-invite', { id: 'up', wrapped, role: 'owner', createdAt: 1 })
+  const refused = await as('add-invite', inviteRow('up', { role: 'owner' }))
   t.is(refused?.code, 'REFUSED')
   t.absent((await db.get('invites', 'up')).data, 'no owner invite from a member')
-  t.is(await as('add-invite', { id: 'ok', wrapped, role: 'member', createdAt: 1 }), null)
+  t.is(await as('add-invite', inviteRow('ok')), null)
 })
 
-test('invites: altering one keeps its rank capped and its secret', async (t) => {
+test('invites: altering one keeps its rank capped', async (t) => {
   const { db, as } = await withMember(t, 'admin')
-  await db.call('add-invite', { id: 'i', wrapped: b4a.alloc(32, 1), role: 'member', createdAt: 1 })
-  const record = { id: 'i', wrapped: b4a.alloc(32, 1), role: 'member', createdAt: 1 }
-  const raised = await as('set-invite', { ...record, role: 'owner' })
-  t.is(raised?.code, 'REFUSED')
-  await as('set-invite', { ...record, wrapped: b4a.alloc(32, 2) })
-  const { data } = await db.get('invites', 'i')
-  t.is(data.role, 'member')
-  t.alike(data.wrapped, b4a.alloc(32, 1), 'knocks still arrive where they did')
+  await db.call('add-invite', inviteRow('i'))
+  t.is((await as('set-invite', inviteRow('i', { role: 'owner' })))?.code, 'REFUSED')
+  t.is((await db.get('invites', 'i')).data.role, 'member')
+  t.is(await as('set-invite', inviteRow('i', { reuse: true })), null, 'within its rank it may')
 })
 
 test('invites: revoking one needs a rank that could grant it', async (t) => {
   const { db, as } = await withMember(t, 'admin')
-  const wrapped = b4a.alloc(32, 1)
-  await db.call('add-invite', { id: 'owner', wrapped, role: 'owner', reuse: true, createdAt: 1 })
-  await db.call('add-invite', { id: 'admin', wrapped, role: 'admin', reuse: true, createdAt: 1 })
+  await db.call('add-invite', inviteRow('owner', { role: 'owner', reuse: true }))
+  await db.call('add-invite', inviteRow('admin', { role: 'admin', reuse: true }))
   t.is((await as('del-invite', { id: 'owner' }))?.code, 'REFUSED')
   t.ok((await db.get('invites', 'owner')).data, 'an admin cannot revoke an owner invite')
   t.is(await as('del-invite', { id: 'admin' }), null, 'but revokes one it could grant')
-})
-
-test('invites: an inviter only appends copies for later inviters', async (t) => {
-  const { db, as } = await withMember(t, 'member')
-  const secret = b4a.alloc(32, 7)
-  const inviter = await addTarget(db, 'member')
-  const reader = await addTarget(db, 'reader')
-  const record = {
-    id: 'i',
-    wrapped: c.encode(wraps, seal([], secret)),
-    role: 'member',
-    reuse: true,
-    createdAt: 1
-  }
-  await db.call('add-invite', record)
-  const withCopy = (members) => ({ ...record, wrapped: c.encode(wraps, seal(members, secret)) })
-
-  t.is((await as('set-invite', withCopy([reader])))?.code, 'REFUSED', 'not for a reader')
-  t.is(await as('set-invite', { ...withCopy([inviter]), role: 'reader' }), null)
-  const { data } = await db.get('invites', 'i')
-  t.alike(
-    c.decode(wraps, data.wrapped).map((w) => w.id),
-    [inviter.id],
-    'the copy is added'
-  )
-  t.is(data.role, 'member', 'nothing else changes')
-  t.is((await as('set-invite', withCopy([reader])))?.code, 'REFUSED', 'sealed copies never change')
-})
-
-test('invites: consuming one needs a rank that could grant it', async (t) => {
-  const { db, as } = await withMember(t, 'member')
-  const wrapped = b4a.alloc(32, 1)
-  await db.call('add-invite', { id: 'admin', wrapped, role: 'admin', createdAt: 1 })
-  await db.call('add-invite', { id: 'member', wrapped, role: 'member', createdAt: 1 })
-  t.is((await as('del-invite', { id: 'admin' }))?.code, 'REFUSED')
-  t.ok((await db.get('invites', 'admin')).data, 'a member cannot drop an admin invite')
-  t.is(await as('del-invite', { id: 'member' }), null, 'but consumes one it could grant')
 })
 
 test('devices: a device record is written only by its own device', async (t) => {

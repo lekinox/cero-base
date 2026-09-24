@@ -286,12 +286,13 @@ export class Server extends RPCServer {
 
   /** Register invite/revoke/join RPC handlers. */
   _wirePairing() {
-    this.rpc.onInvite(async ({ handle, role, ttl, reuse, data }) => {
+    this.rpc.onInvite(async ({ handle, role, ttl, reuse, confirm, data }) => {
       const h = this._resolve(handle)
       const invite = await h.invite({
         role: role || undefined,
         ttl: ttl || undefined,
         reuse: reuse === true,
+        confirm: confirm === true,
         data: data || null
       })
       return { invite }
@@ -343,7 +344,7 @@ export class Server extends RPCServer {
       if (!info) throw CeroError.UNKNOWN('handle type', ref)
       const wire = parent.spec.codec.decodeCreate(data) || {}
       // routes are functions and cannot cross the wire
-      const opts = { name: wire.name, role: wire.role, accept: wire.noAccept ? false : undefined }
+      const opts = { name: wire.name }
       const child = await this.me._create(ref, opts)
       const id = child.id
       this.handles.set(id, child)
