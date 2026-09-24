@@ -37,8 +37,5 @@
     "lunte": "^1.8.4",
     "prettier-config-holepunch": "^2.0.0",
     "turbo": "^2"
-  },
-  "overrides": {
-    "autobee-encryption": "0.1.4"
   }
 }

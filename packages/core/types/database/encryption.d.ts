@@ -75,8 +75,8 @@ export declare class EpochEncryption extends WriterEncryption {
 }
 /**
  * Autobee with a rotation keyring. Every provider autobee constructs (view/system factory,
- * foreign cores, ActiveWriters) picks the epochs up through the patched base class and
- * this `keyring` property.
+ * foreign cores, ActiveWriters) picks the epochs up through the patched base class, which asks
+ * this instance for `keyId` and `getEntropy`.
  */
 export declare class EpochAutobee extends Autobee {
     keyring: any;
@@ -85,6 +85,8 @@ export declare class EpochAutobee extends Autobee {
     _epochRetryDelay: number;
     _epochRetrySeen: number;
     constructor(store: any, key: any, handlers?: {});
+    get keyId(): any;
+    getEntropy(id: any, ctx: any): Promise<any>;
     _close(): Promise<any>;
     _bumpPendingWriters(...args: any[]): Promise<any>;
     _applyWakeupHints(): Promise<any>;

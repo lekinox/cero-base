@@ -10,6 +10,7 @@ import {
   ACTION,
   COUNTERS,
   EPOCHS,
+  REMOVALS,
   INVITE,
   REMOVE,
   ASSIGN,
@@ -61,6 +62,7 @@ export function makeDispatcher({
   const router = new spec.dispatch.Router()
 
   const countersCol = `@${ns}/${COUNTERS}`
+  const removals = `@${ns}/${REMOVALS}`
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
   const getDevice = (view, id) => view.get(`@${ns}/devices`, { id })
 
@@ -363,6 +365,9 @@ export function makeDispatcher({
       await ctx.view.delete(requests, { id: device.id })
     }
     await ctx.view.delete(`@${ns}/members`, op)
+    // an invite they could hold, or saw, does not bring them back
+    const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
+    await ctx.view.insert(removals, { id: op.id, index: minted })
   })
 
   add('rotate-key', async (op, ctx) => {
@@ -527,7 +532,10 @@ export function makeDispatcher({
     const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
     if (!invite) return
     const ts = join.ts || 0
-    const known = await getMember(ctx.view, hid.encode(join.identity))
+    const memberId = hid.encode(join.identity)
+    const known = await getMember(ctx.view, memberId)
+    const removal = known ? null : await ctx.view.get(removals, { id: memberId })
+    if (removal && (invite.index ?? 0) <= removal.index) return
     if (invite.confirm && !known) {
       const waiting = request(invite, join.identity, ctx.key, join.reply, ts)
       return insert(ctx.view, 'requests', requests, waiting)

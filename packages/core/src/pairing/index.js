@@ -351,16 +351,19 @@ export function sealJoin(invite, identity, writer, reply) {
   return { box: crypto.encrypt(c.encode(Join, join), invite.address) }
 }
 
-// block 0 of the writer's core, once: a resumed join finds it there. Plain, since the joiner has
-// no key yet, and linked to the invite's node, so no member applies it before the invite
+// one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
+// another. Plain, since the joiner has no key yet, and linked to the invite's node, so no member
+// applies it before the invite
 async function write(core, spec, invite, identity, writer) {
   await core.ready()
-  if (core.length > 0) return
+  const last = await core.getUserData('cero/join')
+  if (last && b4a.equals(last, invite.id)) return
   const { ns = NAMESPACE, version = 1 } = spec.meta || {}
   const payload = sealJoin(invite, identity, core.key, Mailbox.getAddress(writer.secretKey))
   const op = wrap(version, spec.dispatch.encode(`@${ns}/join`, payload))
   const links = [invite.link]
   await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links }))
+  await core.setUserData('cero/join', invite.id)
 }
 
 function expired({ expires }) {

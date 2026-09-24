@@ -1,5 +1,5 @@
 import Autobee from 'autobee'
-import autobeeEncryption from 'autobee-encryption'
+import autobeeEncryption from 'autobee/lib/encryption.js'
 import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 import b4a from 'b4a'
@@ -11,7 +11,7 @@ import { Identity } from '../identity/index.js'
 
 const { AutobeeEncryption, WriterEncryption } = autobeeEncryption
 
-// the same derivation constant autobee-encryption uses
+// the same derivation constant autobee's encryption uses
 const NS_HASH_KEY = crypto.namespace('autobase', 4)[2]
 
 const NS_BLOBS = crypto.namespace('cero/blobs', 1)[0]
@@ -26,27 +26,23 @@ export function blobEpochKey(entropy) {
   return crypto.hash([NS_BLOBS, entropy])
 }
 
-// autobee news WriterEncryption directly, so epoch awareness is patched onto the
-// autobee-encryption prototype. Epoch 0 keeps the upstream derivation, epoch n derives
-// from the keyring; without a keyring behaviour is identical to upstream
+// autobee reads and writes under key 0 only. Until it takes key ids from its instance (keyId,
+// getEntropy), the same two changes are applied to the base class every provider comes from
 const baseGetKeys = AutobeeEncryption.prototype.getKeys
+const baseEncrypt = AutobeeEncryption.prototype.encrypt
 
 AutobeeEncryption.prototype.getKeys = async function (id, ctx) {
   if (!id) return baseGetKeys.call(this, id, ctx)
-
-  const keyring = this.auto?.keyring
-  const entropy = keyring && keyring.entropy(id)
-  if (!entropy) {
-    // a writer autobee freezes over this throw and only wakeup() re-adds it
-    if (ctx?.key && this.auto?._epochStalled) {
-      this.auto._epochStalled.add(b4a.toHex(ctx.key))
-      this.auto._scheduleEpochRetry()
-    }
-    throw CeroError.UNKNOWN_EPOCH(id)
-  }
-
-  const block = this.blockKey(entropy, ctx)
+  const block = this.blockKey(await this.auto.getEntropy(id, ctx), ctx)
   return { id, block, hash: crypto.hash([NS_HASH_KEY, block]) }
+}
+
+AutobeeEncryption.prototype.encrypt = function (index, block, fork, ctx) {
+  const keyId = this.auto.keyId || 0
+  if (!keyId) return baseEncrypt.call(this, index, block, fork, ctx)
+  const current = Object.create(this)
+  current.getKeys = (id, c) => this.getKeys(keyId, c)
+  return baseEncrypt.call(current, index, block, fork, ctx)
 }
 
 /** Prime a keyring from a local core's persisted epoch stash. */
@@ -58,11 +54,6 @@ export async function loadEpochs(keyring, local) {
   } catch {
     // corrupt userData — epochs re-hydrate from announcements
   }
-}
-
-AutobeeEncryption.prototype.update = async function (ctx) {
-  const current = this.auto?.keyring ? this.auto.keyring.current : 0
-  if (!this.keys || this.keys.id !== current) this.keys = await this.get(current, ctx)
 }
 
 /**
@@ -200,8 +191,8 @@ export class EpochEncryption extends WriterEncryption {}
 
 /**
  * Autobee with a rotation keyring. Every provider autobee constructs (view/system factory,
- * foreign cores, ActiveWriters) picks the epochs up through the patched base class and
- * this `keyring` property.
+ * foreign cores, ActiveWriters) picks the epochs up through the patched base class, which asks
+ * this instance for `keyId` and `getEntropy`.
  */
 export class EpochAutobee extends Autobee {
   constructor(store, key, handlers = {}) {
@@ -211,6 +202,23 @@ export class EpochAutobee extends Autobee {
     this._epochRetry = null
     this._epochRetryDelay = 1000
     this._epochRetrySeen = 0
+  }
+
+  // the key id new blocks are written with
+  get keyId() {
+    return this.keyring ? this.keyring.current : 0
+  }
+
+  // a block from an epoch not learned yet: the writer freezes over the throw, and the retry
+  // wakes it once the announcement lands
+  async getEntropy(id, ctx) {
+    const entropy = this.keyring && this.keyring.entropy(id)
+    if (entropy) return entropy
+    if (ctx?.key) {
+      this._epochStalled.add(b4a.toHex(ctx.key))
+      this._scheduleEpochRetry()
+    }
+    throw CeroError.UNKNOWN_EPOCH(id)
   }
 
   async _close() {

@@ -1,5 +1,5 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
@@ -76,6 +76,7 @@ export function collections(ns, scope) {
   if (scope === 'main') {
     out.push({ name: COUNTERS, schema: `@${ns}/counter`, key: ['name'] })
     out.push({ name: EPOCHS, schema: `@${ns}/epoch`, key: ['epoch'] })
+    out.push({ name: REMOVALS, schema: `@${ns}/removal`, key: ['id'] })
   }
   return out
 }

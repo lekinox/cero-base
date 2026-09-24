@@ -12,8 +12,8 @@ import {
 
 test.configure({ timeout: 90000 })
 
-async function joinAsRoot(t, testnet, inviteStr) {
-  const peer = await openHandle(t, { testnet })
+async function joinAsRoot(t, testnet, inviteStr, opts = {}) {
+  const peer = await openHandle(t, { testnet, ...opts })
   await peer.me.bootstrap({ name: 'peer-root' })
   const child = await open(peer.me.team, inviteStr)
   t.teardown(() => child.close().catch(() => {}))
@@ -145,6 +145,31 @@ test('invites: reuse admits multiple joiners and its row survives', async (t) =>
 
   const { data: rows } = await get(room.invites)
   t.is(rows.length, 1, 'reusable invite row still present after two admissions')
+})
+
+test('invites: a removed member comes back only through an invite minted after its removal', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await openHandle(t, { testnet })
+  await a.me.bootstrap({ name: 'a-root' })
+  const room = await open(a.me.team, { name: 'records' })
+  t.teardown(() => room.close().catch(() => {}))
+  const before = await room.invite({ reuse: true })
+  // a local store keeps its writer, as cero() does, so reopening the room never claims a seat
+  const b = await joinAsRoot(t, testnet, before, { local: true })
+  await memberCount(room, 2)
+
+  // the patient revokes the clinician, who still holds the reusable invite
+  await del(room.members, b.identity.id)
+  await memberCount(room, 1)
+  await waitUntil(async () => ((await get(b.room.members, b.identity.id)).data ? null : true))
+  const err = await b.me._join(before, 'team', { timeout: 3000 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT', 'the old invite admits nobody')
+  t.absent((await get(room.members, b.identity.id)).data)
+
+  const back = await open(b.me.team, await room.invite())
+  t.teardown(() => back.close().catch(() => {}))
+  await memberCount(room, 2)
+  t.pass('an invite minted after the removal brings them back')
 })
 
 test('invites: after a removal and a rotation, old and new invites admit, and the removed member answers none', async (t) => {

@@ -102,6 +102,11 @@ export const main = {
     index: uint,
     admitted: bool,
     expires: int
+  },
+  // a removed member comes back only through an invite minted after `index`
+  removal: {
+    id: required(string),
+    index: required(uint)
   }
 }
 

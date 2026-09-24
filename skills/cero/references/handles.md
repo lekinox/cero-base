@@ -112,7 +112,8 @@ await me.cancel(invite) // stop for good, it is not resumed on the next boot
 needs the remove permission, and refuses a plain member before anything reaches
 the log. It also drops the joins still waiting on a `confirm` invite. An invite
 belongs to the room, not to whoever minted it: it keeps working after its minter
-leaves or is removed, until it is revoked.
+leaves or is removed, until it is revoked. A removed member comes back only
+through an invite minted after its removal, never one it held or saw before.
 
 ## Roles
 

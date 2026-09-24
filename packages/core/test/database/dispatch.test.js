@@ -831,6 +831,27 @@ test('join: a forged join admits nobody', async (t) => {
   t.absent((await db.get('devices', hid.encode(elsewhere))).data, 'a join proves only its own core')
 })
 
+test('join: a removed member comes back only through an invite minted after its removal', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const before = await minted(db, { reuse: true })
+  const identity = await Identity.create()
+  const first = Identity.randomKeyPair().publicKey
+  await apply(db, first, 'join', joinOp(db, before, { identity, writer: first }))
+  t.ok((await db.get('members', identity.id)).data, 'joined')
+  t.is(await apply(db, db.writerKey, 'del-member', { id: identity.id }), null)
+
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, again, 'join', joinOp(db, before, { identity, writer: again }))
+  t.absent((await db.get('members', identity.id)).data, 'an invite from before admits nobody')
+
+  // minted after the removal, straight into the view like the joins above
+  const after = Invite.create({ key: db.key, address: db.address })
+  await apply(db, db.writerKey, 'add-invite', inviteRow(b4a.toHex(after.id)))
+  const back = Identity.randomKeyPair().publicKey
+  await apply(db, back, 'join', joinOp(db, after, { identity, writer: back }))
+  t.ok((await db.get('members', identity.id)).data, 'a newer one does')
+})
+
 test('join: a writer bound to another member is refused', async (t) => {
   const { db } = await withRole(t, 'owner')
   const invite = await minted(db, { reuse: true })

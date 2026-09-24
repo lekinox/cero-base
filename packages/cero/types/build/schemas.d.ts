@@ -92,6 +92,10 @@ export declare const main: {
         admitted: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
     };
+    removal: {
+        id: import("@cero-base/core").Prim;
+        index: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {

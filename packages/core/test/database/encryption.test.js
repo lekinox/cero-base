@@ -1,14 +1,14 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import Autobee from 'autobee'
-import autobeeEncryption from 'autobee-encryption'
+import autobeeEncryption from 'autobee/lib/encryption.js'
 import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
-import { isBare } from 'which-runtime'
 
 import { Keyring, EpochEncryption, EpochAutobee, wraps } from '../../src/database/encryption.js'
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
+import { CeroError } from '../../src/lib/errors.js'
 import { Network } from '../../src/network/index.js'
 import hid from 'hypercore-id-encoding'
 import { admission } from '../../src/lib/utils.js'
@@ -24,13 +24,22 @@ import {
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
-const { WriterEncryption } = autobeeEncryption
+const { AutobeeEncryption, WriterEncryption } = autobeeEncryption
 
+// what the patched providers ask of their autobee, as EpochAutobee answers it
 function fakeAuto(keyring = new Keyring()) {
   return {
     key: crypto.hash(b4a.from('bootstrap')),
     encryptionKey: crypto.hash(b4a.from('room-key')),
-    keyring
+    keyring,
+    get keyId() {
+      return this.keyring.current
+    },
+    getEntropy(id) {
+      const entropy = this.keyring.entropy(id)
+      if (!entropy) throw CeroError.UNKNOWN_EPOCH(id)
+      return entropy
+    }
   }
 }
 
@@ -51,31 +60,18 @@ test('canary: the autobee seams EpochAutobee relies on still exist', (t) => {
   t.ok(EpochAutobee.prototype instanceof Autobee)
 })
 
-// The one canary that has to look outside this repo. Our epoch support is a
-// prototype patch, so it only reaches autobee if autobee loads the SAME copy
-// of autobee-encryption we do. Pin the two apart and npm installs a second
-// copy, autobee builds unpatched providers, and every rotation writes epoch-0
-// blocks that a removed member decrypts happily — no error anywhere.
-// Node-only: `module` does not exist in Bare, and importing it there throws
-// before any promise exists — so the runtime must be checked BEFORE the import,
-// not caught after it.
-test('canary: autobee loads the same autobee-encryption we patched', async (t) => {
-  if (isBare) return t.pass('skipped: no CJS resolver (Bare)')
-  const { createRequire } = await import('module')
-  const from = (pkg) => createRequire(createRequire(import.meta.url).resolve(`${pkg}/package.json`))
-  t.is(
-    from('autobee').resolve('autobee-encryption'),
-    createRequire(import.meta.url).resolve('autobee-encryption'),
-    'duplicate autobee-encryption install — rotation would silently not rotate'
-  )
+// our epoch support is a patch on autobee's encryption base class: it only takes effect if autobee
+// builds its providers from that same class
+test('canary: autobee builds its encryption from the class we patch', (t) => {
+  const provider = Autobee.getViewEncryption(b4a.alloc(32), b4a.alloc(32), 'view')
+  t.ok(provider instanceof AutobeeEncryption)
 })
 
-test('canary: the autobee-encryption surface we patch still exists', (t) => {
+test('canary: the autobee encryption surface we patch still exists', (t) => {
   const p = WriterEncryption.prototype
   t.is(typeof p.getKeys, 'function', 'getKeys (patched on the base prototype)')
-  t.is(typeof p.update, 'function', 'update (patched on the base prototype)')
+  t.is(typeof p.encrypt, 'function', 'encrypt (patched on the base prototype)')
   t.is(typeof p.blockKey, 'function')
-  t.is(typeof p.encrypt, 'function')
   t.is(typeof p.decrypt, 'function')
   t.is(WriterEncryption.PADDING, 8, 'block padding stays 8 bytes (uint32 key-id at [4,8))')
 })
@@ -89,8 +85,9 @@ test('canary: every provider construction path is epoch-aware (incl. ActiveWrite
   const ours = new EpochEncryption(auto)
   const ctx = fakeCtx()
   t.alike(await upstream.getKeys(1, ctx), await ours.getKeys(1, ctx), 'upstream class sees epochs')
-  await upstream.update(ctx)
-  t.is(upstream.keys.id, 1, 'upstream class follows the keyring')
+  const block = b4a.alloc(WriterEncryption.PADDING + 4)
+  await upstream.encrypt(0, block, 0, ctx)
+  t.is(block[4], 1, 'and writes under the current one')
 })
 
 test('canary: epoch derivation matches the golden vector (independent of shared code)', async (t) => {
@@ -154,16 +151,18 @@ test('epoch keys: distinct per epoch, deterministic across peers, unknown throws
   await t.exception(a.getKeys(2, ctx), /unknown encryption epoch/, 'missing entropy is an error')
 })
 
-test('update() follows the latest keyring epoch', async (t) => {
+test('writes follow the latest keyring epoch', async (t) => {
   const provider = new EpochEncryption(fakeAuto())
   const ctx = fakeCtx()
+  const stamped = async () => {
+    const block = b4a.alloc(EpochEncryption.PADDING + 4)
+    await provider.encrypt(0, block, 0, ctx)
+    return block[4]
+  }
 
-  await provider.update(ctx)
-  t.is(provider.keys.id, 0, 'starts on the base era')
-
+  t.is(await stamped(), 0, 'starts on the base era')
   provider.auto.keyring.add(1, crypto.hash(b4a.from('e1')))
-  await provider.update(ctx)
-  t.is(provider.keys.id, 1, 'advances when the keyring does')
+  t.is(await stamped(), 1, 'advances when the keyring does')
 })
 
 // ─── the security property, at the crypto layer ─────────────────────────────

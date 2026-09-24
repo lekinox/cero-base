@@ -49,3 +49,5 @@ export const QUERY_RESERVED = new Set([
 export const COUNTERS = 'counters'
 // rotation announcements
 export const EPOCHS = 'epochs'
+// removed members, with the last invite minted before their removal
+export const REMOVALS = 'removals'

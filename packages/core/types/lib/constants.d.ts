@@ -32,3 +32,4 @@ export declare const NAMESPACE = "cero";
 export declare const QUERY_RESERVED: Set<string>;
 export declare const COUNTERS = "counters";
 export declare const EPOCHS = "epochs";
+export declare const REMOVALS = "removals";

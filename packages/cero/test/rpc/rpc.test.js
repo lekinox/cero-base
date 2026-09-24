@@ -120,7 +120,6 @@ test('client: the import graph stays free of native/server-only packages', (t) =
     'hypercore',
     'corestore',
     'autobee',
-    'autobee-encryption',
     'hyperswarm',
     'hyperdht',
     'hyperdb',

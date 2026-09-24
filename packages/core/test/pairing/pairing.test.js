@@ -250,6 +250,20 @@ test('join: a member joining again from another device keeps its record', async 
   t.is((await host.db.get('devices', hid.encode(writer))).data?.memberId, joiner.identity.id)
 })
 
+test('join: a fresh invite takes over from one that admits nobody', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const revoked = await host.pairing.invite()
+  await host.pairing.revoke(revoked)
+  const writer = crypto.keyPair()
+  const err = await joiner.join(revoked, { writer, timeout: 2000 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT', 'the revoked invite admits nobody')
+
+  // the same writer, as a join resumed with a new invite keeps it
+  const result = await joiner.join(await host.pairing.invite(), { writer })
+  t.alike(result.key, host.db.key)
+  t.ok(await member(host.db, joiner.identity))
+})
+
 test('join: a reply for another database is ignored', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite()
