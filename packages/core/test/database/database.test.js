@@ -19,7 +19,8 @@ import {
   waitFor,
   collect,
   replay,
-  makePeer
+  makePeer,
+  admit
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
@@ -39,20 +40,7 @@ async function makeDb(t, opts = {}) {
 async function bootstrapped(t, opts = {}) {
   const { db, store, identity } = await makeDb(t, opts)
   await db.bootstrap({ name: 'first', isMobile: false })
-  await enroll(db, identity)
   return { db, store, identity }
-}
-
-// every real open lands the member row with the writer; the fixture does the same
-async function enroll(db, identity, role = 'owner', key = db.writerKey) {
-  const ts = Date.now()
-  await db.call('add-member', {
-    id: identity.id,
-    key,
-    role,
-    createdAt: ts,
-    updatedAt: ts
-  })
 }
 
 // ─── construction validation ──────────────────────────────────────────────
@@ -1091,24 +1079,13 @@ test('bootstrap: post-bootstrap puts replicate identity', async (t) => {
 
 // ─── claim (same identity, new device) ────────────────────────────────────
 
-test('claim: same identity on second db admits writer via add-member then claim', async (t) => {
+test('claim: same identity on second db claims against its member record', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.create()
   const topic = randomTopic()
 
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-
-  // First device announces its membership so the second can claim against it.
-  // member.key must be the writer hypercore key (= device.id), NOT identity.publicKey.
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
   const b = await makePeer(t, testnet, {
     identity,
@@ -1129,16 +1106,8 @@ test('claim: same identity on second db admits writer via add-member then claim'
 
 // ─── key-type invariants ──────────────────────────────────────────────────
 
-test('add-member backlinks device.id to writer key, not identity pubkey', async (t) => {
+test('the genesis device row is keyed by the writer, bound to the identity', async (t) => {
   const { db, identity } = await bootstrapped(t)
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey, // writer hypercore key
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   // The backlink device row must use z32(writer hypercore key) as its id, AND
   // its memberId must match the identity id.
   const { data: device } = await db.get('devices', z32.encode(db.writerKey))
@@ -1151,14 +1120,6 @@ test('add-member backlinks device.id to writer key, not identity pubkey', async 
 
 test('put on a collection stamps memberId from the writer→member backlink', async (t) => {
   const { db, identity } = await bootstrapped(t)
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   const { data: row } = await db.put('messages', { text: 'hello' })
   // memberId is stamped by the apply handler, so read it back from the view.
   const { data: stored } = await db.get('messages', row.id)
@@ -1624,15 +1585,6 @@ test('replication: removeWriter — B can no longer write', async (t) => {
 
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-  // A is the owner — required to remove a writer (eviction is owner-only)
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'a',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
   const bIdentity = await Identity.create()
   const b = await makePeer(t, testnet, {
@@ -1712,16 +1664,6 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  // Publish member entry so claim() can verify identity membership.
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-
   const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
@@ -1769,7 +1711,7 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await enroll(a.db, bIdentity, 'member', b.db.writerKey)
+  await admit(a.db, b.db, 'member')
   await waitFor(() => b.db.writable)
 
   const seen = []
@@ -1804,7 +1746,7 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await enroll(a.db, bIdentity, 'member', b.db.writerKey)
+  await admit(a.db, b.db, 'member')
   await waitFor(() => b.db.writable)
 
   // only b has the rule
@@ -1999,7 +1941,6 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
   for (const name of ['a', 'b']) {
     const db = await open({ namespace: name })
     await db.bootstrap({ name })
-    await enroll(db, identity)
     keys.push({ key: db.key, keyPair: db.keyPair, namespace: name })
     await db.close()
   }
@@ -2039,7 +1980,6 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   // x hosts two databases; y opens both but only shared searches
   const x = await makePeer(t, testnet, { identity, topic, namespace: 'shared' })
   await x.db.bootstrap({ name: 'x' })
-  await enroll(x.db, identity)
   const quiet = new Database({
     store: x.store,
     identity,
@@ -2050,7 +1990,6 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   await quiet.ready()
   t.teardown(() => quiet.close().catch(() => {}), { order: 5 })
   await quiet.bootstrap({ name: 'x' })
-  await enroll(quiet, identity)
 
   const y = await makePeer(t, testnet, {
     identity,
@@ -2152,14 +2091,6 @@ test('apply: claim-path device timestamps are deterministic across peers', async
 
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
   const b = await makePeer(t, testnet, {
     identity,
@@ -2169,8 +2100,9 @@ test('apply: claim-path device timestamps are deterministic across peers', async
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
-  // a device of the identity seats itself once it sees the member record
-  await waitFor(() => b.db.writable)
+  // another device of the identity claims its seat once it sees the member record
+  await waitFor(async () => (await b.db.get('members', identity.id)).data)
+  await b.db.claim()
 
   const id = z32.encode(b.db.writerKey)
   const onB = await waitFor(async () => (await b.db.get('devices', id)).data)

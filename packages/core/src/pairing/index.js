@@ -3,6 +3,7 @@ import safetyCatch from 'safety-catch'
 import b4a from 'b4a'
 import c from 'compact-encoding'
 import crypto from 'hypercore-crypto'
+import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
 import { Invite } from './invite.js'
@@ -49,8 +50,9 @@ const MAX_DELAY = 2 ** 31 - 1
 /**
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
- * it. Every device of a member that may invite then replies with the keys. A `confirm` invite's
- * joins wait as `candidate`s until a member accepts or denies them.
+ * it. The admission stays in the database until the joiner has its keys: every device of a member
+ * that may invite offers them while online, and the first one read settles it for all. A
+ * `confirm` invite's joins wait as `candidate`s until a member accepts or denies them.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -64,20 +66,17 @@ export class Pairing extends ReadyResource {
     this.db = db
     /** @type {Set<Request>} candidates not settled yet: whoever attaches after one fired goes through these first */
     this.pending = new Set()
-    /** Whether this device answers the database's joins: it may invite and invites exist. */
+    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed their keys exist. */
     this.serving = false
 
     this._requests = new Map() // writer id → Request
-    this._welcomed = new Set() // writers replied to, as a re-applied join fires again
+    this._replies = new Map() // writer id → the Post offering its keys
     this._expiry = null
     this._onupdate = (touched) => {
       if (['*', 'invites', 'requests', 'members'].some((name) => touched.has(name))) {
         this._sync().catch(safetyCatch)
       }
     }
-    this._onjoin = (join) => this._welcome(join).catch(safetyCatch)
-    // before the database opens: a join it applies while it catches up is answered too
-    db.on('join', this._onjoin)
   }
 
   async _open() {
@@ -89,8 +88,10 @@ export class Pairing extends ReadyResource {
 
   async _close() {
     this.db.off('update', this._onupdate)
-    this.db.off('join', this._onjoin)
     clearTimeout(this._expiry)
+    const posts = [...this._replies.values()]
+    this._replies.clear()
+    await Promise.allSettled(posts.map((post) => post.close()))
   }
 
   /**
@@ -118,6 +119,7 @@ export class Pairing extends ReadyResource {
       expires: invite.expires,
       createdAt: Date.now()
     })
+    invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()
   }
@@ -143,29 +145,33 @@ export class Pairing extends ReadyResource {
     return true
   }
 
-  // follow the log: whether we answer joins, the candidates waiting, the invites that ran out
+  // follow the log: the invites that ran out, the joins waiting for a member, the keys owed
   async _sync() {
     const me = await this._me()
     const { data: invites } = await this.db.get('invites')
+    const { data: requests } = await this.db.get('requests')
     if (this.closing || this.closed) return
-    const inviter = can(me?.role, INVITE)
+    const role = me?.role
     // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting
-    if (can(me?.role, REMOVE)) {
+    if (can(role, REMOVE)) {
       for (const row of invites.filter(expired)) {
         await this.db.call('del-invite', { id: row.id }).catch(safetyCatch)
       }
     }
-    this._arm(invites)
-    await this._candidates(inviter ? invites : [])
-    this.serving = inviter && invites.some((row) => !expired(row))
+    this._arm([...invites, ...requests])
+    const inviter = can(role, INVITE)
+    const owed = inviter ? requests.filter((row) => row.admitted) : []
+    this._candidates(inviter ? requests.filter((row) => !row.admitted) : [], invites)
+    await this._answer(owed, role)
+    this.serving = inviter && (invites.some((row) => !expired(row)) || owed.length > 0)
     this.emit('serving', this.serving)
   }
 
   // wakes the next _sync at the nearest expiry
-  _arm(invites) {
+  _arm(rows) {
     clearTimeout(this._expiry)
     const next = Math.min(
-      ...invites.filter((row) => row.expires > Date.now()).map((row) => row.expires)
+      ...rows.filter((row) => row.expires > Date.now()).map((row) => row.expires)
     )
     if (!Number.isFinite(next)) return
     this._expiry = setTimeout(
@@ -174,8 +180,7 @@ export class Pairing extends ReadyResource {
     )
   }
 
-  async _candidates(invites) {
-    const { data: rows } = invites.length ? await this.db.get('requests') : { data: [] }
+  _candidates(rows, invites) {
     const live = new Set(rows.map((row) => row.id))
     // settled elsewhere: accepted or denied by another member, or its invite revoked
     for (const [id, request] of this._requests) {
@@ -193,25 +198,45 @@ export class Pairing extends ReadyResource {
     }
   }
 
-  // every device of an inviter answers an admission; the joiner takes the first reply
-  async _welcome({ writer, reply, expires }) {
-    if (!this.opened) await this.ready()
-    const id = b4a.toHex(writer)
-    if (this._welcomed.has(id) || b4a.equals(writer, this.db.writerKey)) return
-    if (!can((await this._me())?.role, INVITE)) return
-    // apply cannot see the clock, so keys never go out for an invite that ran out
-    if (expired({ expires })) return
-    this._welcomed.add(id)
-    await this.mailbox.send(
-      reply,
-      c.encode(Response, {
-        status: STATUS_ACCEPTED,
-        reason: '',
-        key: this.db.key,
-        encryptionKey: this.db.encryptionKey,
-        epochs: this.db.keyring.all()
-      })
-    )
+  // an admitted joiner is offered its keys by every inviter device online, until one is read.
+  // Past the invite's expiry the joiner has given up: a member who can remove drops it instead
+  async _answer(rows, role) {
+    const owed = new Set(rows.map((row) => row.id))
+    for (const [id, post] of this._replies) {
+      if (owed.has(id)) continue
+      this._replies.delete(id)
+      post.close().catch(safetyCatch)
+    }
+    for (const row of rows) {
+      if (this._replies.has(row.id)) continue
+      if (!expired(row)) {
+        this._reply(row)
+        continue
+      }
+      if (can(role, REMOVE)) {
+        await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
+      }
+    }
+  }
+
+  // kept in memory, not in the outbox: the admission in the log is what outlives a restart
+  _reply({ id, reply }) {
+    const { network } = this.mailbox
+    const keys = {
+      status: STATUS_ACCEPTED,
+      reason: '',
+      key: this.db.key,
+      encryptionKey: this.db.encryptionKey,
+      epochs: this.db.keyring.all()
+    }
+    const post = new Post(network, reply, c.encode(Response, keys), { mirrors: network.mirrors })
+    this._replies.set(id, post)
+    const settle = async () => {
+      await post.ready()
+      await post.delivered
+      await this.db.call('del-request', { id })
+    }
+    settle().catch(safetyCatch)
   }
 
   async _me() {
@@ -304,24 +329,38 @@ export class Pairing extends ReadyResource {
   }
 }
 
-// block 0 of the writer's core, once: a resumed join finds it there. Plain, since the joiner has
-// no key yet, and sealed to the database's address, so only its members read who joins
-async function write(core, spec, invite, identity, writer) {
-  await core.ready()
-  if (core.length > 0) return
-  const reply = Mailbox.getAddress(writer.secretKey)
+/**
+ * A join's payload: sealed to the database's address, so only its members read who joins; proven
+ * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ *
+ * @param {Invite} invite
+ * @param {import('../identity/index.js').Identity} identity
+ * @param {Uint8Array} writer
+ * @param {Uint8Array} reply
+ * @returns {{ box: Uint8Array }}
+ */
+export function sealJoin(invite, identity, writer, reply) {
   const join = {
     invite: invite.id,
     reply,
-    proof: invite.prove(core.key),
+    proof: invite.prove(writer),
     identity: identity.publicKey,
-    signature: identity.sign(joining(invite.key, invite.id, core.key, reply)),
+    signature: identity.sign(joining(invite.key, invite.id, writer, reply)),
     ts: Date.now()
   }
-  const box = crypto.encrypt(c.encode(Join, join), invite.address)
+  return { box: crypto.encrypt(c.encode(Join, join), invite.address) }
+}
+
+// block 0 of the writer's core, once: a resumed join finds it there. Plain, since the joiner has
+// no key yet, and linked to the invite's node, so no member applies it before the invite
+async function write(core, spec, invite, identity, writer) {
+  await core.ready()
+  if (core.length > 0) return
   const { ns = NAMESPACE, version = 1 } = spec.meta || {}
-  const op = wrap(version, spec.dispatch.encode(`@${ns}/join`, { box }))
-  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true }))
+  const payload = sealJoin(invite, identity, core.key, Mailbox.getAddress(writer.secretKey))
+  const op = wrap(version, spec.dispatch.encode(`@${ns}/join`, payload))
+  const links = [invite.link]
+  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links }))
 }
 
 function expired({ expires }) {

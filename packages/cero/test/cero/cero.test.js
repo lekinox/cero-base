@@ -209,7 +209,8 @@ test('invites: a join request waiting for approval survives the member restartin
 // an invite nobody serves: the join stays pending
 function nowhere(opts) {
   const random = () => Identity.randomBytes(32)
-  return Invite.create({ key: random(), address: random(), ...opts }).toString()
+  const link = { key: random(), length: 1 }
+  return Invite.create({ key: random(), address: random(), link, ...opts }).toString()
 }
 
 test('invites: an owner back online answers its invites without opening the room', async (t) => {
@@ -932,14 +933,6 @@ test('cero(): a second device auto-claims', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await a.me.store.call('add-member', {
-    id: a.me.id,
-    key: a.me.identity.publicKey,
-    role: 'owner',
-    name: 'a',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   await put(a.me.messages, { text: 'from-a' })
 
   const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
@@ -963,14 +956,6 @@ test('cero(): private scope syncs across the same identity on two devices', asyn
   const seed = a.me.identity.seed
 
   // Publish a member entry so device B can claim against it.
-  await a.me.store.call('add-member', {
-    id: a.me.id,
-    key: a.me.identity.publicKey,
-    role: 'owner',
-    name: 'a',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   await put(a.me.messages, { text: 'from-a' })
 
   // Device B opens with the same seed: its own device core, admitted by the

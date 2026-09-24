@@ -1,4 +1,5 @@
 import ReadyResource from 'ready-resource';
+import { Invite } from './invite.js';
 import { Request } from './request.js';
 import { Mailbox } from '../mailbox/index.js';
 export type KeyPair = {
@@ -110,8 +111,9 @@ export type JoinResult = {
 /**
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
- * it. Every device of a member that may invite then replies with the keys. A `confirm` invite's
- * joins wait as `candidate`s until a member accepts or denies them.
+ * it. The admission stays in the database until the joiner has its keys: every device of a member
+ * that may invite offers them while online, and the first one read settles it for all. A
+ * `confirm` invite's joins wait as `candidate`s until a member accepts or denies them.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export declare class Pairing extends ReadyResource {
@@ -119,13 +121,12 @@ export declare class Pairing extends ReadyResource {
     db: import("../index.js").Database;
     /** @type {Set<Request>} candidates not settled yet: whoever attaches after one fired goes through these first */
     pending: Set<Request>;
-    /** Whether this device answers the database's joins: it may invite and invites exist. */
+    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed their keys exist. */
     serving: boolean;
     _requests: Map<any, any>;
-    _welcomed: Set<any>;
+    _replies: Map<any, any>;
     _expiry: number;
     _onupdate: (touched: any) => void;
-    _onjoin: (join: any) => Promise<void>;
     /** @param {PairingOpts} [opts] */
     constructor({ mailbox, db }?: PairingOpts);
     _open(): Promise<void>;
@@ -145,13 +146,13 @@ export declare class Pairing extends ReadyResource {
      */
     revoke(invite: string): Promise<boolean>;
     _sync(): Promise<void>;
-    _arm(invites: any): void;
-    _candidates(invites: any): Promise<void>;
-    _welcome({ writer, reply, expires }: {
-        expires: any;
+    _arm(rows: any): void;
+    _candidates(rows: any, invites: any): void;
+    _answer(rows: any, role: any): Promise<void>;
+    _reply({ id, reply }: {
+        id: any;
         reply: any;
-        writer: any;
-    }): Promise<void>;
+    }): void;
     _me(): Promise<any>;
     _checkGrant(role: any): Promise<void>;
     /**
@@ -165,3 +166,16 @@ export declare class Pairing extends ReadyResource {
      */
     static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal }?: JoinOpts): Promise<JoinResult>;
 }
+/**
+ * A join's payload: sealed to the database's address, so only its members read who joins; proven
+ * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ *
+ * @param {Invite} invite
+ * @param {import('../identity/index.js').Identity} identity
+ * @param {Uint8Array} writer
+ * @param {Uint8Array} reply
+ * @returns {{ box: Uint8Array }}
+ */
+export declare function sealJoin(invite: Invite, identity: import('../identity/index.js').Identity, writer: Uint8Array, reply: Uint8Array): {
+    box: Uint8Array;
+};

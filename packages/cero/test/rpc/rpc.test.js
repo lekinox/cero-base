@@ -537,7 +537,8 @@ test('rpc: a join that lands after the caller stopped waiting shows up in handle
 test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const { client } = await openPair(t)
   const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
-  const invite = Invite.create({ key: random(), address: random() }).toString()
+  const link = { key: random(), length: 1 }
+  const invite = Invite.create({ key: random(), address: random(), link }).toString()
   const joining = open(client.team, invite).catch((e) => e)
   await waitUntil(async () => ((await client.joining()).length ? true : null))
   t.alike(await client.joining(), [invite])

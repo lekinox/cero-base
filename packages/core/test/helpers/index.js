@@ -5,10 +5,14 @@ import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import { Duplex, Readable } from 'streamx'
+import crypto from 'hypercore-crypto'
 
 import { Network } from '../../src/network/index.js'
 import { Database } from '../../src/database/index.js'
+import { wrap } from '../../src/database/envelope.js'
 import { Identity } from '../../src/identity/index.js'
+import { Invite } from '../../src/pairing/invite.js'
+import { sealJoin } from '../../src/pairing/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
 // ─── generic ──────────────────────────────────────────────────────────────
@@ -310,8 +314,8 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, ...opts }
   return { db, store, identity, network, discovery, topic, errors }
 }
 
-// genesis admits the first member at any rank
-export async function withRole(t, role, opts = {}) {
+// genesis names the first member at any rank, and `members` beside it: the only batch that may
+export async function withRole(t, role, { members = [], ...opts } = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
   const db = new Database({ store, identity, spec, ...opts })
@@ -328,7 +332,21 @@ export async function withRole(t, role, opts = {}) {
   }
   await db.write([
     ['add-writer', db._admission(db.writerKey, ts)],
-    ['add-member', member]
+    ['add-member', member],
+    ...members.map((m) => ['add-member', { createdAt: ts, updatedAt: ts, ...m }])
   ])
   return { db, identity }
+}
+
+// b joins a's database as Pairing.join does, from its own core, once it holds the invite;
+// resolves once a admitted it
+export async function admit(a, b, role = 'member') {
+  const invite = Invite.create({ key: a.key, address: a.address })
+  const id = b4a.toHex(invite.id)
+  await a.call('add-invite', { id, role, createdAt: Date.now() })
+  await waitFor(async () => (await b.get('invites', id)).data)
+  const payload = sealJoin(invite, b.identity, b.writerKey, crypto.randomBytes(32))
+  const op = b.spec.dispatch.encode(`@${b.ns}/join`, payload)
+  await b.bee.append(wrap(b.version, op), { optimistic: true })
+  await waitFor(async () => (await a.get('members', b.identity.id)).data)
 }

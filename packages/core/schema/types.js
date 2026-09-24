@@ -4,6 +4,15 @@
 export const NS = 'cero'
 
 export const types = [
+  // A node in a writer's core: the join links the node that added its invite.
+  {
+    name: 'link',
+    compact: true,
+    fields: [
+      { name: 'key', type: 'fixed32', required: true },
+      { name: 'length', type: 'uint', required: true }
+    ]
+  },
   // Pairing invite, z32-encoded as the wire form: the room, its address and the seed that proves it.
   {
     name: 'invite',
@@ -14,6 +23,7 @@ export const types = [
       { name: 'key', type: 'fixed32', required: true },
       { name: 'address', type: 'fixed32', required: true },
       { name: 'seed', type: 'fixed32', required: true },
+      { name: 'link', type: '@cero/link', required: true },
       { name: 'data', type: 'buffer', required: false }
     ]
   },

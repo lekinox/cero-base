@@ -185,14 +185,6 @@ test('Handle: second device claims and syncs', async (t) => {
 
   const a = await openHandle(t, { testnet, identity })
   await a.me.bootstrap({ name: 'a' })
-  await a.me.store.call('add-member', {
-    id: identity.id,
-    key: a.me.store.writerKey, // writer hypercore key — backlinks device → member
-    role: 'owner',
-    name: 'a',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   await put(a.me.messages, { text: 'from-a' })
 
   const b = await openHandle(t, { testnet, identity, key: a.me.store.key })
@@ -286,13 +278,6 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
   await room.ready()
   t.teardown(() => room.close().catch(() => {}))
   await room.bootstrap({ name: 'host' })
-  await room.store.call('add-member', {
-    id: hostId.id,
-    key: room.store.writerKey,
-    role: 'owner',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
   const joinRoom = async (name) => {
     const id = await Identity.create()
@@ -368,13 +353,6 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
   await room.ready()
   t.teardown(() => room.close().catch(() => {}))
   await room.bootstrap({ name: 'host' })
-  await room.store.call('add-member', {
-    id: hostId.id,
-    key: room.store.writerKey,
-    role: 'owner',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
   // the reader is a proper root + child room: its ROOT key differs from the
   // room key, which is exactly the shape where blob cores must resolve with
@@ -566,14 +544,6 @@ test('Handle: second device opens a rotated child by id and reads every era', as
 
   const a = await openHandle(t, { testnet, identity })
   await a.me.bootstrap({ name: 'device-1' })
-  await a.me.store.call('add-member', {
-    id: identity.id,
-    key: a.me.store.writerKey,
-    role: 'owner',
-    name: 'a',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
   await put(room.messages, { text: 'before' })
@@ -1073,7 +1043,7 @@ test('Handle: blobs — lazy, per-handle, round-trips bytes', async (t) => {
 // ─── Phase 4: files put/get ───────────────────────────────────────────────────
 
 test('files: put(handle.files, { data, type }) uploads and returns a resolved file', async (t) => {
-  const { me } = await bootstrapWithMember(t)
+  const { me } = await openHandle(t)
 
   const data = b4a.from('a tiny png')
   const { data: file } = await put(me.files, { data, type: 'image/png', name: 'pic.png' })
@@ -1091,23 +1061,8 @@ test('files: put(handle.files, { data, type }) uploads and returns a resolved fi
 
 // ─── Phase 4: file() field resolution on get/watch ───────────────────────────
 
-async function bootstrapWithMember(t) {
-  const { me, identity } = await openHandle(t)
-  await me.bootstrap({ name: 'desktop' })
-  const ts = Date.now()
-  await me.store.call('add-member', {
-    id: identity.id,
-    key: me.store.writerKey,
-    role: 'owner',
-    name: null,
-    createdAt: ts,
-    updatedAt: ts
-  })
-  return { me, identity }
-}
-
 test('files: set(profile, { avatar: file.id }) → get(profile) yields avatar as a resolved file', async (t) => {
-  const { me } = await bootstrapWithMember(t)
+  const { me } = await openHandle(t)
 
   const { data: file } = await put(me.files, {
     data: b4a.from('AV'),
@@ -1125,7 +1080,7 @@ test('files: set(profile, { avatar: file.id }) → get(profile) yields avatar as
 })
 
 test('files: get(handle.files, id) resolves a single file row', async (t) => {
-  const { me } = await bootstrapWithMember(t)
+  const { me } = await openHandle(t)
 
   const { data: file } = await put(me.files, {
     data: b4a.from('one'),
@@ -1194,7 +1149,7 @@ test('files: a reader cannot add a file', async (t) => {
 })
 
 test('changes: deltas flow with file fields resolved on both sides', async (t) => {
-  const { me } = await bootstrapWithMember(t)
+  const { me } = await openHandle(t)
 
   const stream = changes(me.profile)
   const batches = []

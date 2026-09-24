@@ -16,17 +16,6 @@ import {
 
 test.configure({ timeout: 90000 })
 
-async function publishMember(me) {
-  await me.store.call('add-member', {
-    id: me.id,
-    key: me.identity.publicKey,
-    role: 'owner',
-    name: null,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-}
-
 // ─── del replicates ───────────────────────────────────────────────────────
 
 test('replicate: del propagates A → B', async (t) => {
@@ -34,7 +23,6 @@ test('replicate: del propagates A → B', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await publishMember(a.me)
   const { data: row } = await put(a.me.messages, { text: 'gonna die' })
 
   const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
@@ -62,7 +50,6 @@ test('replicate: watch on B fires when A writes', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await publishMember(a.me)
 
   const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
   await waitForConnection(a.me.network)
@@ -211,7 +198,6 @@ test('replicate: a member resolves + fetches a file; a non-member core 404s', as
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await publishMember(a.me)
 
   await a.me.blobs.ready()
   const data = b4a.from('replicated-bytes')

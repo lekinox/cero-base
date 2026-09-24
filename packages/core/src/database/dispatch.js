@@ -39,7 +39,6 @@ const isSig = (b) => b?.byteLength === 64
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
  * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
- * @param {(join: { identity: Uint8Array, writer: Uint8Array, reply: Uint8Array, expires: number }) => void} opts.onjoin  Per-peer side of an admission, once its batch committed.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} [opts.hooks]  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} [opts.touch]  Marks a ref written by a hook, so its watchers tick.
  * @param {(view: object, name: string, query?: any) => Promise<any>} [opts.read]  Planned read against a given view, for a hook's `ctx.get`.
@@ -54,7 +53,6 @@ export function makeDispatcher({
   key,
   onepoch,
   room,
-  onjoin,
   hooks,
   touch,
   read,
@@ -261,11 +259,9 @@ export function makeDispatcher({
     const { genesis } = ctx.host
     const inviter = await getRole(ctx.view, op.master)
     if (!genesis && !can(inviter, INVITE)) throw CeroError.REFUSED('invite')
-    // the rank is add-member's decision in the same transaction: a refused grant discards this admission.
+    // only a device of the signer's own identity: another member's device seats itself through
+    // its join, or any key the signer holds would act as them.
     // Always an indexer: autobee gc's caught-up non-indexer sessions and they miss later appends
-    // a writer belongs to a member: its own identity, or the member named by the op
-    // only a device of the signer's own identity: another member's device seats itself with
-    // claim-writer, or any key the signer holds would act as them
     const memberId = hid.encode(op.master)
     if (op.memberId && op.memberId !== memberId) throw CeroError.REFUSED('member')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
@@ -309,17 +305,14 @@ export function makeDispatcher({
     })
   })
 
+  // the genesis batch names the creator; everyone after comes in through a signed join
   add('add-member', async (op, ctx) => {
     if (!isKey(op.key)) return
-    // every member id is an identity key: rotation seals to it
-    if (!isIdentity(op.id)) throw CeroError.REFUSED('member')
-    if (!ctx.host.genesis) {
-      const r = await getSignerRole(ctx.view, ctx.key)
-      if (!can(r, INVITE) || !grants(r, op.role)) throw CeroError.REFUSED('invite')
-    }
     // an existing member keeps its row: its rank changes only through set-member
     if (await getMember(ctx.view, op.id)) return
-    // a member record seats nothing: its device claims its own seat (claim-writer)
+    if (!ctx.host.genesis) throw CeroError.REFUSED('member')
+    // every member id is an identity key: rotation seals to it
+    if (!isIdentity(op.id)) throw CeroError.REFUSED('member')
     await insert(ctx.view, 'members', `@${ns}/members`, op)
   })
 
@@ -362,11 +355,12 @@ export function makeDispatcher({
       if (!can(r, REMOVE) || !outranks(r, existing.role)) throw CeroError.REFUSED('remove')
     }
     if (existing.key) await ctx.host.removeWriter(existing.key)
-    // every device of the member goes with them
+    // every device of the member goes with them, and any keys they were still owed
     for (const device of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (device.memberId !== op.id) continue
       await ctx.host.removeWriter(hid.decode(device.id))
       await ctx.view.delete(`@${ns}/devices`, { id: device.id })
+      await ctx.view.delete(requests, { id: device.id })
     }
     await ctx.view.delete(`@${ns}/members`, op)
   })
@@ -472,16 +466,18 @@ export function makeDispatcher({
     if (!can(r, REMOVE) || !capped(r, existing)) throw CeroError.REFUSED('invite')
     await spend(ctx.view, existing)
   })
-  // its waiting joins go with it
+  // its joins still waiting for a member go with it; admitted ones are still owed their keys
   async function spend(view, invite) {
     await view.delete(invites, { id: invite.id })
     for (const request of await view.find(requests, {}).toArray()) {
-      if (request.invite === invite.id) await view.delete(requests, { id: request.id })
+      if (request.invite === invite.id && !request.admitted) {
+        await view.delete(requests, { id: request.id })
+      }
     }
   }
 
-  // the member, when new, and its device; seated when the member writes. The invite is spent
-  // unless it is reusable
+  // the member, when new, and its device, seated when the member writes; its request stays until
+  // a member delivered the keys. The invite is spent unless it is reusable
   async function admit(ctx, { invite, identity, writer, reply, role, ts }) {
     const memberId = hid.encode(identity)
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
@@ -497,8 +493,16 @@ export function makeDispatcher({
       createdAt: ts,
       updatedAt: ts
     })
+    await insert(ctx.view, 'requests', requests, {
+      ...request(invite, identity, writer, reply, ts),
+      admitted: true
+    })
     if (!invite.reuse) await spend(ctx.view, invite)
-    ctx.joined?.({ identity, writer, reply, expires: invite.expires || 0 })
+  }
+
+  function request(invite, identity, writer, reply, ts) {
+    const expires = invite.expires || 0
+    return { id: hid.encode(writer), identity, invite: invite.id, reply, expires, createdAt: ts }
   }
 
   // null when it does not open: anyone may append a join
@@ -525,13 +529,8 @@ export function makeDispatcher({
     const ts = join.ts || 0
     const known = await getMember(ctx.view, hid.encode(join.identity))
     if (invite.confirm && !known) {
-      return insert(ctx.view, 'requests', requests, {
-        id: hid.encode(ctx.key),
-        identity: join.identity,
-        invite: invite.id,
-        reply: join.reply,
-        createdAt: ts
-      })
+      const waiting = request(invite, join.identity, ctx.key, join.reply, ts)
+      return insert(ctx.view, 'requests', requests, waiting)
     }
     const role = invite.role || 'member'
     await admit(ctx, {
@@ -545,16 +544,15 @@ export function makeDispatcher({
   })
   // a waiting join, admitted at a role within the invite's and the accepter's
   add('accept', async (op, ctx) => {
-    const request = await ctx.view.get(requests, { id: op.id })
-    if (!request) return
-    const invite = await ctx.view.get(invites, { id: request.invite })
+    const waiting = await ctx.view.get(requests, { id: op.id })
+    if (!waiting || waiting.admitted) return
+    const invite = await ctx.view.get(invites, { id: waiting.invite })
     const r = await getSignerRole(ctx.view, ctx.key)
     const role = op.role || invite?.role || 'member'
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role || 'member', role)) {
       throw CeroError.REFUSED('invite')
     }
-    await ctx.view.delete(requests, { id: op.id })
-    const { identity, reply, createdAt: ts = 0 } = request
+    const { identity, reply, createdAt: ts = 0 } = waiting
     await admit(ctx, { invite, identity, writer: hid.decode(op.id), reply, role, ts })
   })
   // only a join writes a request
@@ -563,6 +561,7 @@ export function makeDispatcher({
   }
   add('add-request', joinsOnly)
   add('set-request', joinsOnly)
+  // a denial, or keys delivered
   add('del-request', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
     await ctx.view.delete(requests, op)
@@ -640,7 +639,6 @@ export function makeDispatcher({
       const tx = view.transaction()
       // host calls survive a discarded transaction, so they replay once the batch commits
       const calls = []
-      const joins = []
       const deferred = Object.create(host)
       deferred.addWriter = (...args) => void calls.push(['addWriter', args])
       deferred.removeWriter = (...args) => void calls.push(['removeWriter', args])
@@ -653,8 +651,7 @@ export function makeDispatcher({
             host: deferred,
             key: node.key,
             dbKey,
-            seed,
-            joined: (join) => void joins.push(join)
+            seed
           })
         } catch (err) {
           // anything but a refusal skips one node, so an older peer never drops a batch its newer neighbour applies
@@ -673,7 +670,6 @@ export function makeDispatcher({
         await tx.flush()
         // before apply() returns: autobee clears host.applying right after, and addWriter reads it
         for (const [fn, args] of calls) await host[fn](...args)
-        for (const join of joins) onjoin(join)
       }
       await view.flush()
     }

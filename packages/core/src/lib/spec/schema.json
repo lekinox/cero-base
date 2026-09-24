@@ -2,10 +2,30 @@
   "version": 1,
   "schema": [
     {
+      "name": "link",
+      "namespace": "cero",
+      "compact": true,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "length",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
       "name": "invite",
       "namespace": "cero",
       "compact": false,
-      "flagsPosition": 5,
+      "flagsPosition": 6,
       "fields": [
         {
           "name": "version",
@@ -35,6 +55,12 @@
           "name": "seed",
           "required": true,
           "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "link",
+          "required": true,
+          "type": "@cero/link",
           "version": 1
         },
         {

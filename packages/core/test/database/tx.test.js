@@ -72,18 +72,10 @@ test('tx: a refused op rejects the whole transaction and appends nothing', async
 })
 
 test('tx: one refused op takes its allowed siblings with it', async (t) => {
-  const { db } = await withRole(t, 'member')
-
-  // a member may add a reader, and may write messages — but may not evict
+  // a member may write messages, but may not evict
   const reader = await Identity.create()
-  await db.call('add-member', {
-    id: reader.id,
-    key: Identity.randomKeyPair().publicKey,
-    role: 'reader',
-    name: 'r',
-    createdAt: 1,
-    updatedAt: 1
-  })
+  const members = [{ id: reader.id, key: Identity.randomKeyPair().publicKey, role: 'reader' }]
+  const { db } = await withRole(t, 'member', { members })
   const before = len(db)
 
   await t.exception(

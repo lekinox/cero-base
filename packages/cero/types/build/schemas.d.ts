@@ -89,6 +89,8 @@ export declare const main: {
         reply: import("@cero-base/core").Prim;
         createdAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+        admitted: import("@cero-base/core").Prim;
+        expires: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {

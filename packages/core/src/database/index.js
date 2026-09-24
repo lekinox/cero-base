@@ -9,7 +9,7 @@ import hid from 'hypercore-id-encoding'
 
 import { NAMESPACE, SINGLE, COLLECTION, ACTION, QUERY_RESERVED } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
-import { subscribe, admission, ownership, filter, can, WRITE } from '../lib/utils.js'
+import { subscribe, admission, ownership, filter } from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
@@ -94,7 +94,6 @@ export class Database extends ReadyResource {
     }
 
     this._onerror = opts.onerror || ((err) => console.error(err))
-    this._seating = false
     // a join is sealed to the address the encryption key owns: every member opens it, no one else
     this._room = this.encryptionKey ? keyPair(this.encryptionKey) : null
     this.bee = null
@@ -155,7 +154,6 @@ export class Database extends ReadyResource {
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
       room: () => this._room,
-      onjoin: (join) => this.emit('join', join),
       hooks: (phase, op) => this._hooks(phase, op),
       inHook: (fn) => this._inHook(fn),
       touch: (name) => this._touched.add(name),
@@ -172,9 +170,6 @@ export class Database extends ReadyResource {
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())
-    // an admission names the member, only this device can seat its writer
-    this.on('update', () => this._seat().catch(this._onerror))
-    this._seat().catch(this._onerror)
     this.bee.on('writable', () => this.emit('writable'))
     // falling edge: apps freeze the UI the moment access ends
     this.bee.on('unwritable', () => this.emit('unwritable'))
@@ -878,19 +873,6 @@ export class Database extends ReadyResource {
     if (!b4a.isBuffer(publicKey)) throw CeroError.INVALID('publicKey must be a buffer')
     const writer = Hypercore.key({ version: this.store.manifestVersion, signers: [{ publicKey }] })
     await this.write([[verb, this._admission(writer)]])
-  }
-
-  // only a device that never wrote: a revoked one must not seat itself again
-  async _seat() {
-    if (this.writable || this.bee.local.length > 0 || this._seating || this.closing) return
-    const { data: me } = await this.get('members', this.identity.id)
-    if (!me || !can(me.role, WRITE)) return
-    this._seating = true
-    try {
-      await this.claim()
-    } finally {
-      this._seating = false
-    }
   }
 }
 

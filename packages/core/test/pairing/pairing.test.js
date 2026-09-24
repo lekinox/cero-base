@@ -7,6 +7,7 @@ import c from 'compact-encoding'
 import crypto from 'hypercore-crypto'
 import hid from 'hypercore-id-encoding'
 import Hypercore from 'hypercore'
+import encoding from 'autobee/lib/encoding.js'
 
 import { Network } from '../../src/network/index.js'
 import { Identity } from '../../src/identity/index.js'
@@ -25,20 +26,20 @@ test.configure({ timeout: 60000 })
 
 const testnet = await createTestnet(3)
 
-async function makeMailbox(t, { outbox, ...opts } = {}) {
+async function makeMailbox(t, opts = {}) {
   const identity = await Identity.create()
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const net = new Network({ identity, bootstrap: testnet.bootstrap, store, ...opts })
   await net.ready()
   t.teardown(() => net.close().catch(() => {}), { order: 2 })
-  const mailbox = new Mailbox(net, { outbox })
+  const mailbox = new Mailbox(net)
   t.teardown(() => mailbox.close().catch(() => {}), { order: 1 })
   return { mailbox, net, identity }
 }
 
 // a member: the owner of a fresh database, answering its joins
-async function makeHost(t, { mirrors, outbox } = {}) {
-  const { mailbox, net, identity } = await makeMailbox(t, { mirrors, outbox })
+async function makeHost(t, { mirrors } = {}) {
+  const { mailbox, net, identity } = await makeMailbox(t, { mirrors })
   const db = new Database({ store: net.store, identity, network: net, spec })
   await db.ready()
   await db.bootstrap({ name: 'host' })
@@ -59,7 +60,11 @@ async function makeHostJoiner(t, opts = {}) {
   return { host: await makeHost(t, opts), joiner: await makeJoiner(t) }
 }
 
-const sample = () => ({ key: crypto.randomBytes(32), address: crypto.randomBytes(32) })
+const sample = () => ({
+  key: crypto.randomBytes(32),
+  address: crypto.randomBytes(32),
+  link: { key: crypto.randomBytes(32), length: 1 }
+})
 const invites = async (db) => (await db.get('invites')).data
 const member = async (db, identity) =>
   (await db.get('members', hid.encode(identity.publicKey))).data
@@ -184,6 +189,26 @@ test('join: apply admits the joiner, and the reply carries the keys and epochs',
   const { data: device } = await host.db.get('devices', writer)
   t.is(device.memberId, joiner.identity.id, 'its writer, bound to it')
   t.alike(await invites(host.db), [], 'a single-use invite is spent')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('the admission settles once the keys were read')
+  t.alike(await host.mailbox.outbox.list(), [], 'and nothing is kept to send again')
+})
+
+test('join: links the node that added its invite, so no member applies it first', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite()
+  const { link } = Invite.parse(invite)
+  t.alike(link, { key: host.db.writerKey, length: host.db.length }, 'the record, on the minter')
+
+  const { writer } = await joiner.join(invite)
+  const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer.publicKey }] })
+  const core = joiner.net.store.get({ key })
+  await core.ready()
+  const block = await core.get(0)
+  await core.close()
+  // a plain block: its padding says unencrypted, the oplog follows
+  const { links } = encoding.decodeOplog(block.subarray(8))
+  t.alike(links, [link])
 })
 
 test('join: a reusable invite admits every joiner, each at its role', async (t) => {
@@ -237,16 +262,20 @@ test('join: a reply for another database is ignored', async (t) => {
   t.is(err.code, 'TIMEOUT')
 })
 
-test('join: past its expiry on the member clock, no keys go out', async (t) => {
-  const host = await makeHost(t)
-  const writer = crypto.randomBytes(32)
-  const reply = crypto.randomBytes(32)
-  host.db.emit('join', { writer, reply, expires: 1 })
-  await new Promise((resolve) => setImmediate(resolve))
-  t.alike(await host.mailbox.outbox.list(), [], 'apply admitted it, the keys stay here')
-  host.db.emit('join', { writer, reply, expires: 0 })
-  await waitFor(async () => (await host.mailbox.outbox.list()).length === 1)
-  t.pass('a live invite gets its keys')
+test('expiry: a joiner admitted past its invite is removed, not answered', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite({ ttl: 2000 })
+  // nobody answers while the join lands, so it is admitted and never gets its keys
+  await host.pairing.close()
+  const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
+  await waitFor(async () => !!(await member(host.db, joiner.identity)))
+  t.is((await joining).code, 'EXPIRED', 'the joiner gives up at expiry')
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  await waitFor(async () => !(await member(host.db, joiner.identity)))
+  t.alike((await host.db.get('requests')).data, [], 'nothing left owed')
 })
 
 // ─── confirm invites: a member accepts ─────────────────────────────────────
@@ -267,7 +296,8 @@ test('confirm: a join waits as a candidate until a member accepts it', async (t)
   t.alike((await joining).key, host.db.key)
   t.is((await member(host.db, joiner.identity)).role, 'member')
   await waitFor(() => host.pairing.pending.size === 0)
-  t.alike((await host.db.get('requests')).data, [], 'the request is gone')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('the request settles once the joiner read its keys')
 })
 
 test('confirm: accept checks the role and the expiry first', async (t) => {
@@ -312,7 +342,11 @@ test('confirm: accepting one join spends a single-use invite, the others are dro
 
   await requests[0].accept()
   await waitFor(() => host.pairing.pending.size === 0)
-  t.alike((await host.db.get('requests')).data, [], 'the other request went with the invite')
+  t.alike(
+    (await host.db.get('requests')).data.filter((row) => !row.admitted),
+    [],
+    'the other request went with the invite'
+  )
   await requests[1].accept()
   const results = await Promise.all(joining)
   t.is(results.filter((r) => r.key).length, 1, 'one joiner admitted')
@@ -408,24 +442,12 @@ test('serving: true while this member may answer a live invite', async (t) => {
 // ─── resilience ────────────────────────────────────────────────────────────
 
 test('a resumed join hears the reply to its earlier join', async (t) => {
-  // the member's reply is held in its outbox until the joiner stopped
-  let release
-  const held = new Promise((resolve) => {
-    release = resolve
-  })
-  const kept = []
-  const outbox = {
-    list: async () => kept,
-    put: async (mail) => {
-      await held
-      kept.push(mail)
-    },
-    del: async () => {}
-  }
-  const { host, joiner } = await makeHostJoiner(t, { outbox })
+  const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite()
+  await host.pairing.close()
   const writer = crypto.keyPair()
 
+  // admitted while nobody answers, then the joiner stops
   const controller = new AbortController()
   const first = joiner
     .join(invite, { writer, signal: controller.signal, timeout: 0 })
@@ -434,11 +456,14 @@ test('a resumed join hears the reply to its earlier join', async (t) => {
   controller.abort()
   t.is((await first).code, 'CLOSED')
 
+  // a member back online still owes it the keys: the admission is in the log
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
   // the invite is spent, so only the reply to the earlier join can land
   const again = await makeJoiner(t)
-  const resumed = Pairing.join(again.mailbox, invite, { identity: joiner.identity, spec, writer })
-  release()
-  t.alike((await resumed).key, host.db.key)
+  const opts = { identity: joiner.identity, spec, writer }
+  t.alike((await Pairing.join(again.mailbox, invite, opts)).key, host.db.key)
 })
 
 test('offline: member and joiner are never online together, the mirror carries both ways', async (t) => {
@@ -456,7 +481,8 @@ test('offline: member and joiner are never online together, the mirror carries b
 
   await host.net.resume()
   await waitFor(async () => !!(await member(host.db, joiner.identity)), { timeout: 30000 })
-  await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
+  // the reply read by the mirror settles the admission
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0, { timeout: 30000 })
   await host.net.suspend()
 
   await joiner.net.resume()

@@ -229,9 +229,11 @@ export class Handle extends ReadyResource {
   }
 
   async _open() {
-    if (this._wantsPair) this.pair = new Pairing({ mailbox: this.mailbox, db: this.store })
     await this.store.ready()
-    await this.pair?.ready()
+    if (this._wantsPair) {
+      this.pair = new Pairing({ mailbox: this.mailbox, db: this.store })
+      await this.pair.ready()
+    }
     Ref.attach(this, this.store.refs, this.spec.handles)
     this.root._coreKeys.set(b4a.toHex(this.store.key), this.store.encryptionKey)
     if (!this.parent) {

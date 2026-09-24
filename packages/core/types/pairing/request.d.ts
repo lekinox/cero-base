@@ -4,6 +4,13 @@ export declare const Response: {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
+        key: any;
+        length: any;
+    };
+} | {
+    preencode(state: any, m: any): void;
+    encode(state: any, m: any): void;
+    decode(state: any): {
         invite: any;
         reply: any;
         proof: any;

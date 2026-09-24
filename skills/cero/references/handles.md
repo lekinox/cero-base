@@ -110,7 +110,9 @@ await me.cancel(invite) // stop for good, it is not resumed on the next boot
 
 `room.revoke(invite)` returns `true` the first time and `false` afterwards. It
 needs the remove permission, and refuses a plain member before anything reaches
-the log. It also drops the joins still waiting on a `confirm` invite.
+the log. It also drops the joins still waiting on a `confirm` invite. An invite
+belongs to the room, not to whoever minted it: it keeps working after its minter
+leaves or is removed, until it is revoked.
 
 ## Roles
 
@@ -187,7 +189,8 @@ room.pair.on('candidate', review)
 role and cannot exceed it, nor your own rank. `accept` refuses when the invite
 has expired or the role is not a rank. A request stays pending until a member
 accepts or denies it, across restarts: it lives in the room. The joiner may be
-long gone; the reply waits in your mailbox until it comes back. Another member
+long gone; the keys wait on the mirrors, or are offered again whenever a member
+is online, until it comes back. Another member
 settling it takes it out of `room.pair.pending` here too.
 
 ## Listing your handles

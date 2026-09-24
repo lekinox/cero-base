@@ -216,7 +216,6 @@ export declare class Database extends ReadyResource {
     pinned: boolean;
     keyPair: import("../index.js").KeyPair;
     _onerror: (err: Error) => void;
-    _seating: boolean;
     _room: {
         publicKey: Uint8Array;
         secretKey: Uint8Array;
@@ -496,5 +495,4 @@ export declare class Database extends ReadyResource {
     };
     _checkFields(name: any, row: any): void;
     _admit(verb: any, publicKey: any): Promise<void>;
-    _seat(): Promise<void>;
 }

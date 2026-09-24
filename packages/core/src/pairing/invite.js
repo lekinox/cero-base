@@ -17,6 +17,7 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  * @property {Uint8Array} key           Key of the database the invite opens.
  * @property {Uint8Array} address       The database's address: a join is sealed to it.
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
+ * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 
@@ -27,12 +28,13 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  */
 export class Invite {
   /** @param {InviteFields & { _str?: string }} fields */
-  constructor({ expires, key, address, seed, data = null, _str = null }) {
+  constructor({ expires, key, address, seed, link = null, data = null, _str = null }) {
     this.version = VERSION
     this.expires = expires
     this.key = key
     this.address = address
     this.seed = seed
+    this.link = link
     this.data = data
     this._str = _str
     this._keyPair = null
@@ -90,10 +92,10 @@ export class Invite {
   /**
    * A new invite with a fresh seed.
    *
-   * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, data?: Uint8Array | null }} opts
+   * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null }} opts
    * @returns {Invite}
    */
-  static create({ ttl = 0, key, address, data = null }) {
+  static create({ ttl = 0, key, address, link = null, data = null }) {
     if (key?.byteLength !== 32) throw CeroError.INVALID('key must be a 32-byte buffer')
     if (address?.byteLength !== 32) throw CeroError.INVALID('address must be a 32-byte buffer')
     const expires = ttl ? Date.now() + toMs(ttl) : 0
@@ -103,6 +105,7 @@ export class Invite {
       key,
       address,
       seed: crypto.randomBytes(32),
+      link,
       data
     })
   }

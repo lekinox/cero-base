@@ -37,7 +37,7 @@ const me = await cero('./data', spec, { mirrors: [mirrorKey] })
 
 Every handle and every file is mirrored, nothing else changes. Mirror keys carry through `restore`. Recovery of a second device works through a mirror too, so your data is reachable even when none of your devices is online.
 
-Invites go through the mirror as well: a joiner's join waits there until a member comes online, and the member's reply waits there for the joiner. The invite does not name the mirrors, both sides use their own, so give every device of your app the same `mirrors`. A mirror change is then an app update, and every invite keeps working.
+Invites go through the mirror as well: a joiner's join waits there until a member comes online, and the member's reply waits there for the joiner. The invite does not name the mirrors, both sides use their own, so give every device of your app the same `mirrors`. A mirror change is then an app update, and every invite keeps working. A mirror tells a member device about every join for the room while it is connected, and on connecting, about the 32 it received last. So only when more than 32 joins reach the mirror while no member device is connected to it do the older ones wait, until their joiner and a member are online together.
 
 Running one is a few lines with `blind-peer`:
 

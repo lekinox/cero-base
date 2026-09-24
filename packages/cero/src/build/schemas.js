@@ -91,14 +91,17 @@ export const main = {
     id: required(string),
     role: string
   },
-  // a join on a confirm invite, waiting for a member: `id` is the joiner's writer
+  // a join from its arrival until the joiner has its keys: waiting for a member on a confirm
+  // invite, then admitted and owed its reply. `id` is the joiner's writer
   request: {
     id: required(string),
     identity: required(bytes),
     invite: required(string),
     reply: required(bytes),
     createdAt: int,
-    index: uint
+    index: uint,
+    admitted: bool,
+    expires: int
   }
 }
 

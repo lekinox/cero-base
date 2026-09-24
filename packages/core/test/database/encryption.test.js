@@ -19,7 +19,8 @@ import {
   randomTopic,
   waitFor,
   waitForMirrored,
-  makePeer
+  makePeer,
+  admit
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
@@ -242,26 +243,11 @@ async function makeRoom(t, memberRoles = []) {
 
   const a = await makePeer(t, testnet, { topic, encryptionKey })
   await a.db.bootstrap({ name: 'owner' })
-  await a.db.call('add-member', {
-    id: a.identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
   const members = []
   for (const role of memberRoles) {
     const m = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
-    await a.db.tx(async (tx) => {
-      await tx.call('add-member', {
-        id: m.identity.id,
-        key: m.db.writerKey,
-        role,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      })
-    })
+    await admit(a.db, m.db, role)
     members.push(m)
   }
   return { a, members, testnet, topic, encryptionKey }
@@ -460,20 +446,13 @@ test('rotate: seed-phrase recovery re-derives everything — reads, claims, writ
 test('rotate: reader-role member (no writer) follows rotations on every device', async (t) => {
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
   const readerId = await Identity.create()
-  await a.db.call('add-member', {
-    id: readerId.id,
-    key: Identity.randomBytes(32),
-    role: 'reader',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-
   const phone = await makePeer(t, testnet, {
     topic,
     identity: readerId,
     encryptionKey,
     key: a.db.key
   })
+  await admit(a.db, phone.db, 'reader')
   await a.db.put('messages', { text: 'pre' })
   await waitFor(async () => (await texts(phone.db)).includes('pre'))
 
@@ -515,21 +494,14 @@ test('rotate: a member syncs a rotated room through a blind mirror, writer offli
     { order: 5 }
   )
   await a.bootstrap({ name: 'a' })
-  await a.call('add-member', {
-    id: aId.id,
-    key: a.writerKey,
-    role: 'owner',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
+  // B joins from another device while A is online, so the rotation seals to it; its join is on
+  // the mirror, where A's later nodes link it
   const bId = await Identity.create()
-  await a.call('add-member', {
-    id: bId.id,
-    key: Identity.randomBytes(32),
-    role: 'member',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
+  const opts = { topic, identity: bId, encryptionKey, key: a.key, mirrors: [mirror] }
+  const first = await makePeer(t, testnet, opts)
+  await admit(a, first.db, 'reader')
+  await waitForMirrored(first.db)
+  await first.db.close()
   await a.put('messages', { text: 'pre' })
   await a.rotate()
   await a.put('messages', { text: 'post' })
@@ -725,30 +697,12 @@ test('rotate: divergent offline removals converge — no data loss, both targets
   // A owner, B admin (writable), C and D plain members
   const a = await makePeer(t, testnet, { topic, encryptionKey })
   await a.db.bootstrap({ name: 'a' })
-  await a.db.call('add-member', {
-    id: a.identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-  const admit = async (peer, role) => {
-    await a.db.tx(async (tx) => {
-      await tx.call('add-member', {
-        id: peer.identity.id,
-        key: peer.db.writerKey,
-        role,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      })
-    })
-  }
   const b = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
   const cPeer = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
   const dPeer = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
-  await admit(b, 'admin')
-  await admit(cPeer, 'member')
-  await admit(dPeer, 'member')
+  await admit(a.db, b.db, 'admin')
+  await admit(a.db, cPeer.db, 'member')
+  await admit(a.db, dPeer.db, 'member')
 
   await a.db.put('messages', { text: 'pre' })
   await waitFor(async () => b.db.writable && (await texts(b.db)).includes('pre'))
@@ -907,13 +861,8 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
     encryptionKey,
     key: a.db.key
   })
-  await a.db.call('add-member', {
-    id: memberId.id,
-    key: dev1.db.writerKey,
-    role: 'member',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
+  await admit(a.db, dev1.db, 'member')
+  await admit(a.db, dev2.db, 'member')
 
   await a.db.put('messages', { text: 'pre' })
   await waitFor(async () => (await texts(dev1.db)).includes('pre'))

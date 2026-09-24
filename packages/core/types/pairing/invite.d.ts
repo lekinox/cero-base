@@ -16,6 +16,13 @@ export type InviteFields = {
      */
     seed: Uint8Array;
     /**
+     * The node that added its record: a join links it, so no member applies the join first.
+     */
+    link: {
+        key: Uint8Array;
+        length: number;
+    } | null;
+    /**
      * The app's payload, readable before joining. Unsigned: a hint, not proof.
      */
     data?: Uint8Array | null;
@@ -26,6 +33,7 @@ export type InviteFields = {
  * @property {Uint8Array} key           Key of the database the invite opens.
  * @property {Uint8Array} address       The database's address: a join is sealed to it.
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
+ * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 /**
@@ -39,11 +47,15 @@ export declare class Invite {
     key: Uint8Array<ArrayBufferLike>;
     address: Uint8Array<ArrayBufferLike>;
     seed: Uint8Array<ArrayBufferLike>;
+    link: {
+        key: Uint8Array;
+        length: number;
+    };
     data: Uint8Array<ArrayBufferLike>;
     _str: string;
     _keyPair: any;
     /** @param {InviteFields & { _str?: string }} fields */
-    constructor({ expires, key, address, seed, data, _str }: InviteFields & {
+    constructor({ expires, key, address, seed, link, data, _str }: InviteFields & {
         _str?: string;
     });
     /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */
@@ -75,13 +87,17 @@ export declare class Invite {
     /**
      * A new invite with a fresh seed.
      *
-     * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, data?: Uint8Array | null }} opts
+     * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null }} opts
      * @returns {Invite}
      */
-    static create({ ttl, key, address, data }: {
+    static create({ ttl, key, address, link, data }: {
         ttl?: number | string;
         key: Uint8Array;
         address: Uint8Array;
+        link?: {
+            key: Uint8Array;
+            length: number;
+        } | null;
         data?: Uint8Array | null;
     }): Invite;
     /**
