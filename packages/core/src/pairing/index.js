@@ -167,16 +167,15 @@ export class Pairing extends ReadyResource {
     this.emit('serving', this.serving)
   }
 
-  // wakes the next _sync at the nearest expiry
+  // wakes the next _sync just past the nearest expiry: expired() only holds after it
   _arm(rows) {
     clearTimeout(this._expiry)
-    const next = Math.min(
-      ...rows.filter((row) => row.expires > Date.now()).map((row) => row.expires)
-    )
+    const live = rows.filter((row) => row.expires > 0 && !expired(row))
+    const next = Math.min(...live.map((row) => row.expires))
     if (!Number.isFinite(next)) return
     this._expiry = setTimeout(
       () => this._sync().catch(safetyCatch),
-      Math.min(next - Date.now(), MAX_DELAY)
+      Math.min(next - Date.now() + 1, MAX_DELAY)
     )
   }
 

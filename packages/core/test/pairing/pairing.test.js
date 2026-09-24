@@ -444,6 +444,22 @@ test('expiry: a member who can remove drops the invite once it runs out', async 
   t.pass('the log stops admitting it')
 })
 
+test('expiry: an invite reaching its expiry this very millisecond is still watched', async (t) => {
+  const host = await makeHost(t)
+  await host.pairing.invite({ ttl: 60_000 })
+  const [record] = await invites(host.db)
+  const before = host.pairing._expiry
+  // the expiry timer fired on the millisecond itself: not expired yet, so it must wake again
+  const now = Date.now
+  Date.now = () => record.expires
+  try {
+    host.pairing._arm([record])
+  } finally {
+    Date.now = now
+  }
+  t.not(host.pairing._expiry, before, 'a timer is armed for just past it')
+})
+
 test('serving: true while this member may answer a live invite', async (t) => {
   const host = await makeHost(t)
   t.is(host.pairing.serving, false)
