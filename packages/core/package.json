@@ -144,7 +144,7 @@
   },
   "dependencies": {
     "@hyperswarm/secret-stream": "^6.9.2",
-    "autobee": "2.11.4",
+    "autobee": "2.11.8",
     "b4a": "^1.9.0",
     "bare-crypto": "^1.15.3",
     "bare-fs": "^4.8.1",
