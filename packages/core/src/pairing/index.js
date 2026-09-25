@@ -14,7 +14,7 @@ import { wrap } from '../database/envelope.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE } from '../lib/constants.js'
+import { NAMESPACE, MEMBER } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
 const MAX_DELAY = 2 ** 31 - 1
@@ -27,10 +27,10 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {import('../database/index.js').Database} db  The database the invites open. Its `invites` collection holds them, and apply admits their joins.
  *
  * @typedef {object} InviteOpts
- * @property {string} [role]                        Role granted, at most your own.
+ * @property {string} [role]                        Role granted, at most your own. Member by default.
  * @property {number | string} [ttl]                How long it is valid: ms, or `'12h'`, `'2d'`… Never expires when omitted.
  * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise spent by the first.
- * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as `candidate`s.
+ * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
  *
  * @typedef {object} JoinOpts
@@ -52,7 +52,8 @@ const MAX_DELAY = 2 ** 31 - 1
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
  * that may invite offers them while online, and the first one read settles it for all. A
- * `confirm` invite's joins wait as `candidate`s until a member accepts or denies them.
+ * `confirm` invite's joins wait as requests until a member accepts or denies them; `'request'`
+ * fires for each new one.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -64,14 +65,18 @@ export class Pairing extends ReadyResource {
 
     this.mailbox = mailbox
     this.db = db
-    /** @type {Set<Request>} candidates not settled yet: whoever attaches after one fired goes through these first */
+    /** @type {Set<Request>} requests not answered yet: whoever attaches after one fired goes through these first */
     this.pending = new Set()
     /** Whether this device answers the database's joins: it may invite, and invites or joiners owed their keys exist. */
     this.serving = false
 
+    /** @private */
     this._requests = new Map() // writer id → Request
+    /** @private */
     this._replies = new Map() // writer id → the Post offering its keys
+    /** @private */
     this._expiry = null
+    /** @private */
     this._onupdate = (touched) => {
       if (['*', 'invites', 'requests', 'members'].some((name) => touched.has(name))) {
         this._sync().catch(safetyCatch)
@@ -79,6 +84,7 @@ export class Pairing extends ReadyResource {
     }
   }
 
+  /** @private */
   async _open() {
     await this.mailbox.ready()
     await this.db.ready()
@@ -86,6 +92,7 @@ export class Pairing extends ReadyResource {
     this.db.on('update', this._onupdate)
   }
 
+  /** @private */
   async _close() {
     this.db.off('update', this._onupdate)
     clearTimeout(this._expiry)
@@ -100,13 +107,13 @@ export class Pairing extends ReadyResource {
    * @param {InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async invite({ role = '', ttl = 0, reuse = false, confirm = false, data = null } = {}) {
+  async invite({ role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
     if (!this.opened) await this.ready()
     // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently
-    if (role) await this._checkGrant(role)
+    await this._checkGrant(role)
     // a rank above member is handed out once
-    if (reuse && !grants('member', role || 'member')) {
+    if (reuse && !grants(MEMBER, role)) {
       throw CeroError.INVALID(`a reusable invite admits at most member, not '${role}'`)
     }
 
@@ -145,7 +152,22 @@ export class Pairing extends ReadyResource {
     return true
   }
 
+  /**
+   * A join waiting on a `confirm` invite, by its id in the `requests` collection.
+   *
+   * @param {string} id
+   * @returns {Promise<Request>}
+   */
+  async request(id) {
+    // the row can be read before this device has caught up with it
+    if (!this._requests.has(id)) await this._sync()
+    const request = this._requests.get(id)
+    if (!request) throw CeroError.UNKNOWN('request', id)
+    return request
+  }
+
   // follow the log: the invites that ran out, the joins waiting for a member, the keys owed
+  /** @private */
   async _sync() {
     const me = await this._me()
     const { data: invites } = await this.db.get('invites')
@@ -161,13 +183,14 @@ export class Pairing extends ReadyResource {
     this._arm([...invites, ...requests])
     const inviter = can(role, INVITE)
     const owed = inviter ? requests.filter((row) => row.admitted) : []
-    this._candidates(inviter ? requests.filter((row) => !row.admitted) : [], invites)
+    this._pending(inviter ? requests.filter((row) => !row.admitted) : [], invites)
     await this._answer(owed, role)
     this.serving = inviter && (invites.some((row) => !expired(row)) || owed.length > 0)
     this.emit('serving', this.serving)
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it
+  /** @private */
   _arm(rows) {
     clearTimeout(this._expiry)
     const live = rows.filter((row) => row.expires > 0 && !expired(row))
@@ -179,7 +202,8 @@ export class Pairing extends ReadyResource {
     )
   }
 
-  _candidates(rows, invites) {
+  /** @private */
+  _pending(rows, invites) {
     const live = new Set(rows.map((row) => row.id))
     // settled elsewhere: accepted or denied by another member, or its invite revoked
     for (const [id, request] of this._requests) {
@@ -193,12 +217,13 @@ export class Pairing extends ReadyResource {
       const request = new Request({ pairing: this, invite, row })
       this._requests.set(row.id, request)
       this.pending.add(request)
-      this.emit('candidate', request)
+      this.emit('request', request)
     }
   }
 
   // an admitted joiner is offered its keys by every inviter device online, until one is read.
   // Past the invite's expiry the joiner has given up: a member who can remove drops it instead
+  /** @private */
   async _answer(rows, role) {
     const owed = new Set(rows.map((row) => row.id))
     for (const [id, post] of this._replies) {
@@ -219,6 +244,7 @@ export class Pairing extends ReadyResource {
   }
 
   // kept in memory, not in the outbox: the admission in the log is what outlives a restart
+  /** @private */
   _reply({ id, reply }) {
     const { network } = this.mailbox
     const keys = {
@@ -238,11 +264,13 @@ export class Pairing extends ReadyResource {
     settle().catch(safetyCatch)
   }
 
+  /** @private */
   async _me() {
     return (await this.db.get('members', this.db.identity.id)).data
   }
 
   // `grants` treats an unknown role as "no", so an app role name must fail loudly
+  /** @private */
   async _checkGrant(role) {
     if (!isRank(role)) {
       throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)

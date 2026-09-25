@@ -13,7 +13,7 @@ import { Local } from '../local/index.js'
  * identity (i.e. a stored master seed).
  *
  * @param {string} dir   Cero data directory.
- * @param {any} spec     Built spec — same value passed to `cero(dir, spec)`.
+ * @param {import('./spec.js').Spec} spec  Built spec, the value passed to `cero(dir, spec)`.
  * @returns {Promise<boolean>}  `true` if a master seed exists on disk.
  */
 export async function peek(dir, spec) {

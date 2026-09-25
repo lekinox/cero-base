@@ -8,7 +8,7 @@ import b4a from 'b4a'
  * @param {import('./index.js').Database} db
  * @param {string} name    Ref name (scopes the update ticks).
  * @param {string} col     Collection path (`@ns/name`).
- * @param {(row: any) => boolean} matches
+ * @param {(row: Record<string, unknown>) => boolean} matches
  * @returns {import('streamx').Readable}
  */
 export function makeChanges(db, name, col, matches) {

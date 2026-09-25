@@ -1,8 +1,7 @@
 # chat-desktop
 
-Electron reference app for cero2. A tiny chat client that runs `cero` in a
-node `worker_threads` worker and talks to the React renderer over a JSON-RPC
-bridge.
+Electron reference app for cero. A small chat client that runs `cero` in a Bare
+worker and talks to the React renderer over RPC with the same `cero.*` verbs.
 
 ## Layout
 

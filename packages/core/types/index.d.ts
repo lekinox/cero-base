@@ -9,22 +9,13 @@
 export * from './identity/index.js';
 export { Storage } from './storage/index.js';
 export type StorageRef = import('./storage/index.js').Ref;
-export type StorageSingleResult = import('./storage/index.js').SingleResult;
-export type StorageListResult = import('./storage/index.js').ListResult;
 export type StorageOpts = import('./storage/index.js').StorageOpts;
-export type StoredRow = import('./storage/index.js').StoredRow;
-export type GetByIdResult = import('./storage/index.js').GetByIdResult;
 /**
- * `Ref` / `SingleResult` / `ListResult` are JSDoc typedefs (types, not runtime exports),
- * so they are re-exported as namespaced type aliases — `export { Ref as StorageRef }`
- * fails at import because the.
+ * The database exports its `Ref` already, so storage's typedefs come under storage names; rows
+ * and results are the database's.
  *
  * @typedef {import('./storage/index.js').Ref} StorageRef
- * @typedef {import('./storage/index.js').SingleResult} StorageSingleResult
- * @typedef {import('./storage/index.js').ListResult} StorageListResult
  * @typedef {import('./storage/index.js').StorageOpts} StorageOpts
- * @typedef {import('./storage/index.js').StoredRow} StoredRow
- * @typedef {import('./storage/index.js').GetByIdResult} GetByIdResult
  */
 export * from './network/index.js';
 export * from './database/index.js';

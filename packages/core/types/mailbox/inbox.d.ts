@@ -23,9 +23,12 @@ export declare class Inbox extends ReadyResource {
     box: import("./index.js").Box;
     onmessage: (message: Uint8Array) => unknown;
     onerror: (err: Error) => void;
-    _seen: Set<any>;
-    _session: any;
-    _discovery: import("../network/discovery.js").Discovery;
+    /** @private */
+    _seen;
+    /** @private */
+    _session;
+    /** @private */
+    _discovery;
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} secret
@@ -36,12 +39,14 @@ export declare class Inbox extends ReadyResource {
         onmessage: (message: Uint8Array) => unknown;
         onerror: (err: Error) => void;
     });
-    _open(): Promise<void>;
-    _close(): Promise<void>;
-    _onannounce(key: any): void;
-    _read(id: any, key: any): Promise<void>;
-    _handle({ id, message }: {
-        id: any;
-        message: any;
-    }): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
+    /** @private */
+    private _onannounce;
+    /** @private */
+    private _read;
+    /** @private */
+    private _handle;
 }

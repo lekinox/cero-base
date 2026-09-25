@@ -13,11 +13,11 @@ export declare function formatHandles(tree: Array<{
  * `{ data }` for single refs — as a compact summary.
  *
  * @param {string} ref
- * @param {{ data: any, total?: number, size?: number }} result
+ * @param {{ data: unknown, total?: number, size?: number }} result
  * @returns {string}
  */
 export declare function formatState(ref: string, result: {
-    data: any;
+    data: unknown;
     total?: number;
     size?: number;
 }): string;
@@ -34,20 +34,20 @@ export declare function formatError(ref: string, err: {
 /**
  * Render one applied-op event as a single colored line.
  *
- * @param {{ op: string, name: string, row: any, writerKey?: any, seq?: number }} e
+ * @param {{ op: string, name: string, row: Record<string, unknown>, writerKey?: Uint8Array, seq?: number }} e
  * @returns {string}
  */
 export declare function formatEvent(e: {
     op: string;
     name: string;
-    row: any;
-    writerKey?: any;
+    row: Record<string, unknown>;
+    writerKey?: Uint8Array;
     seq?: number;
 }): string;
 /**
  * Render a stats snapshot as a single colored line.
  *
- * @param {{ network?: { connections: number, peers: number }, bee?: { local: number }, cores?: any[] }} s
+ * @param {{ network?: { connections: number, peers: number }, bee?: { local: number }, cores?: Array<{ length: number, byteLength: number, peers: number }> }} s
  * @returns {string}
  */
 export declare function formatStats(s: {
@@ -58,5 +58,9 @@ export declare function formatStats(s: {
     bee?: {
         local: number;
     };
-    cores?: any[];
+    cores?: Array<{
+        length: number;
+        byteLength: number;
+        peers: number;
+    }>;
 }): string;

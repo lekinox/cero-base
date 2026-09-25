@@ -1,6 +1,7 @@
 import test from 'brittle'
 
-import { get, open, del, rotate } from '../../src/lib/operators.js'
+import { get, open, del } from '../../src/lib/operators.js'
+import { cero } from '../../src/index.js'
 import {
   makeStore,
   makeTestnet,
@@ -32,13 +33,13 @@ test('invites: a member cannot mint an invite above its own rank', async (t) => 
   await a.me.bootstrap({ name: 'a-root' })
 
   const room = await open(a.me.team, { name: 'clinic' })
-  const b = await joinAsRoot(t, testnet, await room.invite({ role: 'member' }))
+  const b = await joinAsRoot(t, testnet, await cero.invite(room, { role: 'member' }))
   await memberCount(room, 2)
 
   // b joined as a member — it may pass on what it holds, and nothing above it
-  await t.exception(b.room.invite({ role: 'owner' }), /exceeds your own role/i)
-  await t.exception(b.room.invite({ role: 'admin' }), /exceeds your own role/i)
-  t.ok(await b.room.invite({ role: 'member' }), 'its own rank is fine')
+  await t.exception(cero.invite(b.room, { role: 'owner' }), /exceeds your own role/i)
+  await t.exception(cero.invite(b.room, { role: 'admin' }), /exceeds your own role/i)
+  t.ok(await cero.invite(b.room, { role: 'member' }), 'its own rank is fine')
 })
 
 test('invites: a member cannot revoke — an owner can, and every replica drops it', async (t) => {
@@ -46,18 +47,18 @@ test('invites: a member cannot revoke — an owner can, and every replica drops 
   const a = await openHandle(t, { testnet })
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
-  const b = await joinAsRoot(t, testnet, await room.invite({ role: 'member' }))
+  const b = await joinAsRoot(t, testnet, await cero.invite(room, { role: 'member' }))
   await memberCount(room, 2)
 
-  const inv = await room.invite({ role: 'member' })
+  const inv = await cero.invite(room, { role: 'member' })
   const rows = async (h) => (await get(h.invites)).data.length
   t.is(await rows(room), 1, 'one live invite')
 
   // refused before anything reaches the log
-  await t.exception(b.room.revoke(inv), /remove permission/i, 'a member is refused')
+  await t.exception(cero.revoke(b.room, inv), /remove permission/i, 'a member is refused')
   t.is(await rows(room), 1, 'the invite row is untouched')
 
-  t.ok(await room.revoke(inv), 'the owner revokes it')
+  t.ok(await cero.revoke(room, inv), 'the owner revokes it')
   await waitUntil(async () => ((await rows(b.room)) === 0 ? true : null))
   t.is(await rows(b.room), 0, "and the member's replica drops it")
 })
@@ -68,7 +69,7 @@ test('invites: survive a close/reopen — answered by a fresh handle', async (t)
   await a.me.bootstrap({ name: 'a-root' })
 
   const room = await open(a.me.team, { name: 'clinic' })
-  const inviteStr = await room.invite()
+  const inviteStr = await cero.invite(room)
   const roomId = room.id
   await room.close()
 
@@ -95,12 +96,12 @@ test('invites: any member replica answers an invite after the minter goes offlin
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
-  const b = await joinAsRoot(t, testnet, await room.invite())
+  const b = await joinAsRoot(t, testnet, await cero.invite(room))
   await waitForConnection(a.net)
 
-  const invite2 = await room.invite()
+  const invite2 = await cero.invite(room)
   // the invite must land in B's replica before A leaves
-  await waitUntil(() => (b.room.pair.serving ? true : null))
+  await waitUntil(() => (b.room._pair.serving ? true : null))
   await room.close()
 
   const c = await joinAsRoot(t, testnet, invite2)
@@ -116,18 +117,18 @@ test('invites: revoke propagates — other members stop answering', async (t) =>
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
-  const b = await joinAsRoot(t, testnet, await room.invite())
+  const b = await joinAsRoot(t, testnet, await cero.invite(room))
   await waitForConnection(a.net)
 
-  const invite3 = await room.invite()
-  await waitUntil(() => (b.room.pair.serving ? true : null))
+  const invite3 = await cero.invite(room)
+  await waitUntil(() => (b.room._pair.serving ? true : null))
 
-  t.ok(room.revoke(invite3), 'revoke found the live invite')
+  t.ok(cero.revoke(room, invite3), 'revoke found the live invite')
   await waitUntil(async () => {
     const { data } = await get(b.room.invites)
     return data.length === 0 ? true : null
   })
-  await waitUntil(() => (b.room.pair.serving ? null : true))
+  await waitUntil(() => (b.room._pair.serving ? null : true))
   t.pass('the other member no longer answers it')
 })
 
@@ -138,7 +139,7 @@ test('invites: reuse admits multiple joiners and its row survives', async (t) =>
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
-  const multi = await room.invite({ reuse: true })
+  const multi = await cero.invite(room, { reuse: true })
   await joinAsRoot(t, testnet, multi)
   await joinAsRoot(t, testnet, multi)
   await memberCount(room, 3)
@@ -153,7 +154,7 @@ test('invites: a removed member comes back only through an invite minted after i
   await a.me.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'records' })
   t.teardown(() => room.close().catch(() => {}))
-  const before = await room.invite({ reuse: true })
+  const before = await cero.invite(room, { reuse: true })
   // a local store keeps its writer, as cero() does, so reopening the room never claims a seat
   const b = await joinAsRoot(t, testnet, before, { local: true })
   await memberCount(room, 2)
@@ -166,7 +167,7 @@ test('invites: a removed member comes back only through an invite minted after i
   t.is(err.code, 'TIMEOUT', 'the old invite admits nobody')
   t.absent((await get(room.members, b.identity.id)).data)
 
-  const back = await open(b.me.team, await room.invite())
+  const back = await open(b.me.team, await cero.invite(room))
   t.teardown(() => back.close().catch(() => {}))
   await memberCount(room, 2)
   t.pass('an invite minted after the removal brings them back')
@@ -179,17 +180,17 @@ test('invites: after a removal and a rotation, old and new invites admit, and th
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
-  const b = await joinAsRoot(t, testnet, await room.invite())
+  const b = await joinAsRoot(t, testnet, await cero.invite(room))
   await waitForConnection(a.net)
-  const before = await room.invite()
+  const before = await cero.invite(room)
 
   await del(room.members, b.identity.id)
-  await rotate(room)
-  const after = await room.invite()
+  await waitUntil(async () => (await get(room.status)).data.epoch === 1 || null)
+  const after = await cero.invite(room)
 
   // the new invite's row is sealed under an epoch the removed member never learns
   t.is(b.room.store.keyring.entropy(room.store.keyring.current), null)
-  await waitUntil(() => (b.room.pair.serving ? null : true))
+  await waitUntil(() => (b.room._pair.serving ? null : true))
   t.pass('the removed member stops answering joins')
 
   await joinAsRoot(t, testnet, before)

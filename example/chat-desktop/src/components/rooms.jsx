@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { useCero } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input, Section, Card, Page } from './ui'

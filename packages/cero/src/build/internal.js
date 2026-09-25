@@ -24,9 +24,45 @@ export const defs = {
   }
 }
 
+// computed on the device, never stored: `get` and `watch` read them like any other ref
+const LIVE = {
+  status: { type: 'status', kind: 'single' },
+  joins: { type: 'joining', root: true },
+  nearby: { type: 'peer', root: true }
+}
+
+/**
+ * @typedef {import('../lib/spec.js').RefInfo} RefInfo
+ * @typedef {{ prim: string, required?: boolean, array?: boolean }} FieldType  A `t` field.
+ * @typedef {{ name: string, type: string, required: boolean, array?: boolean }} Column
+ */
+
+/**
+ * @param {string} ns
+ * @param {boolean} root
+ * @returns {Record<string, RefInfo>}
+ */
+export function live(ns, root) {
+  const out = {}
+  for (const [name, def] of Object.entries(LIVE)) {
+    if (def.root && !root) continue
+    out[name] = {
+      kind: def.kind || 'collection',
+      internal: true,
+      live: true,
+      schema: `@${ns}/${def.type}`
+    }
+  }
+  return out
+}
+
 // a DSL primitive is its hyperdb column type, except bytes (a buffer) and file (an id string)
 const COLUMN = { bytes: 'buffer', file: 'string' }
 
+/**
+ * @param {Record<string, FieldType>} map
+ * @returns {Column[]}
+ */
 export function fields(map) {
   return Object.entries(map).map(([name, m]) => ({
     name,
@@ -44,6 +80,11 @@ function merge(type, base, extra) {
   return { ...base, ...extra }
 }
 
+/**
+ * @param {'main' | 'local' | 'rpc'} scope
+ * @param {Record<string, Record<string, FieldType>>} [extend]
+ * @returns {Array<{ name: string, compact: boolean, fields: Column[] }>}
+ */
 export function types(scope, extend = {}) {
   return Object.entries(schemas[scope]).map(([name, base]) => ({
     name,
@@ -52,6 +93,11 @@ export function types(scope, extend = {}) {
   }))
 }
 
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Record<string, RefInfo & { path: string[] }>}
+ */
 export function refs(ns, scope) {
   return Object.fromEntries(
     Object.entries(defs[scope]).map(([name, def]) => [
@@ -67,6 +113,11 @@ export function refs(ns, scope) {
   )
 }
 
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
 export function collections(ns, scope) {
   const out = Object.entries(defs[scope]).map(([name, def]) => ({
     name,
@@ -81,6 +132,10 @@ export function collections(ns, scope) {
   return out
 }
 
+/**
+ * @param {string} ns
+ * @returns {Array<{ name: string, requestType: string }>}
+ */
 export function dispatches(ns) {
   return [
     { name: 'add-writer', requestType: `@${ns}/writer` },
@@ -113,19 +168,23 @@ const COMMANDS = [
   ['invite', 'req-invite', 'res-invite'],
   ['revoke', 'req-revoke', 'res-ok'],
   ['join', 'req-join', 'res-handle'],
-  ['joining', 'req-empty', 'res-joining'],
   ['cancel', 'req-cancel', 'res-ok'],
   ['open-handle', 'req-open', 'res-handle'],
   ['close-handle', 'req-handle', 'res-ok'],
   ['leave', 'req-handle', 'res-ok'],
-  ['changes', 'req-query', 'res-changes', true],
   ['rotate', 'req-handle', 'res-epoch'],
   ['set-active', 'req-set-active', 'res-ok'],
-  ['suspend', 'req-empty', 'res-ok'],
-  ['resume', 'req-empty', 'res-ok'],
-  ['errors', 'req-empty', 'res-error', true]
+  ['suspend', 'req-handle', 'res-ok'],
+  ['resume', 'req-handle', 'res-ok'],
+  ['errors', 'req-empty', 'res-error', true],
+  ['answer', 'req-answer', 'res-ok'],
+  ['nearby', 'req-nearby', 'res-ok']
 ]
 
+/**
+ * @param {string} ns
+ * @returns {Array<{ name: string, request: { name: string }, response: { name: string, stream?: boolean } }>}
+ */
 export function commands(ns) {
   return COMMANDS.map(([name, req, res, stream]) => ({
     name,

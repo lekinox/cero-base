@@ -16,6 +16,7 @@ import { CeroError } from '../lib/errors.js'
 import { Discovery } from './discovery.js'
 import { Presence } from './presence.js'
 
+/** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
 export function channelTopic(topic, channel) {
   return channel ? hash([topic, b4a.from(channel)]) : topic
 }
@@ -24,16 +25,16 @@ export function channelTopic(topic, channel) {
  * @typedef {object} NetworkOpts
  * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the swarm identity.
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
- * @property {(remotePublicKey: Uint8Array, payload: any) => boolean} [firewall]  Incoming-connection filter.
+ * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
- * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
+ * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
- * @property {(err: any) => void} [onerror]                        Background-task error handler.
+ * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
- * @typedef {{ replicate: (stream: any) => any }} Replicable
+ * @typedef {{ replicate: (stream: import('@hyperswarm/secret-stream')) => unknown }} Replicable
  */
 
 /**
@@ -61,35 +62,46 @@ export class Network extends ReadyResource {
     this.relayThrough = relayThrough || null
     this.backoffs = backoffs || null
     this.channel = channel || null
+    /** @type {import('corestore') | null} */
     this.store = store || null
+    /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map((k) => (typeof k === 'string' ? decodeKey(k) : k))
 
+    /** @private */
     this._swarm = null
+    /** @type {import('protomux-wakeup')} */
     this.wakeup = new ProtomuxWakeup()
     this.presence = new Presence(this, presence)
 
     this.info = null
+    /** @private */
     this._peerInfo = new Map()
+    /** @private */
     this._infoSenders = new Set()
 
+    /** @private */
     this._replicateables = new Set()
+    /** @private */
     this._discoveries = new Set()
+    /** @private */
     this._injected = new Set()
+    /** @private */
     this._blindPeering = null
+    /** @private */
     this._onerror = onerror
   }
 
-  /** @returns {any} The underlying hyperswarm, or null before ready / after close. */
+  /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
   get swarm() {
     return this._swarm
   }
 
-  /** @returns {Map<string, any>} Known peers keyed by public-key string. */
+  /** @returns {Map<string, object>} Known peers keyed by public-key string. */
   get peers() {
     return this.swarm ? this.swarm.peers : new Map()
   }
 
-  /** @returns {Set<any>} Live connection streams — swarm and injected. */
+  /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — swarm and injected. */
   get connections() {
     if (!this._injected.size) return this.swarm ? this.swarm.connections : new Set()
     return new Set([...(this.swarm ? this.swarm.connections : []), ...this._injected])
@@ -100,6 +112,7 @@ export class Network extends ReadyResource {
     return this.swarm?.suspended === true
   }
 
+  /** @private */
   async _open() {
     const opts = {}
     if (this.identity) {
@@ -130,6 +143,7 @@ export class Network extends ReadyResource {
     }
   }
 
+  /** @private */
   async _close() {
     for (const conn of [...this._injected]) {
       try {
@@ -178,9 +192,9 @@ export class Network extends ReadyResource {
    * Feed an externally-established connection — a Bluetooth L2CAP channel, a serial link, an
    * in-process pair, any duplex — into the network.
    *
-   * @param {any} stream  Duplex transport, or a ready NoiseSecretStream.
+   * @param {import('streamx').Duplex} stream  Duplex transport, or a ready NoiseSecretStream.
    * @param {{ isInitiator?: boolean }} [opts]  Which side initiates the noise handshake (raw duplexes only).
-   * @returns {any} The encrypted connection stream.
+   * @returns {import('@hyperswarm/secret-stream')} The encrypted connection stream.
    */
   inject(stream, { isInitiator } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
@@ -209,7 +223,7 @@ export class Network extends ReadyResource {
    * The blind-peering client, built on first use: a mailbox post names mirrors this network
    * may not have been given.
    *
-   * @returns {any}
+   * @returns {import('blind-peering')}
    */
   peering() {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
@@ -322,6 +336,7 @@ export class Network extends ReadyResource {
     }
   }
 
+  /** @private */
   _mirror(bee) {
     const peering = this._blindPeering
     if (!peering || bee.closing) return
@@ -363,6 +378,7 @@ export class Network extends ReadyResource {
   }
 
   // silent until a side has info: bytes on a fresh connection trip hyperswarm's duplicate guard
+  /** @private */
   _attachInfo(conn) {
     const mux = Protomux.from(conn)
     let message = null

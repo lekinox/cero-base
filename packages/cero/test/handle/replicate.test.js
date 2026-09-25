@@ -78,20 +78,13 @@ test('replicate: three-peer public scope converges (A invites B + C)', async (t)
 
   const a = await ceroOpen(t, { testnet })
   const team = await open(a.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
   await put(team.messages, { text: 'from-a' })
 
-  const inviteB = await team.invite({ role: 'member' })
+  const inviteB = await cero.invite(team, { role: 'member' })
   const b = await ceroOpen(t, { testnet })
   const teamB = await open(b.me.team, inviteB)
 
-  const inviteC = await team.invite({ role: 'member' })
+  const inviteC = await cero.invite(team, { role: 'member' })
   const c = await ceroOpen(t, { testnet })
   const teamC = await open(c.me.team, inviteC)
 
@@ -124,17 +117,8 @@ test('replicate: re-joining a room you are in is idempotent', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const team = await open(a.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      if (!e.message.includes('already') && !e.message.includes('duplicate')) {
-        t.fail('candidate accept failed: ' + e.message)
-      }
-    }
-  })
 
-  const inviteB = await team.invite({ role: 'member' })
+  const inviteB = await cero.invite(team, { role: 'member' })
   const b = await ceroOpen(t, { testnet })
   const teamB = await open(b.me.team, inviteB)
   await waitForConnection(a.me.network)
@@ -142,7 +126,7 @@ test('replicate: re-joining a room you are in is idempotent', async (t) => {
   await waitUntil(() => teamB.store.writable)
 
   // join again with a fresh invite for the same room
-  const inviteB2 = await team.invite({ role: 'member' })
+  const inviteB2 = await cero.invite(team, { role: 'member' })
   const teamB2 = await open(b.me.team, inviteB2)
 
   t.is(teamB2.id, teamB.id, 'returns the existing room handle')
@@ -163,17 +147,10 @@ test('replicate: pre-join writes are visible to joiner after admission', async (
 
   const a = await ceroOpen(t, { testnet })
   const team = await open(a.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
 
   for (let i = 0; i < 5; i++) await put(team.messages, { text: `msg-${i}` })
 
-  const invite = await team.invite({ role: 'member' })
+  const invite = await cero.invite(team, { role: 'member' })
   const b = await ceroOpen(t, { testnet })
   const teamB = await open(b.me.team, invite)
 
@@ -261,7 +238,7 @@ test('offline: invite → join → replicate purely over an injected connection'
 
   const team = await open(a.me.team, { name: 'field-expo' })
   await put(team.messages, { text: 'registered-before-join' })
-  const invite = await team.invite({ role: 'member' })
+  const invite = await cero.invite(team, { role: 'member' })
 
   const teamB = await open(b.me.team, invite)
   t.ok(teamB.id, 'late volunteer joined with zero internet')

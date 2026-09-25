@@ -7,16 +7,24 @@ import { CeroError } from '../lib/errors.js'
  * Handle for a single topic membership on a {@link Network}. Wraps a hyperswarm
  * PeerDiscovery session and lets it switch between active/passive announce/lookup.
  */
+/**
+ * @typedef {{ refresh(opts?: object): Promise<void>, flushed(): Promise<boolean>, destroy(): Promise<void> }} Session
+ *   The hyperswarm session `swarm.join()` returns, as far as this file uses it.
+ */
+
 export class Discovery {
   /**
    * @param {import('./index.js').Network} network  Owning network.
-   * @param {any} session  Hyperswarm PeerDiscovery session from `swarm.join()`.
+   * @param {Session} session  Hyperswarm PeerDiscovery session from `swarm.join()`.
    * @param {'active' | 'passive'} mode
    */
   constructor(network, session, mode) {
     this.network = network
+    /** @type {Session} */
     this.session = session
+    /** @private */
     this._mode = mode
+    /** @private */
     this._destroyed = false
   }
 

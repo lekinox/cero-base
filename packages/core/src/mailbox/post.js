@@ -13,7 +13,7 @@ export class Post extends ReadyResource {
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} address
    * @param {Uint8Array | null} message
-   * @param {{ mirrors?: Uint8Array[], core?: any }} [opts]
+   * @param {{ mirrors?: Uint8Array[], core?: import('hypercore') }} [opts]
    */
   constructor(network, address, message, { mirrors = [], core = null } = {}) {
     super()
@@ -21,14 +21,20 @@ export class Post extends ReadyResource {
     this.address = address
     this.message = message
     this.mirrors = mirrors
+    /** @type {Promise<void>} */
     this.delivered = new Promise((resolve) => {
+      /** @private */
       this._ondelivered = resolve
     })
+    /** @private */
     this._core = core
+    /** @private */
     this._session = null
+    /** @private */
     this._discovery = null
   }
 
+  /** @private */
   async _open() {
     const { network, address } = this
     const core = this._core || network.store.get({ name: b4a.toHex(crypto.randomBytes(32)) })
@@ -52,6 +58,7 @@ export class Post extends ReadyResource {
     }
   }
 
+  /** @private */
   async _close() {
     this._session?.destroy()
     await this._discovery?.destroy()

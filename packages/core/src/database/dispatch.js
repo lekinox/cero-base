@@ -35,30 +35,16 @@ const isSig = (b) => b?.byteLength === 64
  * @param {object} opts
  * @param {{ dispatch: { Router: Function }, meta?: { refs?: Record<string, { kind?: string, builtin?: boolean, verb?: string }> } }} opts.spec  Generated hyperdispatch spec.
  * @param {string} opts.ns  Namespace prefix for collection and op names.
- * @param {Record<string, Function>} opts.routes  Custom action handlers keyed by route name.
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
  * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} [opts.hooks]  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} [opts.touch]  Marks a ref written by a hook, so its watchers tick.
- * @param {(view: object, name: string, query?: any) => Promise<any>} [opts.read]  Planned read against a given view, for a hook's `ctx.get`.
- * @param {(fn: Function) => Function} [opts.inHook]  Wraps a route so operators called inside it throw, like a hook.
+ * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} [opts.read]  Planned read against a given view, for a hook's `ctx.get`.
  * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<void> }}
  */
-export function makeDispatcher({
-  spec,
-  ns,
-  routes,
-  onerror,
-  key,
-  onepoch,
-  room,
-  hooks,
-  touch,
-  read,
-  inHook = (fn) => fn
-}) {
+export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }) {
   const router = new spec.dispatch.Router()
 
   const countersCol = `@${ns}/${COUNTERS}`
@@ -159,7 +145,7 @@ export function makeDispatcher({
 
   // hooks run inside the op's transaction on every peer, so their verdict is part of the op
   // a rule never meets a nameless writer: an admitted core with no member row is refused
-  // where a hook or route would have to judge it
+  // where a hook would have to judge it
   async function signer(ctx) {
     const memberId = await getSignerMember(ctx.view, ctx.key)
     const role = memberId ? (await getMember(ctx.view, memberId))?.role : null
@@ -449,7 +435,7 @@ export function makeDispatcher({
   const invites = `@${ns}/invites`
   const requests = `@${ns}/requests`
   // an invite grants at most its minter's rank, or the join it admits would grant more
-  const capped = (r, record) => !record.role || grants(r, record.role)
+  const capped = (r, record) => grants(r, record.role)
   add('add-invite', async (op, ctx) => {
     await requireWrite(ctx)
     if (await ctx.view.get(invites, { id: op.id })) throw CeroError.REFUSED('invite')
@@ -500,6 +486,7 @@ export function makeDispatcher({
     })
     await insert(ctx.view, 'requests', requests, {
       ...request(invite, identity, writer, reply, ts),
+      role,
       admitted: true
     })
     if (!invite.reuse) await spend(ctx.view, invite)
@@ -507,7 +494,8 @@ export function makeDispatcher({
 
   function request(invite, identity, writer, reply, ts) {
     const expires = invite.expires || 0
-    return { id: hid.encode(writer), identity, invite: invite.id, reply, expires, createdAt: ts }
+    const id = hid.encode(writer)
+    return { id, identity, invite: invite.id, role: invite.role, reply, expires, createdAt: ts }
   }
 
   // null when it does not open: anyone may append a join
@@ -540,13 +528,12 @@ export function makeDispatcher({
       const waiting = request(invite, join.identity, ctx.key, join.reply, ts)
       return insert(ctx.view, 'requests', requests, waiting)
     }
-    const role = invite.role || 'member'
     await admit(ctx, {
       invite,
       identity: join.identity,
       writer: ctx.key,
       reply: join.reply,
-      role,
+      role: invite.role,
       ts
     })
   })
@@ -556,8 +543,8 @@ export function makeDispatcher({
     if (!waiting || waiting.admitted) return
     const invite = await ctx.view.get(invites, { id: waiting.invite })
     const r = await getSignerRole(ctx.view, ctx.key)
-    const role = op.role || invite?.role || 'member'
-    if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role || 'member', role)) {
+    const role = op.role || invite?.role
+    if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {
       throw CeroError.REFUSED('invite')
     }
     const { identity, reply, createdAt: ts = 0 } = waiting
@@ -599,24 +586,12 @@ export function makeDispatcher({
     if (info.internal) continue
     if (info.kind === 'handle') continue
     if (info.kind === ACTION) {
-      const route = routes[name]
-      // an action with no local route diverges this peer from those that ran it: surface it
-      if (!route) {
-        add(name, async () => onerror(CeroError.UNKNOWN('route', name)))
-        continue
-      }
-      // a route is a hook with no row: the same ctx, the same refusal semantics
+      // an action does what its after hooks do; one with none here diverges this peer from those
+      // that ran them, so it surfaces
       add(name, async (op, ctx) => {
-        const { memberId, role } = await signer(ctx)
-        const hctx = {
-          op: name,
-          name,
-          row: op,
-          memberId,
-          role,
-          ...operators(ctx.view, memberId, op.updatedAt || op.ts || 0, ctx.seed)
-        }
-        await fire([inHook(route)], hctx, true)
+        const fns = pick(name)
+        if (!fns?.after.length) return onerror(CeroError.UNKNOWN('action hook', name))
+        await hooked(fns, { op: name, name, row: op }, ctx, () => {})
       })
       continue
     }

@@ -102,9 +102,12 @@ test('invite: a z32 string, kept in the database', async (t) => {
   t.ok(Math.abs(parsed.expires - Date.now() - 3600_000) < 5000, "'1h' reads as an hour")
 })
 
-test('invite: the role is a rank', async (t) => {
-  const { pairing } = await makeHost(t)
+test('invite: the role is a rank, member by default', async (t) => {
+  const { pairing, db } = await makeHost(t)
   await t.exception(pairing.invite({ role: 'volunteer' }), /not a rank/)
+  await pairing.invite()
+  const [record] = await invites(db)
+  t.is(record.role, 'member')
 })
 
 test('invite: ttl is ms or a duration', async (t) => {
@@ -174,7 +177,7 @@ test('join: apply admits the joiner, and the reply carries the keys and epochs',
   const { host, joiner } = await makeHostJoiner(t)
   await host.db.rotate()
   const invite = await host.pairing.invite({ role: 'member' })
-  host.pairing.on('candidate', () => t.fail('no candidate: nobody has to accept'))
+  host.pairing.on('request', () => t.fail('no request: nobody has to accept'))
 
   const result = await joiner.join(invite)
   t.alike(result.key, host.db.key)
@@ -294,16 +297,18 @@ test('expiry: a joiner admitted past its invite is removed, not answered', async
 
 // ─── confirm invites: a member accepts ─────────────────────────────────────
 
-test('confirm: a join waits as a candidate until a member accepts it', async (t) => {
+test('confirm: a join waits as a request until a member accepts it', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite({ role: 'member', confirm: true })
-  const asked = new Promise((resolve) => host.pairing.once('candidate', resolve))
+  const asked = new Promise((resolve) => host.pairing.once('request', resolve))
   const joining = joiner.join(invite)
 
   const request = await asked
   t.alike(request.identity, joiner.identity.publicKey, 'the joiner identity, proven')
-  t.is(request.invite.role, 'member')
+  t.is(request.role, 'member', 'asking for the role of its invite')
+  t.is((await host.db.get('requests', request.id)).data.role, 'member', 'the row carries it too')
   t.alike([...host.pairing.pending], [request], 'listed until settled')
+  t.is(await host.pairing.request(request.id), request, 'found by the id of its row')
   t.absent(await member(host.db, joiner.identity), 'not admitted yet')
 
   await request.accept()
@@ -312,6 +317,7 @@ test('confirm: a join waits as a candidate until a member accepts it', async (t)
   await waitFor(() => host.pairing.pending.size === 0)
   await waitFor(async () => (await host.db.get('requests')).data.length === 0)
   t.pass('the request settles once the joiner read its keys')
+  await t.exception(host.pairing.request(request.id), /unknown request/)
 })
 
 test('confirm: accept checks the role and the expiry first', async (t) => {
@@ -319,10 +325,10 @@ test('confirm: accept checks the role and the expiry first', async (t) => {
   const capped = await host.pairing.invite({ role: 'member', confirm: true })
   const open = await host.pairing.invite({ confirm: true })
   const requests = []
-  host.pairing.on('candidate', (request) => requests.push(request))
+  host.pairing.on('request', (request) => requests.push(request))
   const joining = [joiner.join(capped).catch((e) => e), joiner.join(open).catch((e) => e)]
   await waitFor(() => requests.length === 2)
-  const [first, second] = requests[0].invite.role ? requests : [...requests].reverse()
+  const [first, second] = requests
 
   await t.exception(first.accept({ role: 'owner' }), /exceeds the invite role/)
   await t.exception(second.accept({ role: 'volunteer' }), /not a rank/)
@@ -336,7 +342,7 @@ test('confirm: accept checks the role and the expiry first', async (t) => {
 test('confirm: a member can deny with a reason', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite({ confirm: true })
-  host.pairing.on('candidate', (request) => request.deny('not-today'))
+  host.pairing.on('request', (request) => request.deny('not-today'))
 
   const err = await joiner.join(invite).catch((e) => e)
   t.is(err.code, 'DENIED')
@@ -350,7 +356,7 @@ test('confirm: accepting one join spends a single-use invite, the others are dro
   const two = await makeJoiner(t)
   const invite = await host.pairing.invite({ role: 'admin', confirm: true })
   const requests = []
-  host.pairing.on('candidate', (request) => requests.push(request))
+  host.pairing.on('request', (request) => requests.push(request))
   const joining = [one, two].map((j) => j.join(invite, { timeout: 5000 }).catch((e) => e))
   await waitFor(() => requests.length === 2)
 

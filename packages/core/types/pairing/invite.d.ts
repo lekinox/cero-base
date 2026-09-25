@@ -52,8 +52,10 @@ export declare class Invite {
         length: number;
     };
     data: Uint8Array<ArrayBufferLike>;
-    _str: string;
-    _keyPair: any;
+    /** @private */
+    _str;
+    /** @private */
+    _keyPair;
     /** @param {InviteFields & { _str?: string }} fields */
     constructor({ expires, key, address, seed, link, data, _str }: InviteFields & {
         _str?: string;
@@ -74,7 +76,8 @@ export declare class Invite {
     prove(writer: Uint8Array): Uint8Array;
     /** @returns {string} The z32 wire form. */
     toString(): string;
-    _pair(): any;
+    /** @private */
+    private _pair;
     /**
      * Whether `proof` is the invite `id`'s signature over `writer`.
      *

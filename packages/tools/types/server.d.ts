@@ -1,26 +1,13 @@
 import { Framed } from './protocol.js';
 export type ReqFrame = {
-    id?: string;
+    id?: number;
     method?: string;
     ref?: string;
     handleId?: string;
     query?: object;
-    cancelId?: string;
+    cancelId?: number;
 };
-/**
- * A decoded request frame. Carries the correlation `id` and `method`, plus the
- * per-method fields a handler reads: `ref`, `handleId`, `query`, `cancelId`.
- * @typedef {{ id?: string, method?: string, ref?: string, handleId?: string, query?: object, cancelId?: string }} ReqFrame
- */
-/**
- * Read-only inspection server over a local Duplex `stream`.
- *
- * @param {object} stream  A streamx Duplex carrying length-prefixed JSON frames.
- * @param {object} me  The live root cero handle.
- * @param {{ events?: { snapshot(): unknown, subscribe(fn: (e: object) => void): () => void }, stats?: { snapshot(): unknown, subscribe(fn: (s: object) => void): () => void }, redact?: (ref: string, row: Record<string, unknown>) => Record<string, unknown> }} [opts]
- * @returns {{ close(): void }}
- */
-export declare function serve(stream: object, me: object, opts?: {
+export type ServeOpts = {
     events?: {
         snapshot(): unknown;
         subscribe(fn: (e: object) => void): () => void;
@@ -30,19 +17,46 @@ export declare function serve(stream: object, me: object, opts?: {
         subscribe(fn: (s: object) => void): () => void;
     };
     redact?: (ref: string, row: Record<string, unknown>) => Record<string, unknown>;
-}): {
+    token?: string | null;
+};
+/**
+ * A decoded request frame. Carries the correlation `id` and `method`, plus the
+ * per-method fields a handler reads: `ref`, `handleId`, `query`, `cancelId`.
+ * @typedef {{ id?: number, method?: string, ref?: string, handleId?: string, query?: object, cancelId?: number }} ReqFrame
+ *
+ * @typedef {{ events?: { snapshot(): unknown, subscribe(fn: (e: object) => void): () => void }, stats?: { snapshot(): unknown, subscribe(fn: (s: object) => void): () => void }, redact?: (ref: string, row: Record<string, unknown>) => Record<string, unknown>, token?: string | null }} ServeOpts
+ */
+/**
+ * Read-only inspection server over a local Duplex `stream`.
+ *
+ * @param {import('streamx').Duplex} stream  A streamx Duplex carrying length-prefixed JSON frames.
+ * @param {import('@cero-base/cero').Context} me  The live root cero handle.
+ * @param {ServeOpts} [opts]
+ * @returns {{ close(): void }}
+ */
+export declare function serve(stream: import('streamx').Duplex, me: import('@cero-base/cero').Context, opts?: ServeOpts): {
     close(): void;
 };
 export declare class TapServer {
-    stream: any;
-    me: any;
-    redact: any;
-    opts: {};
-    tracked: Map<any, any>;
-    _authed: boolean;
+    stream: import("streamx").Duplex<import("streamx").DuplexEvents>;
+    /** @type {import('@cero-base/cero').Context} */
+    me: import('@cero-base/cero').Context;
+    /** @type {(ref: string, row: Record<string, unknown>) => Record<string, unknown>} */
+    redact: (ref: string, row: Record<string, unknown>) => Record<string, unknown>;
+    opts: ServeOpts;
+    /** @type {Map<number, () => void>} */
+    tracked: Map<number, () => void>;
+    /** @private */
+    _authed;
     wire: Framed;
-    _cleanup: () => void;
-    constructor(stream: any, me: any, opts?: {});
+    /** @private */
+    _cleanup;
+    /**
+     * @param {import('streamx').Duplex} stream
+     * @param {import('@cero-base/cero').Context} me
+     * @param {ServeOpts} [opts]
+     */
+    constructor(stream: import('streamx').Duplex, me: import('@cero-base/cero').Context, opts?: ServeOpts);
     /**
      * Dispatch an inbound request frame to its named method handler.
      * @param {ReqFrame} req  A decoded request frame, expected to carry `id` and `method`.
@@ -90,10 +104,16 @@ export declare class TapServer {
      * @returns {void}
      */
     close(): void;
-    _resolveRef(req: any): any;
-    _source(req: any, src: any): void;
-    _track(id: any, off: any): void;
-    _drop(id: any): void;
-    _send(obj: any): void;
-    _teardown(): void;
+    /** @private */
+    private _resolveRef;
+    /** @private */
+    private _source;
+    /** @private */
+    private _track;
+    /** @private */
+    private _drop;
+    /** @private */
+    private _send;
+    /** @private */
+    private _teardown;
 }

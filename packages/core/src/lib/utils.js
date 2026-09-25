@@ -40,13 +40,16 @@ export function can(role, perm) {
 }
 
 // an unknown role grants nothing; callers taking a role from an app must check it
+/** @type {(role: string) => boolean} */
 export function isRank(role) {
   return RANK[role] != null
 }
 
+/** @type {(a: string, b: string) => boolean} */
 export function grants(a, b) {
   return RANK[a] != null && RANK[b] != null && RANK[a] >= RANK[b]
 }
+/** @type {(a: string, b: string) => boolean} */
 export function outranks(a, b) {
   return RANK[a] != null && RANK[b] != null && RANK[a] > RANK[b]
 }
@@ -114,6 +117,7 @@ const fold = (s) =>
     .replace(/\s/g, '')
 
 // every term must be a substring of a searched field
+/** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
 export function searchHit(row, term, fields) {
   const terms = String(term).split(/\s+/).map(fold).filter(Boolean)
   // memberId is a random z32, it would produce spurious hits
@@ -126,9 +130,10 @@ export function searchHit(row, term, fields) {
  * The in-memory query grammar over rows: equality on any non-reserved field,
  * id ranges, `search`, then `reverse` and `limit`.
  *
- * @param {any[]} rows
- * @param {Record<string, any>} [query]
- * @returns {any[]}
+ * @template {Record<string, unknown>} T
+ * @param {T[]} rows
+ * @param {Record<string, unknown>} [query]
+ * @returns {T[]}
  */
 export function filter(rows, query) {
   if (!query) return rows

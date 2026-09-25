@@ -14,9 +14,9 @@ import { Invite } from '@cero-base/core/invite'
  */
 export class Bluetooth extends ReadyResource {
   /**
-   * @param {object} handle           Root cero Handle (network + identity + channel).
+   * @param {import('../handle/index.js').Handle} handle  The root: its network, identity and channel.
    * @param {object} [opts]
-   * @param {any} [opts.backend]      Injected bare-bluetooth-shaped backend (tests); omitted → ble-swarm loads its own, null/false → unsupported.
+   * @param {object | null} [opts.backend]  Injected bare-bluetooth-shaped backend (tests); omitted → ble-swarm loads its own, null/false → unsupported.
    * @param {boolean} [opts.autoStart]  Start on handle open (from `cero({ bluetooth: true })`).
    * @param {number} [opts.maxOutbound]  Max concurrent outbound links; gossip covers the rest.
    * @param {number} [opts.maxInbound]   Max concurrent inbound sessions; newcomers past this are refused.
@@ -24,15 +24,20 @@ export class Bluetooth extends ReadyResource {
    */
   constructor(handle, { backend, autoStart, maxOutbound, maxInbound, pipe } = {}) {
     super()
+    /** @private */
     this._handle = handle
+    /** @private */
     this._autoStart = autoStart === true
-    /** @type {{ hex: string, count: number, timer: any } | null} active invite rendezvous (single topic — one at a time) */
+    /** @type {{ hex: string, count: number, timer: ReturnType<typeof setTimeout> | null } | null} active invite rendezvous (single topic — one at a time) */
     this._announce = null
+    /** @private */
     this._restorePending = false
 
     const identity = handle.identity
     // one mesh topic per channel, or a global one when channelless; strangers still sync nothing
+    /** @private */
     this._topic = crypto.hash(b4a.from(handle.network.channel || 'cero-ble'))
+    /** @type {import('ble-swarm')} */
     this.swarm = new BluetoothSwarm({
       backend,
       // the swarm identity, so one person over Wi-Fi and BLE dedupes to one peer
@@ -61,15 +66,17 @@ export class Bluetooth extends ReadyResource {
     return this.swarm.state
   }
 
-  /** @returns {Map<string, any>} Live BLE links, keyed by peer public key. */
+  /** @returns {Map<string, object>} Live BLE links, keyed by peer public key. */
   get peers() {
     return this.swarm.peers
   }
 
+  /** @private */
   async _open() {
     if (this._autoStart) await this.start()
   }
 
+  /** @private */
   async _close() {
     this._clearAnnounce()
     await this.swarm.destroy()
@@ -156,12 +163,14 @@ export class Bluetooth extends ReadyResource {
     await this.swarm.resume()
   }
 
+  /** @private */
   _stopAnnounce() {
     this._clearAnnounce()
     if (this.swarm.peers.size > 0) this._restorePending = true
     else this.swarm.setTopic(this._topic).catch(safetyCatch)
   }
 
+  /** @private */
   _clearAnnounce() {
     const e = this._announce
     if (!e) return

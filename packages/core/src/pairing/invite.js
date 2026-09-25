@@ -36,7 +36,9 @@ export class Invite {
     this.seed = seed
     this.link = link
     this.data = data
+    /** @private */
     this._str = _str
+    /** @private */
     this._keyPair = null
   }
 
@@ -72,6 +74,7 @@ export class Invite {
     return this._str
   }
 
+  /** @private */
   _pair() {
     this._keyPair ??= crypto.keyPair(crypto.hash([NS_KEY, this.seed]))
     return this._keyPair

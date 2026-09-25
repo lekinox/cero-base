@@ -16,8 +16,7 @@ React Native / Expo chat reference app built on top of [cero](../../packages/cer
 
 - The Bare worklet owns the real cero instance: storage, hyperswarm, autobees.
 - The JS thread connects via `@cero-base/cero/client`'s `connect()` over `BareKit.IPC`.
-  Handle methods (`invite`, `tx`, `call`, `close`, `leave`) and operators
-  (`put`, `set`, `get`, `watch`, `del`, `count`, `open`) all proxy through HRPC.
+  Every verb (`put`, `get`, `watch`, `open`, `invite`, `leave` and the rest) proxies through HRPC.
 
 ## Run
 

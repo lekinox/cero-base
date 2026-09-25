@@ -1,6 +1,8 @@
-# cero
+# Cero Base
 
-Local-first, peer-to-peer data for apps: describe a schema, cero stores it on the device, syncs it between a user's devices and shares it with the people they invite. No server.
+Local-first, peer-to-peer data for apps: describe a schema, it is stored on the device, synced between a user's devices and shared with the people they invite. No server.
+
+Cero Base is two packages: Core (`@cero-base/core`, the primitives) and Cero (`@cero-base/cero`, the SDK apps use). Say "Cero Base" for the project, "Cero" and "Core" for the packages, `cero` in code.
 
 Read `docs/README.md` first, then `skills/cero/SKILL.md` for the short version of the API. The source wins over both.
 
@@ -25,8 +27,9 @@ npm install
 npm test                  # the three packages in parallel under Bare, one file per process
 npm run test:node         # the same under Node
 npm run test:core         # one package
-npm run lint              # prettier + lunte
+npm run lint              # prettier + lunte + docs name only API the source has
 npm run build:types --workspaces --if-present   # regenerate types/ from JSDoc, commit the result
+npm run build:skill                             # regenerate skills/cero/references from docs/, commit the result
 npm run release <patch|minor|major>             # tests, smoke, tag, publish, push
 ```
 
@@ -43,7 +46,8 @@ A single file: `cd packages/core && npx brittle-bare test/database/database.test
 - Tests live under `test/<module>/` mirroring `src/`, one file per module with unit and RPC cases together. Helpers in `test/helpers/index.js`, fixtures in `test/fixtures/`.
 - Wait on conditions with `waitFor` / `waitUntil`, never a bare sleep. Every peer gets `bootstrap: testnet.bootstrap`, never the live DHT.
 - Red-check every guard you add: delete it, watch its test fail, restore it.
-- The `types/` folders are generated. Never edit them by hand; CI diffs them.
+- The `types/` folders and `skills/cero/references` (except `testing.md`) are generated. Never edit them by hand; CI diffs them.
 - Release order is commit, bump, publish. Never publish uncommitted source. No co-author trailers in commits.
 - Example apps' dependencies are hands-off: report drift, do not upgrade them.
 - Notes, plans and evaluations go in `.claude/` (ignored), never in `docs/`.
+- A change to the public API updates `docs/`, the skill (`npm run build:skill`) and the examples in the same change, never later. `npm run lint` fails on a doc naming API the source no longer has.

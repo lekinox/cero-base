@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
@@ -100,7 +100,7 @@ export function Room({ onClose }) {
             </Button>
           </div>
         ) : (
-          <Button onClick={() => room.invite().then(setInvite)}>Invite</Button>
+          <Button onClick={() => cero.invite(room).then(setInvite)}>Invite</Button>
         )}
       </div>
 

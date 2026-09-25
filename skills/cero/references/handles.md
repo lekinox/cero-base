@@ -1,243 +1,214 @@
-# Handles
+# Sharing
+
+Open rooms, invite people into them, confirm who joins, give them roles and remove them.
 
 ```js
+// me from the quickstart; the schema declares room: { messages: t.collection({ text: t.string }) }
 const room = await cero.open(me.room, { name: 'general' })
-const invite = await room.invite({ role: 'member' })
+const invite = await cero.invite(room) // a string: send it any way you like
 
-// on a friend's device
-const room = await cero.open(me.room, { invite })
+// on a friend's device, with their own me
+const joined = await cero.open(me.room, invite)
+await cero.put(joined.messages, { text: 'hi, I am in' })
 ```
 
-Everything is a handle. `me` is the root handle, the user. A child handle is a
-space the user opens from `me` and shares with other people: opened with a name,
-shared as a string, joined with the same string.
+A room is a space you share: its own data, its own members (the people in it) and its own key.
+`me.room` exists because the schema declares a `room` type as a nested object; call it a team, a
+project or a chat. `me` and every room are contexts you pass to `cero.*`: they have no methods, and
+refs such as `room.messages` hang off them.
 
-`me.room` exists because the schema declared a `room` handle type, a nested
-object. Child handles share the root's identity, network and storage, and each
-one is its own database with its own encryption key. The examples call theirs
-rooms; a team, a project or a chat is the same thing.
-
-## On this page
-
-- [Opening a handle](#opening-a-handle)
-- [Invites](#invites)
-- [Joining](#joining)
-- [Roles](#roles)
-- [Members and devices](#members-and-devices)
-- [Accepting joiners](#accepting-joiners)
-- [Listing your handles](#listing-your-handles)
-- [Leave, close, reopen](#leave-close-reopen)
-- [Events](#events)
-
-## Opening a handle
+## Open a room
 
 ```js
-const room = await cero.open(me.room, { name: 'general' }) // create
-const joined = await cero.open(me.room, { invite }) // join
-const again = await cero.open(me.room, { id: room.id }) // reopen
+const room = await cero.open(me.room, { name: 'general' }) // create it: you are its owner
+const again = await cero.open(me.room, { id: room.id }) // reopen one from your list
+const joined = await cero.open(me.room, { invite }) // join: invite is a string someone sent you
 ```
 
-`cero.open` on a handle-kind ref creates, joins or reopens one.
-
-| call                             | what it does                       |
-| -------------------------------- | ---------------------------------- |
-| `cero.open(me.room, { name })`   | Creates one. You become its owner. |
-| `cero.open(me.room, invite)`     | Joins by invite string.            |
-| `cero.open(me.room, { invite })` | Same, in object form.              |
-| `cero.open(me.room, { id })`     | Reopens one already in your list.  |
-| `cero.open(me.room)`             | Creates an unnamed one.            |
-
-Create options are `{ name, routes }`. An unknown handle type
-throws `UNKNOWN`. `room.id` is the z32 database key. Handles are isolated:
-`me.messages` and `room.messages` are different collections, and one room's key
+`{ name }`, or nothing, creates a room. `{ id }` reopens one: an id not in your list throws
+`UNKNOWN`, the id of another type's room `INVALID`. An invite string, bare or as `{ invite }`, joins.
+Rooms are isolated: `me.messages` and `room.messages` are different collections, and one room's key
 never opens another.
 
-## Invites
+## Invite someone
 
-`room.invite(opts)` mints a z32 string. It is a child-handle method. Calling it
-on the root throws `INVALID`.
-
-| option    | type               | default | meaning                                                                                                      |
-| --------- | ------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
-| `role`    | `string`           | `''`    | Role granted. Must be a rank, and cannot exceed your own.                                                    |
-| `ttl`     | `number \| string` | `0`     | How long it is valid: ms, or `'12h'`, `'2d'`. `0` never expires.                                             |
-| `reuse`   | `boolean`          | `false` | Admit more than one joiner, at most `member`. Otherwise single use.                                          |
-| `confirm` | `boolean`          | `false` | Its joins wait for a member to accept them. See [Accepting joiners](#accepting-joiners).                     |
-| `data`    | `Uint8Array`       | `null`  | A payload for the joiner, read with `Invite.parse(invite).data` before joining. Unsigned: a hint, not proof. |
+An invite is a string that lets its holder join one room.
 
 ```js
-const invite = await room.invite({ role: 'member', ttl: '1d' })
+const invite = await cero.invite(room, { role: 'reader', ttl: '1d' })
 ```
 
-Every minted invite is also a row in the room's `invites` collection. The row
-replicates, so any member's device answers a join after the minting device goes
-offline, and the invite survives a close and reopen. A device answers its rooms'
-joins whenever it is online, not only while the app has the room open: at boot
-cero reopens every room that still has invites. A single-use row disappears
-everywhere once a join spends it. A `reuse` row stays.
+| option    | default    | meaning                                                             |
+| --------- | ---------- | ------------------------------------------------------------------- |
+| `role`    | `'member'` | The role the joiner gets, at most your own.                         |
+| `ttl`     | never      | How long it is valid: ms, or `'12h'`, `'2d'`.                       |
+| `reuse`   | single use | `true` admits more than one joiner, at most as `member`.            |
+| `confirm` | `false`    | `true` makes each join wait for a member to accept it.              |
+| `data`    | `null`     | Bytes the joiner reads before joining. Unsigned: a hint, not proof. |
 
-## Joining
+A role that is not a rank, a `ttl` that is not a duration, or `reuse` above `member` throws
+`INVALID`; a role above your own throws `DENIED`. Only rooms have invites: `cero.invite(me)` throws
+`INVALID`.
 
 ```js
-const room = await cero.open(me.room, { invite })
-await cero.put(room.messages, { text: 'hi, I am in' })
+import b4a from 'b4a'
+import { Invite } from '@cero-base/core/invite' // add @cero-base/core to your dependencies
 
-await room.revoke(invite) // on the host: it admits nobody from now on
+const code = await cero.invite(room, { data: b4a.from('from ana') })
+Invite.parse(code).data // on the joiner's side, before joining
 ```
 
-`cero.open(me.room, invite)` on the joiner's side pairs and returns the room. It
-shows up in their `handles` collection under the same id the host has. Joining is
-coalesced by room, not by invite string: two joins in flight for the same room
-resolve to one handle, and joining a room you already have open returns that
-handle instead of pairing again.
+Any device whose member can invite (member, admin, owner, never a reader) answers joins while online,
+not only the one that minted the invite. Cero reopens rooms with live invites at boot, so the app
+need not have the room open.
 
-`cero.open` waits up to the join timeout, 30000 ms by default, then rejects with
-`TIMEOUT`. The join itself goes on: it is saved on the device, survives a restart,
-and once a member answers, even if every member was offline when you joined, the
-room is added to `me.handles`. Watch it to see the room arrive, the same way over
-`connect()`; in the same process the `handle` event also fires. It ends admitted,
-denied, expired or cancelled, and once nobody waits on it, a denial or expiry
-reaches `onerror`. A fresh invite for the same room takes over from the old one.
-
-An admin or owner invite hands its rank out once. A reusable invite admits at most
-`member`, and the first join to land spends a single-use invite, so one racing it
-admits nobody.
+## Revoke an invite
 
 ```js
-const pending = await me.joining() // the invites still waiting for an answer
-await me.cancel(invite) // stop for good, it is not resumed on the next boot
+await cero.revoke(room, code) // true the first time, false afterwards
 ```
 
-`room.revoke(invite)` returns `true` the first time and `false` afterwards. It
-needs the remove permission, and refuses a plain member before anything reaches
-the log. It also drops the joins still waiting on a `confirm` invite. An invite
-belongs to the room, not to whoever minted it: it keeps working after its minter
-leaves or is removed, until it is revoked. A removed member comes back only
-through an invite minted after its removal, never one it held or saw before.
+Keep the invite string: `cero.revoke` takes it, and the rows in `room.invites` keep only a hex id.
+Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and drops the joins still
+waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired or
+spent.
 
-## Roles
+## Join a room
 
 ```js
-const invite = await room.invite({ role: 'reader' }) // read only
-await cero.set(room.members, { id: memberId, role: 'admin' }) // promote, needs assign
-await cero.del(room.members, memberId) // remove, needs remove
-
-import { can } from '@cero-base/core/utils'
-can('member', 'invite') // true
-can('reader', 'write') // false
-```
-
-There are four ranks. A role that is not one of them grants nothing and is
-rejected wherever a role is accepted.
-
-| role     | rank | write | invite | assign | remove |
-| -------- | ---- | ----- | ------ | ------ | ------ |
-| `owner`  | 3    | yes   | yes    | yes    | yes    |
-| `admin`  | 2    | yes   | yes    | yes    | yes    |
-| `member` | 1    | yes   | yes    | no     | no     |
-| `reader` | 0    | no    | no     | no     | no     |
-
-Minting an invite is capped against your own rank. Changing a role needs the
-assign permission, and the assigner must be allowed to hand out the new role and
-outrank the current one. Removing a member needs the remove permission and must
-outrank the target. A member may always remove themselves. A demotion that takes
-write away takes the writer seat with it.
-
-`can`, `grants`, `outranks` and `isRank` are exported from
-`@cero-base/core/utils` if you want to check a rank yourself.
-
-## Members and devices
-
-Every handle carries `members` and `devices`. A member row is
-`{ id, key, role, name, createdAt, updatedAt }` plus anything added with
-`t.extend`. A device row is `{ id, memberId, name, isMobile, ... }`, where
-`memberId` links a writer key back to its member. One member can have many
-devices.
-
-```js
-const { data: members } = await cero.get(room.members)
-
-await cero.del(room.members, memberId) // remove a member and all their devices
-await cero.del(room.devices, deviceId) // revoke one device, the member stays
-```
-
-Removal is observable: other members see an ordinary delete in a `changes`
-stream, and the removed member sees their own removal, because the delete is
-appended under an epoch they can still read.
-
-## Accepting joiners
-
-The room admits a join itself: the joiner writes it into its own core, signed
-with the invite, and any member device with the room open applies it. Nobody has
-to accept.
-
-To approve joins yourself, mint the invite with `confirm: true`. Its joins wait
-as candidates on every member device that can invite.
-
-```js
-const invite = await room.invite({ role: 'member', confirm: true })
-
-const review = async (cand) => {
-  if (await approve(cand)) await room.accept(cand)
-  else await cand.deny('not now')
+try {
+  const room = await cero.open(me.room, invite)
+  await cero.put(room.messages, { text: 'hi, I am in' })
+} catch (err) {
+  // tell is your UI
+  if (err.code === 'TIMEOUT') tell('no member online yet, the room arrives once one answers')
 }
-// requests still waiting, some from before a restart, then the new ones
-for (const cand of room.pair.pending) review(cand)
-room.pair.on('candidate', review)
 ```
 
-`room.accept(candidate, { role })` admits it. `role` defaults to the invite's
-role and cannot exceed it, nor your own rank. `accept` refuses when the invite
-has expired or the role is not a rank. A request stays pending until a member
-accepts or denies it, across restarts: it lives in the room. The joiner may be
-long gone; the keys wait on the mirrors, or are offered again whenever a member
-is online, until it comes back. Another member
-settling it takes it out of `room.pair.pending` here too.
+`cero.open` waits a fixed 30 s, then rejects `TIMEOUT`. The join goes on, across restarts: once a
+member answers, the room appears in `me.room`, so watch that list. An expired invite rejects
+`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
 
-## Listing your handles
+```js
+const { data: joins } = await cero.get(me.joins) // [{ id, type, invite }], still waiting
+await cero.cancel(me, invite) // give up for good: true when it cancelled one
+```
 
-Reading a handle ref lists your child handles of that type out of `handles`, and
-`cero.watch(me.room)` streams the same list live.
+A join on a revoked or spent invite gets no answer: it waits until the invite's ttl, or for good
+without one, so cancel it. A second joiner on a single-use invite is ignored. An invite to a room you
+already have returns that room; a newer invite to the same room takes over. Once nobody waits on a
+join, a denial or expiry reaches `onerror`.
+
+## Confirm joins
+
+A plain invite lets the joiner in by itself: the invite is the approval. To approve each join
+yourself, mint the invite with `confirm: true`. Its joins wait in `room.requests`: every member sees
+them, and members who can invite answer them.
+
+```js
+// the host; approve is your app's prompt
+const invite = await cero.invite(room, { confirm: true })
+
+for await (const { data: requests } of cero.watch(room.requests, { admitted: false })) {
+  for (const request of requests) {
+    // request.identity: the joiner's key, as bytes. request.role: the invite's role
+    if (await approve(request)) await cero.accept(room, request)
+    else await cero.deny(room, request, 'not now')
+  }
+}
+```
+
+```js
+// the joiner; tell is your UI
+try {
+  const room = await cero.open(me.room, invite) // resolves once a member accepts
+  await cero.put(room.messages, { text: 'thanks' })
+} catch (err) {
+  if (err.code === 'DENIED') tell('the room said no')
+  if (err.code === 'TIMEOUT') tell('waiting for a member to accept')
+}
+```
+
+- `hid.encode(request.identity)`, from `hypercore-id-encoding`, is the id their member row will have.
+  `room.requests` also holds admitted joins until their keys are delivered (`admitted: true`), hence
+  the `{ admitted: false }` filter.
+- `cero.accept(room, request)` admits at the invite's role, `{ role: 'reader' }` at a lower one.
+  `cero.deny(room, request, reason)` turns the joiner away. The first answer settles the request for
+  everyone, and it survives restarts.
+- Both reject `UNKNOWN` when another member settled the request, or this device cannot invite.
+  `accept` also rejects `EXPIRED` past the invite's ttl, `INVALID` for a role above the invite's and
+  `REFUSED` for one above your own.
+- On the joiner's side an answer after 30 s arrives as `TIMEOUT` first: an accept adds the room to
+  `me.room`, a later `DENIED` reaches `onerror`. The reason reaches an in-process joiner as
+  `err.reason`; over RPC only `code` and `message` cross, so a UI gets `DENIED` with no reason.
+
+## Set roles
+
+```js
+// memberId: a member's id, which is me.id on their device
+await cero.set(room.members, { id: memberId, role: 'admin' })
+```
+
+| role     | write | invite | assign | remove |
+| -------- | ----- | ------ | ------ | ------ |
+| `owner`  | yes   | yes    | yes    | yes    |
+| `admin`  | yes   | yes    | yes    | yes    |
+| `member` | yes   | yes    | no     | no     |
+| `reader` | no    | no     | no     | no     |
+
+The ranks run owner, admin, member, reader. Changing a role needs assign, a new role within your own
+and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invite')` from
+`@cero-base/core/utils` checks a rank in your UI.
+
+## Remove a member
+
+```js
+await cero.del(room.members, memberId) // the member and every device of theirs
+await cero.del(room.devices, deviceId) // one device, the member stays: an id from room.devices
+```
+
+Removing needs the remove permission and a higher rank: removing an equal or higher rank rejects
+`REFUSED`. Anyone may remove themselves. The removed member's `room.status` shows `role: null`, and
+they come back only through an invite minted after the removal.
+
+## Remove and re-key
+
+```js
+await cero.del(room.members, memberId)
+await cero.rotate(room) // { epoch }: the room has a new key
+```
+
+A removal re-keys the room shortly after on its own, on a device that can remove, so the removed
+member reads nothing written after it. `cero.rotate` re-keys at once: await it before writing
+something they must not see. It needs the remove permission, `REFUSED` otherwise, and cannot run
+inside a transaction: `cero.rotate(tx)` throws `INVALID`. [How it works](how-it-works.md) has the
+mechanism.
+
+## Leave a room
+
+```js
+await cero.del(room.members, me.id) // leave for everyone: you leave the member list
+await cero.leave(room) // gone from your list on every device of yours, and closed here
+```
+
+`cero.leave` alone keeps you a member: the room leaves your list, not the room's. `cero.close(room)`
+stops it on this device and keeps it in your list, to reopen by id. `cero.close(me)` closes
+everything.
+
+## List your rooms
 
 ```js
 const { data: rooms } = await cero.get(me.room)
-// [{ id, type: 'room', name: 'general', createdAt, updatedAt }, ...]
+// [{ id, type: 'room', name, key, encryptionKey, createdAt, updatedAt }]
+
+await cero.activate(room) // the room on screen syncs first
 ```
 
-## Leave, close, reopen
-
-```js
-await room.close() // stop syncing, keep it in my list
-const again = await cero.open(me.room, { id: room.id })
-await again.leave() // gone from my list
-```
-
-`room.leave()` removes the room from `handles` and closes the session.
-`room.close()` closes the session but keeps the row, so `cero.open(me.room,
-{ id })` brings it back. Both are no-ops on the root.
-
-Rejoining works after leaving, after being removed, and after a device was
-revoked. A revoked device rejoins on a fresh writer, its old core being frozen
-for good.
-
-## Events
-
-The root emits `handle` every time a child is created, joined or reopened, once
-per open. `room.store` emits `writable` and `unwritable`, and `unwritable` is the
-explicit signal that you were removed.
-
-```js
-me.on('handle', (room, opts) => {}, { signal: me.signal })
-room.store.on('unwritable', () => {})
-```
-
-`room.store.on('apply', fn)` also sees replicated ops, so an observer learns about a
-removal it did not perform. `me.signal` is an `AbortSignal` that fires when the
-handle closes: pass it to `on`, `watch`, `before` or `after` to drop a
-subscription automatically. Closing the root closes every open child with it.
+`encryptionKey` is the room's secret: never log it or send it anywhere. `cero.watch(me.room)` follows
+the list, joined rooms included. [Network](network.md) covers `cero.activate`.
 
 ## Next
 
-- [Identity](identity.md) for the phrase behind every member row.
-- [Extensions](extensions.md) to put your name and avatar in every room you join.
-- [Files](files.md) for attachments that replicate with a room.
+- [Your devices](identity.md) to be the same member on every device.
+- [Network](network.md) to sync through mirrors, over Bluetooth, and across many rooms.
+- [How it works](how-it-works.md) for what happens on join, removal and re-key.

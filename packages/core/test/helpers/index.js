@@ -279,7 +279,7 @@ export async function fetch(...args) {
 }
 
 // a database on its own network, joined to its topic
-export async function makePeer(t, testnet, { topic, presence, mirrors, ...opts } = {}) {
+export async function makePeer(t, testnet, { topic, presence, mirrors, after = {}, ...opts } = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = opts.identity || (await Identity.create())
   // only mirrors need the store on the network
@@ -302,6 +302,7 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, ...opts }
     onerror: (err) => errors.push(err),
     ...opts
   })
+  for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(
     async () => {
@@ -315,10 +316,11 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, ...opts }
 }
 
 // genesis names the first member at any rank, and `members` beside it: the only batch that may
-export async function withRole(t, role, { members = [], ...opts } = {}) {
+export async function withRole(t, role, { members = [], after = {}, ...opts } = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
   const db = new Database({ store, identity, spec, ...opts })
+  for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
   const ts = Date.now()

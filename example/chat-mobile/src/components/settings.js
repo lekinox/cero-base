@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { View, Text, ScrollView } from 'react-native'
-import * as Clipboard from 'expo-clipboard'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { useCero } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { useToast } from '../hooks/use-toast'
@@ -16,13 +15,12 @@ export function Settings() {
   const { data: devices } = useQuery(me.devices)
   const toast = useToast()
   const [name, setName] = useState(profile?.name || '')
-  const [invite, setInvite] = useState('')
   const [phrase, setPhrase] = useState(null)
 
   // asked of the worker only when the user wants to see it, and never stored
   const reveal = async () => {
     try {
-      setPhrase(await me.identity.toPhrase())
+      setPhrase(await cero.phrase(me))
     } catch (err) {
       toast.show(err.message || 'no phrase stored')
     }
@@ -31,20 +29,6 @@ export function Settings() {
   const save = async () => {
     const v = name.trim()
     if (v && v !== profile?.name) await cero.set(me.profile, { name: v })
-  }
-
-  const newInvite = async () => {
-    try {
-      const inv = await me.invite()
-      setInvite(inv)
-    } catch (err) {
-      toast.show(err.message || 'invite failed')
-    }
-  }
-
-  const copy = (text) => {
-    Clipboard.setStringAsync(text)
-    toast.show('Copied to clipboard')
   }
 
   return (
@@ -69,24 +53,6 @@ export function Settings() {
             </View>
           </Card>
         ))}
-      </Section>
-
-      <Section title='Pair a device'>
-        {invite ? (
-          <>
-            <Card>
-              <Text style={[styles.text, { fontFamily: 'monospace' }]} selectable>
-                {invite}
-              </Text>
-            </Card>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <Button title='Copy' onPress={() => copy(invite)} />
-              <Button title='Clear' variant='secondary' onPress={() => setInvite('')} />
-            </View>
-          </>
-        ) : (
-          <Button title='Generate Device Invite' onPress={newInvite} />
-        )}
       </Section>
 
       <Section title='Recovery phrase'>

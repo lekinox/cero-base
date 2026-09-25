@@ -1,244 +1,251 @@
 # Apps
 
-[Docs](README.md) · Previous: [Identity](identity.md) · Next: [Extensions](extensions.md)
+[Docs](README.md) · Previous: [Network](network.md) · Next: [Extensions](extensions.md)
+
+Run Cero in a worker that owns the storage and the network, and drive it from an Electron or Expo UI with the same verbs.
 
 ```js
-// backend process
+// the worker: storage and network live here
 import { serve } from '@cero-base/cero/server'
-await serve(ipc, spec, { storage: './data' })
+import { spec } from './spec/index.js' // the quickstart's spec, the same on both sides
 
-// UI process
+await serve(ipc, spec, { storage: './data' }) // ipc: a duplex stream to the UI
+
+// the UI: the screen lives here
 import { cero } from '@cero-base/cero/client'
-const me = await cero(ipc, spec)
-await cero.put(me.todos, { text: 'from the UI' })
+
+const me = await cero(ipc, spec) // the same stream, from the UI's end
+await cero.put(me.notes, { title: 'from the UI' })
 ```
-
-One process owns the data, one owns the screen, one duplex stream between them.
-The UI code is the same code.
-
-## On this page
-
-- [Why two processes](#why-two-processes)
-- [The backend package](#the-backend-package)
-- [serve(ipc, spec, opts)](#serveipc-spec-opts)
-- [connect(ipc, spec)](#connectipc-spec)
-- [What crosses the wire](#what-crosses-the-wire)
-- [Extensions and operators cross with the spec](#extensions-and-operators-cross-with-the-spec)
-- [A duplex pair, for tests](#a-duplex-pair-for-tests)
-- [Electron and a Bare worker](#electron-and-a-bare-worker)
-- [Expo and a Bare worklet](#expo-and-a-bare-worklet)
 
 ## Why two processes
 
-```js
-import * as cero from '@cero-base/cero/client' // UI code, never '@cero-base/cero'
-```
+Cero needs native modules and a storage directory, which a renderer or a React Native bundle does not have. So a worker opens Cero, in a Node process or a Bare worker or worklet, and serves it over one duplex stream; the UI holds a client with the same refs and `cero.` verbs. The client never reaches a native module, so Vite and Metro bundle it: UI code imports `@cero-base/cero/client`, never `@cero-base/cero`.
 
-The backend runs the real cero instance. It owns the storage directory, the
-swarm, the databases and the blob cores. It needs native modules, so it runs
-where native modules can run: a Node process, a Bare worker, or a Bare worklet.
+## Try it in one file
 
-The UI owns no data. It holds a client that mirrors the same API over a duplex
-byte stream and forwards every operation to the backend.
-`@cero-base/cero/client` never reaches a native addon, which is what makes it
-bundleable by Metro for React Native. The rule for UI code follows: import
-`@cero-base/cero/client`, never `@cero-base/cero`. A CLI or a test needs no RPC
-at all, and `example/chat-terminal` opens cero in-process instead.
-
-## The backend package
-
-Both halves must agree on the built spec, so the schema, the build script and
-two thin wrappers live in one package both sides depend on.
-`example/chat-backend` is that package.
-
-```text
-chat-backend/
-  schema.js    cero.schema({ ... })
-  build.js     build('./spec', schema), run it after every schema change
-  spec/        generated, commit it
-  server.js    wraps serve()
-  client.js    wraps connect()
-```
-
-Both wrappers are three lines each. `server.js` calls
-`serve(ipc, spec, { storage, ...opts })`, `client.js` calls
-`cero.connect(ipc, spec)`, and each one closes over the same built spec so
-neither caller has to import it.
-
-## `serve(ipc, spec, opts)`
-
-```js
-import { serve } from '@cero-base/cero/server'
-
-const server = await serve(ipc, spec, {
-  storage: './data',
-  name: 'laptop',
-  channel: 'my-app',
-  mirrors: [mirrorKey]
-})
-server.me // the root handle, once a client has connected
-await server.close()
-```
-
-Constructs a `Server`, waits for it to be ready and returns it. The root cero
-instance is not created here. It is created lazily, inside the server, on the
-client's first `init`.
-
-| option      | type                    | default  | meaning                                                                             |
-| ----------- | ----------------------- | -------- | ----------------------------------------------------------------------------------- |
-| `storage`   | `string`                | required | Directory passed to `cero()` for the local store.                                   |
-| `name`      | `string`                | none     | Display name forwarded to `cero()`.                                                 |
-| `bootstrap` | `Array<{ host, port }>` | none     | Custom DHT bootstrap.                                                               |
-| `isMobile`  | `boolean`               | `false`  | Marks this device as mobile.                                                        |
-| `onerror`   | `(err) => void`         | none     | Background-task error handler. Without one, errors emit `error` on the root handle. |
-
-Every other key is forwarded to `cero()` untouched, so `mirrors`, `channel`,
-`storageKey`, `phrase`, `seed`, `extensions` and `bluetooth` all work through
-`serve`. The identity options belong here, because the backend owns storage.
-
-The `Server` exposes `me` (the real root handle, `null` until `init`), `id`,
-`identity`, `handles` and `close()`.
-
-## `connect(ipc, spec)`
-
-```js
-import { connect } from '@cero-base/cero/client'
-
-const me = await connect(ipc, spec)
-me.id
-await me.identity.toPhrase() // async over the wire
-await cero.put(me.todos, { text: 'from the UI' })
-await me.close()
-```
-
-Constructs a `Client`, runs `init` and returns it. The client entry also exports
-`cero`, so `cero(ipc, spec)` is `connect(ipc, spec)` and UI code reads like the
-in-process code.
-
-It carries `id` (matching `server.id`), `deviceId`, an async
-`identity.toPhrase()` that fetches the phrase on demand and never on `init`, one
-`Ref` per schema ref, `local.<ref>` for each app-declared local ref, the raw
-`rpc` binding as an escape hatch, and `close()`. The refs are real `Ref`
-objects, so `cero.open`, `cero.get`, `cero.watch` and the rest work unchanged.
-
-## What crosses the wire
-
-```js
-const room = await cero.open(me.room, { invite }) // yes
-cero.watch(room.messages).on('data', render) // yes
-await room.invite() // yes
-
-cero.before(room.messages, fn) // no: hooks are a rule of the data itself
-await cero.open(me.room, { routes }) // no: functions do not serialize
-```
-
-`open(ref, arg)` becomes one of three commands and returns a stub the client
-wraps in a handle: create, join by invite, or reopen by id. The server keeps the
-live handle in its map, and every later call carries its id. Nesting is refused,
-only the root may be a parent. A client handle carries the same operator surface
-plus `invite()`, `revoke()`, `rotate()`, `setActive()`, `close()` and `leave()`, and
-both `close` and `leave` end every stream bound to that handle. The root also carries
-`suspend()` and `resume()`, so a UI drives backgrounding from its own lifecycle. Background
-errors on the worker reach the client as `error` events, the same as a local root.
-
-`watch` and `changes` arrive as plain streamx readables. Snapshots are
-idempotent, so a slow wire keeps only the newest. Deltas are not, so the server
-holds the iteration instead and loses nothing.
-
-Three things do not cross. `before` and `after` run inside apply, where the data
-lives, and `peek` probes a local directory — a proxy has neither. Register hooks
-on the backend, next to the databases they rule. `routes`, and any other function
-passed as an option, cannot be serialized: register those on the backend too.
-Error classes stay put, only codes cross on the rejection message, so match on
-the code and not on `instanceof` — a hook that refuses a client's write surfaces
-as `REFUSED`.
-
-## Extensions and operators cross with the spec
-
-The spec imports the modules the build named, so neither process registers
-anything. An extension's `schema` is used at build time and its `setup` inside
-`cero()`. Operators are bound by both `cero()` and `connect()`, since an
-operator's body runs in the process that calls it.
-
-```js
-// operators.js
-export const operators = {
-  user: { rename: (h, name) => cero.set(h.profile, { name }) },
-  room: { note: { add: (h, text) => cero.put(h.notes, { text }) } }
-}
-
-await me.user.rename('Remote') // works on a client and on a local handle
-```
-
-A `setup` is also where hooks belong. It runs before any op applies, which is what
-a rule needs, and the client ignores it. Both modules are bundled into the UI, so
-they import from `@cero-base/cero/extensions`, never from `@cero-base/cero`.
-
-## A duplex pair, for tests
-
-Any duplex works. The tests wire the two halves in memory.
+Any duplex works, so two streams that push into each other put both halves in one Node file.
 
 ```js
 import { Duplex } from 'streamx'
+import { serve } from '@cero-base/cero/server'
+import { cero } from '@cero-base/cero/client'
+import { spec } from './spec/index.js' // the quickstart's spec
 
-let a, b
-a = new Duplex({
+const worker = new Duplex({
   write(data, cb) {
-    b.push(data)
-    cb(null)
+    ui.push(data)
+    cb()
   }
 })
-b = new Duplex({
+const ui = new Duplex({
   write(data, cb) {
-    a.push(data)
-    cb(null)
+    worker.push(data)
+    cb()
   }
 })
 
-const server = await serve(a, spec, { storage: dir })
-const client = await connect(b, spec)
+const server = await serve(worker, spec, { storage: './data' })
+const me = await cero(ui, spec)
+
+await cero.put(me.notes, { title: 'from the UI' })
+console.log((await cero.get(me.notes)).data)
+
+await cero.close(me)
+await server.close()
 ```
 
-## Electron and a Bare worker
-
-`example/chat-desktop`. The chain is worker, Electron main, preload, renderer.
-Electron main spawns the worker through `pear-runtime` and proxies its duplex to
-the renderer over `ipcMain` channels, the preload exposes that bridge on
-`window.bridge`, and the renderer wraps the bridge back into a duplex.
+## Run the worker
 
 ```js
+const server = await serve(ipc, spec, {
+  storage: './data', // required: the worker owns the directory
+  name: 'laptop', // this device's name
+  onerror: (err) => console.error('worker', err.code) // while no UI is connected
+})
+```
+
+Every other option goes to `cero()` as is: `channel`, `mirrors`, `bluetooth`, `storageKey`, `extensions`. Background errors reach `onerror` while no UI is connected, and the UI's `onerror` once one is.
+
+`serve` resolves before Cero opens, so the network comes up while the UI still loads. A failure opening Cero, `CHANNEL_MISMATCH` for one, rejects the UI's connect with its code. What throws before the server exists needs the worker's own `try`:
+
+```js
+// workers/main.js in example/chat-desktop, a Bare worker
 /* global Bare */
 import goodbye from 'graceful-goodbye'
 import { serve } from 'chat-backend/server'
 
-const server = await serve(Bare.IPC, { storage: Bare.argv[2] })
+let server
+try {
+  server = await serve(Bare.IPC, { storage: Bare.argv[2] })
+} catch (err) {
+  console.error(`__BOOT_ERROR__${err.message}`)
+  Bare.exit(1)
+}
+
 goodbye(() => server.close())
 ```
 
-Wrap that in a `try` that prints a boot marker to stderr and exits. The
-renderer's stderr listener turns the marker into a stream error, so `connect()`
-rejects with a reason instead of hanging.
+The UI side turns that stderr line into the stream's error, so its connect rejects instead of hanging.
 
-## Expo and a Bare worklet
-
-`example/chat-mobile`. Same server, one hop less, because the worklet's IPC is
-already a duplex reachable from the JS thread.
+## Connect the UI
 
 ```js
+import { cero } from '@cero-base/cero/client'
+
+const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
+const room = await cero.open(me.room, { name: 'team' })
+cero.watch(room.notes).on('data', ({ data }) => render(data)) // render: your UI's
+```
+
+`cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses, `rotate` included.
+
+Each watch item is a full result, and with `changes: true` the client diffs them itself, so a slow link skips items, never changes. A reloaded UI is a new client on the same worker: its old streams end.
+
+## Wire it into Electron
+
+`example/chat-desktop` runs the worker above through four files:
+
+- `electron/main.js` spawns `workers/main.js` with `pear-runtime`, passing its storage directory, and relays the worker's IPC, stdout and stderr to the window over `ipcMain` channels.
+- `electron/preload.js` exposes that relay as `window.bridge`.
+- `src/lib/ipc.js` wraps the bridge in a duplex and turns a `__BOOT_ERROR__` line into the stream's error.
+- `src/hooks/use-chat.js` connects: `await connect(getIPC('/workers/main.js'), opts)`.
+
+```js
+// src/lib/ipc.js, trimmed
+import { Duplex } from 'streamx'
+
+export function getIPC(path) {
+  window.bridge.startWorker(path)
+  const stream = new Duplex({
+    write(data, cb) {
+      window.bridge.writeWorkerIPC(path, data)
+      cb()
+    }
+  })
+  window.bridge.onWorkerIPC(path, (data) => stream.push(data))
+  return stream
+}
+```
+
+## Wire it into Expo
+
+`example/chat-mobile` has one hop less: a Bare worklet's IPC is a duplex on the JS thread.
+
+```js
+// src/lib/ipc.js and src/hooks/use-chat.js, in short
 import { Worklet } from 'react-native-bare-kit'
 import bundle from '../../worklets/app.bundle.mjs'
 
 const worklet = new Worklet()
-worklet.start('/app.bundle', bundle, [storage])
-const me = await connect(worklet.IPC) // worklet.IPC is already a duplex
+worklet.start('/app.bundle', bundle, [storage]) // storage: a folder in the app's documents
+const me = await connect(worklet.IPC) // connect from chat-backend/client
 ```
 
-The worklet itself is `await serve(BareKit.IPC, { storage })`. It must be
-pre-bundled with `bare-pack` before Metro runs, and rebuilt after every worklet
-or backend change.
+The worklet, `worklets/main.js`, is `await serve(BareKit.IPC, { storage: Bare.argv[0] })`. `bare-pack` bundles it into `worklets/app.bundle.mjs` before Metro runs: rebuild after every worklet or backend change.
+
+## Pause in the background
+
+The app's lifecycle belongs to the UI, so the UI tells the worker.
+
+```js
+import { AppState } from 'react-native'
+// me from the UI's cero(ipc, spec)
+
+AppState.addEventListener('change', (state) => {
+  if (state === 'background') cero.suspend(me)
+  if (state === 'active') cero.resume(me)
+})
+
+// in an Electron window
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) cero.suspend(me)
+  else cero.resume(me)
+})
+```
+
+[Network](network.md) covers what pauses.
+
+## What runs in the worker
+
+- `before`, `after` and `tx` take functions, so they run in the worker and the client has none. Register hooks in an extension's `setup`, which runs there.
+- `peek` reads a local directory, so it runs in a process that has one: chat-desktop's Electron main calls it, through `isInitialized`, before it starts the worker.
+- `restore(me, phrase)` on a client takes the phrase; the worker turns it into the seed.
+- Errors cross as `code` and `message` only, so match `err.code`. A hook that refuses a UI's write arrives as `REFUSED`.
+- A denied join reaches a UI as `DENIED` with no reason.
+
+## Ship one spec to both sides
+
+Both halves must run the same built spec, so the schema, the build and two thin wrappers live in one package both depend on. Keep its `spec/` in git: each build reads the last one to number new fields and raise the app version, so a shipped app must keep it. The examples have no users to stay compatible with, so they leave it out of git and rebuild it from scratch.
+
+```js
+// example/chat-backend/server.js
+import os from 'os'
+import { serve as rpcServe } from '@cero-base/cero/server'
+
+import { spec } from './spec/index.js'
+
+export async function serve(ipc, { storage, name = os.hostname(), ...opts } = {}) {
+  if (!ipc) throw new Error('ipc is required')
+  return rpcServe(ipc, spec, { storage, name, ...opts })
+}
+```
+
+```js
+// example/chat-backend/client.js
+import { cero } from '@cero-base/cero/client'
+import { spec } from './spec/index.js'
+
+export const restore = cero.restore
+
+export async function connect(ipc, { name, phrase } = {}) {
+  const me = await cero(ipc, spec)
+  if (phrase) await cero.restore(me, phrase)
+  if (name) await cero.set(me.profile, { name })
+  return me
+}
+```
+
+`connect(ipc, { phrase })` is how the desktop setup screen recovers, and `{ name }` how it creates.
+
+## Run the examples
+
+Four npm workspaces under `example/` share one chat schema. Run `npm install` at the repository root, then `npm run build -w chat-backend` builds the spec; the dev scripts below run it for you.
+
+**chat-backend** is the shared package: `schema.js`, `build.js`, `spec/`, the two wrappers above, and `isInitialized(storage)`. `npm test -w chat-backend` runs its tests.
+
+**chat-terminal** opens Cero in process, no worker, in one file. The first run prints an invite and your phrase.
+
+```sh
+cd example/chat-terminal
+node index.js --name alice                        # prints an invite
+node index.js --join <invite> --name bob          # in a second terminal
+node index.js --phrase "<words>" --storage ./me   # another machine, the first still running
+```
+
+Without `--storage` every run is a fresh identity in a temporary directory. `/invite` prints a fresh invite, `/quit` exits.
+
+**chat-desktop** is Electron with the worker above.
+
+```sh
+npm run dev:desktop -- --no-updates           # from the root: builds the spec, starts Vite and Electron
+npm run dev -w chat-desktop -- --no-updates   # the same, once the spec is built
+```
+
+`--no-updates` keeps the example's over-the-air updates off, so Electron runs the worker on disk.
+
+**chat-mobile** is Expo with the worklet above, on iOS.
+
+```sh
+npm run dev:mobile                           # from the root: builds the spec and the simulator bundle, runs it
+npm run build:device -w chat-mobile          # an iPhone bundle instead
+npm run ios -w chat-mobile -- --device       # then run it on the iPhone
+```
+
+There is no Android bundle script, so the example runs on iOS only.
 
 ## Next
 
-- [Extensions](extensions.md) and [Operators](operators.md) for the modules the build names.
-- [Files](files.md) for uploads, which cross the wire as one message.
-- [Examples](examples.md) for the four apps these snippets come from.
+- [Extensions](extensions.md) to put hooks in a `setup` that runs in the worker.
+- [Network](network.md) for mirrors, Bluetooth and what backgrounding pauses.
+- [How it works](how-it-works.md) for what happens between the two devices.

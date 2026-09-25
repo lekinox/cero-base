@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { View, Text, ScrollView } from 'react-native'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
@@ -88,7 +88,7 @@ export function Room({ onClose }) {
             {invite.slice(0, 16)}...
           </Text>
         ) : (
-          <Button title='Invite' onPress={() => room.invite().then(setInvite)} />
+          <Button title='Invite' onPress={() => cero.invite(room).then(setInvite)} />
         )}
       </View>
 

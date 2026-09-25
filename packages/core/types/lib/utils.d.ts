@@ -13,9 +13,12 @@ export declare function joining(dbKey: Uint8Array<ArrayBufferLike>, invite: Uint
  * @returns {boolean}
  */
 export declare function can(role: string, perm: string): boolean;
-export declare function isRank(role: any): boolean;
-export declare function grants(a: any, b: any): boolean;
-export declare function outranks(a: any, b: any): boolean;
+/** @type {(role: string) => boolean} */
+export declare function isRank(role: string): boolean;
+/** @type {(a: string, b: string) => boolean} */
+export declare function grants(a: string, b: string): boolean;
+/** @type {(a: string, b: string) => boolean} */
+export declare function outranks(a: string, b: string): boolean;
 /**
  * Stream-of-snapshots primitive. Couples a `get` (returns the latest value) with a `watch`
  * (re-fires on change) and emits the newest snapshot every time `watch` ticks.
@@ -30,16 +33,18 @@ export declare function subscribe<T>({ get, watch }: {
     get: () => Promise<T> | T;
     watch: (fn: () => void) => (() => void) | void;
 }): import('streamx').Readable<T>;
-export declare function searchHit(row: any, term: any, fields: any): boolean;
+/** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
+export declare function searchHit(row: Record<string, unknown>, term: string, fields?: string[]): boolean;
 /**
  * The in-memory query grammar over rows: equality on any non-reserved field,
  * id ranges, `search`, then `reverse` and `limit`.
  *
- * @param {any[]} rows
- * @param {Record<string, any>} [query]
- * @returns {any[]}
+ * @template {Record<string, unknown>} T
+ * @param {T[]} rows
+ * @param {Record<string, unknown>} [query]
+ * @returns {T[]}
  */
-export declare function filter(rows: any[], query?: Record<string, any>): any[];
+export declare function filter<T extends Record<string, unknown>>(rows: T[], query?: Record<string, unknown>): T[];
 /**
  * Run `cb` when `signal` aborts — or immediately if it already has.
  *

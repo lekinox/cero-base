@@ -1,4 +1,3 @@
-import AbortController from 'bare-abort-controller';
 /**
  * One handle being joined. It joins with the latest invite and waits as long as it takes: the
  * caller's timeout only ends the caller's wait. What it learns is saved as it goes, the writer
@@ -9,27 +8,31 @@ import AbortController from 'bare-abort-controller';
 export declare class Join {
     root: import("./index.js").Handle;
     type: string;
-    spec: any;
+    spec: object;
     id: string;
-    routes: Record<string, Function>;
     invite: string;
     waiting: number;
     cancelled: boolean;
-    _running: AbortController;
-    _row: any;
-    done: Promise<any>;
-    _resolve: (value: any) => void;
-    _reject: (reason?: any) => void;
-    _onend: () => void;
+    /** @private */
+    _running;
+    /** @private */
+    _row;
+    /** @type {Promise<import('./index.js').Handle>} */
+    done: Promise<import('./index.js').Handle>;
+    /** @private */
+    _resolve;
+    /** @private */
+    _reject;
+    /** @private */
+    _onend;
     /**
      * @param {import('./index.js').Handle} root
-     * @param {{ type: string, spec: any, discoveryKey: Uint8Array, routes?: Record<string, Function>, onend: () => void }} opts
+     * @param {{ type: string, spec: object, discoveryKey: Uint8Array, onend: () => void }} opts
      */
-    constructor(root: import('./index.js').Handle, { type, spec, discoveryKey, routes, onend }: {
+    constructor(root: import('./index.js').Handle, { type, spec, discoveryKey, onend }: {
         type: string;
-        spec: any;
+        spec: object;
         discoveryKey: Uint8Array;
-        routes?: Record<string, Function>;
         onend: () => void;
     });
     /**
@@ -41,15 +44,20 @@ export declare class Join {
     start(invite: string): Promise<void>;
     close(): void;
     cancel(): Promise<void>;
-    _save(fields: any): Promise<any>;
-    _keep(reply: any): Promise<any>;
-    _forget(): Promise<void>;
-    _end(settle: any, value: any): void;
+    /** @private */
+    private _save;
+    /** @private */
+    private _keep;
+    /** @private */
+    private _forget;
+    /** @private */
+    private _end;
 }
 /**
  * Wait for a join, but stop waiting after `ms`; the join itself goes on.
  *
- * @param {Promise<any>} done
+ * @param {Promise<import('./index.js').Handle>} done
  * @param {number} ms  `0` waits as long as the join takes.
+ * @returns {Promise<import('./index.js').Handle>}
  */
-export declare function wait(done: Promise<any>, ms: number): Promise<any>;
+export declare function wait(done: Promise<import('./index.js').Handle>, ms: number): Promise<import('./index.js').Handle>;

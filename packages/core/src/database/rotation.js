@@ -18,7 +18,11 @@ export class Rotation {
   constructor(db) {
     this.db = db
     this.current = null
+    /** @private */
+    this._queue = Promise.resolve()
+    /** @private */
     this._timer = null
+    /** @private */
     this._healedFor = null
   }
 
@@ -27,9 +31,16 @@ export class Rotation {
     this._timer = null
   }
 
-  /** @returns {Promise<{ epoch: number }>} */
+  /**
+   * One at a time: a rotation asked for during another runs after it, sealed to the members as
+   * they stand then.
+   *
+   * @returns {Promise<{ epoch: number }>}
+   */
   rotate() {
-    return this._rotate(false)
+    const run = this._queue.catch(() => {}).then(() => this._rotate(false))
+    this._queue = run
+    return run
   }
 
   /**
@@ -82,11 +93,11 @@ export class Rotation {
     }, 500)
   }
 
+  /** @private */
   async _rotate(retried) {
     const db = this.db
     db.guard()
     if (!db.writable) throw CeroError.NOT_WRITABLE('Database')
-    if (this.current) throw CeroError.INVALID('a rotation is already in progress')
     // manifest v1 blocks carry no key id, rotating there is a silent downgrade
     if (db.bee.local.manifest?.version < 2) {
       throw CeroError.INVALID('rotation requires manifest v2 cores')
@@ -115,6 +126,7 @@ export class Rotation {
     }
   }
 
+  /** @private */
   async _members() {
     const { data: members } = await this.db.get('members')
     if (!Array.isArray(members) || members.length === 0) {
@@ -124,6 +136,7 @@ export class Rotation {
   }
 
   // resolves the sequence apply assigned, 0 if it never applied
+  /** @private */
   async _announce(stamp, entropy, wrapped) {
     const { bee } = this.db
     const from = bee.local.length
@@ -145,6 +158,7 @@ export class Rotation {
   }
 
   // a fresh nonzero stamp no known epoch uses
+  /** @private */
   _mint() {
     for (;;) {
       const stamp = b4a.readUInt32LE(Identity.randomBytes(4), 0)
@@ -152,15 +166,18 @@ export class Rotation {
     }
   }
 
+  /** @private */
   async _taken(stamp) {
     return (await this._epochs()).some((r) => r.stamp === stamp)
   }
 
+  /** @private */
   _epochs() {
     return this.db.view.find(`@${this.db.ns}/epochs`, {}).toArray()
   }
 
   // every envelope addressed to us is tried, a bad one must not lock us out
+  /** @private */
   _unseal(row) {
     for (const entropy of opened(this.db.identity, row.wrapped)) {
       if (entropy.byteLength !== 32) continue
@@ -172,6 +189,7 @@ export class Rotation {
   }
 
   // known epoch secrets to local userData (device-only, never replicates)
+  /** @private */
   _save() {
     const entries = c.encode(epochEntries, this.db.keyring.all())
     return this.db.bee.local.setUserData('cero/epochs', entries)
@@ -180,6 +198,7 @@ export class Rotation {
   // a rotation seals for the rotator's view of the members; REMOVE-capable devices re-key
   // when the current epoch's recipients drift from the member list, or when its envelope
   // for them does not open: a rotator must not seal anyone who could heal it out
+  /** @private */
   async _audit() {
     const db = this.db
     if (db.closing || db.closed || !db.writable || this.current) return
@@ -188,7 +207,11 @@ export class Rotation {
     if (!can(me?.role, REMOVE)) return
 
     const rows = await this._epochs()
-    if (!rows.length) return
+    // a room still on its creation key re-keys at its first removal
+    if (!rows.length) {
+      if (await db.view.findOne(`@${db.ns}/removals`, {})) await this._heal('first removal')
+      return
+    }
     const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
     const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
     const { data: members } = await db.get('members')
@@ -198,8 +221,12 @@ export class Rotation {
       this._healedFor = null
       return
     }
-    // one attempt per (epoch, membership) state, a failing rotate must not loop
-    const state = `${top.stamp}:${[...ids].sort().join(',')}`
+    await this._heal(`${top.stamp}:${[...ids].sort().join(',')}`)
+  }
+
+  // one attempt per (epoch, membership) state, a failing rotate must not loop
+  /** @private */
+  async _heal(state) {
     if (this._healedFor === state) return
     this._healedFor = state
     await this.rotate()

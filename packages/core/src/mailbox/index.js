@@ -47,6 +47,7 @@ export class Mailbox extends ReadyResource {
     this.inbox = inbox
     this.outbox = outbox
     this.onerror = onerror
+    /** @private */
     this._resources = new Set() // inboxes, and posts not read yet
   }
 
@@ -60,11 +61,13 @@ export class Mailbox extends ReadyResource {
     return keyPair(secret).publicKey
   }
 
+  /** @private */
   async _open() {
     await this.network.ready()
     for (const mail of await this.outbox.list()) this._deliver(mail)
   }
 
+  /** @private */
   async _close() {
     const open = [...this._resources]
     this._resources.clear()
@@ -107,12 +110,14 @@ export class Mailbox extends ReadyResource {
     this._deliver(mail)
   }
 
+  /** @private */
   _deliver({ id, address, message, mirrors }) {
     const post = new Post(this.network, address, message, { mirrors })
     this._track(post)
     deliver(post, () => this.outbox.del(id)).catch(safetyCatch)
   }
 
+  /** @private */
   _track(resource) {
     this._resources.add(resource)
     resource.once('close', () => this._resources.delete(resource))

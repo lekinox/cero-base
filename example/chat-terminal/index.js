@@ -20,6 +20,7 @@ Options:
   --phrase <words>    the phrase printed on your first run; makes this machine your device too
   --name <name>       display name (default: hostname)
   --storage <dir>     storage directory (default: a tmp dir)
+  --bootstrap <h:p>   DHT bootstrap node, for a local testnet (or CERO_BOOTSTRAP)
   --help              show this help
 `
 
@@ -40,7 +41,11 @@ async function main() {
   const bootstrap = parseBootstrap(opts.bootstrap || process.env.CERO_BOOTSTRAP)
 
   const fresh = !opts.phrase && !(await isInitialized(storage))
-  const me = await cero(storage, spec, { name, bootstrap, phrase: opts.phrase })
+  const me = await cero(storage, spec, {
+    name,
+    bootstrap,
+    seed: opts.phrase && cero.toSeed(opts.phrase)
+  })
   await cero.set(me.profile, { name })
 
   const room = opts.join ? await cero.open(me.room, { invite: opts.join }) : await ownRoom(me, name)
@@ -49,10 +54,10 @@ async function main() {
   console.log(`# you: ${name} (${me.id.slice(0, 8)})`)
   console.log(`# room: ${room.id.slice(0, 8)}`)
   if (fresh) {
-    console.log(`# phrase (keep it, it recovers you on another machine): ${me.identity.toPhrase()}`)
+    console.log(`# phrase (keep it, it recovers you on another machine): ${await cero.phrase(me)}`)
   }
   if (!opts.join) {
-    const inv = await room.invite()
+    const inv = await cero.invite(room)
     console.log(`# invite (share to add peers):`)
     console.log(inv)
   }
@@ -88,7 +93,7 @@ async function main() {
     if (!text) return
     if (text === '/quit') return shutdown()
     if (text === '/invite') {
-      console.log(await room.invite())
+      console.log(await cero.invite(room))
       return
     }
     try {
@@ -107,7 +112,7 @@ async function main() {
     memberStream.destroy()
     stream.destroy()
     try {
-      await me.close()
+      await cero.close(me)
     } catch {}
     process.exit(0)
   }

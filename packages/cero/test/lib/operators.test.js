@@ -1,12 +1,13 @@
 import test from 'brittle'
 import AbortController from 'bare-abort-controller'
+import { Readable } from 'streamx'
 
 import { Ref } from '../../src/handle/index.js'
 import { put, set, get, del, watch, call } from '../../src/lib/operators.js'
 import { onAbort } from '@cero-base/core/utils'
 import { cero } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
-import { FakeStore, makeTestnet } from '../helpers/index.js'
+import { FakeStore, makeTestnet, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 30000 })
 
@@ -81,9 +82,9 @@ test('del: store.del(name, id)', async (t) => {
   t.alike(store.calls[0], { op: 'del', name: 'messages', arg: 'abc' })
 })
 
-test('watch: store.watch(name, q)', async (t) => {
+test('watch: store.watch(name, q), without the changes flag', async (t) => {
   const { ref, store } = makeRef('messages')
-  watch(ref, { limit: 5 })
+  watch(ref, { limit: 5, changes: true })
   t.alike(store.calls[0], { op: 'watch', name: 'messages', arg: { limit: 5 } })
 })
 
@@ -105,12 +106,36 @@ test('operators: each ref dispatches to its own name', async (t) => {
   t.is(a.store.calls[1].name, 'messages')
 })
 
-test('changes: store.changes(name, q), handle refs rejected', async (t) => {
+test('watch: changes are opt-in', async (t) => {
   const { ref, store } = makeRef('messages')
-  const { changes } = await import('../../src/lib/operators.js')
-  changes(ref, { search: 'x' })
-  t.alike(store.calls[0], { op: 'changes', name: 'messages', arg: { search: 'x' } })
+  const src = new Readable()
+  store.watch = () => src
+  const items = []
+  watch(ref).on('data', (item) => items.push(item))
+  src.push({ data: [{ id: 'a' }] })
+  await waitUntil(() => items.length || null)
+  t.alike(items[0], { data: [{ id: 'a' }] }, 'the snapshot alone')
+})
 
-  const h = makeRef('room', 'handle')
-  t.exception(() => changes(h.ref), /INVALID/, 'handle refs rejected')
+test('watch: replaying the changes of every item rebuilds its data', async (t) => {
+  const { ref, store } = makeRef('messages')
+  const src = new Readable()
+  store.watch = () => src
+  const items = []
+  watch(ref, { changes: true }).on('data', (item) => items.push(item))
+  const a1 = { id: 'a', text: '1' }
+  const b1 = { id: 'b', text: '1' }
+  for (const data of [[a1], [a1, b1], [{ id: 'a', text: '2' }, b1], [b1]]) src.push({ data })
+  await waitUntil(() => items.at(-1)?.data.length === 1 || null)
+
+  t.ok(items[0].reset, 'the first item resets')
+  t.absent(items.slice(1).some((item) => item.reset))
+  const rows = new Map()
+  for (const { changes } of items) {
+    for (const { prev, next } of changes) {
+      if (next) rows.set(next.id, next)
+      else rows.delete(prev.id)
+    }
+  }
+  t.alike([...rows.values()], [b1])
 })

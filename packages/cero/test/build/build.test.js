@@ -31,6 +31,7 @@ const extendFixture = schema({
   profile: t.single({ name: t.string }),
   members: t.extend({ alias: t.required(t.string) })
 })
+const takenSchema = schema({ team: { status: t.collection({ text: t.string }) } })
 const collisionSchema = schema({ members: t.extend({ name: t.string }) })
 const nonBuiltinSchema = schema({ widgets: t.extend({ x: t.string }) })
 const idxSchema = schema({
@@ -112,6 +113,19 @@ test('build: t.extend cannot redeclare a base field', async (t) => {
   const dir = join(buildRoot, 'collision')
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
   await t.exception.all(() => build(dir, collisionSchema), /base field/)
+})
+
+test('build: status and joins are computed builtins an app cannot declare', async (t) => {
+  const specDir = await buildInto(t, 'live')
+  const { meta } = await importSpec(specDir)
+  t.is(meta.refs.status.kind, 'single')
+  t.is(meta.refs.joins.kind, 'collection', 'the root lists its joins')
+  t.is(meta.handles.team.refs.status.kind, 'single')
+  t.absent(meta.handles.team.refs.joins, 'a room has none')
+
+  const dir = join(buildRoot, 'live-taken')
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await t.exception.all(() => build(dir, takenSchema), /'status' is a builtin/)
 })
 
 test('build: t.extend on a non-builtin throws', async (t) => {

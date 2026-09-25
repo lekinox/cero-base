@@ -20,7 +20,7 @@ import {
   t
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { profileSync, handleSync, bind } from '../../src/extensions/index.js'
+import { profileSync, handleSync } from '../../src/extensions/index.js'
 import { makeTestnet, waitUntil, waitForConnection } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -188,7 +188,7 @@ test('after(ref): a derived row written through ctx.put lands on every peer', as
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
-  const invite = await room.invite({ role: 'member', ttl: 60_000 })
+  const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
   const joined = await open(joiner.room, invite)
   await waitForConnection(host.network)
   await waitForConnection(joiner.network)
@@ -260,7 +260,7 @@ test('before(ref): a mutated row lands identically on every peer', async (t) => 
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
-  const invite = await room.invite({ role: 'member', ttl: 60_000 })
+  const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
   const joined = await open(joiner.room, invite)
   await waitForConnection(host.network)
   await waitForConnection(joiner.network)
@@ -384,18 +384,10 @@ test('me.on("handle"): carries the open opts (the create name)', async (t) => {
 
 // ─── extensions: the list a build names ─────────────────────────────────────
 
-// an extension nests by handle type like the app schema; operators are their own map
+// an extension nests by handle type like the app schema
 const notes = {
   schema: { room: { todos: t.collection({ text: t.string }) } },
   setup: (me) => before(me.room.todos, ({ row }) => !!row.text.trim())
-}
-const noteOps = {
-  room: {
-    note: {
-      add: (room, text) => put(room.todos, { text }),
-      list: (room) => get(room.todos)
-    }
-  }
 }
 
 test('extensions: a nested schema folds into the handle type', async (t) => {
@@ -405,15 +397,18 @@ test('extensions: a nested schema folds into the handle type', async (t) => {
   t.ok(spec.handles.room.meta.refs.messages, 'the app refs on room survived')
 })
 
-test('operators: nested operators bind on the type, a type hook guards every room', async (t) => {
+test('extensions: a setup hook on a type guards every room', async (t) => {
   const { spec } = await buildSpec(t, 'ext-feature', base, [notes])
-  const me = await openCero(t, spec, { operators: noteOps })
-  t.absent(me.note, 'nothing on the root')
+  const me = await openCero(t, spec)
   const room = await open(me.room, { name: 'r' })
-  await room.note.add('kept')
-  await t.exception(room.note.add('   '), /REFUSED/, 'the setup hook refused the blank one')
+  await put(room.todos, { text: 'kept' })
+  await t.exception(
+    put(room.todos, { text: '   ' }),
+    /REFUSED/,
+    'the setup hook refused the blank one'
+  )
   t.alike(
-    (await room.note.list()).data.map((r) => r.text),
+    (await get(room.todos)).data.map((r) => r.text),
     ['kept']
   )
 })
@@ -445,21 +440,10 @@ export const extensions = [
 ]
 `
   )
-  await fs.writeFile(
-    join(dir, 'ops.js'),
-    `import { put } from '${src}'
-export const operators = {
-  user: { hello: (h) => h.id },
-  room: { note: { add: (room, text) => put(room.todos, { text }) } }
-}
-`
-  )
-  await build(join(dir, 'spec'), base, { extensions: '../ext.js', operators: '../ops.js' })
+  await build(join(dir, 'spec'), base, { extensions: '../ext.js' })
   const { spec } = await import(pathToFileURL(join(dir, 'spec', 'index.js')).href)
   const mod = await import(pathToFileURL(join(dir, 'ext.js')).href)
-  const ops = await import(pathToFileURL(join(dir, 'ops.js')).href)
   t.is(spec.extensions, mod.extensions, 'the spec imports the extensions it was built from')
-  t.is(spec.operators, ops.operators, 'and the operators it was told about')
   t.ok(spec.handles.room.meta.refs.todos, 'and folded its schema')
   const types = JSON.parse(await fs.readFile(join(dir, 'spec/main/schema/schema.json'), 'utf-8'))
   const handle = types.schema.find((x) => x.name === 'handle')
@@ -470,59 +454,9 @@ export const operators = {
 
   const me = await openCero(t, spec)
   t.is(mod.ran, 1, 'setup ran with nothing registered')
-  t.is(me.user.hello(), me.id, 'the operators export bound on the root')
   const room = await open(me.room, { name: 'r' })
-  await room.note.add('through the spec')
+  await put(room.todos, { text: 'through the spec' })
   t.is((await get(room.todos)).data[0].text, 'through the spec')
-})
-
-test('operators: naming operators alone keeps the bundled two', async (t) => {
-  const dir = join(buildRoot, 'ops-only')
-  await fs.rm(dir, { recursive: true, force: true })
-  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
-  await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(join(dir, 'ops.js'), 'export const operators = { user: { hi: () => 1 } }\n')
-  await build(join(dir, 'spec'), base, { operators: '../ops.js' })
-  const schema = JSON.parse(await fs.readFile(join(dir, 'spec/main/schema/schema.json'), 'utf-8'))
-  const handle = schema.schema.find((x) => x.name === 'handle')
-  t.ok(
-    handle.fields.find((f) => f.name === 'avatar'),
-    'handleSync still folded'
-  )
-  const { spec } = await import(pathToFileURL(join(dir, 'spec', 'index.js')).href)
-  const me = await openCero(t, spec)
-  t.is(me.user.hi(), 1)
-})
-
-test('operators: keyed by namespace, a handle-type key holds its namespaces', (t) => {
-  const calls = []
-  const operators = {
-    user: { rename: (h, name) => calls.push(['user.rename', h.tag, name]) },
-    team: { note: { add: (h, text) => calls.push(['team.note.add', h.tag, text]) } }
-  }
-  const root = { tag: 'root', spec: { meta: { handles: { team: {} } } } }
-  bind(root, null, operators)
-  t.is(typeof root.user.rename, 'function')
-  t.absent(root.team, 'a handle-type key is not a root namespace')
-  const child = { tag: 'child' }
-  bind(child, 'team', operators)
-  t.is(typeof child.note.add, 'function')
-  root.user.rename('Z')
-  child.note.add('hi')
-  t.alike(calls, [
-    ['user.rename', 'root', 'Z'],
-    ['team.note.add', 'child', 'hi']
-  ])
-})
-
-test('bind: curries the handle as arg 0, returns it, skips non-functions', (t) => {
-  const handle = { tag: 'h' }
-  const seen = []
-  const out = bind(handle, null, { guest: { create: (h, d) => seen.push([h.tag, d]), NOPE: 5 } })
-  t.is(out, handle)
-  t.is(handle.guest.NOPE, undefined)
-  handle.guest.create({ x: 1 })
-  t.alike(seen, [['h', { x: 1 }]])
 })
 
 test('extensions: an object runs its setup with the ready handle', async (t) => {
@@ -729,7 +663,7 @@ test('profileSync: a joiner profile is visible on the host member list', async (
   const { host, joiner } = await openTwo(t, spec)
 
   const room = await open(host.room)
-  const invite = await room.invite({ role: 'member', ttl: 60_000 })
+  const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
 
   await set(joiner.profile, { name: 'guest', avatar: 'g.png' })
   const joined = await open(joiner.room, invite)
@@ -771,7 +705,7 @@ test('profileSync: a profile set on another device republishes here', async (t) 
   const room = await open(a.room)
 
   let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
-  b = await restore(b, a.identity.toPhrase())
+  b = await restore(b, a.identity.seed)
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -847,7 +781,7 @@ test('handleSync: a joiner handles row gets named from the handle profile', asyn
 
   const room = await open(host.room)
   await set(room.profile, { name: 'general' })
-  const invite = await room.invite({ role: 'member', ttl: 60_000 })
+  const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
   await open(joiner.room, invite)
   await waitForConnection(host.network)
   await waitForConnection(joiner.network)
@@ -979,7 +913,7 @@ test('profileSync: detaches its handle listener on close', async (t) => {
   const me = await openManual(t, (await buildSpec(t, 'ps-dispose', base, exts)).spec)
   t.is(me.listenerCount('handle'), 1, 'extension registered its handle listener')
   await me.close()
-  t.is(me.listenerCount('handle'), 0, 'listener detached on close (via me.signal)')
+  t.is(me.listenerCount('handle'), 0, 'listener detached on close')
 })
 
 test('handleSync: detaches its handle listener on close', async (t) => {
@@ -987,7 +921,7 @@ test('handleSync: detaches its handle listener on close', async (t) => {
   const me = await openManual(t, (await buildSpec(t, 'his-dispose', handleSchema, exts)).spec)
   t.is(me.listenerCount('handle'), 1, 'extension registered its handle listener')
   await me.close()
-  t.is(me.listenerCount('handle'), 0, 'listener detached on close (via me.signal)')
+  t.is(me.listenerCount('handle'), 0, 'listener detached on close')
 })
 
 // ─── watch ownership: auto-cleanup on close ──────────────────────────────────
@@ -1092,27 +1026,6 @@ test('signal: me.signal works without a global AbortController (Bare)', async (t
   t.ok(signal.aborted, 'aborts on close')
 })
 
-test('signal: on(event, fn, { signal }) removes the listener on abort', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-on')).spec)
-  const ctrl = new AbortController()
-  let hits = 0
-  me.on('handle', () => hits++, { signal: ctrl.signal })
-
-  await open(me.room)
-  t.is(hits, 1, 'fires while subscribed')
-  ctrl.abort()
-  await open(me.room)
-  t.is(hits, 1, 'no longer fires after abort')
-})
-
-test('signal: on(event, fn, { signal: me.signal }) is removed on close', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-on-close')).spec)
-  me.on('handle', () => {}, { signal: me.signal })
-  t.is(me.listenerCount('handle'), 1)
-  await me.close()
-  t.is(me.listenerCount('handle'), 0, 'removed when me closes')
-})
-
 test('signal: after(ref, fn, { signal }) stops firing on abort', async (t) => {
   const me = await openManual(t, (await buildSpec(t, 'sig-after')).spec)
   const ctrl = new AbortController()
@@ -1163,15 +1076,10 @@ test('signal: an already-aborted signal cleans up immediately', async (t) => {
   t.ok(await waitUntil(() => stream.destroyed), 'destroyed right away')
 })
 
-test('signal: a pre-aborted signal tears down on/after/before immediately', async (t) => {
+test('signal: a pre-aborted signal tears down after/before immediately', async (t) => {
   const me = await openManual(t, (await buildSpec(t, 'sig-pre-ops')).spec)
   const ctrl = new AbortController()
   ctrl.abort()
-
-  me.on('handle', () => t.fail('on listener fired'), { signal: ctrl.signal })
-  t.is(me.listenerCount('handle'), 0, 'on() detached immediately')
-  await open(me.room)
-  t.is(me.listenerCount('handle'), 0, 'still detached after an event')
 
   after(me.profile, () => t.fail('after fired'), { signal: ctrl.signal })
   await set(me.profile, { name: 'x' })

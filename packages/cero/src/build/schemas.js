@@ -2,7 +2,6 @@
 import { t } from '../lib/spec.js'
 
 const { string, bytes, int, uint, bool, required } = t
-const array = (m) => ({ ...m, array: true })
 
 export const main = {
   'del-by-id': {
@@ -101,12 +100,36 @@ export const main = {
     createdAt: int,
     index: uint,
     admitted: bool,
-    expires: int
+    expires: int,
+    // what the join asks for, the invite's role; once admitted, the role granted
+    role: string
   },
   // a removed member comes back only through an invite minted after `index`
   removal: {
     id: required(string),
     index: required(uint)
+  },
+  // this device's live view of a context: computed on read, never stored
+  status: {
+    role: string,
+    writable: bool,
+    epoch: uint,
+    suspended: bool,
+    // an app version this one cannot read ops from, 0 when current
+    behind: uint,
+    // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
+    nearby: string
+  },
+  // a join this device still waits on, without its keys
+  joining: {
+    id: required(string),
+    type: required(string),
+    invite: required(string)
+  },
+  // a device linked over Bluetooth, by its identity, with the name it declared
+  peer: {
+    id: required(string),
+    name: string
   }
 }
 
@@ -226,10 +249,6 @@ export const rpc = {
     total: required(int),
     size: required(int)
   },
-  'res-changes': {
-    changes: required(bytes),
-    reset: bool
-  },
   'res-invite': {
     invite: required(string)
   },
@@ -248,10 +267,8 @@ export const rpc = {
     id: required(string),
     deviceId: string,
     fileBase: string,
-    fileToken: string
-  },
-  'res-joining': {
-    invites: required(array(string))
+    fileToken: string,
+    deviceName: string
   },
   'res-seed': {
     phrase: string
@@ -266,5 +283,18 @@ export const rpc = {
     message: required(string),
     code: string,
     stack: string
+  },
+  // accept, or deny with a reason
+  'req-answer': {
+    handle: required(string),
+    id: required(string),
+    accept: bool,
+    role: string,
+    reason: string
+  },
+  // the mesh when `on`, one invite's rendezvous when `invite` is set
+  'req-nearby': {
+    on: bool,
+    invite: string
   }
 }

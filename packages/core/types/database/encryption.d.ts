@@ -1,6 +1,6 @@
 import Autobee from 'autobee';
-import c from 'compact-encoding';
-declare const WriterEncryption: any;
+/** @type {typeof import('autobee/lib/encryption.js').WriterEncryption} */
+declare const WriterEncryption: typeof import('autobee/lib/encryption.js').WriterEncryption;
 /**
  * Encryption key for a rotation epoch's blob cores.
  *
@@ -8,26 +8,49 @@ declare const WriterEncryption: any;
  * @returns {Uint8Array}
  */
 export declare function blobEpochKey(entropy: Uint8Array): Uint8Array;
-/** Prime a keyring from a local core's persisted epoch stash. */
-export declare function loadEpochs(keyring: any, local: any): Promise<void>;
+/**
+ * Prime a keyring from a local core's persisted epoch stash.
+ *
+ * @param {Keyring} keyring
+ * @param {import('hypercore')} local
+ * @returns {Promise<void>}
+ */
+export declare function loadEpochs(keyring: Keyring, local: import('hypercore')): Promise<void>;
 /**
  * Wire codec for a rotation announcement's envelope list — one sealed box
  * per remaining member, addressed by member id.
+ *
+ * @param {Array<{ id: string }>} members
+ * @param {Uint8Array} secret
+ * @returns {Array<{ id: string, box: Uint8Array }>}
  */
-export declare function seal(members: any, secret: any): any;
-export declare function opened(identity: any, wrapped: any): Generator<any, void, unknown>;
-export declare const wraps: c.Encoder<any[], {
+export declare function seal(members: Array<{
     id: string;
-    box: Uint8Array<ArrayBufferLike>;
-}[]>;
+}>, secret: Uint8Array): Array<{
+    id: string;
+    box: Uint8Array;
+}>;
+/**
+ * @param {import('../identity/index.js').Identity} identity
+ * @param {Uint8Array} wrapped
+ * @returns {Generator<Uint8Array, void, unknown>}
+ */
+export declare function opened(identity: import('../identity/index.js').Identity, wrapped: Uint8Array): Generator<Uint8Array, void, unknown>;
+/** @type {import('compact-encoding').Encoder<Array<{ id: string, box: Uint8Array }>>} */
+export declare const wraps: import('compact-encoding').Encoder<Array<{
+    id: string;
+    box: Uint8Array;
+}>>;
 /**
  * Wire codec for locally persisted / pairing-delivered epoch secrets.
+ *
+ * @type {import('compact-encoding').Encoder<Array<{ epoch: number, stamp: number, entropy: Uint8Array }>>}
  */
-export declare const epochEntries: c.Encoder<any[], {
+export declare const epochEntries: import('compact-encoding').Encoder<Array<{
     epoch: number;
     stamp: number;
-    entropy: Uint8Array<ArrayBufferLike>;
-}[]>;
+    entropy: Uint8Array;
+}>>;
 /**
  * Per-database registry of rotation epochs.
  */
@@ -79,17 +102,37 @@ export declare class EpochEncryption extends WriterEncryption {
  * this instance for `keyId` and `getEntropy`.
  */
 export declare class EpochAutobee extends Autobee {
-    keyring: any;
-    _epochStalled: Set<any>;
-    _epochRetry: number;
-    _epochRetryDelay: number;
-    _epochRetrySeen: number;
-    constructor(store: any, key: any, handlers?: {});
-    get keyId(): any;
-    getEntropy(id: any, ctx: any): Promise<any>;
-    _close(): Promise<any>;
-    _bumpPendingWriters(...args: any[]): Promise<any>;
-    _applyWakeupHints(): Promise<any>;
-    _scheduleEpochRetry(): void;
+    /** @type {Keyring | null} */
+    keyring: Keyring | null;
+    /** @private */
+    _epochStalled;
+    /** @private */
+    _epochRetry;
+    /** @private */
+    _epochRetryDelay;
+    /** @private */
+    _epochRetrySeen;
+    /**
+     * @param {import('corestore')} store
+     * @param {Uint8Array | null} key
+     * @param {{ keyring?: Keyring } & Record<string, unknown>} [handlers]  Autobee's options, plus the keyring.
+     */
+    constructor(store: import('corestore'), key: Uint8Array | null, handlers?: {
+        keyring?: Keyring;
+    } & Record<string, unknown>);
+    /** @returns {number} the key id new blocks are written with */
+    get keyId(): number;
+    /** @param {number} id @param {{ key?: Uint8Array }} [ctx] @returns {Promise<Uint8Array>} */
+    getEntropy(id: number, ctx?: {
+        key?: Uint8Array;
+    }): Promise<Uint8Array>;
+    /** @private */
+    private _close;
+    /** @private */
+    private _bumpPendingWriters;
+    /** @private */
+    private _applyWakeupHints;
+    /** @private */
+    private _scheduleEpochRetry;
 }
 export {};

@@ -13,7 +13,8 @@ import { Framed } from './protocol.js'
 /**
  * Consumer SDK for a tap server reached over a local Duplex `stream`.
  *
- * @param {object} stream  A streamx Duplex connected to a tap server.
+ * @param {import('streamx').Duplex} stream  A streamx Duplex connected to a tap server.
+ * @param {{ token?: string }} [opts]
  * @returns {Promise<{ handles(): Promise<Handle[]>, get(ref: string, query?: Query, handleId?: string): Promise<unknown>, watch(ref: string, query?: Query, handleId?: string): import('streamx').Readable, events(): import('streamx').Readable, stats(): import('streamx').Readable, close(): void }>}
  */
 export async function connect(stream, { token } = {}) {
@@ -21,10 +22,16 @@ export async function connect(stream, { token } = {}) {
 }
 
 export class Session {
+  /**
+   * @param {import('streamx').Duplex} stream
+   * @param {{ token?: string }} [opts]
+   */
   constructor(stream, { token } = {}) {
     this.stream = stream
     this.token = token || null
+    /** @type {Map<number, { resolve: (value: unknown) => void, reject: (err: Error) => void }>} */
     this.pending = new Map()
+    /** @type {Map<number, import('streamx').Readable>} */
     this.streams = new Map()
     this.seq = 0
     this.wire = new Framed(stream, (msg) => this._onmessage(msg))
@@ -93,6 +100,7 @@ export class Session {
   }
 
   // fail in-flight requests and end live streams
+  /** @private */
   _onclose() {
     for (const { reject } of this.pending.values()) {
       reject(new TapError('connection closed', 'CLOSED'))
@@ -102,6 +110,7 @@ export class Session {
     this.streams.clear()
   }
 
+  /** @private */
   _onmessage(msg) {
     if ('frame' in msg || msg.end) {
       const r = this.streams.get(msg.id)
@@ -121,14 +130,17 @@ export class Session {
     else p.resolve(msg.data)
   }
 
+  /** @private */
   _newId() {
     return ++this.seq
   }
 
+  /** @private */
   _send(frame) {
     this.wire.send(this.token ? { token: this.token, ...frame } : frame)
   }
 
+  /** @private */
   _request(method, fields) {
     return new Promise((resolve, reject) => {
       const id = this._newId()
@@ -137,6 +149,7 @@ export class Session {
     })
   }
 
+  /** @private */
   _stream(method, fields) {
     const id = this._newId()
     const r = new Readable({

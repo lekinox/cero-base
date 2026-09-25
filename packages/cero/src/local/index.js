@@ -8,8 +8,8 @@ import { Ref } from '../lib/refs.js'
 
 /**
  * @typedef {object} LocalOpts
- * @property {any} [root]   Pre-existing HypercoreStorage to reuse.
- * @property {any} [store]  Pre-existing Corestore to reuse.
+ * @property {import('hypercore-storage')} [root]   Pre-existing HypercoreStorage to reuse.
+ * @property {import('corestore')} [store]  Pre-existing Corestore to reuse.
  * @property {Uint8Array} [storageKey]  32-byte key encrypting the local store at rest.
  */
 
@@ -20,7 +20,7 @@ import { Ref } from '../lib/refs.js'
 export class Local extends ReadyResource {
   /**
    * @param {string | null} dir   Directory for the local store, or `null` when reusing an external `store`.
-   * @param {any} spec            Built cero spec — must include `spec.local.database` and `spec.meta.local`.
+   * @param {import('../lib/spec.js').Spec} spec  Built cero spec, with `spec.local.database` and `spec.meta.local`.
    * @param {LocalOpts} [opts]
    */
   constructor(dir, spec, { root, store, storageKey } = {}) {
@@ -41,11 +41,13 @@ export class Local extends ReadyResource {
     })
   }
 
+  /** @private */
   async _open() {
     await this.store.ready()
     Ref.attach(this, this.store.refs)
   }
 
+  /** @private */
   async _close() {
     await this.store.close()
   }

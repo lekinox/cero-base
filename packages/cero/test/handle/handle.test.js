@@ -4,7 +4,8 @@ import b4a from 'b4a'
 import { Identity } from '@cero-base/core/identity'
 
 import { Handle, Ref } from '../../src/handle/index.js'
-import { put, set, get, del, open, rotate, watch, changes, after } from '../../src/lib/operators.js'
+import { cero } from '../../src/index.js'
+import { put, set, get, del, open, rotate, accept, watch, after } from '../../src/lib/operators.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
   makeStore,
@@ -12,6 +13,7 @@ import {
   makeNet,
   waitForConnection,
   waitUntil,
+  nextRequest,
   fetch,
   openHandle
 } from '../helpers/index.js'
@@ -28,14 +30,15 @@ test('invite: a confirm invite waits for the app to accept', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
   const room = await open(host.me.team, { name: 'gated' })
-  const asked = new Promise((resolve) => room.pair.once('candidate', resolve))
-  const invite = await room.invite({ role: 'reader', confirm: true })
+  const invite = await cero.invite(room, { role: 'reader', confirm: true })
 
   const peer = await openHandle(t, { testnet })
   const joining = open(peer.me.team, invite)
-  const request = await asked
+  const request = await nextRequest(room)
+  t.alike(request.identity, peer.identity.publicKey, 'the room lists who is asking')
+  t.is(request.role, 'reader', 'and the role they ask for, from the invite')
   t.absent((await get(room.members, peer.identity.id)).data, 'nobody admitted yet')
-  await room.accept(request)
+  await accept(room, request)
   const joined = await joining
   t.teardown(() => joined.close().catch(() => {}))
   t.is((await get(room.members, peer.identity.id)).data.role, 'reader')
@@ -44,7 +47,7 @@ test('invite: a confirm invite waits for the app to accept', async (t) => {
 test('invite: refuses a role that is not a rank', async (t) => {
   const { me } = await openHandle(t)
   const room = await open(me.team, { name: 'capped' })
-  await t.exception(room.invite({ role: 'volunteer' }), /not a rank/i)
+  await t.exception(cero.invite(room, { role: 'volunteer' }), /not a rank/i)
 })
 
 // ─── construction ─────────────────────────────────────────────────────────
@@ -73,7 +76,7 @@ test('Handle: rejects missing spec', async (t) => {
 test('Handle: opens and closes', async (t) => {
   const { me } = await openHandle(t)
   t.is(me.opened, true)
-  t.ok(me.pair, 'pair instance attached')
+  t.ok(me._pair, 'pair instance attached')
   await me.close()
   t.is(me.closed, true)
 })
@@ -231,7 +234,7 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
   await room.bootstrap({ name: 'host' })
   await put(room.messages, { text: 'host-msg' })
 
-  const inviteStr = await room.invite({ role: 'reader' })
+  const inviteStr = await cero.invite(room, { role: 'reader' })
   const readerId = await Identity.create()
   const { store: readerStore } = await makeStore(t)
   const readerNet = await makeNet(t, testnet, readerId, readerStore)
@@ -260,7 +263,7 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
   await t.exception.all(() => put(reader.messages, { text: 'should fail' }), /not writable/i)
 })
 
-test('Handle: rotate cuts a removed member off from new data, late joiners read everything', async (t) => {
+test('Handle: a removal re-keys the room, the removed member reads nothing new, late joiners read all', async (t) => {
   const testnet = await makeTestnet(t)
 
   const { store: hostStore } = await makeStore(t)
@@ -283,7 +286,7 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
     const id = await Identity.create()
     const { store } = await makeStore(t)
     const net = await makeNet(t, testnet, id, store)
-    const h = await Handle.join(await room.invite(), {
+    const h = await Handle.join(await cero.invite(room), {
       network: net,
       identity: id,
       store,
@@ -310,8 +313,8 @@ test('Handle: rotate cuts a removed member off from new data, late joiners read 
   await sees(leaves.h, 'before')
 
   await del(room.members, leaves.id.id)
-  const { epoch } = await rotate(room)
-  t.is(epoch, 1, 'operator opens epoch 1')
+  await waitUntil(async () => (await get(room.status)).data.epoch === 1 || null)
+  t.pass('the removal opened epoch 1 by itself')
   await put(room.messages, { text: 'after' })
 
   await sees(stays.h, 'after')
@@ -359,7 +362,7 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
   // the room's key (registering them under the root key serves garbage)
   const m = await openHandle(t, { testnet })
   await m.me.bootstrap({ name: 'member-root' })
-  const member = await open(m.me.team, await room.invite())
+  const member = await open(m.me.team, await cero.invite(room))
   t.teardown(() => member.close().catch(() => {}))
   await waitForConnection(hostNet)
   await waitForConnection(m.net)
@@ -412,7 +415,7 @@ test('Handle: rotation works on nested child rooms — remove, late join, reopen
   const joinAsRoot = async () => {
     const peer = await openHandle(t, { testnet })
     await peer.me.bootstrap({ name: 'peer-root' })
-    const child = await open(peer.me.team, await room.invite())
+    const child = await open(peer.me.team, await cero.invite(room))
     t.teardown(() => child.close().catch(() => {}))
     return { ...peer, room: child }
   }
@@ -468,7 +471,7 @@ async function nestedRoom(t, testnet) {
   const joinAsRoot = async () => {
     const peer = await openHandle(t, { testnet })
     await peer.me.bootstrap({ name: 'peer-root' })
-    const child = await open(peer.me.team, await room.invite())
+    const child = await open(peer.me.team, await cero.invite(room))
     t.teardown(() => child.close().catch(() => {}))
     return { ...peer, room: child }
   }
@@ -600,7 +603,7 @@ test('Handle: a nested watch stream keeps emitting across a rotation', async (t)
   )
 })
 
-test('Handle: subscriptions are rotation-transparent — changes, hooks, removed stays silent', async (t) => {
+test('Handle: subscriptions are rotation-transparent — watch, hooks, removed stays silent', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, room, joinAsRoot, sees } = await nestedRoom(t, testnet)
 
@@ -613,7 +616,7 @@ test('Handle: subscriptions are rotation-transparent — changes, hooks, removed
 
   // live subscriptions opened BEFORE the rotation, on three different peers
   const batches = []
-  const changeStream = changes(b.room.messages)
+  const changeStream = watch(b.room.messages, { changes: true })
   changeStream.on('data', (batch) => batches.push(batch))
   t.teardown(() => changeStream.destroy())
 
@@ -641,7 +644,7 @@ test('Handle: subscriptions are rotation-transparent — changes, hooks, removed
   await waitUntil(() =>
     batches.some((batch) => batch.changes?.some((c) => c.next?.text === 'post')) ? true : null
   )
-  t.pass('changes() stream delivered post-rotation rows without resubscribing')
+  t.pass('watch delivered post-rotation rows without resubscribing')
 
   // the removed member's stream is ALIVE and SILENT — no error, no new data
   await new Promise((r) => setTimeout(r, 1500))
@@ -668,7 +671,7 @@ test('Handle: removal is observable — observers get the delete, the victim is 
 
   // an observer receives a removal as an ordinary delete: { prev: row, next: null }
   const deleted = []
-  const feed = changes(observer.room.members)
+  const feed = watch(observer.room.members, { changes: true })
   feed.on('data', (batch) => {
     for (const c of batch.changes) if (c.next === null) deleted.push(c.prev.id)
   })
@@ -690,7 +693,7 @@ test('Handle: removal is observable — observers get the delete, the victim is 
   await put(room.messages, { text: 'post' })
 
   await waitUntil(() => (deleted.includes(victim.identity.id) ? true : null))
-  t.pass('observer received the removal as a changes delete event')
+  t.pass('observer received the removal as a change with no next')
 
   await waitUntil(() => (snapshots.some((s) => !s.includes(victim.identity.id)) ? true : null))
   t.pass('the removed member was notified of their own removal before the cut')
@@ -768,7 +771,7 @@ test('Handle: a re-invited removed member reads the gap era (documented semantic
   // dead membership, discards the revoked session, runs a real pairing, and
   // the join delivers every epoch secret — the re-admitted member reads the
   // era they were excluded from, by design
-  const bob2 = await open(bob.me.team, await room.invite())
+  const bob2 = await open(bob.me.team, await cero.invite(room))
   t.teardown(() => bob2.close().catch(() => {}))
   await waitUntil(async () => {
     const { data } = await get(bob2.messages)
@@ -782,7 +785,7 @@ test('Handle: an invite minted before a rotation still works after it', async (t
   const { a, room, sees } = await nestedRoom(t, testnet)
 
   await put(room.messages, { text: 'before' })
-  const invite = await room.invite() // minted at epoch 0
+  const invite = await cero.invite(room) // minted at epoch 0
   await rotate(room)
   await put(room.messages, { text: 'after' })
 
@@ -877,7 +880,7 @@ test('Handle: invite + Handle.join + atomic admission', async (t) => {
   await room.bootstrap({ name: 'host' })
   await put(room.messages, { text: 'from-host' })
 
-  const inviteStr = await room.invite({ role: 'member', ttl: 60_000 })
+  const inviteStr = await cero.invite(room, { role: 'member', ttl: 60_000 })
 
   const joinerId = await Identity.create()
   const { store: joinerStore } = await makeStore(t)
@@ -926,9 +929,9 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
 
   await room.bootstrap({ name: 'host' })
 
-  const inviteStr = await room.invite({ role: 'member', ttl: 60_000 })
-  t.is(await room.revoke(inviteStr), true, 'revoke returns true the first time')
-  t.is(await room.revoke(inviteStr), false, 'revoke returns false the second time')
+  const inviteStr = await cero.invite(room, { role: 'member', ttl: 60_000 })
+  t.is(await cero.revoke(room, inviteStr), true, 'revoke returns true the first time')
+  t.is(await cero.revoke(room, inviteStr), false, 'revoke returns false the second time')
 
   const joinerId = await Identity.create()
   const { store: joinerStore } = await makeStore(t)
@@ -1116,7 +1119,7 @@ test('files: a reader cannot add a file', async (t) => {
 
   await room.bootstrap({ name: 'owner' })
 
-  const inviteStr = await room.invite({ role: 'reader' })
+  const inviteStr = await cero.invite(room, { role: 'reader' })
   const readerId = await Identity.create()
   const { store: readerStore } = await makeStore(t)
   const readerNet = await makeNet(t, testnet, readerId, readerStore)
@@ -1148,10 +1151,10 @@ test('files: a reader cannot add a file', async (t) => {
   t.is(data.length, 0, 'no file row landed')
 })
 
-test('changes: deltas flow with file fields resolved on both sides', async (t) => {
+test('watch: changes carry file fields resolved on both sides', async (t) => {
   const { me } = await openHandle(t)
 
-  const stream = changes(me.profile)
+  const stream = watch(me.profile, { changes: true })
   const batches = []
   stream.on('data', (b) => batches.push(b))
   await waitUntil(() => batches.length >= 1)

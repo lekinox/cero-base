@@ -1,40 +1,32 @@
 # Quickstart
 
-## On this page
-
-- [1. Describe your data](#1-describe-your-data)
-- [2. Build it, once](#2-build-it-once)
-- [3. Use it](#3-use-it)
-- [Watch instead of poll](#watch-instead-of-poll)
-- [Share with a handle](#share-with-a-handle)
-- [The first device and its phrase](#the-first-device-and-its-phrase)
-- [Another device from the phrase](#another-device-from-the-phrase)
-- [Node or Bare](#node-or-bare)
+Build a chat that runs in two terminals: one creates a room and prints an invite, the other joins with it, and every line typed in either shows up in both.
 
 ```sh
+mkdir chat && cd chat
+npm init -y
+npm pkg set type=module
 npm install @cero-base/cero
 ```
 
-A cero app is three files.
+You need Node 22 or newer. The app is three files: a schema, a build script and the chat.
 
-## 1. Describe your data
+## Describe the data
 
 ```js
 // schema.js
 import { cero, t } from '@cero-base/cero'
 
 export const schema = cero.schema({
-  notes: t.collection({
-    title: t.string,
-    body: t.string,
-    pinned: t.bool
-  })
+  room: {
+    messages: t.collection({ from: t.string, text: t.string })
+  }
 })
 ```
 
-`t.collection` is a table of rows. cero adds `id`, `createdAt`, `updatedAt`, `index` and `memberId` to every row for you.
+`room` declares a kind of room: a space you open and share by invite, encrypted with its own key. `messages` is a collection, a table of rows. Cero adds `id`, `memberId`, `index`, `createdAt` and `updatedAt` to every row.
 
-## 2. Build it, once
+## Build it
 
 ```js
 // build.js
@@ -48,108 +40,141 @@ await build('./spec', schema)
 node build.js
 ```
 
-This writes `spec/`, the compiled form of your schema. Run it again whenever the schema changes. Add `"prepare": "node build.js"` to package.json and it happens on install.
+This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Every device in a room needs the same `spec/`: one on an older build skips the newer writes and shows `behind` in its `room.status`.
 
-## 3. Use it
+## Write the chat
 
 ```js
-// index.js
+// chat.js
+import readline from 'readline'
 import { cero } from '@cero-base/cero'
 import { spec } from './spec/index.js'
 
-const me = await cero('./data', spec)
+const [name, invite] = process.argv.slice(2)
+const me = await cero(`./${name}`, spec)
 
-await cero.put(me.notes, { title: 'first', body: 'hello', pinned: true })
+let room
+if (invite) {
+  room = await cero.open(me.room, { invite })
+  console.log('joined')
+} else {
+  room = await cero.open(me.room, { name: 'chat' })
+  console.log('invite:', await cero.invite(room))
+}
 
-const { data } = await cero.get(me.notes)
-console.log(data) // [{ id, memberId, index, createdAt, updatedAt, title, body, pinned }]
+cero.watch(room.messages, { changes: true }).on('data', ({ changes }) => {
+  for (const { prev, next } of changes) if (!prev) console.log(`${next.from}: ${next.text}`)
+})
 
-await me.close()
-```
-
-Run it with `node index.js`. That is the whole loop. `me` is your root handle. `me.notes` is the ref for your collection. `cero.put` writes, `cero.get` reads.
-
-## Watch instead of poll
-
-```js
-cero.watch(me.notes).on('data', ({ data }) => render(data))
-```
-
-Or as a loop:
-
-```js
-for await (const { data } of cero.watch(me.notes)) render(data)
-```
-
-The stream sends the current rows now and again after every change, local or from a peer. Destroy it when you are done, or pass `{ signal: me.signal }` and it dies with the handle.
-
-## Share with a handle
-
-Anything you want other people to see goes in a child handle. Declare one as a nested object in the schema, then open it from `me`. The examples call it a room:
-
-```js
-// schema.js
-export const schema = cero.schema({
-  notes: t.collection({ title: t.string, body: t.string, pinned: t.bool }),
-  room: { notes: t.collection({ title: t.string, body: t.string }) }
+readline.createInterface({ input: process.stdin }).on('line', (text) => {
+  cero.put(room.messages, { from: name, text })
 })
 ```
 
-```js
-const room = await cero.open(me.room, { name: 'team' })
-await cero.put(room.notes, { title: 'shared', body: 'everyone sees this' })
+`me` is you on this device: the first run in a directory creates your identity there, later runs open it. An invite lets one person in as a member and never expires; call `cero.invite(room)` again for the next person. `watch` sends the messages now and after every change, and with `changes: true` each item lists what changed, `prev` being `null` for a new row.
 
-const invite = await room.invite()
+## Run it in two terminals
+
+Start alice in one terminal, and bob in another with the whole invite alice printed. They are two users, with their data in `./alice` and `./bob`. Then type a line in either and press Enter.
+
+```console
+$ node chat.js alice
+invite: yryb1pgmtzjph1yw6syywotoufh55ur7tgtjgqiysnm4h1…
+hi, anyone here?
+alice: hi, anyone here?
+bob: hi alice
+welcome, bob
+alice: welcome, bob
 ```
 
-Send the invite string any way you like. On the other side:
-
-```js
-const room = await cero.open(me.room, { invite })
+```console
+$ node chat.js bob yryb1pgmtzjph1yw6syywotoufh55ur7tgtjgqiysnm4h1…
+joined
+alice: hi, anyone here?
+hi alice
+bob: hi alice
+alice: welcome, bob
 ```
 
-Both sides now write to the same room and see each other's rows, online or after reconnecting.
+Lines without a name are what you typed, the others come from the room. Bob sees alice's first line as he joins: the first item of a watch holds every row already there.
 
-## The first device and its phrase
+The first connection over the internet can take a few seconds. If the join takes longer than 30 seconds, `cero.open` rejects with `TIMEOUT`: run the same command again and the join picks up where it stopped. Ctrl+C stops a side, and its data stays in its directory.
 
-There is no identity option on a fresh app. cero generates the identity, and you show the phrase to the user once.
+Cero prints errors that happen in the background, away from any call, and keeps going; pass `onerror` to `cero()` to handle them yourself.
 
-```js
-const me = await cero('./data', spec, { name: 'laptop' })
+## Open the same room next time
 
-console.log(me.identity.toPhrase())
-// twelve words: keep them, they are the account
-```
-
-The next launch on the same machine is the same call with no phrase. The identity and this device's writer are stored in `./data`, so `cero('./data', spec)` opens as you.
-
-## Another device from the phrase
-
-The user types the phrase. Nothing else.
+As it stands, every run of `node chat.js alice` creates another room with a new invite, because every `cero.open(me.room, { name })` does. Your rooms are the rows of `me.room`, so before the next run, change chat.js to open the first one by id when there is one.
 
 ```js
-const me = await cero('./data', spec, { phrase, name: 'phone' })
-
-me.id // same as on the laptop
+// chat.js, in place of the lines that open the room; me and invite from above
 const { data: rooms } = await cero.get(me.room)
-// [{ id, type: 'room', name: 'team', ... }]  the laptop's rooms, replicated
+
+let room
+if (invite) {
+  room = await cero.open(me.room, { invite })
+  console.log('joined')
+} else if (rooms.length) {
+  room = await cero.open(me.room, { id: rooms[0].id })
+} else {
+  room = await cero.open(me.room, { name: 'chat' })
+  console.log('invite:', await cero.invite(room))
+}
 ```
 
-Underneath, the phone derived a pointer core from the phrase, read the root database key from a device of yours that is online, opened that database with a writer core of its own, pulled the history, and admitted itself with a signature only the phrase can produce. It never writes to a core the laptop wrote. If no device of yours is reachable it rejects with `TIMEOUT` after `recoveryTimeout`, 30 seconds by default, rather than start a second history.
+```console
+$ node chat.js alice
+alice: hi, anyone here?
+bob: hi alice
+alice: welcome, bob
+```
 
-A supplied phrase only ever recovers, it never creates an identity, so a typo cannot silently hand you an empty account.
+The history prints first, as it did for bob when he joined. `node chat.js bob`, with no invite, reopens the room bob joined.
 
-## Node or Bare
+## Be alice on another device
+
+Your phrase is twelve words Cero generated with your identity on the first run. The same phrase on another device makes it the same user. Print it from chat.js:
 
 ```js
-import fs from 'fs' // not 'node:fs'
-import { join } from 'path'
+// chat.js, after the cero() line
+console.log('phrase:', await cero.phrase(me))
 ```
 
-Both, Node 22 or newer. Import `fs`, `path`, `crypto`, `events` and `url` as usual, with no `node:` prefix; on Bare the package maps them to the `bare-*` modules. Nothing in your code changes.
+Restart alice: she prints her phrase, and one of her devices is online. Then, in a third terminal, open her from the phrase in a fresh directory:
+
+```js
+// device.js
+import { cero } from '@cero-base/cero'
+import { spec } from './spec/index.js'
+
+const [name, phrase] = process.argv.slice(2)
+const me = await cero(`./${name}`, spec, { seed: cero.toSeed(phrase) })
+
+cero.watch(me.room).on('data', ({ data }) => console.log(data.map((room) => room.name)))
+```
+
+```console
+$ node device.js alice-laptop "<alice's twelve words>"
+[ 'chat' ]
+```
+
+Her rooms arrive as they sync, which is why this watches `me.room` instead of reading it once. Stop it, and `node chat.js alice-laptop` opens the same room as alice, from her second device.
+
+A phrase recovers only in a fresh directory, with the same `channel` and `mirrors` options as your other devices, while one of them is online. Otherwise `cero()` rejects with `TIMEOUT` after 30 seconds and creates nothing. The seed sits unencrypted in the data directory unless you pass `storageKey`. [Your devices](identity.md) has the full story.
+
+## What you built
+
+| File        | Idea                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------- |
+| `schema.js` | Your data, described once: a kind of room and the messages in it.                     |
+| `build.js`  | The compiled `spec/` every device runs, rebuilt after each schema change.             |
+| `chat.js`   | `me` is you, a room is shared by invite, `put` writes and `watch` shows every change. |
+| `device.js` | The phrase makes another device the same user, with the same rooms.                   |
+
+[example/chat-terminal](../example/chat-terminal) is the full version, with display names, more invites and a flag for the phrase.
 
 ## Next
 
-- [Schema](schema.md) for every field type, singles, actions and rooms.
-- [Data](data.md) for queries, `set`, `del`, `changes` and hooks.
-- [Handles](handles.md) for roles, invites that expire, and revoking.
+- [Schema](schema.md): every field type, and growing a schema without breaking older builds.
+- [Sharing](handles.md): roles, invites that expire or wait for a yes, removing a member.
+- [Your devices](identity.md): the phrase, recovery and removing a device.

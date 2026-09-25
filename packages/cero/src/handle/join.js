@@ -18,24 +18,29 @@ import { epochEntries } from '@cero-base/core/database/encryption'
 export class Join {
   /**
    * @param {import('./index.js').Handle} root
-   * @param {{ type: string, spec: any, discoveryKey: Uint8Array, routes?: Record<string, Function>, onend: () => void }} opts
+   * @param {{ type: string, spec: object, discoveryKey: Uint8Array, onend: () => void }} opts
    */
-  constructor(root, { type, spec, discoveryKey, routes, onend }) {
+  constructor(root, { type, spec, discoveryKey, onend }) {
     this.root = root
     this.type = type
     this.spec = spec
     this.id = b4a.toHex(discoveryKey)
-    this.routes = routes
     this.invite = null
     this.waiting = 0
     this.cancelled = false
+    /** @private */
     this._running = null // aborts the attempt in flight
+    /** @private */
     this._row = null
+    /** @type {Promise<import('./index.js').Handle>} */
     this.done = new Promise((resolve, reject) => {
+      /** @private */
       this._resolve = resolve
+      /** @private */
       this._reject = reject
     })
     this.done.catch(safetyCatch)
+    /** @private */
     this._onend = onend
   }
 
@@ -50,7 +55,7 @@ export class Join {
     this._running?.abort()
     const running = new AbortController()
     this._running = running
-    const nearby = this.root.bluetooth?.announce(invite)
+    const nearby = this.root._bluetooth?.announce(invite)
     try {
       const row = await this._save({ invite })
       const writer = { publicKey: row.publicKey, secretKey: row.secretKey }
@@ -59,7 +64,7 @@ export class Join {
       const reply = row.key
         ? unpack(row)
         : await this._keep(await Pairing.join(mailbox, invite, opts))
-      this._end(this._resolve, await this.root._enter(this.type, reply, this.routes))
+      this._end(this._resolve, await this.root._enter(this.type, reply))
       await this._forget()
     } catch (err) {
       if (running !== this._running) return
@@ -84,6 +89,7 @@ export class Join {
   }
 
   // the first save fixes the writer, later ones add what was learned
+  /** @private */
   async _save(fields) {
     const store = this.root.local?.store
     this._row ??= (store && (await store.get('joins', this.id)).data) || Identity.randomKeyPair()
@@ -93,16 +99,19 @@ export class Join {
   }
 
   // the reply, kept so a restart opens the handle without joining again
+  /** @private */
   async _keep(reply) {
     const { key, encryptionKey, epochs } = reply
     await this._save({ key, encryptionKey, epochs: c.encode(epochEntries, epochs) })
     return reply
   }
 
+  /** @private */
   async _forget() {
     await this.root.local?.store.del('joins', this.id).catch(safetyCatch)
   }
 
+  /** @private */
   _end(settle, value) {
     this._onend()
     settle(value)
@@ -112,8 +121,9 @@ export class Join {
 /**
  * Wait for a join, but stop waiting after `ms`; the join itself goes on.
  *
- * @param {Promise<any>} done
+ * @param {Promise<import('./index.js').Handle>} done
  * @param {number} ms  `0` waits as long as the join takes.
+ * @returns {Promise<import('./index.js').Handle>}
  */
 export async function wait(done, ms) {
   if (!ms) return done

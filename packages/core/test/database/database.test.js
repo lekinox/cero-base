@@ -500,34 +500,35 @@ test('put: accepts declared + system fields', async (t) => {
   t.is(data.id, 'm1')
 })
 
-// ─── action routing ─────────────────────────────────────────────────────────
+// ─── actions ─────────────────────────────────────────────────────────
 
-async function teamDb(t, routes) {
+async function teamDb(t, after = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec: spec.handles.team, routes })
+  const db = new Database({ store, identity, spec: spec.handles.team })
+  for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
   await db.bootstrap({ name: 'first', isMobile: false })
   return db
 }
 
-test('call: a declared action with no route throws (not a silent no-op)', async (t) => {
+test('call: a declared action with no after hook throws (not a silent no-op)', async (t) => {
   const db = await teamDb(t)
   await t.exception(
     db.call('promote', { memberId: 'm', role: 'admin' }),
-    /action 'promote' has no route/,
+    /action 'promote' has no after hook/,
     'fails loud instead of writing a dead op'
   )
 })
 
-test('call: a declared action with a registered route succeeds', async (t) => {
+test('call: a declared action with an after hook succeeds', async (t) => {
   const db = await teamDb(t, { promote: async () => {} })
   await db.call('promote', { memberId: 'm', role: 'admin' })
-  t.pass('routed action call did not throw')
+  t.pass('the action call did not throw')
 })
 
-test('call: a route gets the hook ctx and writes through it', async (t) => {
+test('call: an action hook gets the ctx and writes through it', async (t) => {
   const db = await teamDb(t, {
     promote: async ({ row, memberId, role, get, put }) => {
       const { data: before } = await get('notes', { text: row.memberId })
@@ -541,7 +542,7 @@ test('call: a route gets the hook ctx and writes through it', async (t) => {
   t.alike(
     data.map((n) => n.text),
     ['m:admin:0:owner', 'second'],
-    'the route read and wrote the room through ctx'
+    'the hook read and wrote the room through ctx'
   )
   t.ok(
     data.every((n) => n.id.length > 0),
@@ -555,13 +556,13 @@ test('call: a route gets the hook ctx and writes through it', async (t) => {
   )
 })
 
-test('call: rows a route writes get the same ids on every peer', async (t) => {
+test('call: rows an action hook writes get the same ids on every peer', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const routes = {
+  const after = {
     promote: async ({ row, put }) => put('notes', { text: `promoted ${row.memberId}` })
   }
-  const a = await makePeer(t, testnet, { topic, spec: spec.handles.team, routes })
+  const a = await makePeer(t, testnet, { topic, spec: spec.handles.team, after })
   await a.db.bootstrap({ name: 'a' })
   const b = await makePeer(t, testnet, {
     identity: await Identity.create(),
@@ -569,7 +570,7 @@ test('call: rows a route writes get the same ids on every peer', async (t) => {
     spec: spec.handles.team,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey,
-    routes
+    after
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -595,7 +596,7 @@ test('addWriter admits another device of this identity', async (t) => {
   t.is(device.memberId, db.identity.id, 'bound to the admitting identity')
 })
 
-test('call: a route that throws refuses the action', async (t) => {
+test('call: an action hook that throws refuses the action', async (t) => {
   const db = await teamDb(t, {
     promote: async ({ row }) => {
       if (row.role === 'god') throw new Error('no such rank')
@@ -603,10 +604,10 @@ test('call: a route that throws refuses the action', async (t) => {
   })
   await t.exception(db.call('promote', { memberId: 'm', role: 'god' }), /REFUSED/)
   await db.call('promote', { memberId: 'm', role: 'admin' })
-  t.pass('a passing route still applies')
+  t.pass('a passing hook still applies')
 })
 
-test('call: an operator called inside a route throws INVALID', async (t) => {
+test('call: an operator called inside an action hook throws INVALID', async (t) => {
   let err = null
   const db = await teamDb(t, {
     promote: async () => {
@@ -618,7 +619,7 @@ test('call: an operator called inside a route throws INVALID', async (t) => {
     }
   })
   await db.call('promote', { memberId: 'm', role: 'admin' })
-  t.is(err?.code, 'INVALID', 'cero operators are off limits inside a route')
+  t.is(err?.code, 'INVALID', 'cero operators are off limits inside a hook')
 })
 
 test('apply event: fires per applied op with op/name/row/writerKey, and unsubscribes', async (t) => {
@@ -2057,7 +2058,7 @@ test('apply: builtin timestamps are deterministic across peers', async (t) => {
   }
 })
 
-test('write: a throwing route rejects the call and appends nothing (dry-run)', async (t) => {
+test('write: a throwing action hook rejects the call and appends nothing (dry-run)', async (t) => {
   const db = await teamDb(t, {
     promote: async ({ row }) => {
       if (row.role === 'boom') throw new Error('role rejected by app')

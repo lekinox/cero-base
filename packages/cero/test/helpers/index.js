@@ -8,7 +8,7 @@ import BlindPeer from 'blind-peer'
 import { Network } from '@cero-base/core/network'
 import { Identity } from '@cero-base/core/identity'
 
-import { cero } from '../../src/index.js'
+import { cero, get } from '../../src/index.js'
 import { Handle } from '../../src/handle/index.js'
 import { Local } from '../../src/local/index.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -83,6 +83,20 @@ export async function waitForConnection(net, timeout = 30000) {
   throw new Error('timeout waiting for connection')
 }
 
+// the invites of the joins a device still waits on
+export async function joinsOf(me) {
+  const { data } = await get(me.joins)
+  return data.map((join) => join.invite)
+}
+
+// a join waiting on the room's confirm invites, read the way an app reads it; `after` skips one
+export function nextRequest(room, after = null) {
+  return waitUntil(async () => {
+    const { data } = await get(room.requests, { admitted: false })
+    return data.find((r) => r.id !== after?.id) || null
+  })
+}
+
 export async function waitUntil(fn, timeout = 30000, step = 50) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
@@ -152,10 +166,6 @@ export class FakeStore extends ReadyResource {
   watch(name, q) {
     this.record('watch', name, q)
     return { on() {}, once() {}, destroy() {} }
-  }
-  changes(name, q) {
-    this.record('changes', name, q)
-    return { async *[Symbol.asyncIterator]() {}, on() {}, once() {}, destroy() {} }
   }
   call(name, d) {
     return this.record('call', name, d)

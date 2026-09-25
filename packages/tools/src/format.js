@@ -45,7 +45,7 @@ export function formatHandles(tree) {
  * `{ data }` for single refs — as a compact summary.
  *
  * @param {string} ref
- * @param {{ data: any, total?: number, size?: number }} result
+ * @param {{ data: unknown, total?: number, size?: number }} result
  * @returns {string}
  */
 export function formatState(ref, result) {
@@ -74,7 +74,7 @@ const OP_COLOR = { add: c.green, set: c.yellow, del: c.red, claim: c.magenta }
 /**
  * Render one applied-op event as a single colored line.
  *
- * @param {{ op: string, name: string, row: any, writerKey?: any, seq?: number }} e
+ * @param {{ op: string, name: string, row: Record<string, unknown>, writerKey?: Uint8Array, seq?: number }} e
  * @returns {string}
  */
 export function formatEvent(e) {
@@ -87,7 +87,7 @@ export function formatEvent(e) {
 /**
  * Render a stats snapshot as a single colored line.
  *
- * @param {{ network?: { connections: number, peers: number }, bee?: { local: number }, cores?: any[] }} s
+ * @param {{ network?: { connections: number, peers: number }, bee?: { local: number }, cores?: Array<{ length: number, byteLength: number, peers: number }> }} s
  * @returns {string}
  */
 export function formatStats(s) {

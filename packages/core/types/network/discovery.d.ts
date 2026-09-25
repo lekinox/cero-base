@@ -1,18 +1,30 @@
+export type Session = {
+    refresh(opts?: object): Promise<void>;
+    flushed(): Promise<boolean>;
+    destroy(): Promise<void>;
+};
 /**
  * Handle for a single topic membership on a {@link Network}. Wraps a hyperswarm
  * PeerDiscovery session and lets it switch between active/passive announce/lookup.
  */
+/**
+ * @typedef {{ refresh(opts?: object): Promise<void>, flushed(): Promise<boolean>, destroy(): Promise<void> }} Session
+ *   The hyperswarm session `swarm.join()` returns, as far as this file uses it.
+ */
 export declare class Discovery {
     network: import("./index.js").Network;
-    session: any;
-    _mode: "active" | "passive";
-    _destroyed: boolean;
+    /** @type {Session} */
+    session: Session;
+    /** @private */
+    _mode;
+    /** @private */
+    _destroyed;
     /**
      * @param {import('./index.js').Network} network  Owning network.
-     * @param {any} session  Hyperswarm PeerDiscovery session from `swarm.join()`.
+     * @param {Session} session  Hyperswarm PeerDiscovery session from `swarm.join()`.
      * @param {'active' | 'passive'} mode
      */
-    constructor(network: import('./index.js').Network, session: any, mode: 'active' | 'passive');
+    constructor(network: import('./index.js').Network, session: Session, mode: 'active' | 'passive');
     /** @returns {'active' | 'passive'} */
     get mode(): 'active' | 'passive';
     /** @returns {boolean} */

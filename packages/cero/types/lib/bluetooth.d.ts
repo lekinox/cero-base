@@ -6,28 +6,33 @@ import ReadyResource from 'ready-resource';
  * @extends ReadyResource
  */
 export declare class Bluetooth extends ReadyResource {
-    _handle: object;
-    _autoStart: boolean;
-    /** @type {{ hex: string, count: number, timer: any } | null} active invite rendezvous (single topic — one at a time) */
+    /** @private */
+    _handle;
+    /** @private */
+    _autoStart;
+    /** @type {{ hex: string, count: number, timer: ReturnType<typeof setTimeout> | null } | null} active invite rendezvous (single topic — one at a time) */
     _announce: {
         hex: string;
         count: number;
-        timer: any;
+        timer: ReturnType<typeof setTimeout> | null;
     } | null;
-    _restorePending: boolean;
-    _topic: any;
-    swarm: any;
+    /** @private */
+    _restorePending;
+    /** @private */
+    _topic;
+    /** @type {import('ble-swarm')} */
+    swarm: import('ble-swarm');
     /**
-     * @param {object} handle           Root cero Handle (network + identity + channel).
+     * @param {import('../handle/index.js').Handle} handle  The root: its network, identity and channel.
      * @param {object} [opts]
-     * @param {any} [opts.backend]      Injected bare-bluetooth-shaped backend (tests); omitted → ble-swarm loads its own, null/false → unsupported.
+     * @param {object | null} [opts.backend]  Injected bare-bluetooth-shaped backend (tests); omitted → ble-swarm loads its own, null/false → unsupported.
      * @param {boolean} [opts.autoStart]  Start on handle open (from `cero({ bluetooth: true })`).
      * @param {number} [opts.maxOutbound]  Max concurrent outbound links; gossip covers the rest.
      * @param {number} [opts.maxInbound]   Max concurrent inbound sessions; newcomers past this are refused.
      * @param {'l2cap' | 'gatt'} [opts.pipe]  Data pipe — 'l2cap' (default, faster) or 'gatt'. Both peers must match.
      */
-    constructor(handle: object, { backend, autoStart, maxOutbound, maxInbound, pipe }?: {
-        backend?: any;
+    constructor(handle: import('../handle/index.js').Handle, { backend, autoStart, maxOutbound, maxInbound, pipe }?: {
+        backend?: object | null;
         autoStart?: boolean;
         maxOutbound?: number;
         maxInbound?: number;
@@ -35,10 +40,12 @@ export declare class Bluetooth extends ReadyResource {
     });
     /** @returns {'unsupported'|'unauthorized'|'off'|'waiting'|'starting'|'on'} */
     get state(): 'unsupported' | 'unauthorized' | 'off' | 'waiting' | 'starting' | 'on';
-    /** @returns {Map<string, any>} Live BLE links, keyed by peer public key. */
-    get peers(): Map<string, any>;
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @returns {Map<string, object>} Live BLE links, keyed by peer public key. */
+    get peers(): Map<string, object>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
     /**
      * Begin advertising + scanning. Idempotent; no-op when unsupported.
      *
@@ -71,6 +78,8 @@ export declare class Bluetooth extends ReadyResource {
      * @returns {Promise<void>}
      */
     resume(): Promise<void>;
-    _stopAnnounce(): void;
-    _clearAnnounce(): void;
+    /** @private */
+    private _stopAnnounce;
+    /** @private */
+    private _clearAnnounce;
 }

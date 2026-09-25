@@ -33,11 +33,15 @@ export class Inbox extends ReadyResource {
     this.box = box
     this.onmessage = onmessage
     this.onerror = onerror
+    /** @private */
     this._seen = new Set()
+    /** @private */
     this._session = null
+    /** @private */
     this._discovery = null
   }
 
+  /** @private */
   async _open() {
     for (const mail of await this.box.list()) {
       if (!b4a.equals(mail.address, this.address)) continue
@@ -54,11 +58,13 @@ export class Inbox extends ReadyResource {
     this._discovery = this.network.join(crypto.discoveryKey(this.address))
   }
 
+  /** @private */
   async _close() {
     this._session?.destroy()
     await this._discovery?.destroy()
   }
 
+  /** @private */
   _onannounce(key) {
     const id = b4a.toHex(key)
     if (this._seen.has(id)) return
@@ -67,6 +73,7 @@ export class Inbox extends ReadyResource {
     this._read(id, key).catch(() => this._seen.delete(id))
   }
 
+  /** @private */
   async _read(id, key) {
     const core = this.network.store.get({ key })
     let message
@@ -82,6 +89,7 @@ export class Inbox extends ReadyResource {
   }
 
   // dropped once handled; one that throws stays for the next time this address is received
+  /** @private */
   async _handle({ id, message }) {
     try {
       await this.onmessage(message)

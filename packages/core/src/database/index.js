@@ -21,11 +21,10 @@ import { keyPair } from '../mailbox/inbox.js'
 
 /**
  * @typedef {object} DatabaseOpts
- * @property {any} store                                              Corestore (or compatible) used to materialize the autobee.
+ * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
- * @property {{ database: any, dispatch: any, meta?: { ns?: string, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
- * @property {Record<string, Function>} [routes]                      Custom action handlers keyed by route name.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -38,8 +37,9 @@ import { keyPair } from '../mailbox/inbox.js'
  * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
  * `behind` (an op from a newer app version was skipped).
  *
- * @typedef {{ data: any | null }} SingleResult
- * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
+ * @typedef {Record<string, unknown>} Row  A row, fields by name.
+ * @typedef {{ data: Row | null }} SingleResult
+ * @typedef {{ data: Row[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
  * @typedef {{ gt?: string, gte?: string, lt?: string, lte?: string, reverse?: boolean, limit?: number, search?: string, fields?: string[], total?: boolean }} Query
  * @typedef {{ kind: string, verb: string, name: string }} Ref
  * @typedef {object} HookContext
@@ -71,6 +71,7 @@ export class Database extends ReadyResource {
       throw CeroError.INVALID('spec must have database + dispatch')
     }
 
+    /** @type {import('corestore')} */
     this.store = opts.store
     this.identity = opts.identity
     this.network = opts.network || null
@@ -79,8 +80,8 @@ export class Database extends ReadyResource {
     this.ns = this.meta.ns || NAMESPACE
     this.refs = this.meta.refs || {}
     this.version = this.meta.version || 1
+    /** @type {number | null} */
     this.behind = null
-    this.routes = opts.routes || {}
     this.namespace = opts.namespace || NAMESPACE
     this.encryptionKey = opts.encryptionKey || opts.identity.encryptionKey || null
     this.keyring = new Keyring()
@@ -93,22 +94,33 @@ export class Database extends ReadyResource {
       throw CeroError.INVALID('the identity keypair is never a writer — use a device keypair')
     }
 
+    /** @private */
     this._onerror = opts.onerror || ((err) => console.error(err))
     // a join is sealed to the address the encryption key owns: every member opens it, no one else
+    /** @private */
     this._room = this.encryptionKey ? keyPair(this.encryptionKey) : null
     this.bee = null
     this.dispatcher = null
+    /** @private */
     this._presence = null
+    /** @private */
     this._txChain = null
 
+    /** @private */
     this._before = new Map()
+    /** @private */
     this._after = new Map()
+    /** @private */
     this._hooking = 0
+    /** @private */
     this._verbs = verbMap(this.refs)
+    /** @private */
     this._touched = new Set()
+    /** @private */
     this._seq = 0
     // every watch and changes stream is an 'update' listener
     this.setMaxListeners(0)
+    /** @type {Array<[string, unknown]> | null} */
     this.txQueue = null
   }
 
@@ -142,6 +154,7 @@ export class Database extends ReadyResource {
     return this.bee?.view || null
   }
 
+  /** @private */
   async _open() {
     await this.store.ready()
     if (this.network) await this.network.ready()
@@ -149,13 +162,11 @@ export class Database extends ReadyResource {
     this.dispatcher = makeDispatcher({
       spec: this.spec,
       ns: this.ns,
-      routes: this.routes,
       onerror: this._onerror,
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
       room: () => this._room,
       hooks: (phase, op) => this._hooks(phase, op),
-      inHook: (fn) => this._inHook(fn),
       touch: (name) => this._touched.add(name),
       read: (view, name, query) => this._read(view, name, query)
     })
@@ -180,6 +191,7 @@ export class Database extends ReadyResource {
     if (this.network && !known) this._joinSwarm(this.bee, this.bee.discoveryKey)
   }
 
+  /** @private */
   async _close() {
     this.rotation.close()
     if (this._presence) {
@@ -210,7 +222,7 @@ export class Database extends ReadyResource {
    * Register a pre-op hook. It runs at apply on every peer, inside the op's transaction;
    * returning `false` (or throwing) refuses the op everywhere.
    *
-   * @param {string} op
+   * @param {string} op  A write (`put`, `set`, `del`), or an action's name.
    * @param {HookFn} fn
    * @returns {() => void} disposer
    */
@@ -220,9 +232,10 @@ export class Database extends ReadyResource {
 
   /**
    * Register a post-op hook. It runs at apply on every peer, in the op's transaction, so it
-   * may write derived rows through `ctx.put` / `ctx.set` / `ctx.del`.
+   * may write derived rows through `ctx.put` / `ctx.set` / `ctx.del`. On an action it is what
+   * the action does.
    *
-   * @param {string} op
+   * @param {string} op  A write (`put`, `set`, `del`), or an action's name.
    * @param {HookFn} fn
    * @returns {() => void} disposer
    */
@@ -234,7 +247,7 @@ export class Database extends ReadyResource {
    * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
    *
    * @param {string} name
-   * @param {Record<string, any>} row
+   * @param {Record<string, unknown>} row
    * @returns {Promise<SingleResult | null>}
    */
   async put(name, row) {
@@ -248,7 +261,7 @@ export class Database extends ReadyResource {
    * Upsert by merging with the existing row, preserving `createdAt`.
    *
    * @param {string} name
-   * @param {Record<string, any>} row
+   * @param {Record<string, unknown>} row
    * @param {{ upsert?: boolean }} [opts]
    * @returns {Promise<SingleResult | null>}
    */
@@ -272,19 +285,17 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Dispatch a custom action route by name.
+   * Run a declared action: what the `after` hooks on its name do, at apply on every peer.
    *
    * @param {string} op
-   * @param {Record<string, any>} [data]
+   * @param {Record<string, unknown>} [data]
    * @returns {Promise<void>}
    */
   async call(op, data = {}) {
     this.guard()
-    // a declared action with no local route applies as a silent no-op (builtins pass)
-    if (this.refs[op]?.kind === ACTION && typeof this.routes[op] !== 'function') {
-      throw CeroError.INVALID(
-        `action '${op}' has no route — pass { routes: { ${op} } } when opening the handle`
-      )
+    // an action with nothing to run would write a dead op into the log
+    if (this.refs[op]?.kind === ACTION && !this._after.get(op)?.length) {
+      throw CeroError.INVALID(`action '${op}' has no after hook`)
     }
     await this.write([[op, data]])
   }
@@ -338,7 +349,7 @@ export class Database extends ReadyResource {
    * Encode and append dispatch ops. Buffers into the active `tx` queue if one
    * is open.
    *
-   * @param {Array<[string, any]>} ops
+   * @param {Array<[string, unknown]>} ops
    * @returns {Promise<void>}
    */
   async write(ops) {
@@ -379,6 +390,7 @@ export class Database extends ReadyResource {
   }
 
   // the same read against any view: hooks read the transaction they run in
+  /** @private */
   async _read(view, name, query) {
     const ref = this.ref(name)
     const col = this.col(ref)
@@ -575,6 +587,7 @@ export class Database extends ReadyResource {
   }
 
   // the boot reads post-rotation state through the keyring, primed before the bee exists
+  /** @private */
   async _preload() {
     const local = this.store.namespace(this.namespace).get({
       keyPair: this.keyPair,
@@ -589,6 +602,7 @@ export class Database extends ReadyResource {
     await local.close()
   }
 
+  /** @private */
   async _boot() {
     const bee = new EpochAutobee(this.store.namespace(this.namespace), this.key, {
       keyPair: this.keyPair,
@@ -611,6 +625,7 @@ export class Database extends ReadyResource {
   }
 
   // ops skipped as too new apply once this version caught up: wipe the boot record and reboot
+  /** @private */
   async _replay() {
     const behind = await this.bee.local.getUserData('cero/behind')
     this.behind = behind ? c.decode(c.uint, behind) : null
@@ -623,6 +638,7 @@ export class Database extends ReadyResource {
   }
 
   // without this hook autobee trusts every fast-forward candidate, a removed device's fork included
+  /** @private */
   async _isTrusted(writer, view) {
     try {
       const row = await bounded(view.get(`@${this.ns}/devices`, { id: hid.encode(writer) }))
@@ -638,6 +654,7 @@ export class Database extends ReadyResource {
   }
 
   // unwrap once so the dispatcher sees op bytes. Skipping a newer version is deterministic
+  /** @private */
   async _apply(nodes, view, host) {
     const ready = []
     for (const node of nodes) {
@@ -654,6 +671,7 @@ export class Database extends ReadyResource {
   }
 
   // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip
+  /** @private */
   async _update(db) {
     await db.update()
     const touched = this._touched
@@ -663,17 +681,20 @@ export class Database extends ReadyResource {
   }
 
   // a writer swap re-opens the bee on the same topic, so the slot is the same one
+  /** @private */
   _joinSwarm(bee, discoveryKey) {
     this.network.attach(bee)
     this._presence = this.network.presence.add(discoveryKey, { pinned: this.pinned })
   }
 
   // wrapped so an operator called from inside a hook fails instead of appending its own op
+  /** @private */
   _hooks(phase, op) {
     const fns = (phase === 'before' ? this._before : this._after).get(op)
     return fns?.length ? fns.map((fn) => this._inHook(fn)) : NO_HOOKS
   }
 
+  /** @private */
   _inHook(fn) {
     return async (ctx) => {
       this._hooking++
@@ -686,6 +707,7 @@ export class Database extends ReadyResource {
   }
 
   // an 'update' listener for one ref; the disposer detaches it
+  /** @param {string} name @param {() => void} fn @returns {() => void} */
   onUpdate(name, fn) {
     const tick = (touched) => {
       if (touched.has('*') || touched.has(name)) fn()
@@ -695,6 +717,7 @@ export class Database extends ReadyResource {
   }
 
   // '@cero/set-messages' → { op: 'set', name: 'messages' }; an action has no dash
+  /** @private */
   _opOf(node) {
     const { name, value } = this.spec.dispatch.decode(node.value)
     const verb = name.slice(name.indexOf('/') + 1)
@@ -704,6 +727,7 @@ export class Database extends ReadyResource {
   }
 
   // marks the refs a batch touched and emits 'apply' per op, local and replicated alike
+  /** @private */
   _notify(nodes) {
     const listened = this.listenerCount('apply') > 0
     for (const node of nodes) {
@@ -716,7 +740,7 @@ export class Database extends ReadyResource {
         continue
       }
       const ref = this._verbs.get(op.name)
-      // an action's route handler writes wherever it wants, widen to all
+      // an action's hooks write wherever they want, widen to all
       this._touched.add(ref && this.refs[ref].kind !== ACTION ? ref : '*')
       if (!listened) continue
       this.emit('apply', {
@@ -729,6 +753,7 @@ export class Database extends ReadyResource {
     }
   }
 
+  /** @private */
   async _merge(name, row, { upsert = true } = {}) {
     const ref = this._prepare(name, row)
     const existing = ref.kind === SINGLE || row?.id ? (await this.get(name, row?.id)).data : null
@@ -740,6 +765,7 @@ export class Database extends ReadyResource {
     return this._append(stored, `${insert ? 'add' : 'set'}-${ref.verb}`)
   }
 
+  /** @private */
   _prepare(name, row) {
     this.guard()
     const ref = this.ref(name)
@@ -747,16 +773,19 @@ export class Database extends ReadyResource {
     return ref
   }
 
+  /** @private */
   async _append(stored, verb) {
     await this.write([[verb, stored]])
     return { row: stored }
   }
 
+  /** @private */
   _done(ctx) {
     return ctx ? { data: ctx.row } : null
   }
 
   // ops from a newer app version: emit behind once per version, the marker survives restarts
+  /** @private */
   _onfuture(version) {
     if (this.behind !== null && version <= this.behind) return
     this.behind = version
@@ -765,6 +794,7 @@ export class Database extends ReadyResource {
   }
 
   // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the write
+  /** @private */
   async _dryRun(encoded) {
     const tx = this.view.transaction()
     const host = {
@@ -795,6 +825,7 @@ export class Database extends ReadyResource {
   }
 
   // one hyperdb read per query: index, bounds and window pushed down, the rest filtered in memory
+  /** @private */
   _plan(name, query = {}) {
     const ref = this.refs[name]
     const col = `@${this.ns}/${name}`
@@ -824,6 +855,7 @@ export class Database extends ReadyResource {
   }
 
   // matched rows; unknown once a pushed-down limit filled the page
+  /** @private */
   async _total(view, path, range, matched, query) {
     if (range.limit === undefined || matched.length < range.limit) return matched.length
     if (!query?.total) return null
@@ -832,6 +864,7 @@ export class Database extends ReadyResource {
   }
 
   // an append by a core not yet admitted: apply verifies the signature and admits it
+  /** @private */
   async _optimistic(op, opts) {
     await this.bee.append(wrap(this.version, op), { optimistic: true })
     await this.bee.update()
@@ -839,6 +872,7 @@ export class Database extends ReadyResource {
   }
 
   // the genesis device row is the first write of every database, so any device row means backfilled
+  /** @private */
   async _backfilled(timeout) {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
@@ -851,12 +885,14 @@ export class Database extends ReadyResource {
   }
 
   // the add-writer row for `writer`, appended by this device and signed by the identity
+  /** @private */
   _admission(writer, ts = Date.now()) {
     const sig = this.identity.sign(admission(this.key, writer, this.writerKey))
     return { master: this.identity.publicKey, writer, sig, ts }
   }
 
   // the encoder silently drops an undeclared field, so the returned row would lie
+  /** @private */
   _checkFields(name, row) {
     const declared = this.refs[name]?.fields
     if (!declared || !row) return
@@ -868,6 +904,7 @@ export class Database extends ReadyResource {
     }
   }
 
+  /** @private */
   async _admit(verb, publicKey) {
     this.guard()
     if (!b4a.isBuffer(publicKey)) throw CeroError.INVALID('publicKey must be a buffer')

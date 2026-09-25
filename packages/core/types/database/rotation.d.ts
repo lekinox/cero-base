@@ -9,12 +9,21 @@ export declare class Rotation {
         stamp: number;
         epoch: number;
     };
-    _timer: number;
-    _healedFor: any;
+    /** @private */
+    _queue;
+    /** @private */
+    _timer;
+    /** @private */
+    _healedFor;
     /** @param {import('./index.js').Database} db */
     constructor(db: import('./index.js').Database);
     close(): void;
-    /** @returns {Promise<{ epoch: number }>} */
+    /**
+     * One at a time: a rotation asked for during another runs after it, sealed to the members as
+     * they stand then.
+     *
+     * @returns {Promise<{ epoch: number }>}
+     */
     rotate(): Promise<{
         epoch: number;
     }>;
@@ -36,13 +45,24 @@ export declare class Rotation {
     hydrate(): Promise<void>;
     /** Debounced audit, run after every update. */
     heal(): void;
-    _rotate(retried: any): any;
-    _members(): Promise<any[]>;
-    _announce(stamp: any, entropy: any, wrapped: any): Promise<number>;
-    _mint(): number;
-    _taken(stamp: any): Promise<any>;
-    _epochs(): any;
-    _unseal(row: any): any;
-    _save(): any;
-    _audit(): Promise<void>;
+    /** @private */
+    private _rotate;
+    /** @private */
+    private _members;
+    /** @private */
+    private _announce;
+    /** @private */
+    private _mint;
+    /** @private */
+    private _taken;
+    /** @private */
+    private _epochs;
+    /** @private */
+    private _unseal;
+    /** @private */
+    private _save;
+    /** @private */
+    private _audit;
+    /** @private */
+    private _heal;
 }

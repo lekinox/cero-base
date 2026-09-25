@@ -673,17 +673,16 @@ test('epochs reload: a primed keyring skips re-processing known rotations', asyn
   t.is(processed, 0, 'known epochs are skipped — no unseal replay')
 })
 
-test('rotate: guards — no tx batching, no concurrent rotations', async (t) => {
+test('rotate: no tx batching; concurrent rotations run one after the other', async (t) => {
   const { a } = await makeRoom(t, [])
   await t.exception(
     a.db.tx((tx) => tx.rotate()),
     /inside tx/,
     'rotation cannot be batched'
   )
-  const first = a.db.rotate()
-  await t.exception(a.db.rotate(), /already in progress/, 'second concurrent rotate rejected')
-  const { epoch } = await first
-  t.is(epoch, 1, 'first rotation unaffected')
+  const [first, second] = await Promise.all([a.db.rotate(), a.db.rotate()])
+  t.is(first.epoch, 1)
+  t.is(second.epoch, 2, 'the second waited its turn')
 })
 
 // ─── divergent concurrent rotations (the review scenario) ──────────────────

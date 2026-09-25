@@ -7,12 +7,25 @@ import { Duplex } from 'streamx'
 import { decodeId } from '@cero-base/core/blobs'
 import { Invite } from '@cero-base/core/invite'
 
-import { cero, put, set, get, del, watch, changes, call, open, rotate } from '../../src/index.js'
+import {
+  cero,
+  put,
+  set,
+  get,
+  del,
+  watch,
+  call,
+  open,
+  rotate,
+  accept,
+  deny
+} from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
 import { connect } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
+import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
-import { makeTestnet, observe, waitUntil, fetch } from '../helpers/index.js'
+import { makeTestnet, observe, waitUntil, fetch, nextRequest, joinsOf } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -149,11 +162,11 @@ test('rpc: recovery phrase is fetched on demand, not via init', async (t) => {
 
   // the phrase must never ride along on init — a client that wants it asks for
   // it, so an app that never shows it never pulls the account into its memory
-  t.absent(client.identity.phrase, 'init carries no phrase')
+  t.absent(client.identity, 'init carries no identity, so no phrase')
 
-  const phrase = await client.identity.toPhrase()
+  const phrase = await cero.phrase(client)
   t.ok(phrase && phrase.split(' ').length >= 12, 'client fetches the phrase via the seed RPC')
-  t.is(phrase, me.identity.toPhrase(), 'matches the server identity phrase')
+  t.is(phrase, await cero.phrase(me), 'matches the server identity phrase')
 })
 
 test('rpc: client exposes refs lifted from the spec', async (t) => {
@@ -289,20 +302,6 @@ test('rpc: client close ends live watch streams cleanly (no error)', async (t) =
   await t.execution(() => outcome, 'channel teardown ends the watch — not a failure')
 })
 
-test('rpc: client close ends live changes streams cleanly (no error)', async (t) => {
-  const { client } = await openPair(t)
-  const stream = changes(client.messages)
-  let batches = 0
-  const outcome = new Promise((resolve, reject) => {
-    stream.on('data', () => batches++)
-    stream.on('error', reject)
-    stream.on('close', resolve)
-  })
-  await waitUntil(() => batches >= 1) // initial replay delivered
-  await client.close()
-  await t.execution(() => outcome, 'channel teardown ends the changes stream — not a failure')
-})
-
 test('rpc: watching an unknown ref destroys the stream with an error', async (t) => {
   const { client } = await openPair(t)
   // The server can't resolve the ref, so it destroys the response stream with
@@ -354,50 +353,64 @@ test('rpc: a reloaded UI re-attaches, init answers again and the old watches end
   t.is((await get(client.messages)).data[0].text, 'still served', 'the worker keeps serving')
 })
 
-test('rpc: worker background errors surface on the client as error events', async (t) => {
-  const { me, client } = await openPair(t)
-  const seen = new Promise((resolve) => client.once('error', resolve))
+test("rpc: the worker's background errors reach the client's onerror", async (t) => {
+  let report
+  const seen = new Promise((resolve) => (report = resolve))
+  const { me, client } = await openPair(t, {}, { onerror: report })
   me.network.suspend = async () => {
     throw new Error('radio')
   }
-  await client.suspend()
+  await cero.suspend(client)
   t.is((await seen).message, 'radio')
-  await client.resume()
+  await cero.resume(client)
 })
 
-test('rpc: setActive ranks the server handle, suspend and resume reach the root', async (t) => {
+test("rpc: deactivate takes a room off the swarm, activate brings it back; suspend is the app's", async (t) => {
   const { me, client } = await openPair(t, { presence: { active: 1, announced: 0, idle: 50 } })
   const team = await open(client.team, { name: 'engineering' })
   const serverTeam = [...me.children][0]
   const mode = () => me.network.presence.mode(serverTeam.store.bee.discoveryKey)
   t.is(mode(), 'active', 'creating the room ranked it')
 
-  await team.setActive(false)
+  await cero.deactivate(team)
   await waitUntil(() => mode() === null)
   t.pass('off the swarm')
-  await team.setActive(true)
-  t.is(mode(), 'active', 'back on focus')
+  await cero.activate(team)
+  t.is(mode(), 'active', 'back on top once selected')
+  await t.exception(cero.suspend(team), /the app's, on me/)
 
-  await client.suspend()
-  t.ok(me.suspended, 'suspended on the server')
-  await client.resume()
-  t.absent(me.suspended, 'resumed')
+  await cero.suspend(client)
+  t.ok((await get(client.status)).data.suspended, 'suspended on the server')
+  await cero.resume(client)
+  t.absent((await get(client.status)).data.suspended, 'resumed')
 })
 
-test('rpc: rotate on a child handle round-trips via the wire', async (t) => {
+test('rpc: rotate on a room round-trips via the wire', async (t) => {
   const { me, client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
   await put(team.messages, { text: 'pre' })
 
   const { epoch } = await rotate(team)
-  t.is(epoch, 1, 'rotation applied on the server and epoch returned')
+  t.is(epoch, 1, 'rotated in the worker, the epoch back in the UI')
+  t.is((await get(team.status)).data.epoch, 1)
 
   await put(team.messages, { text: 'post' })
-  const { data: list } = await get(team.messages)
-  t.is(list.length, 2, 'reads keep working across the rotation')
+  t.is((await get(team.messages)).data.length, 2, 'reads keep working across the rotation')
+  t.is([...me.children][0].store.keyring.seq, 1, 'the worker keyring advanced')
+})
 
-  const serverTeam = [...me.children][0]
-  t.is(serverTeam.store.keyring.seq, 1, 'server keyring advanced')
+test('rpc: a removal made from the UI re-keys the room', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const team = await open(client.team, { name: 'engineering' })
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  await open(other.team, await cero.invite(team))
+
+  await del(team.members, other.id)
+  await waitUntil(async () => (await get(team.status)).data.epoch === 1 || null)
+  t.pass('the worker opened epoch 1')
+  await put(team.messages, { text: 'post' })
+  t.is((await get(team.messages)).data.length, 1, 'writes go on in the new epoch')
 })
 
 test('rpc: a watch stream over the wire survives a rotation mid-stream', async (t) => {
@@ -411,8 +424,7 @@ test('rpc: a watch stream over the wire survives a rotation mid-stream', async (
   t.teardown(() => stream.destroy())
   await waitUntil(() => (seen.length > 0 ? true : null))
 
-  const { epoch } = await rotate(team)
-  t.is(epoch, 1)
+  await rotate(team)
   await put(team.messages, { text: 'post' })
 
   await waitUntil(() => (seen.some((s) => s.includes('post')) ? true : null))
@@ -431,7 +443,7 @@ test('rpc: leave() over the wire drops the handle on the server', async (t) => {
   const { server, client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
   t.ok(server.handles.has(team.id), 'server tracks the open child handle')
-  await team.leave()
+  await cero.leave(team)
   t.absent(server.handles.has(team.id), 'server no longer has the handle after leave()')
 })
 
@@ -448,19 +460,28 @@ test('rpc: leaving a handle ends its watch streams (no dangling)', async (t) => 
     started = true
   })
   await waitUntil(() => started) // stream is live before we leave
-  await team.leave()
+  await cero.leave(team)
   const how = await Promise.race([ended, new Promise((r) => setTimeout(() => r(false), 2000))])
   t.ok(how, 'watch stream ended when the handle left')
 })
 
-test('rpc: a custom action call over the wire routes to the server handler', async (t) => {
+test('rpc: a verb the root cannot take fails the same way in the UI as in the worker', async (t) => {
+  const { client } = await openPair(t)
+  await t.exception(cero.leave(client), /the root cannot be left/)
+  await t.exception(cero.accept(client, { id: 'x' }), /the root has no invites/)
+})
+
+test('rpc: an action called from the UI runs in the worker', async (t) => {
   const { client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
-  // `promote` is a declared action ref, so the call crosses the wire and the
-  // server resolves it on the live team handle. The fixture wires no route for
-  // it (route fns can't cross the wire), so the server-side dispatch throws
-  // INVALID 'has no route' — which proves the call reached the handler.
-  await t.exception(call(team.promote, { memberId: 'x', role: 'read' }), /no route/)
+  // the worker's room has no after hook on `promote`, and says so: the call reached it
+  await t.exception(call(team.promote, { memberId: 'x', role: 'read' }), /no after hook/)
+})
+
+test('rpc: the client names its device the way a local root does', async (t) => {
+  const { me, client } = await openPair(t, { name: 'laptop' })
+  t.is(client.device?.name, 'laptop')
+  t.alike(client.device, me.device)
 })
 
 test('rpc: buffer field round-trips byte-perfect', async (t) => {
@@ -487,15 +508,15 @@ test('rpc: invite carries ttl and data over the wire', async (t) => {
   const team = await open(client.team, { name: 'inviting' })
 
   const before = Date.now()
-  const limited = await team.invite({ role: 'member', ttl: 60_000 })
+  const limited = await cero.invite(team, { role: 'member', ttl: 60_000 })
   const expires = Invite.parse(limited).expires
   t.ok(expires >= before + 60_000 && expires <= Date.now() + 60_000, 'expiry stamped from ttl')
 
-  const forever = await team.invite({ role: 'member' })
+  const forever = await cero.invite(team, { role: 'member' })
   t.is(Invite.parse(forever).expires, 0, 'no ttl still means never')
 
   const data = b4a.from('clinic')
-  t.alike(Invite.parse(await team.invite({ data })).data, data)
+  t.alike(Invite.parse(await cero.invite(team, { data })).data, data)
   t.is(Invite.parse(forever).data, null, 'no data unless given')
 })
 
@@ -516,8 +537,8 @@ test('rpc: a join that lands after the caller stopped waiting shows up in handle
   const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => owner.close().catch(() => {}), { order: 5 })
   const room = await open(owner.team, { name: 'clinic' })
-  const invite = await room.invite()
-  await owner.suspend()
+  const invite = await cero.invite(room)
+  await cero.suspend(owner)
 
   // the server's join times out the way a client's open does, only sooner
   const err = await me._join(invite, 'team', { timeout: 500 }).catch((e) => e)
@@ -528,9 +549,30 @@ test('rpc: a join that lands after the caller stopped waiting shows up in handle
       if (data.some((row) => row.id === room.id)) return true
     }
   })()
-  await owner.resume()
+  await cero.resume(owner)
   t.ok(await arrived, 'the client sees the room once a member answers')
   t.is((await open(client.team, { id: room.id })).id, room.id)
+})
+
+test("rpc: the UI sees a confirm invite's requests and answers them", async (t) => {
+  const { client, testnet } = await openPair(t)
+  const room = await open(client.team, { name: 'gated' })
+  const invite = await cero.invite(room, { role: 'member', confirm: true, reuse: true })
+
+  const ana = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => ana.close().catch(() => {}), { order: 5 })
+  const joining = open(ana.team, invite)
+  const request = await nextRequest(room)
+  t.alike(request.identity, ana.identity.publicKey, 'who is asking')
+  t.is(request.role, 'member', 'as what, over the wire too')
+  await accept(room, request)
+  t.is((await joining).id, room.id, 'accepted from the UI')
+
+  const bob = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => bob.close().catch(() => {}), { order: 5 })
+  const refused = open(bob.team, invite).catch((e) => e)
+  await deny(room, await nextRequest(room, request), 'not now')
+  t.is((await refused).code, 'DENIED', 'denied from the UI')
 })
 
 test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
@@ -539,10 +581,10 @@ test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const link = { key: random(), length: 1 }
   const invite = Invite.create({ key: random(), address: random(), link }).toString()
   const joining = open(client.team, invite).catch((e) => e)
-  await waitUntil(async () => ((await client.joining()).length ? true : null))
-  t.alike(await client.joining(), [invite])
-  t.ok(await client.cancel(invite))
-  t.alike(await client.joining(), [])
+  await waitUntil(async () => ((await joinsOf(client)).length ? true : null))
+  t.alike(await joinsOf(client), [invite])
+  t.ok(await cero.cancel(client, invite))
+  t.alike(await joinsOf(client), [])
   t.is((await joining).code, 'CLOSED')
 })
 
@@ -581,6 +623,7 @@ test('rpc: file read resolves a url that serves the bytes over http', async (t) 
   const { data: row } = await put(client.files, { data, name: 'c.txt', type: 'text/plain' })
   const { data: got } = await get(client.files, row.id)
   t.ok(got.url, 'read resolved a url')
+  t.is(row.url, got.url, 'the written row carries the same url')
   const res = await fetch(got.url)
   t.is(res.status, 200, 'url serves 200')
   const body = b4a.from(await res.arrayBuffer())
@@ -644,49 +687,30 @@ test('rpc: server rejects local ops on builtin refs', async (t) => {
   )
 })
 
-test('rpc: operators are symmetric over the wire', async (t) => {
-  const operators = {
-    user: { rename: (h, name) => set(h.profile, { name }) },
-    team: { note: { add: (h, text) => put(h.notes, { text }) } }
-  }
-  const { client } = await openPair(t, { operators }, { operators })
-
-  await client.user.rename('Remote')
-  t.is((await get(client.profile)).data.name, 'Remote')
-
-  const team = await open(client.team, { name: 'squad' })
-  await team.note.add('via-rpc')
-  t.is((await get(team.notes)).data[0].text, 'via-rpc')
+test('rpc: the UI turns the radio off and on, and reads it', async (t) => {
+  const { client } = await openPair(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const radio = async () => (await get(client.status)).data.nearby
+  t.is(await radio(), 'on')
+  await cero.nearby(client, false)
+  t.is(await radio(), 'off')
+  await cero.nearby(client, true)
+  t.is(await radio(), 'on')
 })
 
-test('rpc: connect() binds the operators it is given', async (t) => {
-  const operators = { team: { note: { add: (h, text) => put(h.notes, { text }) } } }
-  const testnet = await makeTestnet(t)
-  const [serverStream, clientStream] = pair()
-  const server = await serve(serverStream, spec, {
-    storage: await t.tmp(),
-    bootstrap: testnet.bootstrap
-  })
-  const client = await connect(clientStream, spec, { operators })
-  t.teardown(
-    async () => {
-      await client.close().catch(() => {})
-      await server.close().catch(() => {})
-    },
-    { order: 5 }
-  )
-
-  const team = await open(client.team, { name: 'squad' })
-  await team.note.add('instance')
-  t.is((await get(team.notes)).data[0].text, 'instance')
+test('rpc: an app function runs the same in the worker and in the UI', async (t) => {
+  const { me, client } = await openPair(t)
+  const rename = (ctx, name) => set(ctx.profile, { name })
+  await rename(client, 'Remote')
+  t.is((await get(me.profile)).data.name, 'Remote', 'called with the UI root')
+  await rename(me, 'Local')
+  t.is((await get(client.profile)).data.name, 'Local', 'called with the worker root')
 })
 
-test('rpc: changes streams deltas over the wire, symmetric with local', async (t) => {
+test('rpc: watch carries the same changes over the wire as locally', async (t) => {
   const { server, client } = await openPair(t)
-  const { changes } = await import('../../src/lib/operators.js')
 
-  const remote = changes(client.messages)
-  const local = server.me.store.changes('messages')
+  const remote = watch(client.messages, { changes: true })
+  const local = watch(server.me.messages, { changes: true })
   t.teardown(() => {
     remote.destroy()
     local.destroy()
@@ -697,7 +721,7 @@ test('rpc: changes streams deltas over the wire, symmetric with local', async (t
   local.on('data', (b) => localBatches.push(b))
 
   await waitUntil(() => remoteBatches.length >= 1)
-  t.is(remoteBatches[0].reset, true, 'initial reset batch crosses the wire')
+  t.is(remoteBatches[0].reset, true, 'the first item resets on the client too')
 
   const { data: row } = await put(client.messages, { text: 'delta' })
   await waitUntil(() => remoteBatches.some((b) => b.changes.some((c) => c.next?.id === row.id)))

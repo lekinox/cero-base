@@ -9,6 +9,7 @@ export const STATUS_ACCEPTED = 0
 export const STATUS_DENIED = 1
 
 // an accept and a deny both ride this response
+/** @type {import('compact-encoding').Encoder<{ status: number, reason?: string, key?: Uint8Array | null, encryptionKey?: Uint8Array | null, epochs?: Array<{ epoch: number, stamp: number, entropy: Uint8Array }> | null }>} */
 export const Response = getEncoding('@cero/confirm')
 
 /**
@@ -31,8 +32,13 @@ export class Request {
     this.invite = invite
     this.id = row.id
     this.identity = row.identity
+    /** The role the join asks for: its invite's. */
+    this.role = invite.role
+    /** @type {Uint8Array} */
     this.writer = hid.decode(row.id)
+    /** @private */
     this._reply = row.reply
+    /** @private */
     this._settled = false
   }
 
@@ -46,11 +52,11 @@ export class Request {
     if (this._settled) return
     const { invite } = this
     if (invite.expires > 0 && Date.now() > invite.expires) throw CeroError.EXPIRED()
-    role = role || invite.role || 'member'
+    role = role || invite.role
     if (!isRank(role)) {
       throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
     }
-    if (!grants(invite.role || 'member', role)) {
+    if (!grants(invite.role, role)) {
       throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
     }
     this._settled = true

@@ -1,217 +1,234 @@
 # Data
 
-[Docs](README.md) · Previous: [Schema](schema.md) · Next: [Handles](handles.md)
+[Docs](README.md) · Previous: [Schema](schema.md) · Next: [Sharing](handles.md)
+
+Write, query and watch rows, react to every write with a rule, batch writes and attach files.
 
 ```js
+import { cero } from '@cero-base/cero'
+
+// me from cero('./data', spec), with the schema from the Schema page
 const { data: todo } = await cero.put(me.todos, { text: 'buy milk' })
 await cero.set(me.todos, { id: todo.id, done: true })
-const { data: todos } = await cero.get(me.todos, { done: false })
+const { data: open } = await cero.get(me.todos, { done: false })
 await cero.del(me.todos, todo.id)
 ```
 
-Every operator takes a ref first. `me.todos` is a ref on the root handle, `room.messages` a ref on a child handle. The same calls work on both, and over RPC.
+The data operators take a ref first: `me.todos` on the root, `room.messages` in a room. The same
+calls work in the worker and over RPC.
 
-## On this page
-
-- [put](#put)
-- [set](#set)
-- [get](#get)
-- [Queries](#queries)
-- [del](#del)
-- [watch](#watch)
-- [changes](#changes)
-- [Hooks](#hooks)
-- [Store events](#store-events)
-- [Batching writes in process](#batching-writes-in-process)
-- [Errors you will hit](#errors-you-will-hit)
-
-## put
+## Add a row
 
 ```js
-const { data } = await cero.put(me.todos, { text: 'buy milk' })
-data // { id, text, createdAt, updatedAt, memberId, index }
+const { data: row } = await cero.put(me.todos, { text: 'call mum' })
+// row: { id, text, createdAt, updatedAt }
+await cero.put(me.todos, { id: 'weekly', text: 'water the plants' }) // your own id
 ```
 
-`put` inserts a row. Give it an `id` to choose the id yourself, otherwise cero generates one. `createdAt` and `updatedAt` are stamped on the way in, `memberId` and `index` when the op applies. A `put` with an id that already exists overwrites that row.
+`memberId` and `index` appear when you read the row back. A `put` over an existing id replaces the
+whole row: fields you leave out are cleared. A field the schema does not declare throws `INVALID`,
+except in `me.local` and through a hook's ctx, where it is dropped.
 
-On `files`, `put` uploads bytes instead. See [Files](files.md).
-
-## set
+## Change a row
 
 ```js
-await cero.set(me.todos, { id, done: true })
-await cero.set(me.profile, { name: 'jb' })
+await cero.set(me.todos, { id: row.id, done: true }) // row from the block above
+await cero.set(me.profile, { name: 'Ana' })
+const none = await cero.set(me.todos, { id: 'nope', done: true }, { upsert: false }) // null
 ```
 
-`set` merges. It reads the stored row, lays your fields over it, keeps `createdAt` and stamps `updatedAt`, then writes. A one-field change is one `set`. Two concurrent sets on the same row keep each other's fields, the read and the write run as one step.
+`set` reads the row on this device, lays your fields over it, keeps `createdAt` and writes the
+whole row. When two devices set the same row at once, the write that ends up last wins every
+field, not only the ones it changed. Without an id on a collection, `set` adds a row like `put`.
+With `{ upsert: false }` it only changes a row that exists, and resolves `null` when there is
+none; over RPC, `{ data: undefined }`.
 
-Without an id on a collection, `set` inserts like `put`. With `{ upsert: false }` it only updates a row that exists and returns `null` otherwise. On a single there is no id, `set` merges over the one record.
-
-Every field you write must be declared in the schema. An unknown field throws `INVALID` instead of being dropped by the encoder.
-
-## get
+## Read rows
 
 ```js
-const { data: profile } = await cero.get(me.profile) // single: the record or null
-const { data: one } = await cero.get(me.todos, id) // by id: the row or null
-const { data, total, size } = await cero.get(me.todos) // list
+const { data: profile } = await cero.get(me.profile) // the record, or null
+const { data: one } = await cero.get(me.todos, row.id) // the row, or null
+const { data, total, size } = await cero.get(me.todos) // a list
 ```
 
-A list comes back in insertion order. `total` is how many rows matched before `limit`, `size` how many came back. On a handle ref, `cero.get(me.room)` lists your child handles of that type.
+A list comes back in the order rows were added. Through an index, it comes back ordered by the
+index fields, then id, and `me.local` lists in id order.
 
-## Queries
-
-Any key that is not reserved is an equality filter on that field. The reserved keys are:
-
-| Key                      | Meaning                                                             |
-| ------------------------ | ------------------------------------------------------------------- |
-| `gt`, `gte`, `lt`, `lte` | Bounds on `id`.                                                     |
-| `reverse`                | Newest first.                                                       |
-| `limit`                  | At most this many rows.                                             |
-| `total`                  | `true` counts the whole match even when `limit` filled the page.    |
-| `search`                 | Case and accent insensitive substring match, every word must match. |
-| `fields`                 | Which string fields `search` looks at. Default: all of them.        |
+## Filter, search and page
 
 ```js
-await cero.get(me.todos, { done: false })
-await cero.get(me.todos, { done: false, reverse: true, limit: 20 })
+await cero.get(me.todos, { done: false, limit: 20 })
+await cero.get(me.todos, { reverse: true, limit: 20 }) // the newest 20
 await cero.get(me.todos, { search: 'milk', fields: ['text'] })
-await cero.get(me.todos, { gt: lastId, limit: 50 }) // cursor pagination on id
 ```
 
-An equality query on an indexed field reads through the index. Declare one with `t.collection(fields, { indexes: { 'by-done': ['done'] } })`. `reverse` and `limit` are served by the store when nothing else narrows the read, so a page of the newest rows touches `limit` rows, not the whole collection.
+Any key not in this table is an equality filter on that field.
 
-## del
+| Key                      | Does                                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `limit`                  | At most this many rows.                                                                      |
+| `reverse`                | The other way round: newest first on a plain list.                                           |
+| `total`                  | `true` counts every match even when `limit` filled the page.                                 |
+| `search`                 | Case and accent insensitive; every word must appear in a string field other than `memberId`. |
+| `fields`                 | The string fields `search` looks at.                                                         |
+| `gt`, `gte`, `lt`, `lte` | Bounds on `id`, compared as strings.                                                         |
+
+`total` is how many rows matched and `size` how many came back. When `limit` filled the page,
+`total` can be `null`; ask with `total: true` to count. There is no sort and no range on fields
+other than `id`: read the rows and sort them in memory. Generated ids are random, so `gt` and `lt`
+are not a cursor: for more rows, raise `limit`. Over RPC, `limit: 0` is dropped and every row
+comes back.
+
+## Delete a row
 
 ```js
-await cero.del(me.todos, id) // one row
-await cero.del(me.profile) // wipe the single
+await cero.del(me.todos, row.id)
+await cero.del(me.profile) // wipes the single
 ```
 
-To count, read `total`: `(await cero.get(me.todos, { done: false })).total`.
-
-## watch
+## Follow changes
 
 ```js
-const stream = cero.watch(me.todos, { done: false })
-stream.on('data', ({ data, total, size }) => render(data))
+const ac = new AbortController()
+cero.watch(me.todos, { done: false }, { signal: ac.signal }).on('data', ({ data }) => {
+  console.log(data.length, 'open')
+})
 ```
 
-Or as a loop:
+The stream sends the result at once and after every change, local or remote; a slow reader
+gets only the newest. It ends when the signal aborts or the handle closes, and a
+`for await` loop then throws an error with the code `STREAM_DESTROYED`, so `break` out to stop.
 
 ```js
-for await (const { data } of cero.watch(me.todos)) render(data)
-```
-
-The stream sends the current result now and again after every change, local or from a peer. Under a slow consumer it keeps only the newest snapshot. The stream ends with its handle. Pass `{ signal }` for a shorter life, or call `stream.destroy()`.
-
-`cero.watch(me.room)` streams your list of child handles the same way.
-
-## changes
-
-```js
-for await (const { changes, reset } of cero.changes(room.messages)) {
-  for (const { prev, next } of changes) {
-    if (next === null) removed(prev)
-    else if (prev === null) added(next)
-    else updated(next)
-  }
+for await (const { data } of cero.watch(me.todos, { id: row.id })) {
+  if (data[0]?.done) break // one row followed: data holds it, or nothing once deleted
 }
 ```
 
-`changes` streams deltas instead of snapshots: batches of `{ prev, next }` pairs, nothing dropped. The first batch carries the current rows as inserts with `reset: true`, and so does any batch after the view moved to another core. Replaying every batch into a `Map` keyed by id always rebuilds the current state. `limit` and `reverse` do not apply. A removed member shows up here as a delete on `room.members`.
-
-## Hooks
-
-A hook is a rule, not a listener. It runs when the op applies — on every peer, inside the op's transaction.
+`changes: true` in the query adds `changes`, the `{ prev, next }` rows that changed since the item
+before, and `reset`, true on the first item, whose changes list every row with `prev: null`. A
+slow reader gets fewer items, never fewer changes, and a row that leaves the query shows up with
+`next: null`.
 
 ```js
-cero.before(room.messages, ({ row }) => {
-  if (!row.text.trim()) return false // refuse the write, everywhere
-  row.text = row.text.trim() // or change what lands
-})
-
-cero.before(room.messages, async ({ memberId, get }) => {
-  if ((await get(room.banned, memberId)).data) return false
-})
-
-cero.after(room.banned, ({ row, memberId, put }) =>
-  put(room.audit, { kind: 'ban', by: memberId, target: row.id })
-)
+for await (const { changes } of cero.watch(me.todos, { changes: true })) {
+  for (const { prev, next } of changes) console.log(prev ? (next ? 'changed' : 'gone') : 'new')
+}
 ```
 
-`before` decides. Return `false` and the op is refused: the writer's own call rejects with `REFUSED` and no peer stores the row. Mutating `row` rewrites what lands — the call still returns the row it submitted, the hook decides what everyone keeps.
+## React to writes
 
-`after` derives. Write the rows that follow from this one and they commit in the same transaction. A hook that throws refuses the op too: a rule that errors must not leave one peer with a row its neighbour rejected.
-
-Both receive the same ctx:
-
-| Field                      | Is                                                       |
-| -------------------------- | -------------------------------------------------------- |
-| `op`                       | `put`, `set` or `del`, as it applies                     |
-| `name`                     | The ref the op is on                                     |
-| `row`                      | The incoming row, mutable in `before`, `null` on a `del` |
-| `existing`                 | The stored row this op replaces, or `null`               |
-| `id`                       | The row id                                               |
-| `memberId`, `role`         | Who signed the op, and what they may do                  |
-| `get`, `put`, `set`, `del` | The operators, on the room as it stands at this op       |
-
-The operators on the ctx are the ones you already use — `get(room.banned, id)`, `put(room.audit, row)` — reading and writing inside the transaction. The imported `cero.put` and `cero.get` throw inside a hook; go through the ctx.
-
-An upsert on a collection applies as an add, so `cero.set(me.todos, { id, done: true })` reaches a hook as a `put`. `op` is always the op as it applies. A hook on a single sees its `set` and its `del`, so a rule on `me.profile` also decides who may wipe it.
-
-Three rules follow from running on every peer:
-
-- **Be deterministic.** Read `ctx` and nothing else. No clock, no random, no local state — two peers that disagree store different rows.
-- **Register before the data moves.** Hooks live in the process that owns the data, set up in an extension's `setup` or right after `cero()`, before any op applies. A peer that registers late has already applied ops without the rule. They are not available over RPC.
-- **Expect to run twice on the writer.** The writing device runs its hooks once to check the op, then again when it applies. Pure hooks do not notice.
-
-`before` and `after` return an unsubscribe function, and `{ signal }` unsubscribes on abort. A hook on `me.room.messages`, the ref through the handle type, applies to every room open now and every one opened later. To watch writes locally instead of ruling on them, use [`changes`](#changes).
-
-## Store events
+A hook is a rule every device runs on each write to a ref, inside that write: `before` decides
+what lands, `after` writes what follows from it.
 
 ```js
-room.store.on('writable', () => {}) // this device may write
-room.store.on('unwritable', () => {}) // access ended, you were removed
-room.store.on('update', (touched) => {}) // a batch applied; touched = the refs it changed
+// rules.js, a bare-function extension: see Extensions
+import { cero } from '@cero-base/cero/extensions'
+
+// room: { messages: t.collection({ text: t.string }), seen: t.collection({ at: t.int }) }
+export const rules = (me) => {
+  cero.before(me.room.messages, ({ op, row }) => {
+    if (op === 'del') return // row is null on a delete
+    if (!row.text?.trim()) return false // refused, on every device
+    row.text = row.text.trim() // what every device stores
+  })
+  cero.after(me.room.messages, ({ op, row, memberId, put }) => {
+    if (op !== 'del') return put(me.room.seen, { id: memberId, at: row.updatedAt })
+  })
+}
 ```
 
-To see every applied op, local and replicated, listen for `apply` on the store: `room.store.on('apply', ({ op, name, row }) => ...)`. It fires inside apply, so keep it cheap.
+When `before` returns `false` or either hook throws, no device stores the write and the writer's
+call rejects with `REFUSED`. Register hooks in an extension's `setup`, on type refs like
+`me.room.messages`: every room of the type has them before it opens, so every device runs the same
+rules on every write ([Extensions](extensions.md)). Both return a function that removes the hook
+and take `{ signal }` as a third argument. Hooks never fire on the builtins.
 
-## Batching writes in process
+| ctx                        | Is                                                                                                                               |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `op`                       | `put`, `set` or `del`; on a collection `cero.set` arrives as `put`, or as `set` with `{ upsert: false }`; on an action, its name |
+| `name`                     | the ref's name                                                                                                                   |
+| `row`                      | the incoming row, `null` on a `del`                                                                                              |
+| `existing`                 | the stored row, or `null`                                                                                                        |
+| `id`                       | the row's id                                                                                                                     |
+| `memberId`, `role`         | who wrote it, as `owner`, `admin` or `member`                                                                                    |
+| `get`, `put`, `set`, `del` | read and write inside this write                                                                                                 |
+
+The `cero.` operators throw inside a hook: use the ones on ctx. `ctx.put` mints the same id on
+every device, `ctx.set` needs an id on a collection, and `ctx.get` returns `t.file` fields as bare
+ids. Writes through ctx skip the role and `own` checks, so check `ctx.role` before a privileged
+one. A hook reads only ctx, never a clock, random numbers or local state, or devices store
+different rows; the writing device runs it twice, to check the write and to store it.
+
+## Batch writes
 
 ```js
-await me.store.tx(async (tx) => {
-  await tx.put('todos', { text: 'a' })
-  await tx.put('todos', { text: 'b' })
+await cero.tx(me, async (tx) => {
+  await cero.put(tx.todos, { text: 'a' })
+  await cero.put(tx.todos, { text: 'b' })
 })
 ```
 
-The two writes land as one atomic batch, both or neither. `tx` is on the underlying database and only in process, it does not cross RPC.
+Writes through `tx` land together or not at all. The function must take `tx` and write only
+through it: a `set` through `me` inside it waits for the batch to end, and hangs. Reads through
+`tx` see the data as it stood before the batch, so two `set`s on one row both merge over the old
+row, and the second wins. `cero.tx` runs in the worker only, not over RPC.
 
-## Errors you will hit
+## Files
+
+```js
+const { data: file } = await cero.put(me.files, {
+  data: Buffer.from('hello'),
+  type: 'text/plain',
+  name: 'hello.txt'
+})
+// file: { id, name, type, size, url }
+```
+
+The root and every room have a `files` builtin. `data` is bytes, or a Readable in the worker
+process; `type` is required, `name` optional. To put a file on a row, store its id in a `t.file`
+field, which reads back as `{ id, type, size, url }`:
+
+```js
+// room from cero.open(me.room), bytes a Buffer of the photo
+// messages: t.collection({ text: t.string, photo: t.file })
+const { data: photo } = await cero.put(room.files, { data: bytes, type: 'image/jpeg' })
+await cero.put(room.messages, { text: 'look', photo: photo.id })
+const { data: messages } = await cero.get(room.messages) // messages[0].photo.url
+```
+
+- A `url` works on this device, for this run: it changes on every start. Store the id and read
+  the row again for a fresh url.
+- A `t.file` field resolves only for a file in the same room's `files`, or the root's for a root
+  row. A string that is not a file id makes every read of that row throw `INVALID`.
+- Files have no timestamps, they read `0`: order them by `index`.
+- `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
+  admin or an owner deletes one.
+- A member removed from a room can't read files added after the room re-keys. See
+  [How it works](how-it-works.md).
+
+## Handle errors
 
 ```js
 try {
-  await cero.put(me.todos, { nope: 1 })
+  await cero.put(me.todos, { text: 'buy bread' })
 } catch (err) {
-  if (err.code === 'INVALID') showFieldError(err.message)
-  else throw err
+  if (err.code !== 'NOT_WRITABLE' && err.code !== 'REFUSED') throw err
+  console.log('you cannot write here')
 }
 ```
 
-| Code           | When                                                                |
-| -------------- | ------------------------------------------------------------------- |
-| `INVALID`      | A field is not in the schema, or an argument has the wrong shape.   |
-| `UNKNOWN`      | The ref name is not in the built spec.                              |
-| `NOT_WRITABLE` | This device is not admitted as a writer, yet or any more.           |
-| `REFUSED`      | Your role may not do this: a reader writing, editing someone's row. |
-| `CLOSED`       | The handle was closed under the call.                               |
+| Code           | When                                                                    | Do                                                                                   |
+| -------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the room read-only; `room.status` has `writable`.                               |
+| `REFUSED`      | Your role, `own`, or a `before` hook said no.                           | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
+| `INVALID`      | An unknown field or a bad value.                                        | Fix the call.                                                                        |
+| `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                   | Read the list again.                                                                 |
 
-Match on `err.code`. [Errors](errors.md) lists every code.
+[Errors](errors.md) lists every code.
 
 ## Next
 
-- [Handles](handles.md) to share a collection with other people.
-- [Files](files.md) for bytes next to rows.
-- [API reference](api.md) for every signature on one page.
+- [Sharing](handles.md) to put these rows in a room other people see.
+- [Extensions](extensions.md) to register hooks and reuse your own functions.
+- [API reference](api.md) for every signature and option.

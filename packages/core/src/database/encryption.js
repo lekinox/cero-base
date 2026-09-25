@@ -9,7 +9,9 @@ import hid from 'hypercore-id-encoding'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 
-const { AutobeeEncryption, WriterEncryption } = autobeeEncryption
+const { AutobeeEncryption } = autobeeEncryption
+/** @type {typeof import('autobee/lib/encryption.js').WriterEncryption} */
+const WriterEncryption = autobeeEncryption.WriterEncryption
 
 // the same derivation constant autobee's encryption uses
 const NS_HASH_KEY = crypto.namespace('autobase', 4)[2]
@@ -45,7 +47,13 @@ AutobeeEncryption.prototype.encrypt = function (index, block, fork, ctx) {
   return baseEncrypt.call(current, index, block, fork, ctx)
 }
 
-/** Prime a keyring from a local core's persisted epoch stash. */
+/**
+ * Prime a keyring from a local core's persisted epoch stash.
+ *
+ * @param {Keyring} keyring
+ * @param {import('hypercore')} local
+ * @returns {Promise<void>}
+ */
 export async function loadEpochs(keyring, local) {
   const saved = await local.getUserData('cero/epochs').catch(() => null)
   if (!saved) return
@@ -59,11 +67,20 @@ export async function loadEpochs(keyring, local) {
 /**
  * Wire codec for a rotation announcement's envelope list — one sealed box
  * per remaining member, addressed by member id.
+ *
+ * @param {Array<{ id: string }>} members
+ * @param {Uint8Array} secret
+ * @returns {Array<{ id: string, box: Uint8Array }>}
  */
 export function seal(members, secret) {
   return members.map((m) => ({ id: m.id, box: Identity.seal(hid.decode(m.id), secret) }))
 }
 
+/**
+ * @param {import('../identity/index.js').Identity} identity
+ * @param {Uint8Array} wrapped
+ * @returns {Generator<Uint8Array, void, unknown>}
+ */
 export function* opened(identity, wrapped) {
   for (const w of c.decode(wraps, wrapped)) {
     if (w.id !== identity.id) continue
@@ -72,6 +89,7 @@ export function* opened(identity, wrapped) {
   }
 }
 
+/** @type {import('compact-encoding').Encoder<Array<{ id: string, box: Uint8Array }>>} */
 export const wraps = c.array({
   preencode(state, w) {
     c.string.preencode(state, w.id)
@@ -88,6 +106,8 @@ export const wraps = c.array({
 
 /**
  * Wire codec for locally persisted / pairing-delivered epoch secrets.
+ *
+ * @type {import('compact-encoding').Encoder<Array<{ epoch: number, stamp: number, entropy: Uint8Array }>>}
  */
 export const epochEntries = c.array({
   preencode(state, e) {
@@ -195,22 +215,33 @@ export class EpochEncryption extends WriterEncryption {}
  * this instance for `keyId` and `getEntropy`.
  */
 export class EpochAutobee extends Autobee {
+  /**
+   * @param {import('corestore')} store
+   * @param {Uint8Array | null} key
+   * @param {{ keyring?: Keyring } & Record<string, unknown>} [handlers]  Autobee's options, plus the keyring.
+   */
   constructor(store, key, handlers = {}) {
     super(store, key, handlers)
+    /** @type {Keyring | null} */
     this.keyring = handlers.keyring || null
+    /** @private */
     this._epochStalled = new Set()
+    /** @private */
     this._epochRetry = null
+    /** @private */
     this._epochRetryDelay = 1000
+    /** @private */
     this._epochRetrySeen = 0
   }
 
-  // the key id new blocks are written with
+  /** @returns {number} the key id new blocks are written with */
   get keyId() {
     return this.keyring ? this.keyring.current : 0
   }
 
   // a block from an epoch not learned yet: the writer freezes over the throw, and the retry
   // wakes it once the announcement lands
+  /** @param {number} id @param {{ key?: Uint8Array }} [ctx] @returns {Promise<Uint8Array>} */
   async getEntropy(id, ctx) {
     const entropy = this.keyring && this.keyring.entropy(id)
     if (entropy) return entropy
@@ -221,6 +252,7 @@ export class EpochAutobee extends Autobee {
     throw CeroError.UNKNOWN_EPOCH(id)
   }
 
+  /** @private */
   async _close() {
     if (this._epochRetry) clearTimeout(this._epochRetry)
     this._epochRetry = null
@@ -229,6 +261,7 @@ export class EpochAutobee extends Autobee {
 
   // an UNKNOWN_EPOCH from the drain parks the pass; the retry wakes the stalled cores once the
   // announcement lands. Forward the arguments: the local drain passes { local: true }
+  /** @private */
   async _bumpPendingWriters(...args) {
     try {
       return await super._bumpPendingWriters(...args)
@@ -240,6 +273,7 @@ export class EpochAutobee extends Autobee {
   }
 
   // hints read the system bee outside the guarded drain; park and retry like everything else
+  /** @private */
   async _applyWakeupHints() {
     try {
       return await super._applyWakeupHints()
@@ -251,6 +285,7 @@ export class EpochAutobee extends Autobee {
   }
 
   // a stalled core produces no wake-up of its own, only wakeup() re-adds it; exponential backoff
+  /** @private */
   _scheduleEpochRetry() {
     if (this._epochRetry || this.closing) return
     const version = this.keyring ? this.keyring.version : 0

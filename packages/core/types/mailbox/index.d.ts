@@ -62,7 +62,8 @@ export declare class Mailbox extends ReadyResource {
     inbox: Box;
     outbox: Box;
     onerror: (err: Error) => void;
-    _resources: Set<any>;
+    /** @private */
+    _resources;
     /**
      * @param {import('../network/index.js').Network} network  Needs a store: messages travel as cores in it.
      * @param {MailboxOpts} [opts]
@@ -75,8 +76,10 @@ export declare class Mailbox extends ReadyResource {
      * @returns {Uint8Array}
      */
     static getAddress(secret: Uint8Array): Uint8Array;
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
     /**
      * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
      * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
@@ -101,11 +104,8 @@ export declare class Mailbox extends ReadyResource {
     send(address: Uint8Array, message: Uint8Array, { mirrors }?: {
         mirrors?: Uint8Array[];
     }): Promise<void>;
-    _deliver({ id, address, message, mirrors }: {
-        address: any;
-        id: any;
-        message: any;
-        mirrors: any;
-    }): void;
-    _track(resource: any): void;
+    /** @private */
+    private _deliver;
+    /** @private */
+    private _track;
 }

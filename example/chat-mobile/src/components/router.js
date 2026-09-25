@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { View, Text } from 'react-native'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { restore } from 'chat-backend/client'
 import { useCero } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'

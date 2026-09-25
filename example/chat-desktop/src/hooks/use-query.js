@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 
 export function useQuery(ref, query) {
   const queryKey = query ? JSON.stringify(query) : ''

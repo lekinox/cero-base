@@ -10,21 +10,28 @@ export declare class Post extends ReadyResource {
     address: Uint8Array<ArrayBufferLike>;
     message: Uint8Array<ArrayBufferLike>;
     mirrors: Uint8Array<ArrayBufferLike>[];
-    delivered: Promise<any>;
-    _ondelivered: (value: any) => void;
-    _core: any;
-    _session: any;
-    _discovery: import("../network/discovery.js").Discovery;
+    /** @type {Promise<void>} */
+    delivered: Promise<void>;
+    /** @private */
+    _ondelivered;
+    /** @private */
+    _core;
+    /** @private */
+    _session;
+    /** @private */
+    _discovery;
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} address
      * @param {Uint8Array | null} message
-     * @param {{ mirrors?: Uint8Array[], core?: any }} [opts]
+     * @param {{ mirrors?: Uint8Array[], core?: import('hypercore') }} [opts]
      */
     constructor(network: import('../network/index.js').Network, address: Uint8Array, message: Uint8Array | null, { mirrors, core }?: {
         mirrors?: Uint8Array[];
-        core?: any;
+        core?: import('hypercore');
     });
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
 }

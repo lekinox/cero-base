@@ -11,7 +11,7 @@ import { CeroError } from '../lib/errors.js'
  */
 export class RPCPeer extends ReadyResource {
   /**
-   * @param {any} ipc                                Duplex IPC stream (e.g. a socket or pipe).
+   * @param {import('streamx').Duplex} ipc           Duplex IPC stream (e.g. a socket or pipe).
    * @param {import('./index.js').Spec} spec         Spec object exposing `rpc` and `schema`.
    */
   constructor(ipc, spec) {
@@ -22,17 +22,20 @@ export class RPCPeer extends ReadyResource {
 
     this.ipc = ipc
     this.spec = spec
+    /** @type {import('framed-stream')} */
     this.framed = new FramedStream(ipc)
     this.rpc = new spec.rpc(this.framed)
     // pause after hrpc attaches its listener, streamx resumes on attach
     this.framed.pause()
   }
 
+  /** @private */
   async _open() {
     if (!this.spec.codec) bindCodec(this.spec)
     this.framed.resume()
   }
 
+  /** @private */
   async _close() {
     if (this.framed && !this.framed.destroyed) {
       try {

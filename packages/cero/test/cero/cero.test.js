@@ -12,7 +12,19 @@ import { Pairing } from '@cero-base/core/pairing'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { epochEntries } from '@cero-base/core/database/encryption'
 
-import { cero, put, set, get, open, peek, restore } from '../../src/index.js'
+import {
+  cero,
+  put,
+  set,
+  get,
+  open,
+  call,
+  accept,
+  deny,
+  peek,
+  restore,
+  toSeed
+} from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
   makeTestnet,
@@ -20,6 +32,8 @@ import {
   holds,
   waitForConnection,
   waitUntil,
+  nextRequest,
+  joinsOf,
   ceroOpen
 } from '../helpers/index.js'
 
@@ -46,8 +60,8 @@ test('mirrors: a joiner joins while every member is offline or suspended, the mi
   const mirrors = [b4a.toHex(mirror.publicKey)]
   const { me: owner } = await ceroOpen(t, { testnet, mirrors })
   const room = await open(owner.team, { name: 'clinic' })
-  const invite = await room.invite()
-  await owner.suspend()
+  const invite = await cero.invite(room)
+  await cero.suspend(owner)
 
   // the same app, so the same mirrors
   const { me: joiner } = await ceroOpen(t, { testnet, mirrors })
@@ -56,7 +70,7 @@ test('mirrors: a joiner joins while every member is offline or suspended, the mi
   await held
   t.is((await get(room.members)).data.length, 1, 'a suspended owner admits nobody')
 
-  await owner.resume()
+  await cero.resume(owner)
   const joined = await joining
   t.is(joined.id, room.id, 'admitted once the owner came back')
 })
@@ -78,7 +92,7 @@ test('mirrors: owner and joiner are never online together, across restarts', asy
   const owner = await ceroOpen(t, { testnet, mirrors })
   const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   await owner.me.close()
 
   // the joiner joins alone and leaves: its join waits on the app's mirror
@@ -107,19 +121,40 @@ test('mirrors: owner and joiner are never online together, across restarts', asy
   t.ok(await joined(again, id), 'joined with nobody else online')
 })
 
+test('hooks: an action on a type runs in every room of it, created, joined or reopened', async (t) => {
+  const testnet = await makeTestnet(t)
+  const promoted = []
+  const promote = ({ row }) => void promoted.push(row.memberId)
+  const extensions = [{ setup: (me) => cero.after(me.team.promote, promote) }]
+  const owner = await ceroOpen(t, { testnet, extensions })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const { id } = room
+  await call(room.promote, { memberId: 'created', role: 'member' })
+
+  const joiner = await ceroOpen(t, { testnet, extensions })
+  const joined = await open(joiner.me.team, await cero.invite(room))
+  await call(joined.promote, { memberId: 'joined', role: 'member' })
+
+  await owner.me.close()
+  const back = await reopen(t, owner.dir, testnet, { extensions })
+  const reopened = await open(back.team, { id })
+  await call(reopened.promote, { memberId: 'reopened', role: 'member' })
+  t.ok(['created', 'joined', 'reopened'].every((m) => promoted.includes(m)))
+})
+
 test('invites: a join survives the joiner restarting, and lands once a member is back', async (t) => {
   const testnet = await makeTestnet(t)
   const { me: owner } = await ceroOpen(t, { testnet })
   const room = await open(owner.team, { name: 'clinic' })
-  const invite = await room.invite()
-  await owner.suspend()
+  const invite = await cero.invite(room)
+  await cero.suspend(owner)
 
   const joiner = await ceroOpen(t, { testnet })
   const err = await joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
   t.is(err.code, 'TIMEOUT', 'the caller stops waiting')
   await joiner.me.close()
 
-  await owner.resume()
+  await cero.resume(owner)
   const again = await reopen(t, joiner.dir, testnet)
   t.ok(await joined(again, room.id), 'the join went on after the restart')
 })
@@ -129,19 +164,18 @@ test('invites: a reply survives the member restarting', async (t) => {
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite({ confirm: true })
+  const invite = await cero.invite(room, { confirm: true })
 
   // the joiner joins, then leaves before a member accepts
   const joiner = await ceroOpen(t, { testnet })
-  const asked = new Promise((resolve) => room.pair.once('candidate', resolve))
   const waiting = joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
-  const candidate = await asked
+  const request = await nextRequest(room)
   await waiting
   await joiner.me.close()
 
   // admitted while the joiner is away, and the invite consumed: only the kept reply can get
   // the joiner in, the outbox has to carry it across the restart
-  await room.accept(candidate)
+  await accept(room, request)
   await waitUntil(async () => ((await get(room.invites)).data.length === 0 ? true : null))
   await owner.me.close()
   const back = await reopen(t, owner.dir, testnet)
@@ -155,14 +189,14 @@ test('invites: a joiner restarting after the reply landed opens the room from th
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
 
   // the reply landed and the writer was admitted, then the joiner stopped: nothing left to join
   const joiner = await ceroOpen(t, { testnet })
   const { identity, mailbox } = joiner.me
   const opts = { identity, spec: spec.handles.team }
   const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, opts)
-  await room.revoke(invite)
+  await cero.revoke(room, invite)
   const { discoveryKey } = Invite.parse(invite)
   await joiner.me.local.store.put('joins', {
     id: b4a.toHex(discoveryKey),
@@ -185,13 +219,12 @@ test('invites: a join request waiting for approval survives the member restartin
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite({ confirm: true })
+  const invite = await cero.invite(room, { confirm: true })
 
   // the joiner joins and leaves; its request waits in the room
   const joiner = await ceroOpen(t, { testnet })
-  const asked = new Promise((resolve) => room.pair.once('candidate', resolve))
   const waiting = joiner.me._join(invite, 'team', { timeout: 1000 }).catch((e) => e)
-  await asked
+  await nextRequest(room)
   await waiting
   await joiner.me.close()
 
@@ -199,8 +232,7 @@ test('invites: a join request waiting for approval survives the member restartin
   await owner.me.close()
   const back = await reopen(t, owner.dir, testnet)
   const again = await open(back.team, { id })
-  await waitUntil(() => again.pair.pending.size > 0 || null)
-  await again.accept([...again.pair.pending][0])
+  await accept(again, await nextRequest(again))
 
   const returned = await reopen(t, joiner.dir, testnet)
   t.ok(await joined(returned, id), 'approved while the joiner was away')
@@ -218,7 +250,7 @@ test('invites: an owner back online answers its invites without opening the room
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   await owner.me.close()
 
   const joiner = await ceroOpen(t, { testnet })
@@ -234,7 +266,7 @@ test('invites: a confirm invite reopened at boot still waits for the app', async
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const { id } = room
-  const invite = await room.invite({ confirm: true })
+  const invite = await cero.invite(room, { confirm: true })
   await owner.me.close()
 
   const joiner = await ceroOpen(t, { testnet })
@@ -242,9 +274,9 @@ test('invites: a confirm invite reopened at boot still waits for the app', async
 
   const back = await reopen(t, owner.dir, testnet)
   const served = await waitUntil(() => [...back.children].find((c) => c.id === id) || null)
-  const request = await waitUntil(() => [...served.pair.pending][0] || null)
+  const request = await nextRequest(served)
   t.is((await get(served.members)).data.length, 1, 'waiting for the app, not admitted')
-  await served.accept(request)
+  await accept(served, request)
   t.ok(await joined(joiner.me, id))
 })
 
@@ -253,7 +285,7 @@ test('invites: a room with no invite left is not reopened at boot', async (t) =>
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const serving = async (me) => (await me.local.store.get('serving')).data.length
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   await waitUntil(async () => ((await serving(owner.me)) === 1 ? true : null))
 
   const joiner = await ceroOpen(t, { testnet })
@@ -266,7 +298,7 @@ test('invites: a room left with invites is dropped from the list at boot', async
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
-  await room.invite()
+  await cero.invite(room)
   await waitUntil(async () =>
     (await owner.me.local.store.get('serving')).data.length ? true : null
   )
@@ -283,7 +315,7 @@ test('invites: a reader invite joins through cero() and reads', async (t) => {
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   await put(room.messages, { text: 'hello' })
-  const invite = await room.invite({ role: 'reader' })
+  const invite = await cero.invite(room, { role: 'reader' })
 
   const joiner = await ceroOpen(t, { testnet })
   const joined = await open(joiner.me.team, invite)
@@ -298,7 +330,7 @@ test('roles: a reader promoted to member can write', async (t) => {
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const joiner = await ceroOpen(t, { testnet })
-  const joined = await open(joiner.me.team, await room.invite({ role: 'reader' }))
+  const joined = await open(joiner.me.team, await cero.invite(room, { role: 'reader' }))
   t.absent(joined.store.writable)
 
   await set(room.members, { id: joiner.me.identity.id, role: 'member' })
@@ -315,12 +347,12 @@ test('invites: an admin invite joins through cero() with admin rights', async (t
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const joiner = await ceroOpen(t, { testnet })
-  const joined = await open(joiner.me.team, await room.invite({ role: 'admin' }))
+  const joined = await open(joiner.me.team, await cero.invite(room, { role: 'admin' }))
 
   const { data: member } = await get(joined.members, joiner.me.identity.id)
   t.is(member.role, 'admin')
   t.ok(joined.store.writable)
-  t.ok(await joined.invite({ role: 'member' }), 'an admin mints invites')
+  t.ok(await cero.invite(joined, { role: 'member' }), 'an admin mints invites')
 })
 
 test('invites: a pending join is listed, survives a restart, and a cancel ends it for good', async (t) => {
@@ -328,18 +360,18 @@ test('invites: a pending join is listed, survives a restart, and a cancel ends i
   const invite = nowhere()
   const err = await joiner.me._join(invite, 'team', { timeout: 500 }).catch((e) => e)
   t.is(err.code, 'TIMEOUT')
-  t.alike(await joiner.me.joining(), [invite])
+  t.alike(await joinsOf(joiner.me), [invite])
   await joiner.me.close()
 
   const again = await reopen(t, joiner.dir, joiner.testnet)
-  t.alike(await again.joining(), [invite], 'still pending after the restart')
-  t.ok(await again.cancel(invite))
-  t.alike(await again.joining(), [])
-  t.absent(await again.cancel(invite), 'nothing left to cancel')
+  t.alike(await joinsOf(again), [invite], 'still pending after the restart')
+  t.ok(await cero.cancel(again, invite))
+  t.alike(await joinsOf(again), [])
+  t.absent(await cero.cancel(again, invite), 'nothing left to cancel')
   await again.close()
 
   const last = await reopen(t, joiner.dir, joiner.testnet)
-  t.alike(await last.joining(), [], 'not resumed')
+  t.alike(await joinsOf(last), [], 'not resumed')
   t.is(last._joining.size, 0)
 })
 
@@ -347,7 +379,7 @@ test('invites: a join row left behind for a handle already open is dropped at bo
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   const joiner = await ceroOpen(t, { testnet })
   await open(joiner.me.team, invite)
 
@@ -358,7 +390,7 @@ test('invites: a join row left behind for a handle already open is dropped at bo
   await joiner.me.close()
 
   const again = await reopen(t, joiner.dir, testnet)
-  t.alike(await again.joining(), [])
+  t.alike(await joinsOf(again), [])
   t.is(again._joining.size, 0, 'nothing resumed')
 })
 
@@ -366,8 +398,8 @@ test('invites: a caller waiting on a cancelled join hears CLOSED', async (t) => 
   const { me } = await ceroOpen(t)
   const invite = nowhere()
   const waiting = me._join(invite, 'team', { timeout: 0 }).catch((e) => e)
-  await waitUntil(async () => ((await me.joining()).length ? true : null))
-  await me.cancel(invite)
+  await waitUntil(async () => ((await joinsOf(me)).length ? true : null))
+  await cero.cancel(me, invite)
   t.is((await waiting).code, 'CLOSED')
 })
 
@@ -379,37 +411,35 @@ test('invites: a pending join ends when its invite expires, and says so', async 
   t.is(err.code, 'TIMEOUT', 'the caller stops waiting first')
   await waitUntil(() => errors.length || null)
   t.is(errors[0].code, 'EXPIRED', 'nobody waits, so onerror hears it')
-  t.alike(await me.joining(), [])
+  t.alike(await joinsOf(me), [])
 })
 
 test('invites: a denial reaches the caller, or onerror once nobody waits', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
-  const candidates = []
-  room.pair.on('candidate', (candidate) => candidates.push(candidate))
-  const invite = () => room.invite({ confirm: true })
+  const invite = () => cero.invite(room, { confirm: true })
 
   const errors = []
   const onerror = (err) => errors.push(err)
   const waited = await ceroOpen(t, { testnet, onerror })
   const joining = waited.me._join(await invite(), 'team', { timeout: 0 }).catch((e) => e)
-  await waitUntil(() => candidates.length || null)
-  await candidates[0].deny('not now')
+  const first = await nextRequest(room)
+  await deny(room, first, 'not now')
   t.is((await joining).code, 'DENIED', 'the caller hears it')
   t.is(errors.length, 0, 'and onerror does not')
 
   // the joiner joins and leaves; the denial waits in the member's outbox for its return
   const away = await ceroOpen(t, { testnet })
   await away.me._join(await invite(), 'team', { timeout: 1000 }).catch((e) => e)
-  await waitUntil(() => candidates.length === 2 || null)
+  const second = await nextRequest(room, first)
   await away.me.close()
-  await candidates[1].deny('not now')
+  await deny(room, second, 'not now')
 
   const back = await reopen(t, away.dir, testnet, { onerror })
   await waitUntil(() => errors.length || null)
   t.is(errors[0].code, 'DENIED', 'a resumed join reports to onerror')
-  t.alike(await back.joining(), [])
+  t.alike(await joinsOf(back), [])
 })
 
 test('mirrors: absent opt leaves blind peering off', async (t) => {
@@ -457,9 +487,9 @@ test('cero: a failed open releases the storage lock so a retry succeeds', async 
   await t.exception(
     cero(dir, spec, {
       bootstrap: testnet.bootstrap,
-      phrase: 'not actually a valid bip39 mnemonic'
+      seed: b4a.alloc(7)
     }),
-    'invalid phrase rejected'
+    'invalid seed rejected'
   )
   // a retry on the same dir must not hit a corestore lock leaked by the failure
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
@@ -494,9 +524,9 @@ test('peek(): true after reopening with the stored phrase', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
   const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  const phrase = first.identity.toPhrase()
+  const phrase = await cero.phrase(first)
   await first.close()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed: toSeed(phrase) })
   await me.close()
   t.is(await peek(dir, spec), true)
 })
@@ -517,7 +547,7 @@ async function withPeer(t) {
   const testnet = await makeTestnet(t)
   const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => a.close().catch(() => {}), { order: 5 })
-  return { testnet, a, phrase: a.identity.toPhrase() }
+  return { testnet, a, phrase: await cero.phrase(a) }
 }
 
 test('restore(): rejects bad input', async (t) => {
@@ -526,8 +556,9 @@ test('restore(): rejects bad input', async (t) => {
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
 
   await t.exception.all(() => restore(null, 'x'), /me/)
-  await t.exception.all(() => restore(me, null), /phrase/)
-  await t.exception.all(() => restore(me, 123), /phrase/)
+  await t.exception.all(() => restore(me, null), /seed/)
+  await t.exception.all(() => restore(me, 'words'), /seed/)
+  t.exception.all(() => toSeed('not actually a valid bip39 mnemonic'), /BIP-39/)
 })
 
 test('restore(): swaps identity to the given phrase', async (t) => {
@@ -535,12 +566,12 @@ test('restore(): swaps identity to the given phrase', async (t) => {
 
   let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   const oldId = b.id
-  b = await restore(b, phrase)
+  b = await restore(b, toSeed(phrase))
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   t.not(b.id, oldId, 'identity changed')
   t.is(b.id, a.id, 'matches the peer with the same phrase')
-  t.is(b.identity.toPhrase(), phrase, 'phrase round-trips')
+  t.is(await cero.phrase(b), phrase, 'phrase round-trips')
 })
 
 test('restore(): wipes prior local store data', async (t) => {
@@ -551,7 +582,7 @@ test('restore(): wipes prior local store data', async (t) => {
   await put(me.messages, { text: 'before-restore' })
   t.is((await get(me.messages)).data.length, 1, 'wrote data before restore')
 
-  me = await restore(me, phrase)
+  me = await restore(me, toSeed(phrase))
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
 
   t.is((await get(me.messages)).data.length, 0, 'old data is wiped')
@@ -564,14 +595,14 @@ test('restore(): carries the channel so channeled peers still meet', async (t) =
   const channel = 'test-channel'
 
   const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, channel })
-  const phrase = a.identity.toPhrase()
+  const phrase = await cero.phrase(a)
   t.teardown(() => a.close().catch(() => {}), { order: 5 })
   await put(a.messages, { text: 'from-old-device' })
 
   const bDir = await t.tmp()
   const storageKey = b4a.alloc(32, 9)
   let b = await cero(bDir, spec, { bootstrap: testnet.bootstrap, channel, storageKey })
-  b = await restore(b, phrase)
+  b = await restore(b, toSeed(phrase))
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   t.is(b.id, a.id, 'restore succeeded on a channeled network')
@@ -653,7 +684,7 @@ test('restore(): keeps channel isolation from peers on another channel', async (
     bootstrap: testnet.bootstrap,
     channel: 'channel-one'
   })
-  const phrase = a.identity.toPhrase()
+  const phrase = await cero.phrase(a)
   t.teardown(() => a.close().catch(() => {}), { order: 5 })
 
   const b = await cero(await t.tmp(), spec, {
@@ -663,7 +694,7 @@ test('restore(): keeps channel isolation from peers on another channel', async (
   })
 
   await t.exception(
-    () => restore(b, phrase),
+    () => restore(b, toSeed(phrase)),
     /TIMEOUT/,
     'cross-channel recovery finds no peer and times out'
   )
@@ -673,7 +704,7 @@ test('restore(): no-op when the phrase is the current identity', async (t) => {
   const { a, phrase } = await withPeer(t)
   await put(a.messages, { text: 'keep-me' })
 
-  const same = await restore(a, phrase)
+  const same = await restore(a, toSeed(phrase))
 
   t.is(same, a, 'returns the same running instance')
   t.is(same.id, a.id, 'identity unchanged')
@@ -685,14 +716,14 @@ test('restore(): identity persists across reopen', async (t) => {
   const dir = await t.tmp()
 
   let me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  me = await restore(me, phrase)
+  me = await restore(me, toSeed(phrase))
   const restoredId = me.id
   await me.close()
 
   me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   t.is(me.id, restoredId, 'same identity on reopen')
-  t.is(me.identity.toPhrase(), phrase, 'phrase preserved')
+  t.is(await cero.phrase(me), phrase, 'phrase preserved')
 })
 
 test('restore(): peek reflects the new identity', async (t) => {
@@ -700,7 +731,7 @@ test('restore(): peek reflects the new identity', async (t) => {
   const dir = await t.tmp()
 
   let me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  me = await restore(me, phrase)
+  me = await restore(me, toSeed(phrase))
   await me.close()
 
   t.is(await peek(dir, spec), true, 'peek sees new identity')
@@ -711,7 +742,7 @@ test('restore(): syncs data from the peer holding the phrase', async (t) => {
   await set(a.profile, { name: 'jb' })
 
   let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
-  b = await restore(b, phrase)
+  b = await restore(b, toSeed(phrase))
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   await waitUntil(async () => (await get(b.profile)).data?.name === 'jb')
@@ -750,11 +781,11 @@ test('cero(): from phrase', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
   const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  const phrase = first.identity.toPhrase()
+  const phrase = await cero.phrase(first)
   await first.close()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed: toSeed(phrase) })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  t.is(me.identity.toPhrase(), phrase)
+  t.is(await cero.phrase(me), phrase)
 })
 
 // ─── refs lifted onto facade ──────────────────────────────────────────────
@@ -883,7 +914,7 @@ test('cero(): joiner sees the joined room in its handles collection', async (t) 
   const testnet = await makeTestnet(t)
   const host = await ceroOpen(t, { testnet })
   const room = await host.me._create('team', { name: 'general' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   const guest = await ceroOpen(t, { testnet })
   await guest.me._join(invite, 'team')
   const { data: rows } = await get(guest.me.team)
@@ -980,16 +1011,9 @@ test('cero(): two identities sync on a public scope via invite', async (t) => {
 
   const host = await ceroOpen(t, { testnet })
   const team = await open(host.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
   await put(team.messages, { text: 'from-host' })
 
-  const inviteStr = await team.invite({ role: 'member', ttl: 60_000 })
+  const inviteStr = await cero.invite(team, { role: 'member', ttl: 60_000 })
 
   const joiner = await ceroOpen(t, { testnet })
   const teamB = await open(joiner.me.team, inviteStr)
@@ -1013,13 +1037,13 @@ test('cero(): a phrase alone recovers a second device — no flag, no new histor
   const testnet = await makeTestnet(t)
   const { me: a } = await ceroOpen(t, { testnet, name: 'laptop-A' })
   await put(a.messages, { text: 'from-a' })
-  const phrase = a.identity.toPhrase()
+  const phrase = await cero.phrase(a)
 
   // a new device with nothing but the phrase: its own writer core, the
   // history pulled from A, admitted by the identity's signature
   const b = await cero(await t.tmp(), spec, {
     bootstrap: testnet.bootstrap,
-    phrase,
+    seed: toSeed(phrase),
     name: 'laptop-B'
   })
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
@@ -1043,17 +1067,47 @@ test('cero(): a phrase alone recovers a second device — no flag, no new histor
 
 test('cero(): suspend()/resume() flips swarm + corestore state', async (t) => {
   const { me } = await ceroOpen(t)
-  t.absent(me.suspended, 'starts not suspended')
+  t.absent((await get(me.status)).data.suspended, 'starts not suspended')
   t.absent(me.network.swarm.suspended)
   t.absent(me.store.opened === false && me.store.suspended)
 
-  await me.suspend()
-  t.ok(me.suspended, 'composer reports suspended')
+  await cero.suspend(me)
+  t.ok((await get(me.status)).data.suspended, 'composer reports suspended')
   t.ok(me.network.swarm.suspended, 'swarm suspended')
 
-  await me.resume()
-  t.absent(me.suspended)
+  await cero.resume(me)
+  t.absent((await get(me.status)).data.suspended)
   t.absent(me.network.swarm.suspended)
+})
+
+test('status: a room reports its role, writability, epoch and suspension, live', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const status = async () => (await get(room.status)).data
+  const expected = {
+    role: 'owner',
+    writable: true,
+    epoch: 0,
+    suspended: false,
+    behind: 0,
+    nearby: null
+  }
+  t.alike(await status(), expected)
+
+  const seen = []
+  cero.watch(room.status).on('data', ({ data }) => seen.push(data.suspended))
+  const now = (suspended) => waitUntil(() => seen.at(-1) === suspended || null)
+  await now(false)
+  await cero.suspend(me)
+  t.ok((await status()).suspended, 'a suspended app suspends its rooms')
+  await now(true)
+  await cero.resume(me)
+  await now(false)
+  t.pass('the watch follows each change')
+
+  await cero.deactivate(room)
+  t.absent((await status()).suspended, 'a room off the swarm is not a suspended app')
+  await t.exception(cero.suspend(room), /the app's, on me/)
 })
 
 test('suspend: a failing step is reported to onerror, the rest still suspends', async (t) => {
@@ -1062,22 +1116,11 @@ test('suspend: a failing step is reported to onerror, the rest still suspends', 
   me.network.suspend = async () => {
     throw new Error('radio')
   }
-  await me.suspend()
+  await cero.suspend(me)
   t.is(errors[0]?.message, 'radio', 'the failure is reported')
-  t.ok(me.suspended, 'suspend still completes')
-  await me.resume()
-  t.absent(me.suspended)
-})
-
-test('onerror: without a handler background errors emit "error" on the root', async (t) => {
-  const { me } = await ceroOpen(t)
-  const seen = new Promise((resolve) => me.once('error', resolve))
-  me.network.suspend = async () => {
-    throw new Error('radio')
-  }
-  await me.suspend()
-  t.is((await seen).message, 'radio')
-  await me.resume()
+  t.ok((await get(me.status)).data.suspended, 'suspend still completes')
+  await cero.resume(me)
+  t.absent((await get(me.status)).data.suspended)
 })
 
 test('onerror: a core fault reaches onerror', async (t) => {
@@ -1103,7 +1146,7 @@ test('close: a failing step still tears down the rest, then the error surfaces',
   await again.close()
 })
 
-test('onerror: with neither a handler nor a listener background errors are printed', async (t) => {
+test('onerror: without a handler background errors are printed', async (t) => {
   const { me } = await ceroOpen(t)
   const printed = []
   const error = console.error
@@ -1112,9 +1155,9 @@ test('onerror: with neither a handler nor a listener background errors are print
   me.network.suspend = async () => {
     throw new Error('radio')
   }
-  await me.suspend()
+  await cero.suspend(me)
   t.is(printed[0]?.message, 'radio')
-  await me.resume()
+  await cero.resume(me)
 })
 
 test('cero(): a suspend() racing an in-flight resume() serializes — last call wins', async (t) => {
@@ -1133,12 +1176,12 @@ test('cero(): a suspend() racing an in-flight resume() serializes — last call 
     calls.push('resume')
   }
 
-  await me.suspend()
-  const resuming = me.resume()
-  const suspending = me.suspend() // fired while resume is still in flight
+  await cero.suspend(me)
+  const resuming = cero.resume(me)
+  const suspending = cero.suspend(me) // fired while resume is still in flight
   await Promise.all([resuming, suspending])
 
-  t.ok(me.suspended, 'handle reports suspended')
+  t.ok((await get(me.status)).data.suspended, 'handle reports suspended')
   t.is(calls[calls.length - 1], 'suspend', 'network ops ran in call order')
   t.ok(me.network.swarm.suspended, 'swarm actually ended suspended')
 })
@@ -1174,12 +1217,12 @@ test('cero(): a blob core resolving after close does not re-register its key', a
 
 test('cero(): suspend()/resume() is idempotent', async (t) => {
   const { me } = await ceroOpen(t)
-  await me.suspend()
-  await me.suspend() // no-op
-  t.ok(me.suspended)
-  await me.resume()
-  await me.resume() // no-op
-  t.absent(me.suspended)
+  await cero.suspend(me)
+  await cero.suspend(me) // no-op
+  t.ok((await get(me.status)).data.suspended)
+  await cero.resume(me)
+  await cero.resume(me) // no-op
+  t.absent((await get(me.status)).data.suspended)
 })
 
 test('cero(): writes work after suspend()+resume() cycle', async (t) => {
@@ -1187,8 +1230,8 @@ test('cero(): writes work after suspend()+resume() cycle', async (t) => {
   const team = await open(me.team)
   await put(team.messages, { text: 'before' })
 
-  await me.suspend()
-  await me.resume()
+  await cero.suspend(me)
+  await cero.resume(me)
 
   await put(team.messages, { text: 'after' })
   const { data: rows } = await get(team.messages)
@@ -1199,27 +1242,54 @@ test('cero(): close() works after suspend without resume', async (t) => {
   const dir = await t.tmp()
   const testnet = await makeTestnet(t)
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  await me.suspend()
+  await cero.suspend(me)
   await me.close()
   t.pass('close after suspend did not throw')
 })
 
-// ─── operators ──────────────────────────────────────────────────────────────
+test('tx: the writes made through the batch land together, or none do', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  cero.before(room.notes, ({ row }) => row.text !== 'no')
+  const batch = (note) =>
+    cero.tx(room, async (tx) => {
+      await put(tx.messages, { text: 'hi' })
+      await put(tx.notes, { text: note })
+    })
 
-test('operators: a map binds root operators on cero()', async (t) => {
-  const operators = { user: { rename: (h, name) => set(h.profile, { name }) } }
-  const { me } = await ceroOpen(t, { operators })
-  await me.user.rename('Auto')
-  t.is((await get(me.profile)).data.name, 'Auto')
+  await t.exception(batch('no'), /REFUSED/)
+  t.is((await get(room.messages)).data.length, 0, 'the refused note took the message with it')
+  await batch('yes')
+  t.is((await get(room.messages)).data.length, 1)
+  t.is((await get(room.notes)).data.length, 1)
+  await t.exception(
+    cero.tx(room, async () => {}),
+    /fn takes the batch/
+  )
 })
 
-test('operators: a handle-type key binds on open(), not on the root', async (t) => {
-  const operators = { team: { note: { add: (h, text) => put(h.notes, { text }) } } }
-  const { me } = await ceroOpen(t, { operators })
-  t.absent(me.note, 'child-scope op is not on the root')
-  const team = await open(me.team, { name: 'squad' })
-  await team.note.add('hello')
-  t.is((await get(team.notes)).data[0].text, 'hello')
+test('leave: a room can be left, the root cannot', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  await cero.leave(room)
+  t.is((await get(me.team)).data.length, 0, 'the room left the list')
+  await t.exception(cero.leave(me), /the root cannot be left/)
+})
+
+test('extensions: setup runs before the root opens, and what it reads waits for the open', async (t) => {
+  let opened = null
+  let read = null
+  const extensions = [
+    {
+      async setup(me) {
+        opened = me.opened
+        read = await get(me.profile)
+      }
+    }
+  ]
+  await ceroOpen(t, { extensions })
+  t.is(opened, false, 'setup ran first')
+  t.alike(read, { data: null }, 'the read waited for the open')
 })
 
 test('extensions: the bundled two run when nothing is named', async (t) => {

@@ -1,4 +1,3 @@
-import { Readable } from 'streamx';
 import { Framed } from './protocol.js';
 export type Query = object;
 export type Handle = Record<string, unknown>;
@@ -11,10 +10,13 @@ export type Handle = Record<string, unknown>;
 /**
  * Consumer SDK for a tap server reached over a local Duplex `stream`.
  *
- * @param {object} stream  A streamx Duplex connected to a tap server.
+ * @param {import('streamx').Duplex} stream  A streamx Duplex connected to a tap server.
+ * @param {{ token?: string }} [opts]
  * @returns {Promise<{ handles(): Promise<Handle[]>, get(ref: string, query?: Query, handleId?: string): Promise<unknown>, watch(ref: string, query?: Query, handleId?: string): import('streamx').Readable, events(): import('streamx').Readable, stats(): import('streamx').Readable, close(): void }>}
  */
-export declare function connect(stream: object, { token }?: {}): Promise<{
+export declare function connect(stream: import('streamx').Duplex, { token }?: {
+    token?: string;
+}): Promise<{
     handles(): Promise<Handle[]>;
     get(ref: string, query?: Query, handleId?: string): Promise<unknown>;
     watch(ref: string, query?: Query, handleId?: string): import('streamx').Readable;
@@ -23,13 +25,24 @@ export declare function connect(stream: object, { token }?: {}): Promise<{
     close(): void;
 }>;
 export declare class Session {
-    stream: any;
-    token: any;
-    pending: Map<any, any>;
-    streams: Map<any, any>;
+    stream: import("streamx").Duplex<import("streamx").DuplexEvents>;
+    token: string;
+    /** @type {Map<number, { resolve: (value: unknown) => void, reject: (err: Error) => void }>} */
+    pending: Map<number, {
+        resolve: (value: unknown) => void;
+        reject: (err: Error) => void;
+    }>;
+    /** @type {Map<number, import('streamx').Readable>} */
+    streams: Map<number, import('streamx').Readable>;
     seq: number;
     wire: Framed;
-    constructor(stream: any, { token }?: {});
+    /**
+     * @param {import('streamx').Duplex} stream
+     * @param {{ token?: string }} [opts]
+     */
+    constructor(stream: import('streamx').Duplex, { token }?: {
+        token?: string;
+    });
     /**
      * Lists the handles exposed by the server.
      *
@@ -72,10 +85,16 @@ export declare class Session {
      * @returns {void}
      */
     close(): void;
-    _onclose(): void;
-    _onmessage(msg: any): void;
-    _newId(): number;
-    _send(frame: any): void;
-    _request(method: any, fields: any): Promise<any>;
-    _stream(method: any, fields: any): Readable<import("streamx").ReadableEvents>;
+    /** @private */
+    private _onclose;
+    /** @private */
+    private _onmessage;
+    /** @private */
+    private _newId;
+    /** @private */
+    private _send;
+    /** @private */
+    private _request;
+    /** @private */
+    private _stream;
 }

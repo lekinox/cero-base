@@ -16,7 +16,17 @@ export declare class Presence {
     active: number;
     announced: number;
     idle: number;
-    entries: Map<any, any>;
+    /** @type {Map<string, { topic: Uint8Array, pinned: boolean, refs: number, touched: number, off: boolean, discovery: import('./discovery.js').Discovery | null, timer: ReturnType<typeof setTimeout> | null, pending: 'active' | 'passive' | null }>} */
+    entries: Map<string, {
+        topic: Uint8Array;
+        pinned: boolean;
+        refs: number;
+        touched: number;
+        off: boolean;
+        discovery: import('./discovery.js').Discovery | null;
+        timer: ReturnType<typeof setTimeout> | null;
+        pending: 'active' | 'passive' | null;
+    }>;
     /**
      * @param {import('./index.js').Network} network
      * @param {{ active?: number, announced?: number, idle?: number }} [opts]
@@ -44,7 +54,10 @@ export declare class Presence {
     mode(topic: Uint8Array): 'active' | 'passive' | null;
     refresh(): void;
     close(): void;
-    _want(e: any, mode: any): void;
-    _settle(e: any): void;
-    _leave(e: any): void;
+    /** @private */
+    private _want;
+    /** @private */
+    private _settle;
+    /** @private */
+    private _leave;
 }

@@ -5,7 +5,7 @@ import net from 'net'
  * lifecycle.
  *
  * @param {{ port?: number, host?: string, token?: string | null }} [opts]
- * @returns {{ accept(handler: (socket: any) => void): void, ready(): Promise<{ port: number }>, port: number | null, close(): void }}
+ * @returns {{ accept(handler: (socket: import('streamx').Duplex) => void): void, ready(): Promise<{ port: number }>, port: number | null, close(): void }}
  */
 export function loopback(opts = {}) {
   const host = opts.host ?? '127.0.0.1'
@@ -51,7 +51,7 @@ export function loopback(opts = {}) {
  * `connect()`.
  *
  * @param {{ port: number, host?: string }} [opts]
- * @returns {any} A streamx-compatible Duplex socket.
+ * @returns {import('streamx').Duplex} A streamx-compatible Duplex socket.
  */
 export function dial(opts = {}) {
   return net.connect(opts.port, opts.host ?? '127.0.0.1')

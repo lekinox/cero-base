@@ -1,89 +1,106 @@
 # Errors
 
+Every code Cero and Core throw, when you see it, and what to do.
+
 ```js
+import { cero } from '@cero-base/cero'
+
+// me from cero()
 try {
   await cero.put(me.todos, { nope: 1 })
 } catch (err) {
-  err.code // 'INVALID'
+  err.code // 'INVALID': todos has no field nope
 }
 ```
 
-Every error cero throws is a `CeroError`. Match on `err.code`, never on the message.
+## Match on the code
 
-The code is stable and prefixed to `err.message`, so a log line identifies itself.
-`err.isCeroError` is always `true` and `CeroError.isCeroError(err)` is the same
-check as a static guard. Use either instead of `instanceof`, which does not
-survive a realm boundary. `err.name` is `'CeroError'`. The class is exported from
-`@cero-base/core/errors`.
+- In process, every error Cero throws is a `CeroError` (from `@cero-base/core/errors`). It carries `err.code`, the same code at the start of `err.message`, and `err.isCeroError`; `CeroError.isCeroError(err)` is a guard that works across realms. `DENIED` adds `err.reason` and `REFUSED` adds `err.rule`.
+- Across RPC, in a UI on `@cero-base/cero/client`, only `code` and `message` survive. Match `err.code` everywhere: `reason`, `rule` and `isCeroError` do not reach a UI.
 
-| Code               | You see it when                                                                                                                    |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `REQUIRED`         | A required argument is missing: `dir`, `spec`, `store`, `identity`, `network`, `mailbox`.                                          |
-| `INVALID`          | An argument or state failed validation. The message names the rule.                                                                |
-| `CLOSED`           | An operation ran on a closed resource: a `Database`, `Storage`, `Network`, `Pairing` or `Blobs`.                                   |
-| `CHANNEL_MISMATCH` | A channel-stamped storage was reopened under a different channel, including none. The stored channel is not named.                 |
-| `NOT_READY`        | An operation ran before `await resource.ready()`.                                                                                  |
-| `CONFLICT`         | The operation raced an existing state.                                                                                             |
-| `DESTROYED`        | An operation ran on a destroyed `Discovery`. Join again for a new one.                                                             |
-| `UNKNOWN`          | A typed lookup failed: an unknown ref name, handle type or collection. Check it against the built spec.                            |
-| `NOT_WRITABLE`     | A write, or `cero.rotate`, ran where this device is not a writer yet.                                                              |
-| `TIMEOUT`          | A bounded wait elapsed: `whenWritable`, a phrase recovery with no reachable device, or a join no member answered yet (it goes on). |
-| `UNSUPPORTED`      | The feature is not implemented yet. Nothing to do.                                                                                 |
-| `INVALID_INVITE`   | An invite failed to parse: bad z32, bad envelope, unknown version. Ask for a fresh one.                                            |
-| `EXPIRED`          | An invite is past its `ttl`, on either side of the handshake.                                                                      |
-| `DENIED`           | The host refused the join, or the call needs a permission you lack. `err.reason` holds the host's reason, or `null`.               |
-| `REFUSED`          | An apply-time rule refused the op. `err.rule` names it, for example `'write'`, `'own'` or `'rotate'`.                              |
-| `NETWORK_ERROR`    | A swarm or transport failure. Retry. It is not a host decision, so do not report it as a denial.                                   |
-| `UNKNOWN_EPOCH`    | A block references a rotation epoch this peer has not learned. It clears when the announcement syncs in.                           |
+## Codes
+
+| Code               | You see it when                                                                                                                                                                                                                                                                                                                                                                                                                                    | Do                                                             |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `REQUIRED`         | `spec` is missing in `cero()`, `peek()` or `serve()`, `seed` in `restore()`, `storage` in `serve()`. In Core: a primitive's `store`, `identity`, `network` or `mailbox`.                                                                                                                                                                                                                                                                           | Pass it.                                                       |
+| `INVALID`          | An argument or call failed a check, named in the message: a missing `dir`, a field the schema does not declare, an action with no `after` hook, `cero.invite` or `cero.leave` on the root, `suspend` or `resume` on a room, `nearby` without `bluetooth`, a `tx` fn that takes no argument, `rotate` inside `tx`, a phrase that is not BIP-39, an invite role that is not a role or a reusable one above member, `accept` above the invite's role. | Fix the call.                                                  |
+| `CLOSED`           | A call on a closed context. A join waiting in `cero.open` when you cancel it, or when `me` closes: one you did not cancel resumes on the next open.                                                                                                                                                                                                                                                                                                | Reopen, or wait for the join to land.                          |
+| `CHANNEL_MISMATCH` | `dir` keeps the first channel it is opened with, and this open passes another, or none.                                                                                                                                                                                                                                                                                                                                                            | Open with its channel, or use another `dir`.                   |
+| `NOT_READY`        | Core only: a call before `await x.ready()`.                                                                                                                                                                                                                                                                                                                                                                                                        | Await `ready()` first.                                         |
+| `CONFLICT`         | A core on this device forked, usually because a data dir was copied to another machine. It reaches `onerror`; nothing resyncs.                                                                                                                                                                                                                                                                                                                     | Stop using the copy. A second device starts from the phrase.   |
+| `DESTROYED`        | Core only: a call on a destroyed `Discovery`.                                                                                                                                                                                                                                                                                                                                                                                                      | Join the topic again.                                          |
+| `UNKNOWN`          | A name the spec does not have (a ref, a handle type, an action), a room id not in your list, a request already settled or not seen yet.                                                                                                                                                                                                                                                                                                            | Check the name against the built spec, or read the list again. |
+| `NOT_WRITABLE`     | This device cannot write here: a reader, a removed member, or a join not let in yet.                                                                                                                                                                                                                                                                                                                                                               | Show the room read-only.                                       |
+| `TIMEOUT`          | Recovery from the phrase, or `restore`, found no device of yours within `recoveryTimeout`. A join was not answered within 30 s: it goes on. A room opened by id for the first time on this device while none of the room's devices is online.                                                                                                                                                                                                      | Retry when another device is online. A join lands on its own.  |
+| `UNSUPPORTED`      | Over RPC: opening or joining a room from inside a room.                                                                                                                                                                                                                                                                                                                                                                                            | Open rooms from `me`.                                          |
+| `INVALID_INVITE`   | The invite string does not parse: bad z32, a bad envelope, an unknown version.                                                                                                                                                                                                                                                                                                                                                                     | Ask for a fresh one.                                           |
+| `EXPIRED`          | The invite is past its `ttl`: joining with it, or `cero.accept` on a request it brought.                                                                                                                                                                                                                                                                                                                                                           | Ask for, or mint, a fresh one.                                 |
+| `DENIED`           | A member turned your join away (`err.reason` in process, none in a UI). Or your role falls short: an invite above your own role, `revoke` without the remove permission.                                                                                                                                                                                                                                                                           | Tell the user; nothing to retry.                               |
+| `REFUSED`          | A rule refused your write, on every peer, and its whole batch is dropped. `err.rule`, in process: `'write'` your role cannot write, `'own'` another member's row, `'hook'` a hook said no, `'assign'` a role beyond your rank, `'remove'` a member you do not outrank, or `'invite'`, `'rotate'`, `'member'`, `'device'`, `'request'`.                                                                                                             | Show it as not allowed.                                        |
+| `NETWORK_ERROR`    | Writing or announcing a join failed. The join has ended.                                                                                                                                                                                                                                                                                                                                                                                           | Call `cero.open` again.                                        |
+| `UNKNOWN_EPOCH`    | Handled inside the room. A removed member may see it on `onerror`.                                                                                                                                                                                                                                                                                                                                                                                 | Ignore it.                                                     |
+
+## Joining
 
 ```js
+import { cero } from '@cero-base/cero/client'
+
+// in the UI: me from cero(ipc, spec), invite pasted by the user, toast is yours
 try {
-  await cero.open(me.room, { invite })
+  return await cero.open(me.room, { invite })
 } catch (err) {
-  switch (err.code) {
-    case 'INVALID_INVITE':
-      return toast('Bad invite')
-    case 'EXPIRED':
-      return toast('This invite has expired')
-    case 'DENIED':
-      return toast(err.reason || 'Denied')
-    case 'TIMEOUT':
-      return toast('Waiting for a member to answer') // the join goes on
-    default:
-      throw err
-  }
+  if (err.code === 'INVALID_INVITE') toast('That is not an invite')
+  else if (err.code === 'EXPIRED') toast('This invite has expired, ask for a new one')
+  else if (err.code === 'DENIED') toast('You were not let in')
+  else if (err.code === 'TIMEOUT')
+    toast('Waiting for a member to let you in') // it goes on
+  else if (err.code === 'NETWORK_ERROR') toast('Could not send the join, try again')
+  else throw err
 }
 ```
 
-A `REFUSED` aborts the writer's whole batch, which is what makes `tx` atomic.
+A join that timed out lands on its own: the room appears in `cero.watch(me.room)`, and `me.joins` lists it until then.
+
+## Writing
+
+```js
+// room from cero.open, text from your form, readOnly and toast are yours
+try {
+  await cero.put(room.messages, { text })
+} catch (err) {
+  if (err.code === 'NOT_WRITABLE') return readOnly() // a reader, or removed
+  if (err.code === 'REFUSED') return toast('Not allowed here') // err.rule in process only
+  throw err
+}
+```
 
 ## Background errors
 
-Calls you make reject to you. Work cero does on its own, replication, pairing,
-mirroring, a suspend step, a join nobody waits on any more, reports through one
-handler instead.
+Your calls reject to you. What Cero does on its own (replication, pairing, mirroring, a suspend step, a join nobody waits on any more) goes to `onerror`, and without one it prints.
 
 ```js
+// dir and spec as in the Quickstart, toast is yours
 const me = await cero(dir, spec, { onerror: (err) => toast(err.message) })
 ```
 
-Without `onerror`, the root emits `error`, and prints when nobody listens either.
+A split app is the same: the worker sends its background errors to every connected client, whose `onerror` gets `code`, `message` and `stack`. The worker's own `onerror` runs only while no client is connected.
 
 ```js
-me.on('error', (err) => {
-  if (err.code === 'CONFLICT') return showBanner('A device diverged, resyncing')
-  toast(err.message)
+import { cero } from '@cero-base/cero/client'
+
+// ipc and spec from your worker setup, see Apps
+const me = await cero(ipc, spec, {
+  onerror: (err) => {
+    if (err.code === 'UNKNOWN_EPOCH') return // safe to ignore
+    toast(err.message)
+  }
 })
 ```
 
-A split app is the same: the worker forwards its background errors to every
-connected client, and the client emits `error` with the message, code and stack.
-The worker's own `onerror` only runs while no client is connected.
-
-`close()` still rejects when a step fails, but every step has run first, so the
-storage lock is never left held.
+`cero.close(me)` still rejects when a step fails, but only after every step ran, so the storage lock is never left held.
 
 ## Next
 
-- Core primitives, for the layer most of these codes come from.
-- [Data](data.md), for the writes that raise `INVALID` and `REFUSED`.
+- [API reference](api.md): which call throws what.
+- Core primitives: where most of these codes start.
+- [Apps](apps.md): the worker and the UI, where errors cross.

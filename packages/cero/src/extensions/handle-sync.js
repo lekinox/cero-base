@@ -5,7 +5,8 @@ import { get, set, watch } from '../lib/operators.js'
  * Mirror a child handle's `profile` (name + avatar) onto its row in the parent's `handles`
  * list — so a handle list shows names + avatars without opening each one.
  *
- * @param {{ fields?: Record<string, any> }} [opts]
+ * @param {{ fields?: Record<string, object> }} [opts]  Extra fields, as `t` types.
+ * @returns {import('./index.js').Extension}
  */
 export function handleSync({ fields = { avatar: t.string } } = {}) {
   return {
@@ -28,7 +29,8 @@ export function handleSync({ fields = { avatar: t.string } } = {}) {
           reflect(child, data).catch(me._onerror)
         })
       }
-      me.on('handle', onHandle, { signal: me.signal })
+      me.on('handle', onHandle)
+      return () => me.off('handle', onHandle)
     }
   }
 }

@@ -1,73 +1,17 @@
 export declare const STATUS_ACCEPTED = 0;
 export declare const STATUS_DENIED = 1;
-export declare const Response: {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        key: any;
-        length: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        invite: any;
-        reply: any;
-        proof: any;
-        identity: any;
-        signature: any;
-        ts: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        epoch: any;
-        stamp: any;
-        entropy: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        status: any;
-        reason: any;
-        key: any;
-        encryptionKey: any;
-        epochs: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        data: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        prev: any;
-        next: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        id: any;
-        name: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        coreKey: any;
-        blockOffset: any;
-        blockLength: any;
-        byteOffset: any;
-        byteLength: any;
-        type: any;
-    };
-};
+/** @type {import('compact-encoding').Encoder<{ status: number, reason?: string, key?: Uint8Array | null, encryptionKey?: Uint8Array | null, epochs?: Array<{ epoch: number, stamp: number, entropy: Uint8Array }> | null }>} */
+export declare const Response: import('compact-encoding').Encoder<{
+    status: number;
+    reason?: string;
+    key?: Uint8Array | null;
+    encryptionKey?: Uint8Array | null;
+    epochs?: Array<{
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }> | null;
+}>;
 export type RequestOpts = {
     /**
      * Owning Pairing instance.
@@ -117,9 +61,14 @@ export declare class Request {
     };
     id: string;
     identity: Uint8Array<ArrayBufferLike>;
-    writer: any;
-    _reply: Uint8Array<ArrayBufferLike>;
-    _settled: boolean;
+    /** The role the join asks for: its invite's. */
+    role: string;
+    /** @type {Uint8Array} */
+    writer: Uint8Array;
+    /** @private */
+    _reply;
+    /** @private */
+    _settled;
     /** @param {RequestOpts} opts */
     constructor({ pairing, invite, row }: RequestOpts);
     /**

@@ -5,30 +5,45 @@ import z32 from 'z32'
 import { decodeId } from '@cero-base/core/blobs/codec'
 
 import { Ref } from '../lib/refs.js'
-import { put, set, get, del, watch, changes, call, open, rotate } from '../lib/operators.js'
+import * as verbs from '../lib/operators.js'
 import { t, schema } from '../lib/spec.js'
-import { operatorsOf, bind } from '../extensions/index.js'
 
-export { put, set, get, del, watch, changes, call, open, rotate, t, schema }
+// hooks and batches take functions: they run where the data lives, never in the UI
+const { before, after, tx, ...remote } = verbs
+
+export const {
+  put,
+  set,
+  get,
+  del,
+  watch,
+  call,
+  open,
+  invite,
+  revoke,
+  rotate,
+  accept,
+  deny,
+  leave,
+  close,
+  cancel,
+  suspend,
+  resume,
+  activate,
+  deactivate,
+  phrase,
+  nearby
+} = remote
+export { t, schema }
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCClient} BaseRPCClient
  *
- * @typedef {object} RefInfo
- * @property {'single'|'collection'|'action'|'handle'} [kind]
- * @property {string} [schema]
- * @property {string} [type]
- * @property {boolean} [internal]
- *
- * @typedef {import('@cero-base/core/rpc').Spec & { meta: { ns?: string, refs: Record<string, RefInfo>, local?: { refs: Record<string, RefInfo> }, handles?: Record<string, Spec> }, handles: Record<string, Spec> }} Spec  Built cero spec (schema + rpc + per-handle child specs).
- *
- * @typedef {{ data: any }} SingleResult
- * @typedef {{ data: any[], total: number, size: number }} ListResult
- * @typedef {{ data: any | null }} GetByIdResult
- *
- * @typedef {object} ClientIdentity
- * @property {string} id
- * @property {() => string|null} toPhrase
+ * @typedef {import('../lib/spec.js').RefInfo} RefInfo
+ * @typedef {import('../lib/spec.js').Spec} Spec
+ * @typedef {import('../lib/spec.js').Row} Row
+ * @typedef {import('../lib/operators.js').SingleResult} SingleResult
+ * @typedef {import('../lib/operators.js').ListResult} ListResult
  *
  * @typedef {object} HandleStub
  * @property {string} id
@@ -63,13 +78,19 @@ const blobIdEnc = {
 const operators = {
   _local: false,
 
-  /** @param {string} name @returns {RefInfo|undefined} */
+  /**
+   * @param {string} name @returns {RefInfo|undefined}
+   * @private
+   */
   _refInfo(name) {
     const refs = this._local ? this.spec.meta.local?.refs : this.spec.meta.refs
     return refs?.[name]
   },
 
-  /** @returns {any} */
+  /**
+   * @returns {import('@cero-base/core/rpc').Codec}
+   * @private
+   */
   _codec() {
     return this._local ? this.spec.local.codec : this.spec.codec
   },
@@ -79,13 +100,9 @@ const operators = {
     return this._refInfo(name)?.schema
   },
 
-  /**
-   * Build a renderable URL for a file id using the base + token learned at init.
-   *
-   * @param {string} id
-   * @returns {string}
-   */
-  url(id) {
+  // the worker's file server, reached with the base and token learned at init
+  /** @private */
+  _link(id) {
     const root = this.parent || this
     const base = root._fileBase || ''
     const token = root._fileToken || ''
@@ -102,8 +119,9 @@ const operators = {
    * size, url }` objects.
    *
    * @param {string} name
-   * @param {any} data
-   * @returns {any}
+   * @param {Row | Row[] | null} data
+   * @returns {Row | Row[] | null}
+   * @private
    */
   _resolveFiles(name, data) {
     if (data == null) return data
@@ -112,13 +130,14 @@ const operators = {
     return this._resolveRow(name, info, data)
   },
 
+  /** @private */
   _resolveRow(name, info, row) {
     if (!row || typeof row !== 'object') return row
     if (info?.internal && info?.verb === 'file') {
       if (!row.id) return row
       try {
         const { type, blobId } = decodeId(row.id)
-        return { ...row, type, size: blobId.byteLength, url: this.url(row.id) }
+        return { ...row, type, size: blobId.byteLength, url: this._link(row.id) }
       } catch {
         return row
       }
@@ -131,7 +150,7 @@ const operators = {
       if (v == null) continue
       try {
         const { type, blobId } = decodeId(v)
-        out[f] = { id: v, type, size: blobId.byteLength, url: this.url(v) }
+        out[f] = { id: v, type, size: blobId.byteLength, url: this._link(v) }
       } catch {
         // leave as-is if not a valid file id
       }
@@ -143,7 +162,7 @@ const operators = {
    * Insert a row over the wire.
    *
    * @param {string} name
-   * @param {Record<string, any>} row
+   * @param {Row} row
    * @returns {Promise<SingleResult>}
    */
   async put(name, row) {
@@ -173,7 +192,7 @@ const operators = {
    * Upsert a row over the wire. Pass `{ upsert: false }` to update-only.
    *
    * @param {string} name
-   * @param {Record<string, any>} row
+   * @param {Row} row
    * @param {{ upsert?: boolean }} [opts]
    * @returns {Promise<SingleResult>}
    */
@@ -195,8 +214,8 @@ const operators = {
    * `Storage.get` contract.
    *
    * @param {string} name
-   * @param {string | Record<string, any>} [query]
-   * @returns {Promise<SingleResult | ListResult | GetByIdResult>}
+   * @param {string | Record<string, unknown>} [query]
+   * @returns {Promise<SingleResult | ListResult>}
    */
   async get(name, query) {
     const codec = this._codec()
@@ -245,7 +264,7 @@ const operators = {
    * underlying mutation. Destroy the stream to stop watching.
    *
    * @param {string} name
-   * @param {Record<string, any>} [query]
+   * @param {Record<string, unknown>} [query]
    * @returns {import('streamx').Readable}
    */
   watch(name, query) {
@@ -290,51 +309,10 @@ const operators = {
   },
 
   /**
-   * Delta subscription over the wire — same contract as the local operator: batches of `{
-   * prev, next }` with file fields resolved, `reset` marks a full replay.
-   */
-  changes(name, query) {
-    const refInfo = this._refInfo(name)
-    const codec = this._codec()
-    const schema = refInfo?.schema
-    const wire = this.rpc.changes({
-      handle: this.id,
-      ref: name,
-      query: codec.encodeQuery(query),
-      local: this._local
-    })
-    const out = new Readable({
-      predestroy() {
-        wire.destroy()
-      }
-    })
-    const pump = async () => {
-      for await (const frame of wire) {
-        const changes = []
-        for (const { prev, next } of codec.decodeChanges(schema, frame.changes)) {
-          changes.push({
-            prev: prev && this._resolveFiles(name, prev),
-            next: next && this._resolveFiles(name, next)
-          })
-        }
-        out.push({ changes, reset: frame.reset === true })
-      }
-      if (!out.destroyed) out.push(null)
-    }
-    pump().catch((err) => {
-      if (out.destroyed) return
-      // both are ends, not failures
-      if (err.code === 'PREMATURE_CLOSE' || err.code === 'CHANNEL_CLOSED') out.push(null)
-      else out.destroy(err)
-    })
-    return out
-  },
-
-  /**
    * Invoke a named action ref over the wire.
    *
    * @param {string} op
-   * @param {any} [data]
+   * @param {Row} [data]
    * @returns {Promise<void>}
    */
   async call(op, data) {
@@ -344,13 +322,10 @@ const operators = {
     await this.rpc.call({ handle: this.id, op, data: encoded })
   },
 
-  /**
-   * Mint a pairing invite for this handle.
-   *
-   * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
-   * @returns {Promise<string>}
-   */
-  async invite({ role, ttl, reuse, confirm, data } = {}) {
+  // the verbs in lib/operators.js land here, and cross to the worker
+
+  /** @private */
+  async _invite({ role, ttl, reuse, confirm, data } = {}) {
     const { invite } = await this.rpc.invite({
       handle: this.id,
       role: role || '',
@@ -362,35 +337,57 @@ const operators = {
     return invite
   },
 
-  /**
-   * Revoke a previously issued invite.
-   *
-   * @param {string} invite
-   * @returns {Promise<boolean>}
-   */
-  async revoke(invite) {
+  /** @private */
+  async _revoke(invite) {
     const { ok } = await this.rpc.revoke({ handle: this.id, invite })
     return ok
   },
 
-  /**
-   * Rotate this handle's encryption epoch on the server.
-   *
-   * @returns {Promise<{ epoch: number }>}
-   */
-  async rotate() {
+  /** @private */
+  async _rotate() {
     const { epoch } = await this.rpc.rotate({ handle: this.id })
     return { epoch }
   },
 
-  /**
-   * `true` ranks this handle as just updated on the server, `false` takes it off the swarm.
-   *
-   * @param {boolean} active
-   * @returns {Promise<void>}
-   */
-  async setActive(active) {
-    await this.rpc.setActive({ handle: this.id, active })
+  /** @private */
+  async _answer(id, { accept, role, reason }) {
+    await this.rpc.answer({ handle: this.id, id, accept, role: role || '', reason: reason || '' })
+  },
+
+  /** @private */
+  async _leave() {
+    await this.rpc.leave({ handle: this.id })
+  },
+
+  /** @private */
+  async _cancel(invite) {
+    return (await this.rpc.cancel({ invite })).ok
+  },
+
+  /** @private */
+  async _suspend() {
+    await this.rpc.suspend({ handle: this.id })
+  },
+
+  /** @private */
+  async _resume() {
+    await this.rpc.resume({ handle: this.id })
+  },
+
+  /** @private */
+  async _active(on) {
+    await this.rpc.setActive({ handle: this.id, active: on })
+  },
+
+  /** @private */
+  async _phrase() {
+    return (await this.rpc.seed({})).phrase || null
+  },
+
+  /** @private */
+  async _nearby(mode) {
+    const invite = typeof mode === 'string' ? mode : ''
+    await this.rpc.nearby({ on: mode !== false, invite })
   }
 }
 
@@ -405,8 +402,7 @@ const operators = {
 export async function restore(me, phrase) {
   const res = await me.rpc.restore({ phrase })
   me.id = res.id
-  me.deviceId = res.deviceId || null
-  me.identity = { id: res.id, toPhrase: async () => (await me.rpc.seed({})).phrase || null }
+  me.device = device(res)
   return me
 }
 
@@ -420,6 +416,7 @@ class LocalRefs {
     this.parent = client
     this.spec = client.spec
     this.store = this
+    /** @private */
     this._local = true
     const refs = client.spec.meta.local?.refs || {}
     const exposed = Object.fromEntries(Object.entries(refs).filter(([, info]) => !info.internal))
@@ -431,7 +428,11 @@ class LocalRefs {
     return this.parent.rpc
   }
 
-  /** Root handle id (local ops are resolved against the root's local store). */
+  /**
+   * The root's id: local ops resolve against the root's local store.
+   *
+   * @returns {string | null}
+   */
   get id() {
     return this.parent.id
   }
@@ -444,25 +445,28 @@ class LocalRefs {
  */
 export class Client extends RPCClient {
   /**
-   * @param {any} ipc   Framed IPC stream (must be writable).
+   * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
    * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-   * @param {{ operators?: Record<string, any> }} [opts]  The operators to bind, instead of the ones the spec carries.
+   * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
    */
-  constructor(ipc, spec, opts = {}) {
+  constructor(ipc, spec, { onerror } = {}) {
     super(ipc, spec)
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     Object.assign(this, operators)
-    this.operators = operatorsOf(spec, opts.operators)
+    /** @private */
+    this._onerror = onerror || ((err) => console.error(err))
+    /** @type {string | null} */
     this.id = null
-    this.deviceId = null
+    /** @type {{ id: string, name: string | null } | null} */
+    this.device = null
     this.store = this
     this.local = null
   }
 
   // the worker's background errors, delivered the way a local root delivers them
+  /** @private */
   _pumpErrors() {
-    const report = (err) =>
-      this.listenerCount('error') ? this.emit('error', err) : console.error(err)
+    const report = this._onerror
     const pump = async () => {
       for await (const { message, code, stack } of this.rpc.errors({})) {
         report(Object.assign(new Error(message), code && { code }, stack && { stack }))
@@ -473,58 +477,31 @@ export class Client extends RPCClient {
     })
   }
 
+  /** @private */
   async _open() {
     await super._open()
-    const { id, deviceId, fileBase, fileToken } = await this.rpc.init({})
+    const res = await this.rpc.init({})
+    const { id, fileBase, fileToken } = res
     this.id = id
-    this.deviceId = deviceId || null
+    this.device = device(res)
+    /** @private */
     this._fileBase = fileBase || ''
+    /** @private */
     this._fileToken = fileToken || ''
-    this.identity = { id, toPhrase: async () => (await this.rpc.seed({})).phrase || null }
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
-    bind(this, null, this.operators)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
     this._pumpErrors()
-  }
-
-  /**
-   * The joins no member answered yet, resumed on every boot.
-   *
-   * @returns {Promise<string[]>}  Their invites.
-   */
-  async joining() {
-    return (await this.rpc.joining({})).invites
-  }
-
-  /**
-   * Stop joining the handle an invite opens, for good.
-   *
-   * @param {string} invite
-   * @returns {Promise<boolean>}  Whether a join was pending.
-   */
-  async cancel(invite) {
-    return (await this.rpc.cancel({ invite })).ok
-  }
-
-  /** Pause networking and storage on the server. Idempotent. */
-  async suspend() {
-    await this.rpc.suspend({})
-  }
-
-  /** Resume a suspended server. Idempotent. */
-  async resume() {
-    await this.rpc.resume({})
   }
 
   /**
    * Create a new child handle of the given type.
    *
    * @param {string} type
-   * @param {Record<string, any>} [opts]
+   * @param {{ name?: string | null }} [opts]
    * @returns {Promise<Handle>}
+   * @private
    */
   async _create(type, opts = {}) {
-    // routes are functions and cannot cross the wire
     const stub = await this.rpc.addHandle({
       ref: type,
       handle: this.id,
@@ -539,6 +516,7 @@ export class Client extends RPCClient {
    * @param {string} type
    * @param {string} id
    * @returns {Promise<Handle>}
+   * @private
    */
   async _load(type, id) {
     const stub = await this.rpc.openHandle({ parent: this.id, row: id })
@@ -551,6 +529,7 @@ export class Client extends RPCClient {
    * @param {string} invite
    * @param {string} type
    * @returns {Promise<Handle>}
+   * @private
    */
   async _join(invite, type) {
     const stub = await this.rpc.join({ parent: this.id, ref: type, invite })
@@ -580,7 +559,6 @@ class Handle {
     if (!this.spec.codec) bindCodec(this.spec)
     this.store = this
     Ref.attach(this, this.spec.meta.refs)
-    bind(this, this.type, parent.operators)
   }
 
   /** Underlying RPC channel borrowed from the parent. */
@@ -588,23 +566,17 @@ class Handle {
     return this.parent.rpc
   }
 
-  /** Tear down the remote handle without leaving the room. */
   close() {
     return this.parent.rpc.closeHandle({ handle: this.id })
-  }
-
-  /** Tear down the remote handle and drop membership. */
-  leave() {
-    return this.parent.rpc.leave({ handle: this.id })
   }
 }
 
 /**
  * Construct a `Client`, wait for `init` to complete, and return it.
  *
- * @param {any} ipc
- * @param {object} spec
- * @param {{ operators?: Record<string, any> }} [opts]
+ * @param {import('streamx').Duplex} ipc
+ * @param {Spec} spec
+ * @param {{ onerror?: (err: Error) => void }} [opts]
  * @returns {Promise<Client>}
  */
 export async function connect(ipc, spec, opts) {
@@ -617,24 +589,17 @@ export async function connect(ipc, spec, opts) {
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
  * server (via `connect`) instead of opening a local store.
  *
- * @param {any} ipc    Framed IPC duplex stream.
- * @param {any} spec   Built cero spec.
- * @param {{ operators?: Record<string, any> }} [opts]
+ * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
+ * @param {Spec} spec  Built cero spec.
+ * @param {{ onerror?: (err: Error) => void }} [opts]
  * @returns {Promise<Client>}
  */
 export function cero(ipc, spec, opts) {
   return connect(ipc, spec, opts)
 }
-cero.connect = connect
-cero.restore = restore
-cero.t = t
-cero.put = put
-cero.set = set
-cero.get = get
-cero.del = del
-cero.watch = watch
-cero.changes = changes
-cero.call = call
-cero.open = open
-cero.rotate = rotate
-cero.schema = schema
+Object.assign(cero, remote, { connect, restore, t, schema })
+
+// the same shape a local root has
+function device({ deviceId, deviceName }) {
+  return deviceId ? { id: deviceId, name: deviceName || null } : null
+}

@@ -91,10 +91,28 @@ export declare const main: {
         index: import("@cero-base/core").Prim;
         admitted: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
     };
     removal: {
         id: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+    };
+    status: {
+        role: import("@cero-base/core").Prim;
+        writable: import("@cero-base/core").Prim;
+        epoch: import("@cero-base/core").Prim;
+        suspended: import("@cero-base/core").Prim;
+        behind: import("@cero-base/core").Prim;
+        nearby: import("@cero-base/core").Prim;
+    };
+    joining: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+    };
+    peer: {
+        id: import("@cero-base/core").Prim;
+        name: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {
@@ -205,10 +223,6 @@ export declare const rpc: {
         total: import("@cero-base/core").Prim;
         size: import("@cero-base/core").Prim;
     };
-    'res-changes': {
-        changes: import("@cero-base/core").Prim;
-        reset: import("@cero-base/core").Prim;
-    };
     'res-invite': {
         invite: import("@cero-base/core").Prim;
     };
@@ -228,9 +242,7 @@ export declare const rpc: {
         deviceId: import("@cero-base/core").Prim;
         fileBase: import("@cero-base/core").Prim;
         fileToken: import("@cero-base/core").Prim;
-    };
-    'res-joining': {
-        invites: import("@cero-base/core").Prim;
+        deviceName: import("@cero-base/core").Prim;
     };
     'res-seed': {
         phrase: import("@cero-base/core").Prim;
@@ -245,5 +257,16 @@ export declare const rpc: {
         message: import("@cero-base/core").Prim;
         code: import("@cero-base/core").Prim;
         stack: import("@cero-base/core").Prim;
+    };
+    'req-answer': {
+        handle: import("@cero-base/core").Prim;
+        id: import("@cero-base/core").Prim;
+        accept: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+    };
+    'req-nearby': {
+        on: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
 };

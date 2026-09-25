@@ -31,6 +31,10 @@ function fromWire(v) {
  * and delivers each decoded frame to `onMessage`; `send` writes a framed frame.
  */
 export class Framed {
+  /**
+   * @param {import('streamx').Duplex} stream
+   * @param {(msg: unknown) => void} onMessage
+   */
   constructor(stream, onMessage) {
     this.stream = stream
     this.onMessage = onMessage
@@ -55,6 +59,7 @@ export class Framed {
     this.stream.write(b4a.concat([head, body]))
   }
 
+  /** @private */
   _ondata(chunk) {
     this.buf = b4a.concat([this.buf, chunk])
     while (this.buf.length >= 4) {

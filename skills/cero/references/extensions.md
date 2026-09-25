@@ -1,141 +1,168 @@
 # Extensions
 
+Write behaviour once and reuse it: your own functions for what the app does, extensions for rules
+and schema every device runs, actions for named writes.
+
 ```js
-// bookmarks.js
+// todo.js
+import { cero } from '@cero-base/cero/extensions'
+
+export const add = (me, text) => cero.put(me.todos, { text })
+export const finish = (me, id) => cero.set(me.todos, { id, done: true })
+export const remove = (me, id) => cero.del(me.todos, id)
+export const pending = (me) => cero.get(me.todos, { done: false })
+```
+
+```js
+import * as todo from './todo.js'
+
+// me from cero('./data', spec) in the worker, or from cero(ipc, spec) in the UI
+const { data: row } = await todo.add(me, 'buy milk')
+await todo.finish(me, row.id)
+```
+
+## Your own functions
+
+A feature is a file of plain functions, each taking the context first, `me` or a room, and calling
+the `cero.` operators. Nothing registers them: import the file and call `todo.add(me, 'buy milk')`.
+
+```js
+// chat.js
+import { cero } from '@cero-base/cero/extensions'
+
+export const say = (room, text) => cero.put(room.messages, { text })
+export const rename = (room, name) => cero.set(room.profile, { name })
+```
+
+Import `cero` from `@cero-base/cero/extensions`: it carries the operators without the runtime, so
+the same file runs in the worker and bundles into the UI. Everything but `before`, `after` and
+`tx` works on a client.
+
+## Write an extension
+
+An extension is `{ schema, setup }`, both optional. Its schema is folded into the build, and its
+setup runs with the root wherever `cero()` opens the data, on every device.
+
+```js
+// seen.js
 import { cero, t } from '@cero-base/cero/extensions'
 
-export const bookmarks = {
-  schema: { bookmarks: t.collection({ url: t.string, title: t.string }) },
+export const seen = {
+  schema: { room: { seen: t.collection({ at: t.int }) } },
   setup: (me) =>
-    cero.after(me.bookmarks, ({ row }) => console.log('bookmarked', row.url), { signal: me.signal })
+    cero.after(me.room.messages, ({ op, row, memberId, put }) => {
+      if (op === 'del') return // row is null on a delete
+      return put(me.room.seen, { id: memberId, at: row.updatedAt })
+    })
 }
 ```
 
-An extension is a piece of cero you can add: a collection, a field, a
-behaviour, or all three. `me.bookmarks` now exists like any ref you declared
-yourself.
+The schema nests by handle type like the app's, so `room.seen` joins the app's own refs on `room`.
+A hook on the type ref `me.room.messages` reaches every room of the type, created, joined or
+reopened, before it opens. The rules every hook follows are in
+[React to writes](data.md#react-to-writes).
 
-## Named once
+`setup(me)` runs before the root opens, so its hooks see every write. An operator called inside
+it waits for the open. Don't await a write in `setup`: on a fresh identity it runs before this
+device can write, and `cero()` rejects with `REFUSED`. Write from a hook or a `cero.watch`
+instead. `setup` may be async, a function it returns runs on close, and a throw makes `cero()`
+reject.
 
-An app names its extensions in one module and tells `build` where it is. The
-build folds each `schema` into the spec and writes an import of that module into
-`spec/index.js`, so `cero()` finds the list there and runs each `setup`.
+## Name them in the build
 
 ```js
 // extensions.js
 import { profileSync, handleSync } from '@cero-base/cero/extensions'
-import { bookmarks } from './bookmarks.js'
+import { seen } from './seen.js'
 
-export const extensions = [profileSync(), handleSync(), bookmarks]
+export const extensions = [profileSync(), handleSync(), seen]
 ```
 
 ```js
 // build.js
+import { build } from '@cero-base/cero/build'
+import { schema } from './schema.js'
+
 await build('./spec', schema, { extensions: '../extensions.js' })
 ```
 
-The path is written into the spec as given, so it is relative to the spec
-directory and names the file as it exists at runtime. Nothing else registers
-anything: `cero('./data', spec)` runs the list. A UI process loads the same
-spec and ignores it, `setup` never runs on a client.
+The path is resolved from the spec directory. The build folds each extension's schema in and
+writes an import of the module into `spec/index.js`, so `cero('./data', spec)` runs every setup,
+and a UI that loads the spec runs none. Because the spec imports it, `extensions.js` and every
+extension module import from `@cero-base/cero/extensions`, never `@cero-base/cero`, and a setup
+that needs something heavy imports it inside the function. A bare function in the list is
+shorthand for `{ setup }`.
 
-The list holds extension objects, or a bare function as shorthand for
-`{ setup }`.
-
-```js
-export const extensions = [
-  profileSync(),
-  bookmarks,
-  (me) => {
-    const timer = setInterval(() => cero.set(me.profile, { seenAt: Date.now() }), 60_000)
-    return () => clearInterval(timer) // the returned function runs on close
-  }
-]
-```
-
-Two things follow from the spec importing the module. It is bundled into the UI,
-so `extensions.js` and every extension module import from
-`@cero-base/cero/extensions`, which carries the `cero` facade, `t` and `schema`
-without the runtime, never from `@cero-base/cero`. And a `setup` that needs
-something heavy imports it inside the function.
+A list instead of a path, `build('./spec', schema, { extensions: [seen] })`, folds the schema
+only: pass the same list to `cero('./data', spec, { extensions: [seen] })`. With a list, or with
+no option at all, `spec.extensions` is `null`, so `[...spec.extensions]` throws.
 
 ## The two that ship
 
-| extension     | what it does for you                                                                        |
-| ------------- | ------------------------------------------------------------------------------------------- |
-| `profileSync` | Set your profile once. Every room you are in shows your name and avatar in its member list. |
-| `handleSync`  | Name a room once. Your room list shows names and avatars without opening any of them.       |
+| Extension       | Does                                                                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every room you are in, on open and on every change. |
+| `handleSync()`  | Copies a room's own `profile` onto its row in your `handles` list, so a room list shows names without opening the rooms.                       |
 
-Both run when a build names no list. `profileSync` declares a `profile` single of
-`{ name, avatar }` and extends the `member` builtin with the same extra fields,
-then republishes when you open a room and whenever your profile changes.
-`handleSync` extends the `handle` builtin and mirrors a room's own `profile`
-onto its row in your list, leaving room types without a `profile` alone. Neither
-writes when the row already matches, so reopening rooms costs no ops.
-
-To reconfigure one, name a list that holds your instance. To drop them, name a
-list without them.
+Both run when the build names no extensions, and neither writes when the row already matches.
+Drop one by naming a list without it.
 
 ```js
-export const extensions = [profileSync({ fields: { status: t.string } }), handleSync()]
+// extensions.js
+import { profileSync, handleSync, t } from '@cero-base/cero/extensions'
+
+export const extensions = [
+  profileSync({ fields: { avatar: t.string, status: t.string } }),
+  handleSync()
+]
 ```
 
-An app that declares its own richer `profile` wins: on a field conflict the app
-schema beats the extension's.
+`fields` replaces the default `{ avatar: t.string }` and lands on both `profile` and `members`. A
+`profile` you declare yourself replaces the extension's; each of its fields must then exist on
+`members` and hold a plain value, so a synced avatar is a `t.string`, and a `t.file` does not
+sync.
 
-A list can also be passed directly. `build(dir, schema, { extensions: [] })` folds
-nothing and writes no import, and `cero(dir, spec, { extensions })` runs that
-list instead of the spec's. That is the hatch for tests and for an extension
-configured at runtime, a devtools tap with a live transport for instance:
-`{ extensions: [...spec.extensions, devtools({ transport })] }`.
+`handleSync` needs the room type to declare `profile: t.single({ name: t.string })`, and any other
+field of it must exist on `handles`, as `avatar` does by default. `cero.open(me.room, { name })`
+writes the name into that profile.
 
-## Writing one
-
-| field       | meaning                                                                                             |
-| ----------- | --------------------------------------------------------------------------------------------------- |
-| `schema`    | Folded into the build. New refs, or `t.extend` on a builtin, nested by handle type like the schema. |
-| `setup(me)` | Runs once the root handle is ready. May be async. A returned function runs on close.                |
+## Give an action its handler
 
 ```js
-export const lastSeen = {
-  schema: { members: t.extend({ seenAt: t.uint }) },
+// archive.js
+import { cero, t } from '@cero-base/cero/extensions'
+
+export const archive = {
+  schema: { archive: t.action({ until: t.int }) },
   setup: (me) =>
-    cero.after(me.room.messages, ({ row, memberId, set }) =>
-      set('members', { id: memberId, seenAt: row.updatedAt })
-    )
+    cero.after(me.archive, async ({ row, get, del }) => {
+      const { data } = await get(me.todos)
+      const old = data.filter((todo) => todo.done && todo.updatedAt < row.until)
+      for (const todo of old) await del(me.todos, todo.id)
+    })
 }
 ```
-
-`t.extend` adds fields to `members`, `devices`, `invites`, `handles` or `files`.
-Redeclaring a field the builtin already has fails at build time. The hook runs
-on every peer inside the message's transaction, so it writes through `ctx.set`
-and stamps the row's own time, never the clock. `me.signal` aborts when the root
-closes, so a listener registered with it goes with it.
-
-A `setup` that throws makes `cero()` reject and closes what it opened, so a
-retry in the same process works.
-
-## On every room
-
-A schema nests by handle type, exactly like the app schema, so an extension adds
-a collection to rooms with `{ room: { notes: ... } }` and the app's own refs on
-`room` are kept. A hook on `me.room.notes` applies to every room, the ones open
-now and every one opened later, so `setup` never has to wait for a `handle`
-event.
 
 ```js
-export const notes = {
-  schema: { room: { notes: t.collection({ text: t.string }) } },
-  setup: (me) => cero.before(me.room.notes, ({ row }) => !!row.text.trim())
-}
+await cero.call(me.archive, { until: Date.now() })
 ```
 
-The functions an app calls on those notes are [operators](operators.md), named
-the same way and kept apart.
+An action's `after` hook is what it does, on every device, with `row` as the payload. It follows
+every hook rule: read and write through ctx only, and a throw, or a `before` that returns `false`,
+refuses the call. Writes through ctx skip the role checks, so an action that does something
+privileged checks `ctx.role` first. Calling an action with no `after` hook throws `INVALID`, and a
+device without the hook reports the action to `onerror`. In a handle type, register on the type
+ref, `cero.after(me.room.archive, fn)`, and call it on a room, `cero.call(room.archive, data)`.
+
+## Add to an app that shipped
+
+An extension's `t.extend` fields go ahead of the fields already added to that builtin, so adding
+one to a shipped app can reorder them and break stored rows, see
+[Change a schema that shipped](schema.md#change-a-schema-that-shipped). Give the extension its
+own collection instead, as `seen` does: `schema: { room: { seen: t.collection({ at: t.int }) } }`.
 
 ## Next
 
-- [Operators](operators.md) for functions bound on handles.
-- [Files](files.md) for the `files` builtin extensions can extend.
-- [Handles](handles.md) for the `handle` event.
+- [How it works](how-it-works.md) for what a hook sees offline and on conflict.
 - [Apps](apps.md) for which process runs what.
+- [API reference](api.md) for every operator and option.

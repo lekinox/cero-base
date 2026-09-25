@@ -704,6 +704,9 @@ test('add-invite: a member may mint, but an existing invite is never overwritten
   const err = await as('add-invite', inviteRow('inv', { role: 'reader' }))
   t.is(err?.code, 'REFUSED', 'an existing id is refused')
   t.is((await db.get('invites', 'inv')).data.role, 'admin', 'and the row is untouched')
+
+  const blank = await as('add-invite', inviteRow('blank', { role: '' }))
+  t.is(blank?.code, 'REFUSED', 'an invite without a rank is refused')
 })
 
 test('del-invite / set-invite: revoking or altering a shared invite needs REMOVE', async (t) => {
@@ -937,8 +940,8 @@ test('confirm: accepting or denying needs INVITE; only a join writes a request',
 })
 
 test('join: a reader writes nothing, not through an optimistic op either', async (t) => {
-  const routes = { promote: async () => {} }
-  const { db } = await withRole(t, 'owner', { spec: spec.handles.team, routes })
+  const after = { promote: async () => {} }
+  const { db } = await withRole(t, 'owner', { spec: spec.handles.team, after })
   // minted first: a write through db rebuilds the view without the joins applied straight into it
   const readers = await minted(db, { role: 'reader' })
   const gated = await minted(db, { confirm: true })
@@ -1146,9 +1149,9 @@ test('poison op: garbage bytes from an admitted writer are skipped on every peer
   t.ok(aErrs.length > 0, 'A surfaced the skip via onerror')
 })
 
-// a replicated action with no local route must surface: silently skipping it
-// diverges this peer from everyone that ran the handler
-test('missing route: a replicated action surfaces via onerror, apply continues', async (t) => {
+// a replicated action with no local hook must surface: silently skipping it
+// diverges this peer from everyone that ran it
+test('missing action hook: a replicated action surfaces via onerror, apply continues', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
   const bErrs = []
@@ -1156,7 +1159,7 @@ test('missing route: a replicated action surfaces via onerror, apply continues',
   const a = await makePeer(t, testnet, {
     topic,
     spec: spec.handles.team,
-    routes: { promote: async () => {} }
+    after: { promote: async () => {} }
   })
   await a.db.bootstrap({ name: 'a' })
 
@@ -1176,10 +1179,10 @@ test('missing route: a replicated action surfaces via onerror, apply continues',
   const { data: row } = await a.db.put('messages', { text: 'alive' })
 
   const onB = await waitFor(async () => (await b.db.get('messages', row.id)).data)
-  t.is(onB.text, 'alive', 'B kept applying past the routeless action')
+  t.is(onB.text, 'alive', 'B kept applying past the unhooked action')
   t.ok(
     bErrs.some((e) => e.code === 'UNKNOWN'),
-    'B surfaced the missing route via onerror'
+    'B surfaced the missing hook via onerror'
   )
 })
 

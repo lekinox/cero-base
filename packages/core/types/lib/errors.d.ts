@@ -15,10 +15,10 @@ export declare class CeroError extends Error {
     /**
      * Type-guard for `err instanceof CeroError` that survives realm boundaries.
      *
-     * @param {any} err
+     * @param {unknown} err
      * @returns {err is CeroError}
      */
-    static isCeroError(err: any): err is CeroError;
+    static isCeroError(err: unknown): err is CeroError;
     /**
      * Missing required argument.
      *

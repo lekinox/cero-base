@@ -1,4 +1,4 @@
-# Testing cero apps
+# Testing Cero apps
 
 Real-world models: `packages/cero/test/**` and `example/chat-backend/test`.
 
@@ -13,7 +13,7 @@ Real-world models: `packages/cero/test/**` and `example/chat-backend/test`.
 - **brittle** (v4) is the assertion lib. `brittle-node` and `brittle-bare` are bins
   shipped inside the `brittle` package; `npm i -D brittle` provides both.
 - the packages run under **Bare**, one process per file:
-  `"test:bare": "find test -name '*.test.js' | sort | xargs -P1 -n1 brittle-bare"`. `npm test` runs that.
+  `"test:bare": "find test -name '*.test.js' | sort | xargs -P4 -n1 brittle-bare"`, four files at a time. `npm test` runs that.
   Bare has no Node globals: tests import `process` (mapped to bare-process), `AbortController`
   from bare-abort-controller, and `fetch` from the test helpers.
 - Apps and TS packages run under Node: `"test": "brittle-node test/*.test.js"`, or
@@ -21,7 +21,7 @@ Real-world models: `packages/cero/test/**` and `example/chat-backend/test`.
   `.ts` sources directly.
 - `pretest` rebuilds the spec (`npm run build:test` in a package, `node build.js` in an app),
   so tests always run against the current schema.
-- Monorepo: `npx turbo test --filter='./packages/*' --concurrency=1`; a single file is
+- Monorepo: `npm test` runs the packages in parallel through turbo; a single file is
   `npx brittle-bare test/database/database.test.js` (or `brittle-node` in Node).
 - Networked test files start with `test.configure({ timeout: 60000 })`.
 - One test file per module, unit and RPC assertions together. No `rpc-x.test.js` splits.
@@ -54,9 +54,10 @@ Imports from a nested file go one level up: `../../src/...`, `../helpers/index.j
 
 RPC symmetry tests stand up the real thing in-process:
 `serve(a, spec, { storage: tmp, bootstrap: net.bootstrap })` on one end of `pair()`,
-`connect(b, spec)` on the other, `cero.define(operators)` first, then assert bound ops ran
-server-side (returned rows carry `createdAt`). An RPC child handle has no `.identity`; pass
-the root `client.id` where a role lookup needs it.
+`cero.connect(b, spec)` from `@cero-base/cero/client` on the other, then assert the operators ran server-side (returned
+rows carry `createdAt`) and that `status`, `requests` and `joins` read the same on both
+sides. An RPC child handle has no `.identity`; pass the root `client.id` where a role lookup
+needs it.
 
 ## Shared helpers
 
@@ -112,13 +113,12 @@ import test from 'brittle'
 import { cero } from '@cero-base/cero'
 import { spec } from '../spec/index.js'
 import { makeTestnet, waitUntil } from './utils.js'
-// before any cero(): the same cero.use(extensions) + cero.define(operators) the app registers
 
 test.configure({ timeout: 60000 })
 
 async function peer(t, testnet, name) {
   const me = await cero(await t.tmp(), spec, { name, bootstrap: testnet.bootstrap })
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.teardown(() => cero.close(me).catch(() => {}), { order: 5 })
   return me
 }
 
@@ -128,9 +128,9 @@ test('invite + join replicates both ways', async (t) => {
   const b = await peer(t, testnet, 'joiner')
 
   const roomA = await cero.open(a.room, { name: 'general' })
-  const invite = await roomA.invite({ role: 'member' })
+  const invite = await cero.invite(roomA, { role: 'member' })
   const roomB = await cero.open(b.room, { invite })
-  await waitUntil(() => roomB.store.writable) // the join is complete once B is a writer
+  await waitUntil(async () => (await cero.get(roomB.status)).data.writable)
 
   await cero.put(roomA.messages, { id: 'm1', text: 'hi' })
   const got = await waitUntil(async () => (await cero.get(roomB.messages, 'm1')).data)
@@ -153,33 +153,40 @@ with no reachable device it rejects with `TIMEOUT`.
 ```js
 const a = await peer(t, testnet, 'laptop')
 await cero.put(a.notes, { text: 'from-a' })
-const phrase = a.identity.toPhrase()
+const phrase = await cero.phrase(a)
 
-const b = await cero(await t.tmp(), spec, { phrase, bootstrap: testnet.bootstrap })
+const b = await cero(await t.tmp(), spec, {
+  seed: cero.toSeed(phrase),
+  bootstrap: testnet.bootstrap
+})
 t.is(b.id, a.id)
-t.not(b4a.toHex(b.store.writerKey), b4a.toHex(a.store.writerKey)) // its own writer
+t.not(b.device.id, a.device.id) // its own writer
 await waitUntil(async () => (await cero.get(b.notes)).data.find((n) => n.text === 'from-a'))
 ```
 
 ## Guard rejection tests
 
-`before` hooks are per handle instance: a hook on peer A's handle never blocks a write issued
-through peer B's handle. Guards are honest-client checks, not a security boundary; apply-time
-rules (`REFUSED`) are. Test a guard against the writing handle, assert the cancelled write
-resolves to `null`, and use a barrier write to prove the blocked row never lands anywhere:
+A `before` hook is a rule at apply: it runs on every peer that registered it, inside the op's
+transaction. Every peer must register the same rules before ops apply, so a guard lives in an
+extension's `setup`, which runs before the root opens. A refused write rejects the writer's
+call with `REFUSED`. Test it against the writing handle, and use a barrier write to prove the
+refused row never lands anywhere:
 
 ```js
-cero.before(roomB.guests, (ctx) => (ctx.row.name?.trim() ? undefined : false))
-t.is(await cero.put(roomB.guests, blocked), null, 'cancelled write resolves to null')
+const guard = { setup: (me) => cero.before(me.room.guests, ({ row }) => !!row.name?.trim()) }
+// every peer: cero(dir, spec, { extensions: [guard], bootstrap: testnet.bootstrap })
+
+await t.exception(cero.put(roomB.guests, blocked), /REFUSED/)
 await cero.put(roomB.guests, permitted) // barrier from the same handle
 await waitUntil(async () => (await cero.get(roomA.guests, permitted.id)).data)
-t.absent((await cero.get(roomA.guests, blocked.id)).data, 'blocked write never landed')
+t.absent((await cero.get(roomA.guests, blocked.id)).data, 'refused write never landed')
 ```
 
 ## Testing watch streams
 
 Drain with one continuous `for await`, or a single persistent `'data'` listener, and match
-snapshots against expectations. Never call `stream.once('data')` repeatedly, it races streamx
+items against expectations. Each item is `{ data }`; watch with `{ changes: true }` to assert on
+`changes` for what moved. Never call `stream.once('data')` repeatedly, it races streamx
 and drops emissions between listeners. See `observe()` in `packages/cero/test/helpers/index.js`.
 
 ## Rules
