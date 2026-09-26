@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.2 (2026-09-26)
+
+### Chores
+
+- bare-fs 4.8.2, react-native-bare-kit 0.15.6
+- autobee 2.12.0
+
 ## 2.3.1 (2026-09-26)
 
 ### Bug Fixes
