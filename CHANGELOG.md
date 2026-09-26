@@ -1,5 +1,59 @@
 # Changelog
 
+## 2.3.0 (2026-09-26)
+
+### Features
+
+- every act is a cero verb, joins confirmed through request.accept, docs rewritten
+- a join rides in the joiner's own core, apply admits it
+- a rank above member is handed out once
+- a device serves its rooms' invites whenever it is online
+- invites carry no mirrors, each side uses the app's own
+- mailbox pairing replaces blind-pairing
+
+### Bug Fixes
+
+- a joiner admitted but gone is removed at its invite's expiry, even while a device offers its keys
+- the audit's bugs, test first; members hold what they skip, faster reconnects, Bluetooth on device keys
+- an invite reaching its expiry on the timer's own millisecond is still dropped
+- rotation on autobee 2.11.1, a removed member needs a newer invite
+- joins link their invite, members come in only through a join
+- invites are sealed for later inviters too
+- a sealed-out device re-keys, revoking an invite is rank-capped
+- invite secrets sealed to inviters, genesis from autobee
+- a device seats only itself
+- every record type keeps its rank rule
+- roles change by rank only, writers stay with their member
+- a knock delivered again admits nobody twice
+- reader joins, a closed mailbox stops a join, never-online-together test
+
+### Refactoring
+
+- pairing keeps one map of served invites, each with its inbox
+
+### Performance
+
+- the server boots cero when it opens, not on the first init
+
+### Documentation
+
+- the identity example shows the phrase round trip
+
+### Chores
+
+- autobee 2.11.8
+- autobee 2.11.4, ble-swarm 2.3.2, npm 12.1.0, vite 8.3.1, expo 57.0.25
+- a comment still named autobee-encryption
+- autobee 2.10.1, corestore 7.12.6, hyperswarm 4.17.2, electron 44.4.5
+
+### Other
+
+- 🚀 test: shared helpers — ceroOpen, openHandle, withRole, waitFor; the owner revokes a device once its claim reached it
+- 🚀 test: one makePeer helper for a database on its own network, apply() for an op as a given writer
+- 🚀 examples: a reloaded desktop window no longer offers setup again
+- 🚀 examples: mobile settings reveal the recovery phrase on demand
+- 🚀 examples: a join nobody answered yet waits instead of failing
+
 ## 2.2.1 (2026-09-18)
 
 ### Documentation
