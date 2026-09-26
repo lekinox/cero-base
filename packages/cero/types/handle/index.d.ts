@@ -207,6 +207,8 @@ export declare class Handle extends ReadyResource {
     /** @type {Set<Handle> | null} */
     children: Set<Handle> | null;
     /** @private */
+    _pending;
+    /** @private */
     _typeHooks;
     /** @private */
     _loading;

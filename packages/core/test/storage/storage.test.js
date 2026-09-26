@@ -257,6 +257,19 @@ for (const backend of backends) {
     stream.destroy()
   })
 
+  test(`[${backend}] a watch torn down after close ends cleanly`, async (t) => {
+    const { storage } = await make(t, backend)
+    const stream = storage.watch('drafts')
+    await new Promise((resolve) => stream.once('data', resolve))
+    await storage.close()
+    const closed = new Promise((resolve, reject) => {
+      stream.once('error', reject)
+      stream.once('close', resolve)
+    })
+    stream.destroy()
+    await t.execution(closed, 'no throw from the unwatch')
+  })
+
   // ─── persistence ───────────────────────────────────────────────────────────
 
   test(`[${backend}] persistence: data survives close + reopen`, async (t) => {

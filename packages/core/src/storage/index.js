@@ -223,11 +223,13 @@ export class Storage extends ReadyResource {
   watch(name, query) {
     this._guard()
     this._ref(name)
+    // close nulls this.db, a teardown after it unwatches the db it watched
+    const db = this.db
     return subscribe({
       get: () => this.get(name, query),
       watch: (fn) => {
-        this.db.watch(fn)
-        return () => this.db.unwatch(fn)
+        db.watch(fn)
+        return () => db.unwatch(fn)
       }
     })
   }

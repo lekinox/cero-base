@@ -399,6 +399,15 @@ test('rpc: client.create(type) opens a child handle on the server', async (t) =>
   void me
 })
 
+test('rpc: a room created while the root closes rejects with CLOSED', async (t) => {
+  const { me, client } = await openPair(t)
+  const creating = open(client.team, { name: 'clinic' })
+  const closing = cero.close(me)
+  const err = await creating.catch((err) => err)
+  t.is(err?.code, 'CLOSED', `rejected with ${err?.code}: ${err?.message}`)
+  await closing
+})
+
 test('rpc: put/get on a child handle round-trips via the wire', async (t) => {
   const { client } = await openPair(t)
   const team = await open(client.team)
@@ -767,6 +776,21 @@ test('rpc: local watch emits over the wire', async (t) => {
   await put(client.local.drafts, { text: 'd' })
   await observed
   stream.destroy()
+})
+
+test('rpc: closing the root ends a live local watch without throwing', async (t) => {
+  const { me, client } = await openPair(t)
+  const stream = watch(client.local.drafts)
+  let snapshots = 0
+  let closed = false
+  let error = null
+  stream.on('data', () => snapshots++)
+  stream.on('error', (err) => (error = err))
+  stream.on('close', () => (closed = true))
+  await waitUntil(() => snapshots >= 1)
+  await cero.close(me)
+  await waitUntil(() => closed, 5000)
+  t.is(error, null, 'the watch ended with its root, without an error')
 })
 
 test('rpc: local del removes a row', async (t) => {

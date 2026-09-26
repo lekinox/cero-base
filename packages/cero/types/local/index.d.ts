@@ -28,12 +28,22 @@ export declare class Local extends ReadyResource {
     dir: string;
     spec: import("../lib/spec.js").Spec;
     store: Storage;
+    /** @private */
+    _owned;
     /**
      * @param {string | null} dir   Directory for the local store, or `null` when reusing an external `store`.
      * @param {import('../lib/spec.js').Spec} spec  Built cero spec, with `spec.local.database` and `spec.meta.local`.
      * @param {LocalOpts} [opts]
      */
     constructor(dir: string | null, spec: import('../lib/spec.js').Spec, { root, store, storageKey }?: LocalOpts);
+    /**
+     * Tie a watch stream to this store: it ends when the store closes.
+     *
+     * @template {import('streamx').Readable} T
+     * @param {T} stream
+     * @returns {T}
+     */
+    own<T extends import('streamx').Readable>(stream: T): T;
     /** @private */
     private _open;
     /** @private */

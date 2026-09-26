@@ -173,6 +173,18 @@ test('Local: destroyed watch stream stops emitting', async (t) => {
   t.pass('no emission after destroy')
 })
 
+test('Local: closing the root ends a live local watch cleanly', async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  const stream = watch(me.local.drafts)
+  let error = null
+  stream.on('error', (err) => (error = err))
+  await new Promise((resolve) => stream.once('data', resolve))
+  await cero.close(me)
+  t.ok(stream.destroyed, 'the watch ended with its root')
+  t.is(error, null, 'without an error')
+})
+
 test('Local: two dirs are independent', async (t) => {
   const dirA = await t.tmp()
   const dirB = await t.tmp()

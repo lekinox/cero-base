@@ -124,6 +124,9 @@ export class Handle extends ReadyResource {
     this._onerror = this._opts.onerror || ((err) => console.error(err))
     /** @type {Set<Handle> | null} */
     this.children = parent ? null : new Set()
+    // children still opening, not adopted yet: a close must close them too
+    /** @private */
+    this._pending = parent ? null : new Set()
     /** @private */
     this._typeHooks = parent ? null : new Set()
     /** @private */
@@ -301,6 +304,7 @@ export class Handle extends ReadyResource {
       () => this._blobs?.close(),
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
       ...[...(this.children || [])].map((c) => () => c.close()),
+      ...[...(this._pending || [])].map((c) => () => c.close()),
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -737,10 +741,12 @@ export class Handle extends ReadyResource {
       this._loading?.delete(id)
       return child
     } catch (err) {
-      if (abort) abort(err)
+      // a creation the parent's close broke fails with CLOSED, whichever resource went first
+      const reason = this.closing || this.closed ? CeroError.CLOSED('Handle') : err
+      if (abort) abort(reason)
       if (inflightId) this._loading?.delete(inflightId)
       await child.close().catch(safetyCatch)
-      throw err
+      throw reason
     }
   }
 
@@ -941,11 +947,11 @@ export class Handle extends ReadyResource {
       if (firstTime) {
         await this._saveKeyPair(id, writer)
       }
+      this._adopt(child, {})
     } catch (err) {
       await child.close().catch(safetyCatch)
       throw err
     }
-    this._adopt(child, {})
     return child
   }
 
@@ -954,6 +960,8 @@ export class Handle extends ReadyResource {
   _room(opts) {
     const child = new Handle({ parent: this, ...opts })
     for (const hook of this._typeHooks) hook.apply(child)
+    this._pending.add(child)
+    child.once('close', () => this._pending.delete(child))
     return child
   }
 
@@ -975,6 +983,9 @@ export class Handle extends ReadyResource {
 
   /** @private */
   _adopt(child, info) {
+    // a closing parent has already closed its children, it would never close this one
+    if (this.closing || this.closed) throw CeroError.CLOSED('Handle')
+    this._pending.delete(child)
     this.children.add(child)
     this._serve(child)
     this.emit('handle', child, info)
@@ -1113,14 +1124,20 @@ function delivered({ key, encryptionKey, epochs, writer }) {
 
 function admitted(db, id) {
   return new Promise((resolve, reject) => {
+    const done = (err, member) => {
+      db.off('update', onupdate)
+      db.off('close', onclose)
+      if (err) reject(err)
+      else resolve(member)
+    }
     const check = async () => {
       const { data } = await db.get('members', id)
-      if (!data) return
-      db.off('update', onupdate)
-      resolve(data)
+      if (data) done(null, data)
     }
-    const onupdate = () => check().catch(reject)
+    const onupdate = () => check().catch(done)
+    const onclose = () => done(CeroError.CLOSED('Database'))
     db.on('update', onupdate)
+    db.once('close', onclose)
     onupdate()
   })
 }

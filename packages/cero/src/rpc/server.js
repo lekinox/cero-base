@@ -258,6 +258,8 @@ export class Server extends RPCServer {
       if (!set) this._watchStreams.set(handle, (set = new Set()))
       set.add(stream)
       live.on('data', onData)
+      // a watch ending with its handle ends the client's
+      live.once('close', () => stream.destroy())
       // channel teardown destroys the stream with CHANNEL_CLOSED; 'close' cleans up
       stream.on('error', safetyCatch)
       stream.on('close', () => {

@@ -39,6 +39,21 @@ export class Local extends ReadyResource {
       store,
       storageKey
     })
+    /** @private */
+    this._owned = new Set()
+  }
+
+  /**
+   * Tie a watch stream to this store: it ends when the store closes.
+   *
+   * @template {import('streamx').Readable} T
+   * @param {T} stream
+   * @returns {T}
+   */
+  own(stream) {
+    this._owned.add(stream)
+    stream.once('close', () => this._owned.delete(stream))
+    return stream
   }
 
   /** @private */
@@ -49,6 +64,7 @@ export class Local extends ReadyResource {
 
   /** @private */
   async _close() {
+    for (const stream of [...this._owned]) stream.destroy()
     await this.store.close()
   }
 }

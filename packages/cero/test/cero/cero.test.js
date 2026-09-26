@@ -160,6 +160,63 @@ test('invites: a join survives the joiner restarting, and lands once a member is
   t.ok(await joined(again, room.id), 'the join went on after the restart')
 })
 
+test('invites: a join the root closes on rejects with CLOSED, stays saved and lands later', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  await cero.suspend(owner)
+
+  const joiner = await ceroOpen(t, { testnet })
+  const joining = open(joiner.me.team, invite).catch((err) => err)
+  await waitUntil(async () => ((await joinsOf(joiner.me)).length ? true : null))
+  await joiner.me.close()
+  t.is((await joining).code, 'CLOSED', 'the waiting open hears CLOSED')
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.alike(await joinsOf(again), [invite], 'the join is still saved')
+  await cero.resume(owner)
+  t.ok(await joined(again, room.id), 'it lands once a member answers')
+})
+
+test('invites: a join opening its room when the root closes rejects with CLOSED, stays saved and lands later', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  const topic = discoveryKey(room.store.key)
+
+  // the reply landed, the joiner stopped before its admission reached it
+  const joiner = await ceroOpen(t, { testnet })
+  const { identity, mailbox } = joiner.me
+  const opts = { identity, spec: spec.handles.team }
+  const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, opts)
+  await joiner.me.local.store.put('joins', {
+    id: b4a.toHex(Invite.parse(invite).discoveryKey),
+    type: 'team',
+    invite,
+    publicKey: writer.publicKey,
+    secretKey: writer.secretKey,
+    key,
+    encryptionKey,
+    epochs: c.encode(epochEntries, epochs)
+  })
+  await joiner.me.close()
+  await cero.suspend(owner.me)
+
+  // back with no member online: the resumed join opens the room and waits on its admission
+  const again = await reopen(t, joiner.dir, testnet)
+  const joining = open(again.team, invite).catch((err) => err)
+  await waitUntil(() => again.network.presence.mode(topic) !== null)
+  await again.close()
+  t.is((await joining).code, 'CLOSED', 'the waiting open hears CLOSED')
+
+  const back = await reopen(t, joiner.dir, testnet)
+  t.alike(await joinsOf(back), [invite], 'the join is still saved')
+  await cero.resume(owner.me)
+  t.ok(await joined(back, room.id), 'it lands once a member is back')
+})
+
 test('invites: a reply survives the member restarting', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
@@ -1378,6 +1435,43 @@ test('open: an open by id that fails closes the room it opened', async (t) => {
 
   await t.exception(open(b.me.team, { id: room.id }), /TIMEOUT/)
   t.is(b.me.network.presence.mode(topic), null, 'the half-opened room left the swarm')
+})
+
+test('open: a room created while the root closes rejects with CLOSED', async (t) => {
+  const { me } = await ceroOpen(t)
+  const creating = open(me.team, { name: 'clinic' })
+  const closing = cero.close(me)
+  const err = await creating.catch((err) => err)
+  t.is(err?.code, 'CLOSED', `rejected with ${err?.code}: ${err?.message}`)
+  await closing
+})
+
+test('open: an open by id waiting on its seat when the root closes rejects with CLOSED', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await ceroOpen(t, { testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const topic = discoveryKey(room.store.key)
+  const b = await ceroOpen(t, { testnet, seed: a.me.identity.seed })
+  await waitUntil(async () => (await get(b.me.team)).data.length === 1)
+  await a.me.close()
+
+  // a new device of the identity claims a seat, and no device is online to admit it
+  const opening = open(b.me.team, { id: room.id }).catch((err) => err)
+  await waitUntil(() => b.me.network.presence.mode(topic) !== null)
+  await b.me.close()
+  const err = await opening
+  t.is(err?.code, 'CLOSED', `rejected with ${err?.code}: ${err?.message}`)
+})
+
+test('open: a room whose creation lands as the root closes rejects with CLOSED', async (t) => {
+  const { me } = await ceroOpen(t)
+  let closing = null
+  cero.after(me.handles, () => {
+    closing ??= cero.close(me)
+  })
+  const err = await open(me.team, { name: 'clinic' }).catch((err) => err)
+  t.is(err?.code, 'CLOSED', `rejected with ${err?.code}: ${err?.message}`)
+  await closing
 })
 
 test('leave: you are no longer a member of the room you left', async (t) => {
