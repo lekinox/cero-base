@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.1 (2026-09-26)
+
+### Bug Fixes
+
+- both cero facades type their verbs, and the verbs take a UI's contexts
+- the hook guard covers only a hook's own run, so work beside a waiting hook is not refused
+
 ## 2.3.0 (2026-09-26)
 
 ### Features
