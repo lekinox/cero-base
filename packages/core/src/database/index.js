@@ -7,16 +7,32 @@ import safetyCatch from 'safety-catch'
 import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 
-import { NAMESPACE, SINGLE, COLLECTION, ACTION, QUERY_RESERVED } from '../lib/constants.js'
+import {
+  NAMESPACE,
+  SINGLE,
+  COLLECTION,
+  ACTION,
+  QUERY_RESERVED,
+  RANK,
+  ADMIN
+} from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
-import { subscribe, admission, ownership, filter } from '../lib/utils.js'
+import {
+  subscribe,
+  admission,
+  ownership,
+  filter,
+  checkFields,
+  checkRequired,
+  stamp
+} from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 import { Rotation } from './rotation.js'
 import { makeChanges } from './changes.js'
-import { makeDispatcher } from './dispatch.js'
+import { makeDispatcher, BESPOKE } from './dispatch.js'
 import { keyPair } from '../mailbox/inbox.js'
 
 /**
@@ -48,8 +64,8 @@ import { keyPair } from '../mailbox/inbox.js'
  * @property {Record<string, unknown> | null} row       The incoming row; mutate it in `before` to change what lands.
  * @property {Record<string, unknown> | null} existing  The stored row, or null.
  * @property {string | null} id                         The row id for a `del`.
- * @property {string} memberId                          The writer's member id.
- * @property {string} role                              The writer's role.
+ * @property {string | null} memberId                   The writer's member id, null for a core no member owns yet (a join, a claim, genesis).
+ * @property {string | null} role                       The writer's role, null likewise.
  * @property {(ref: string | { name: string }, query?: string | Record<string, unknown>) => Promise<{ data: unknown }>} get
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} put
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} set
@@ -105,6 +121,8 @@ export class Database extends ReadyResource {
     this._presence = null
     /** @private */
     this._txChain = null
+    /** @private */
+    this._held = new Map()
 
     /** @private */
     this._before = new Map()
@@ -187,6 +205,12 @@ export class Database extends ReadyResource {
     // without a listener autobee escalates apply/view errors to a process crash
     this.bee.on('error', this._onerror)
 
+    // with no mirror to hold the room, every member holds it: any member serves a joiner, offline
+    if (this.network && !this.network.mirrors.length) {
+      this.bee.on('move-to', () => this._holdRoom().catch(safetyCatch))
+      this._holdRoom().catch(safetyCatch)
+    }
+
     // a fresh db has no key until boot mints it
     if (this.network && !known) this._joinSwarm(this.bee, this.bee.discoveryKey)
   }
@@ -198,6 +222,10 @@ export class Database extends ReadyResource {
       this._presence.remove()
       this._presence = null
     }
+    const held = [...this._held.values()]
+    this._held.clear()
+    for (const { range } of held) range.destroy()
+    await Promise.allSettled(held.map(({ core }) => core.close()))
     if (this.bee) {
       // detach first, else the closed bee replicates into every new connection
       if (this.network) this.network.detach(this.bee)
@@ -244,7 +272,8 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
+   * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`: an overwrite keeps
+   * the row's `createdAt`, and timestamps the caller passes are ignored.
    *
    * @param {string} name
    * @param {Record<string, unknown>} row
@@ -252,8 +281,9 @@ export class Database extends ReadyResource {
    */
   async put(name, row) {
     const ref = this._prepare(name, row)
-    const ts = Date.now()
-    const stored = { createdAt: ts, updatedAt: ts, ...row, id: row.id || genId() }
+    const was = row.id ? (await this.get(name, row.id)).data : null
+    const stored = stamp({ ...row, id: row.id || genId() }, was?.createdAt)
+    checkRequired(name, this.refs[name], stored)
     return this._done(await this._append(stored, `add-${ref.verb}`))
   }
 
@@ -266,7 +296,9 @@ export class Database extends ReadyResource {
    * @returns {Promise<SingleResult | null>}
    */
   async set(name, row, opts) {
-    return this._done(await this.tx((tx) => tx._merge(name, row, opts)))
+    if (this.txQueue) return this._done(await this._merge(name, row, opts))
+    // read, merge and append as one unit: two sets on one row see each other
+    return this._done(await this._chain(() => this._merge(name, row, opts)))
   }
 
   /**
@@ -326,22 +358,25 @@ export class Database extends ReadyResource {
       throw CeroError.INVALID('tx(fn) — fn must accept the transaction handle: tx((tx) => ...)')
     }
     if (this.txQueue) return fn(this)
-    // outer transactions serialize so their appends land in call order
-    const run = async () => {
-      const batch = Object.create(this)
-      batch.txQueue = []
-      try {
-        const result = await fn(batch)
-        if (batch.txQueue.length) await this.write(batch.txQueue)
-        return result
-      } catch (err) {
-        if (this.closing || this.closed) throw CeroError.CLOSED('Database')
-        throw err
-      }
+    // only the commit is chained: a write the callback awaits outside the batch must not queue
+    // behind it
+    const batch = Object.create(this)
+    batch.txQueue = []
+    try {
+      const result = await fn(batch)
+      if (batch.txQueue.length) await this._chain(() => this.write(batch.txQueue))
+      return result
+    } catch (err) {
+      if (this.closing || this.closed) throw CeroError.CLOSED('Database')
+      throw err
     }
+  }
+
+  // one after the other, past each other's failures so one does not wedge the rest
+  /** @private */
+  _chain(fn) {
     const prev = this._txChain || Promise.resolve()
-    // chain past prev's outcome so one failure doesn't wedge later transactions
-    this._txChain = prev.then(run, run)
+    this._txChain = prev.then(fn, fn)
     return this._txChain
   }
 
@@ -358,7 +393,9 @@ export class Database extends ReadyResource {
       return
     }
     this.guard()
-    if (!this.bee.writable) throw CeroError.NOT_WRITABLE('Database')
+    // leaving takes no seat: a reader's own removal goes in optimistically, apply admits it
+    const optimistic = !this.bee.writable && leaving(ops, this.identity.id)
+    if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
     await this.bee.updated()
     const encoded = ops.map(([op, payload]) =>
@@ -369,7 +406,7 @@ export class Database extends ReadyResource {
     try {
       if (!(await this._dryRun(encoded)) && !action) return
       const wrapped = encoded.map((value) => wrap(this.version, value))
-      await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped)
+      await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
     } catch (err) {
       if (this.closing || this.closed) throw CeroError.CLOSED('Database')
       throw err
@@ -632,19 +669,24 @@ export class Database extends ReadyResource {
     if (this.behind === null || this.behind > this.version) return false
     await this.bee.local.setUserData('autobee/head', null)
     await this.bee.local.setUserData('cero/behind', null)
+    if (this.network) this.network.detach(this.bee)
     await this.bee.close()
     this.behind = null
     return true
   }
 
-  // without this hook autobee trusts every fast-forward candidate, a removed device's fork included
+  // only an admin's or an owner's device hands over a view: anyone else holding the key could serve
+  // a forged one that peers adopt without applying it
   /** @private */
   async _isTrusted(writer, view) {
     try {
       const row = await bounded(view.get(`@${this.ns}/devices`, { id: hid.encode(writer) }))
       if (!row) return false
-      if (row.v) return true
-      // only a provably empty view lets the genesis writer vouch: its core is the db key
+      if (row.v) {
+        const member = await bounded(view.get(`@${this.ns}/members`, { id: row.v.memberId }))
+        return RANK[member?.v?.role] >= RANK[ADMIN]
+      }
+      // only a provably empty view trusts the genesis writer: its core is the db key
       const any = await bounded(view.find(`@${this.ns}/devices`, { limit: 1 }).toArray())
       if (!any) return false
       return any.v.length === 0 && !!this.key && b4a.equals(writer, this.key)
@@ -680,11 +722,34 @@ export class Database extends ReadyResource {
     this._presence?.touch()
   }
 
-  // a writer swap re-opens the bee on the same topic, so the slot is the same one
+  // every bee a boot opens is attached, but the topic is joined once: close leaves it once
   /** @private */
   _joinSwarm(bee, discoveryKey) {
     this.network.attach(bee)
-    this._presence = this.network.presence.add(discoveryKey, { pinned: this.pinned })
+    this._presence ??= this.network.presence.add(discoveryKey, { pinned: this.pinned })
+  }
+
+  // every writer the room ever had and every core its views read; only the system bee, an autobee
+  // internal, lists all the writers
+  /** @private */
+  async _holdRoom() {
+    const bee = this.bee
+    const { views } = await bee.cores({ all: true })
+    for (const key of views) this._hold(key)
+    for await (const writer of bee.system.list()) this._hold(writer.key, writer.length)
+  }
+
+  // a view live, a writer only as far as the room applied it: past that a stranger could grow a
+  // core every member pulls. Inactive, so a new connection stays silent: the range only asks peers
+  // already replicating the core
+  /** @private */
+  _hold(key, end = -1) {
+    const id = b4a.toHex(key)
+    const held = this._held.get(id)
+    if (this.closing || (held && (held.end === -1 || end <= held.end))) return
+    const core = held ? held.core : this.store.get({ key, active: false })
+    held?.range.destroy()
+    this._held.set(id, { core, end, range: core.download({ start: 0, end }) })
   }
 
   // wrapped so an operator called from inside a hook fails instead of appending its own op
@@ -758,8 +823,8 @@ export class Database extends ReadyResource {
     const ref = this._prepare(name, row)
     const existing = ref.kind === SINGLE || row?.id ? (await this.get(name, row?.id)).data : null
     if (!upsert && !existing) return null
-    const ts = Date.now()
-    const stored = { ...existing, ...row, createdAt: existing?.createdAt ?? ts, updatedAt: ts }
+    const stored = stamp({ ...existing, ...row }, existing?.createdAt)
+    checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     const insert = ref.kind === COLLECTION && upsert && !BESPOKE.has(ref.verb)
     return this._append(stored, `${insert ? 'add' : 'set'}-${ref.verb}`)
@@ -769,7 +834,7 @@ export class Database extends ReadyResource {
   _prepare(name, row) {
     this.guard()
     const ref = this.ref(name)
-    this._checkFields(name, row)
+    checkFields(name, this.refs[name], row)
     return ref
   }
 
@@ -841,10 +906,12 @@ export class Database extends ReadyResource {
       return { path: `${col}-${idx}`, range, rest, sorted: true }
     }
     if (eq.length || query.search) return { path: col, range: {}, rest, sorted: false }
+    // a range on the id reads in id order, so hyperdb serves the window and stops at the page
     if (bounded) {
       const range = {}
       for (const k of RANGE) if (query[k] !== undefined) range[k] = { id: query[k] }
-      return { path: col, range, rest, sorted: false }
+      pushWindow(range, rest)
+      return { path: col, range, rest, sorted: true }
     }
     if (ref?.orderIndex) {
       const range = {}
@@ -891,19 +958,6 @@ export class Database extends ReadyResource {
     return { master: this.identity.publicKey, writer, sig, ts }
   }
 
-  // the encoder silently drops an undeclared field, so the returned row would lie
-  /** @private */
-  _checkFields(name, row) {
-    const declared = this.refs[name]?.fields
-    if (!declared || !row) return
-    for (const key of Object.keys(row)) {
-      if (declared.includes(key) || SYSTEM_FIELDS.has(key)) continue
-      throw CeroError.INVALID(
-        `unknown field '${key}' on '${name}' — declared: ${declared.join(', ') || '(none)'}`
-      )
-    }
-  }
-
   /** @private */
   async _admit(verb, publicKey) {
     this.guard()
@@ -944,11 +998,10 @@ function verbMap(refs) {
   return map
 }
 
-// member and device have their own set handlers, every other collection upserts via add-
-const BESPOKE = new Set(['member', 'device'])
-
-// fields the write path stamps itself, always allowed
-const SYSTEM_FIELDS = new Set(['id', 'memberId', 'index', 'createdAt', 'updatedAt'])
+// the one op a device without a writer seat may append
+function leaving(ops, id) {
+  return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
+}
 
 const RANGE = new Set(['gt', 'gte', 'lt', 'lte'])
 

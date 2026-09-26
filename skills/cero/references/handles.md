@@ -124,7 +124,7 @@ try {
   const room = await cero.open(me.room, invite) // resolves once a member accepts
   await cero.put(room.messages, { text: 'thanks' })
 } catch (err) {
-  if (err.code === 'DENIED') tell('the room said no')
+  if (err.code === 'DENIED') tell(err.reason || 'the room said no')
   if (err.code === 'TIMEOUT') tell('waiting for a member to accept')
 }
 ```
@@ -139,8 +139,8 @@ try {
   `accept` also rejects `EXPIRED` past the invite's ttl, `INVALID` for a role above the invite's and
   `REFUSED` for one above your own.
 - On the joiner's side an answer after 30 s arrives as `TIMEOUT` first: an accept adds the room to
-  `me.room`, a later `DENIED` reaches `onerror`. The reason reaches an in-process joiner as
-  `err.reason`; over RPC only `code` and `message` cross, so a UI gets `DENIED` with no reason.
+  `me.room`, a later `DENIED` reaches `onerror`. Either way the reason is `err.reason`, in the
+  worker and in a UI.
 
 ## Set roles
 
@@ -168,7 +168,8 @@ await cero.del(room.devices, deviceId) // one device, the member stays: an id fr
 ```
 
 Removing needs the remove permission and a higher rank: removing an equal or higher rank rejects
-`REFUSED`. Anyone may remove themselves. The removed member's `room.status` shows `role: null`, and
+`REFUSED`. Anyone may remove themselves, a reader too, except the last owner of a room others are
+in: `INVALID`. The removed member's `room.status` shows `role: null`, and
 they come back only through an invite minted after the removal.
 
 ## Remove and re-key
@@ -187,13 +188,13 @@ mechanism.
 ## Leave a room
 
 ```js
-await cero.del(room.members, me.id) // leave for everyone: you leave the member list
-await cero.leave(room) // gone from your list on every device of yours, and closed here
+await cero.leave(room) // out of its members, out of your list on every device, closed here
 ```
 
-`cero.leave` alone keeps you a member: the room leaves your list, not the room's. `cero.close(room)`
-stops it on this device and keeps it in your list, to reopen by id. `cero.close(me)` closes
-everything.
+`cero.leave` removes you from the room's members, at any role, then the room from your list. The
+last owner of a room others are in gets `INVALID`: make another member an owner first, with
+`cero.set(room.members, { id, role: 'owner' })`. `cero.close(room)` stops a room on this device and
+keeps it in your list, to reopen by id. `cero.close(me)` closes everything.
 
 ## List your rooms
 

@@ -7,6 +7,7 @@ import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
 import { decode as decodeKey } from 'hypercore-id-encoding'
 import { hash } from 'hypercore-crypto'
+import HyperDHT from 'hyperdht'
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
 import c from 'compact-encoding'
@@ -15,6 +16,10 @@ import { ACTIVE, PASSIVE } from '../lib/constants.js'
 import { CeroError } from '../lib/errors.js'
 import { Discovery } from './discovery.js'
 import { Presence } from './presence.js'
+
+// a live remote answers our header in milliseconds; udx gives up on a silent one only after ~13 s
+const SILENT_TIMEOUT = 3000
+const RELOOKUPS = [5000, 20000, 60000]
 
 /** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
 export function channelTopic(topic, channel) {
@@ -88,6 +93,10 @@ export class Network extends ReadyResource {
     /** @private */
     this._blindPeering = null
     /** @private */
+    this._lost = new Set()
+    /** @private */
+    this._relookup = null
+    /** @private */
     this._onerror = onerror
   }
 
@@ -114,23 +123,33 @@ export class Network extends ReadyResource {
 
   /** @private */
   async _open() {
-    const opts = {}
+    // timeouts follow each node's measured round trip, not a flat second a try; the swarm destroys it
+    const dht = new HyperDHT({
+      bootstrap: this.bootstrap,
+      adaptiveTimeout: { min: 150, max: 1000 }
+    })
+    const opts = { dht }
     if (this.identity) {
       opts.keyPair = { publicKey: this.identity.publicKey, secretKey: this.identity.secretKey }
     }
-    if (this.bootstrap) opts.bootstrap = this.bootstrap
     if (this.firewall) opts.firewall = this.firewall
     if (this.relayThrough) opts.relayThrough = this.relayThrough
     if (this.backoffs) opts.backoffs = this.backoffs
 
     const swarm = (this._swarm = new Hyperswarm(opts))
+    // back online after a NAT rebind or a router restart, peers may hold a stale address for us
+    dht.on('network-update', () => {
+      // a tick later: the dht's own wake-up in this event would clear a refresh made now
+      if (dht.online) setTimeout(() => this.closing || swarm.server.refresh(), 0)
+    })
     swarm.on('connection', (stream, info) => {
       if (this.closing || this.closed) {
         stream.destroy()
         return
       }
+      dropIfSilent(stream)
+      stream.on('close', () => this._lose(stream.remotePublicKey))
       this.wakeup.addStream(stream)
-      this._attachInfo(stream)
       for (const r of this._replicateables) replicateInto(r, stream)
       this.emit('connection', stream, info)
     })
@@ -145,6 +164,8 @@ export class Network extends ReadyResource {
 
   /** @private */
   async _close() {
+    clearTimeout(this._relookup)
+    this._lost.clear()
     for (const conn of [...this._injected]) {
       try {
         conn.destroy()
@@ -199,7 +220,7 @@ export class Network extends ReadyResource {
   inject(stream, { isInitiator } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
     if (!stream) throw CeroError.REQUIRED('stream')
-    // the swarm identity, so two radios between one pair dedupe to one peer
+    // a raw duplex handshakes as this identity
     const keyPair = this.identity
       ? { publicKey: this.identity.publicKey, secretKey: this.identity.secretKey }
       : (this.swarm?.keyPair ?? undefined)
@@ -239,7 +260,7 @@ export class Network extends ReadyResource {
   }
 
   /**
-   * Declare this peer's self-reported info ({ name, ... }).
+   * Declare this peer's self-reported info ({ name, ... }) to the peers of injected streams.
    *
    * @param {object | null} info
    */
@@ -280,6 +301,7 @@ export class Network extends ReadyResource {
     if (this.closing || this.closed) return
     await this._blindPeering?.suspend()
     await this._swarm?.suspend()
+    clearTimeout(this._relookup)
   }
 
   /**
@@ -288,9 +310,11 @@ export class Network extends ReadyResource {
    * @returns {Promise<void>}
    */
   async resume() {
-    if (this.closing || this.closed) return
+    if (this.closing || this.closed || !this.suspended) return
     await this._swarm?.resume()
     await this._blindPeering?.resume()
+    // the lookups hyperswarm runs at resume can go out before the network is back
+    this._relook(0)
   }
 
   /**
@@ -377,7 +401,30 @@ export class Network extends ReadyResource {
     for (const stream of this.connections) replicateInto(target, stream)
   }
 
-  // silent until a side has info: bytes on a fresh connection trip hyperswarm's duplicate guard
+  // hyperswarm stops redialing a peer after a few failed tries and looks it up again only every 10 min
+  /** @private */
+  _lose(key) {
+    if (this.closing || this.closed) return
+    this._lost.add(b4a.toHex(key))
+    this._relook(0)
+  }
+
+  /** @private */
+  _relook(i) {
+    clearTimeout(this._relookup)
+    this._relookup = setTimeout(() => {
+      for (const conn of this.swarm.connections) this._lost.delete(b4a.toHex(conn.remotePublicKey))
+      if (!this._lost.size && this.swarm.connections.size) return
+      for (const d of this._discoveries) {
+        if (d.mode === ACTIVE) d.session.refresh().catch(safetyCatch)
+      }
+      if (i + 1 < RELOOKUPS.length) this._relook(i + 1)
+      else this._lost.clear()
+    }, RELOOKUPS[i])
+    this._relookup.unref()
+  }
+
+  // injected streams only: bytes on a fresh swarm connection trip hyperswarm's duplicate guard
   /** @private */
   _attachInfo(conn) {
     const mux = Protomux.from(conn)
@@ -404,6 +451,14 @@ export class Network extends ReadyResource {
     conn.on('close', () => this._infoSenders.delete(send))
     if (this.info) send()
   }
+}
+
+function dropIfSilent(conn) {
+  const timer = setTimeout(() => {
+    if (conn.rawStream.packetsReceived === 0) conn.destroy()
+  }, SILENT_TIMEOUT)
+  timer.unref()
+  conn.once('close', () => clearTimeout(timer))
 }
 
 // corestore replication is store-wide: replicate each root once per connection

@@ -53,3 +53,28 @@ export declare function filter<T extends Record<string, unknown>>(rows: T[], que
  * @returns {(() => void) | undefined}
  */
 export declare function onAbort(signal: AbortSignal | undefined, cb: () => void): (() => void) | undefined;
+/** @type {<T>(row: T, createdAt?: number | null, ts?: number) => T & { createdAt: number, updatedAt: number }} */
+export declare function stamp<T>(row: T, createdAt: number, ts?: number): T & {
+    createdAt: number;
+    updatedAt: number;
+};
+/**
+ * Refuse a field the ref does not declare: the encoder would drop it and the returned row would lie.
+ *
+ * @param {string} name
+ * @param {{ fields?: string[] } | undefined} ref
+ * @param {Record<string, unknown> | null | undefined} row
+ */
+export declare function checkFields(name: string, ref: {
+    fields?: string[];
+} | undefined, row: Record<string, unknown> | null | undefined): void;
+/**
+ * Refuse a whole row that lacks a required field: the encoder would fail on it with no code.
+ *
+ * @param {string} name
+ * @param {{ required?: Record<string, string> } | undefined} ref
+ * @param {Record<string, unknown>} row
+ */
+export declare function checkRequired(name: string, ref: {
+    required?: Record<string, string>;
+} | undefined, row: Record<string, unknown>): void;

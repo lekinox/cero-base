@@ -24,8 +24,10 @@ await cero.put(me.todos, { id: 'weekly', text: 'water the plants' }) // your own
 ```
 
 `memberId` and `index` appear when you read the row back. A `put` over an existing id replaces the
-whole row: fields you leave out are cleared. A field the schema does not declare throws `INVALID`,
-except in `me.local` and through a hook's ctx, where it is dropped.
+whole row, keeping only its `createdAt`: fields you leave out are cleared. The database stamps
+`createdAt` and `updatedAt` and ignores any you pass. A field the schema does not declare, or a
+row missing a `t.required` one, throws `INVALID` naming the field. Written through a hook's `ctx`,
+it refuses the op that ran the hook.
 
 ## Change a row
 
@@ -39,7 +41,7 @@ const none = await cero.set(me.todos, { id: 'nope', done: true }, { upsert: fals
 whole row. When two devices set the same row at once, the write that ends up last wins every
 field, not only the ones it changed. Without an id on a collection, `set` adds a row like `put`.
 With `{ upsert: false }` it only changes a row that exists, and resolves `null` when there is
-none; over RPC, `{ data: undefined }`.
+none.
 
 ## Read rows
 
@@ -50,7 +52,8 @@ const { data, total, size } = await cero.get(me.todos) // a list
 ```
 
 A list comes back in the order rows were added. Through an index, it comes back ordered by the
-index fields, then id, and `me.local` lists in id order.
+index fields, then id; a range on the id comes back in id order and reads only the page, and
+`me.local` lists in id order.
 
 ## Filter, search and page
 
@@ -74,8 +77,7 @@ Any key not in this table is an equality filter on that field.
 `total` is how many rows matched and `size` how many came back. When `limit` filled the page,
 `total` can be `null`; ask with `total: true` to count. There is no sort and no range on fields
 other than `id`: read the rows and sort them in memory. Generated ids are random, so `gt` and `lt`
-are not a cursor: for more rows, raise `limit`. Over RPC, `limit: 0` is dropped and every row
-comes back.
+are not a cursor: for more rows, raise `limit`.
 
 ## Delete a row
 
@@ -98,8 +100,8 @@ gets only the newest. It ends when the signal aborts or the handle closes, and a
 `for await` loop then throws an error with the code `STREAM_DESTROYED`, so `break` out to stop.
 
 ```js
-for await (const { data } of cero.watch(me.todos, { id: row.id })) {
-  if (data[0]?.done) break // one row followed: data holds it, or nothing once deleted
+for await (const { data } of cero.watch(me.todos, row.id)) {
+  if (data?.done) break // one row followed by id: data is the row, or null once deleted
 }
 ```
 
@@ -140,7 +142,8 @@ When `before` returns `false` or either hook throws, no device stores the write 
 call rejects with `REFUSED`. Register hooks in an extension's `setup`, on type refs like
 `me.room.messages`: every room of the type has them before it opens, so every device runs the same
 rules on every write ([Extensions](extensions.md)). Both return a function that removes the hook
-and take `{ signal }` as a third argument. Hooks never fire on the builtins.
+and take `{ signal }` as a third argument. Hooks fire on the builtins too, such as
+`me.room.members`, where a join is a `put`.
 
 | ctx                        | Is                                                                                                                               |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
@@ -149,14 +152,15 @@ and take `{ signal }` as a third argument. Hooks never fire on the builtins.
 | `row`                      | the incoming row, `null` on a `del`                                                                                              |
 | `existing`                 | the stored row, or `null`                                                                                                        |
 | `id`                       | the row's id                                                                                                                     |
-| `memberId`, `role`         | who wrote it, as `owner`, `admin` or `member`                                                                                    |
+| `memberId`, `role`         | who wrote it, as `owner`, `admin` or `member`; on a builtin also `reader`, or `null` until the writer is a member, as on a join  |
 | `get`, `put`, `set`, `del` | read and write inside this write                                                                                                 |
 
 The `cero.` operators throw inside a hook: use the ones on ctx. `ctx.put` mints the same id on
 every device, `ctx.set` needs an id on a collection, and `ctx.get` returns `t.file` fields as bare
-ids. Writes through ctx skip the role and `own` checks, so check `ctx.role` before a privileged
-one. A hook reads only ctx, never a clock, random numbers or local state, or devices store
-different rows; the writing device runs it twice, to check the write and to store it.
+ids. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
+not make refuses the whole write: a hook that writes on every join checks `ctx.role` first, or a
+reader's join is refused. A hook reads only ctx, never a clock, random numbers or local state, or
+devices store different rows; the writing device runs it twice, to check the write and to store it.
 
 ## Batch writes
 
@@ -167,10 +171,11 @@ await cero.tx(me, async (tx) => {
 })
 ```
 
-Writes through `tx` land together or not at all. The function must take `tx` and write only
-through it: a `set` through `me` inside it waits for the batch to end, and hangs. Reads through
-`tx` see the data as it stood before the batch, so two `set`s on one row both merge over the old
-row, and the second wins. `cero.tx` runs in the worker only, not over RPC.
+Writes through `tx`, which the function must take, land together or not at all; a write through
+`me` inside it lands on its own. Reads through `tx` see what has landed, not the batch's own
+writes, so two `set`s on one row both merge over the old row, and the second wins. A batch is
+atomic, not isolated: other writes can land between its reads and its commit. `cero.tx` runs in
+the worker only, not over RPC.
 
 ## Files
 
@@ -198,7 +203,8 @@ const { data: messages } = await cero.get(room.messages) // messages[0].photo.ur
 - A `url` works on this device, for this run: it changes on every start. Store the id and read
   the row again for a fresh url.
 - A `t.file` field resolves only for a file in the same room's `files`, or the root's for a root
-  row. A string that is not a file id makes every read of that row throw `INVALID`.
+  row: to use a file in another room, put its bytes there. profileSync and handleSync do that for
+  a `t.file` avatar. A string that is not a file id makes every read of that row throw `INVALID`.
 - Files have no timestamps, they read `0`: order them by `index`.
 - `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
   admin or an owner deletes one.
@@ -220,7 +226,7 @@ try {
 | -------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the room read-only; `room.status` has `writable`.                               |
 | `REFUSED`      | Your role, `own`, or a `before` hook said no.                           | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
-| `INVALID`      | An unknown field or a bad value.                                        | Fix the call.                                                                        |
+| `INVALID`      | An unknown field, a missing required one, or a bad value.               | Fix the call.                                                                        |
 | `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                   | Read the list again.                                                                 |
 
 [Errors](errors.md) lists every code.

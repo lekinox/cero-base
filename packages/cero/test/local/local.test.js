@@ -102,7 +102,8 @@ test('Local: get with limit paginates', async (t) => {
   for (const c of ['a', 'b', 'c', 'd', 'e']) await put(local.drafts, { text: c })
 
   const { data: page, total, size } = await get(local.drafts, { limit: 3 })
-  t.is(total, 5, 'total counts all rows')
+  t.is(total, null, 'a full page counts only with total: true, as in a room')
+  t.is((await get(local.drafts, { limit: 3, total: true })).total, 5)
   t.is(size, 3, 'size = returned rows')
   t.is(page.length, 3)
 })

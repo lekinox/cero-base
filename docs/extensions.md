@@ -65,10 +65,8 @@ reopened, before it opens. The rules every hook follows are in
 [React to writes](data.md#react-to-writes).
 
 `setup(me)` runs before the root opens, so its hooks see every write. An operator called inside
-it waits for the open. Don't await a write in `setup`: on a fresh identity it runs before this
-device can write, and `cero()` rejects with `REFUSED`. Write from a hook or a `cero.watch`
-instead. `setup` may be async, a function it returns runs on close, and a throw makes `cero()`
-reject.
+it waits for the open, so `setup` may read and write, on a fresh identity too. `setup` may be
+async, a function it returns runs on close, and a throw makes `cero()` reject.
 
 ## Name them in the build
 
@@ -95,9 +93,10 @@ extension module import from `@cero-base/cero/extensions`, never `@cero-base/cer
 that needs something heavy imports it inside the function. A bare function in the list is
 shorthand for `{ setup }`.
 
-A list instead of a path, `build('./spec', schema, { extensions: [seen] })`, folds the schema
-only: pass the same list to `cero('./data', spec, { extensions: [seen] })`. With a list, or with
-no option at all, `spec.extensions` is `null`, so `[...spec.extensions]` throws.
+A list instead of a path, `build('./spec', schema, { extensions: [seen] })`, folds the schema only:
+pass the same list to `cero('./data', spec, { extensions: [seen] })`, or `cero()` throws `INVALID`. `extensions: []` means none, at build and at open. `spec.extensions`
+is the list `cero()` runs: the module's, `[]`, or with no option the two that ship. After a list,
+it is `null`.
 
 ## The two that ship
 
@@ -107,7 +106,7 @@ no option at all, `spec.extensions` is `null`, so `[...spec.extensions]` throws.
 | `handleSync()`  | Copies a room's own `profile` onto its row in your `handles` list, so a room list shows names without opening the rooms.                       |
 
 Both run when the build names no extensions, and neither writes when the row already matches.
-Drop one by naming a list without it.
+Drop one by naming a list without it, or both with `[]`.
 
 ```js
 // extensions.js
@@ -121,12 +120,14 @@ export const extensions = [
 
 `fields` replaces the default `{ avatar: t.string }` and lands on both `profile` and `members`. A
 `profile` you declare yourself replaces the extension's; each of its fields must then exist on
-`members` and hold a plain value, so a synced avatar is a `t.string`, and a `t.file` does not
-sync.
+`members` with the same type and hold a plain value or a file. A `t.file` avatar,
+`profileSync({ fields: { avatar: t.file } })`, is copied with its file into each room, where every
+member reads it.
 
 `handleSync` needs the room type to declare `profile: t.single({ name: t.string })`, and any other
-field of it must exist on `handles`, as `avatar` does by default. `cero.open(me.room, { name })`
-writes the name into that profile.
+field of it must exist on `handles`, as `avatar` does by default. A `t.file` avatar,
+`handleSync({ fields: { avatar: t.file } })`, is copied with its file into your list, and reads
+with the room closed. `cero.open(me.room, { name })` writes the name into that profile.
 
 ## Give an action its handler
 
@@ -151,8 +152,8 @@ await cero.call(me.archive, { until: Date.now() })
 
 An action's `after` hook is what it does, on every device, with `row` as the payload. It follows
 every hook rule: read and write through ctx only, and a throw, or a `before` that returns `false`,
-refuses the call. Writes through ctx skip the role checks, so an action that does something
-privileged checks `ctx.role` first. Calling an action with no `after` hook throws `INVALID`, and a
+refuses the call. Its writes through ctx are the caller's own: an action cannot do what its caller
+may not, such as raise a role. Calling an action with no `after` hook throws `INVALID`, and a
 device without the hook reports the action to `onerror`. In a handle type, register on the type
 ref, `cero.after(me.room.archive, fn)`, and call it on a room, `cero.call(room.archive, data)`.
 

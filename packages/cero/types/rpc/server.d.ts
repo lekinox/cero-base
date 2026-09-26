@@ -36,6 +36,7 @@ export type Identity = {
 export type RefAndCodec = {
     ref: import('../lib/refs.js').Ref;
     codec: import('@cero-base/core/rpc').Codec;
+    info?: import('../lib/spec.js').RefInfo;
 };
 export type Spec = import('../lib/spec.js').Spec;
 export type Context = import('../handle/index.js').Context;
@@ -59,7 +60,7 @@ export type GetResult = {
  * @property {string} deviceId  Per-device id (empty when no `local` spec).
  * @property {string} deviceName  This device's name, empty when it has none.
  *
- * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec }} RefAndCodec
+ * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
  *
  * @typedef {import('../lib/spec.js').Spec} Spec
  * @typedef {import('../handle/index.js').Context} Context
@@ -118,12 +119,12 @@ export declare class Server extends RPCServer {
      * @private
      */
     private _endWatches;
+    /** @private */
+    private _onerror;
     /**
-     * Wire the `init` handler: it waits for the boot and attaches the client.
+     * Wire the `errors` and `init` handlers: init waits for the boot and attaches the client.
      * @private
      */
-    private _onerror;
-    /** @private */
     private _wireInit;
     /**
      * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.

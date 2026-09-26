@@ -30,12 +30,15 @@ export default schema({
     })
   },
 
+  tasks: t.collection({ title: t.required(t.string), done: t.bool }),
+
   local: {
     drafts: t.collection({
       text: t.string
     }),
     settings: t.single({
       entropy: t.bytes
-    })
+    }),
+    tasks: t.collection({ title: t.required(t.string) })
   }
 })

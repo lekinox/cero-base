@@ -1,3 +1,5 @@
+import { CeroError } from '@cero-base/core/errors'
+
 import { profileSync } from './profile-sync.js'
 import { handleSync } from './handle-sync.js'
 import { t, schema } from '../lib/spec.js'
@@ -22,13 +24,19 @@ export const cero = { t, schema, ...operators }
 export const bundled = [profileSync(), handleSync()]
 
 /**
- * The extensions a spec carries, else the bundled two. A bare function is `{ setup }`.
+ * The override, else the list the spec carries, else the bundled two. A bare function is `{ setup }`.
  *
  * @param {import('../lib/spec.js').Spec | null} spec
  * @param {Array<Extension | Extension['setup']>} [override]
  * @returns {Extension[]}
  */
 export function extensionsOf(spec, override) {
-  const list = override || spec?.extensions || bundled
-  return list.map((e) => (typeof e === 'function' ? { setup: e } : e))
+  const list = override ?? spec?.extensions
+  // a list built in memory cannot be written into the spec
+  if (list === null) {
+    throw CeroError.INVALID(
+      'the spec was built with a list of extensions: pass it to cero(dir, spec, { extensions })'
+    )
+  }
+  return (list ?? bundled).map((e) => (typeof e === 'function' ? { setup: e } : e))
 }

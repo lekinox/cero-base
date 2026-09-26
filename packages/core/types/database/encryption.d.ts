@@ -1,6 +1,4 @@
 import Autobee from 'autobee';
-/** @type {typeof import('autobee/lib/encryption.js').WriterEncryption} */
-declare const WriterEncryption: typeof import('autobee/lib/encryption.js').WriterEncryption;
 /**
  * Encryption key for a rotation epoch's blob cores.
  *
@@ -91,12 +89,6 @@ export declare class Keyring {
     remove(stamp: number): void;
 }
 /**
- * The epoch-aware provider — the class itself is upstream WriterEncryption; the epoch
- * behavior lives on the (patched) base prototype above.
- */
-export declare class EpochEncryption extends WriterEncryption {
-}
-/**
  * Autobee with a rotation keyring. Every provider autobee constructs (view/system factory,
  * foreign cores, ActiveWriters) picks the epochs up through the patched base class, which asks
  * this instance for `keyId` and `getEntropy`.
@@ -135,4 +127,3 @@ export declare class EpochAutobee extends Autobee {
     /** @private */
     private _scheduleEpochRetry;
 }
-export {};

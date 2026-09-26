@@ -2,6 +2,7 @@ import b4a from 'b4a'
 import { Readable } from 'streamx'
 
 import { ROLE_PERMS, RANK, QUERY_RESERVED } from './constants.js'
+import { CeroError } from './errors.js'
 
 // can() callers need the capability names, and constants.js is not public
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
@@ -10,6 +11,9 @@ export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 const ADD_WRITER_TAG = b4a.from('cero/add-writer')
 const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer')
 const JOIN_TAG = b4a.from('cero/join')
+
+// fields the write path stamps itself, always allowed
+const SYSTEM_FIELDS = new Set(['id', 'memberId', 'index', 'createdAt', 'updatedAt'])
 
 /** @type {(dbKey: Uint8Array, writer: Uint8Array, appender: Uint8Array) => Uint8Array} */
 export function admission(dbKey, writer, appender) {
@@ -169,4 +173,42 @@ export function onAbort(signal, cb) {
   if (signal.aborted) return void cb()
   signal.addEventListener('abort', cb, { once: true })
   return () => signal.removeEventListener('abort', cb)
+}
+
+/** @type {<T>(row: T, createdAt?: number | null, ts?: number) => T & { createdAt: number, updatedAt: number }} */
+export function stamp(row, createdAt, ts = Date.now()) {
+  return { ...row, createdAt: createdAt ?? ts, updatedAt: ts }
+}
+
+/**
+ * Refuse a field the ref does not declare: the encoder would drop it and the returned row would lie.
+ *
+ * @param {string} name
+ * @param {{ fields?: string[] } | undefined} ref
+ * @param {Record<string, unknown> | null | undefined} row
+ */
+export function checkFields(name, ref, row) {
+  const declared = ref?.fields
+  if (!declared || !row) return
+  for (const key of Object.keys(row)) {
+    if (declared.includes(key) || SYSTEM_FIELDS.has(key)) continue
+    throw CeroError.INVALID(
+      `unknown field '${key}' on '${name}' — declared: ${declared.join(', ') || '(none)'}`
+    )
+  }
+}
+
+/**
+ * Refuse a whole row that lacks a required field: the encoder would fail on it with no code.
+ *
+ * @param {string} name
+ * @param {{ required?: Record<string, string> } | undefined} ref
+ * @param {Record<string, unknown>} row
+ */
+export function checkRequired(name, ref, row) {
+  for (const key in ref?.required) {
+    if (row[key] == null && !SYSTEM_FIELDS.has(key)) {
+      throw CeroError.INVALID(`'${key}' is required on '${name}'`)
+    }
+  }
 }

@@ -96,6 +96,14 @@ export declare function refs(ns: string, scope: 'main' | 'local'): Record<string
     path: string[];
 }>;
 /**
+ * Add `fields` to a ref: file ones resolve on read, required ones the RPC client fills on a set.
+ *
+ * @param {RefInfo} ref
+ * @param {Record<string, FieldType>} fields
+ * @returns {RefInfo}
+ */
+export declare function declare(ref: RefInfo, fields: Record<string, FieldType>): RefInfo;
+/**
  * @param {string} ns
  * @param {'main' | 'local'} scope
  * @returns {Array<{ name: string, schema: string, key: string[] }>}

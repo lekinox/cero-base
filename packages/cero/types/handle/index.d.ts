@@ -79,6 +79,19 @@ export type HandleOpts = {
      * When `false`, skips creating a `Pairing` session.
      */
     pair?: boolean;
+    /**
+     * Root only: the radio, up before the root opens.
+     */
+    bluetooth?: import('../lib/bluetooth.js').Bluetooth | null;
+    /**
+     * Root only: provision this device as it opens, its genesis or its recovery.
+     */
+    bootstrap?: {
+        name?: string | null;
+        isMobile?: boolean;
+        recovering?: boolean;
+        timeout?: number;
+    } | null;
 };
 export type CreateChildOpts = {
     name?: string | null;
@@ -138,6 +151,8 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
  * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
+ * @property {import('../lib/bluetooth.js').Bluetooth | null} [bluetooth]  Root only: the radio, up before the root opens.
+ * @property {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number } | null} [bootstrap]  Root only: provision this device as it opens, its genesis or its recovery.
  *
  * @typedef {object} CreateChildOpts
  * @property {string | null} [name]
@@ -215,6 +230,10 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _wantsPair;
     /** @private */
+    _boot;
+    /** @private */
+    _bluetooth;
+    /** @private */
     _live;
     /** @private */
     _ac;
@@ -278,22 +297,6 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _link;
     /**
-     * Initialise a fresh database: write the genesis claim, derive the writer.
-     * Forwards to `Database.bootstrap`.
-     *
-     * @param {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number }} [opts]
-     * @returns {Promise<{ id: Uint8Array, writer: KeyPair }>}
-     */
-    bootstrap(opts?: {
-        name?: string | null;
-        isMobile?: boolean;
-        recovering?: boolean;
-        timeout?: number;
-    }): Promise<{
-        id: Uint8Array;
-        writer: KeyPair;
-    }>;
-    /**
      * Claim writer capability on an existing database (paired-device flow).
      * Forwards to `Database.claim`.
      *
@@ -329,7 +332,13 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _nearby;
     /** @private */
+    private _tell;
+    /** @private */
     private _peers;
+    /** @private */
+    private _nameOf;
+    /** @private */
+    private _onPeers;
     /** @private */
     private _onRadio;
     /** @private */
@@ -357,6 +366,14 @@ export declare class Handle extends ReadyResource {
      * @private
      */
     private _registerBlobCore;
+    /**
+     * The bytes of a file this handle holds, fetched from a peer when this device lacks them.
+     *
+     * @param {string} id
+     * @returns {Promise<Uint8Array>}
+     * @private
+     */
+    private _bytes;
     /** @private */
     private _blobCoreKey;
     /**

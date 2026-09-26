@@ -43,12 +43,12 @@ export async function put(ref, row) {
 async function putFile(ref, row) {
   const handle = ref.handle
   if (handle.rpc) return handle.put('files', row)
-  const { data, type, name = null } = row
+  const { data, type, name = null, from = null } = row
   const blobs = handle.blobs // captured once — the instance carries its epoch stamp
   await blobs.ready()
   const blobId = await blobs.put(data)
   const id = encodeId(blobs.key, blobId, type)
-  await handle.store.call('add-file', { id, name, stamp: blobs.stamp || 0 })
+  await handle.store.call('add-file', { id, name, stamp: blobs.stamp || 0, from })
   return { data: resolveFile(handle, id, name) }
 }
 
@@ -58,7 +58,7 @@ async function putFile(ref, row) {
  * @param {Ref} ref
  * @param {Row} row
  * @param {{ upsert?: boolean }} [opts]
- * @returns {Promise<SingleResult>}
+ * @returns {Promise<SingleResult | null>}
  */
 export async function set(ref, row, opts) {
   await opened(ref.handle)
@@ -156,7 +156,8 @@ function hook(phase, ref, fn, opts) {
 const parentStore = (ref) => (ref.handle.root ? ref.handle.root.store : ref.handle.store)
 
 const normalize = (rows, name) => {
-  const data = (rows || []).filter((r) => r.type === name)
+  if (!Array.isArray(rows)) return { data: rows?.type === name ? rows : null }
+  const data = rows.filter((r) => r.type === name)
   return { data, total: data.length, size: data.length }
 }
 
@@ -225,12 +226,14 @@ const bindStream = (owner, stream, opts) => {
  * `prev: null`.
  *
  * @param {Ref} ref
- * @param {Record<string, unknown> & { changes?: boolean }} [query]
+ * @param {string | Record<string, unknown> & { changes?: boolean }} [query]
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {import('streamx').Readable}
  */
 export function watch(ref, query, opts) {
-  const { changes, ...q } = query || {}
+  const id = typeof query === 'string'
+  const { changes, ...rest } = (!id && query) || {}
+  const q = id ? query : rest
   const owner = ref.handle
   const from = owner.opened === false ? owner.ready().then(() => source(ref, q)) : source(ref, q)
   const diff = changes ? differ(ref.kind === 'single') : null

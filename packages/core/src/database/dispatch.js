@@ -11,12 +11,23 @@ import {
   COUNTERS,
   EPOCHS,
   REMOVALS,
+  OWNER,
   INVITE,
   REMOVE,
   ASSIGN,
   WRITE
 } from '../lib/constants.js'
-import { can, grants, outranks, admission, ownership, joining } from '../lib/utils.js'
+import {
+  can,
+  grants,
+  outranks,
+  admission,
+  ownership,
+  joining,
+  checkFields,
+  checkRequired,
+  stamp
+} from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { Identity } from '../identity/index.js'
@@ -28,25 +39,29 @@ const Join = getEncoding('@cero/join')
 const isKey = (b) => b?.byteLength === 32
 const isSig = (b) => b?.byteLength === 64
 
+// member and device have their own set handlers, every other collection upserts via add-
+export const BESPOKE = new Set(['member', 'device'])
+
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
  *
  * @param {object} opts
- * @param {{ dispatch: { Router: Function }, meta?: { refs?: Record<string, { kind?: string, builtin?: boolean, verb?: string }> } }} opts.spec  Generated hyperdispatch spec.
+ * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }> } }} opts.spec  Generated hyperdispatch spec.
  * @param {string} opts.ns  Namespace prefix for collection and op names.
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
  * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
- * @param {(phase: 'before' | 'after', op: string) => Function[]} [opts.hooks]  Registered hooks for an op, run inside its transaction.
- * @param {(name: string) => void} [opts.touch]  Marks a ref written by a hook, so its watchers tick.
- * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} [opts.read]  Planned read against a given view, for a hook's `ctx.get`.
+ * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
+ * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, so its watchers tick.
+ * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
  * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<void> }}
  */
 export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }) {
   const router = new spec.dispatch.Router()
 
+  const col = (name) => `@${ns}/${name}`
   const countersCol = `@${ns}/${COUNTERS}`
   const removals = `@${ns}/${REMOVALS}`
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
@@ -80,23 +95,31 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const tRole = targetMemberId ? (await getMember(view, targetMemberId))?.role : null
     return !tRole || outranks(r, tRole)
   }
-
-  async function insert(view, name, col, op) {
-    if (name !== COUNTERS) {
-      const existing = op.id != null ? await view.get(col, op) : null
-      if (existing && existing.index != null) {
-        op.index = existing.index
-      } else {
-        const counter = (await view.get(countersCol, { name })) ?? { name, value: 0 }
-        op.index = counter.value + 1
-        await view.insert(countersCol, { name, value: op.index })
-      }
-    }
-    await view.insert(col, op)
+  // without this owner the others would have nobody who outranks them all
+  const orphans = async (view, id) => {
+    const others = (await view.find(`@${ns}/members`, {}).toArray()).filter((m) => m.id !== id)
+    return others.length > 0 && !others.some((m) => m.role === OWNER)
   }
 
-  const pick = (op) => {
-    if (!hooks || !op) return null
+  async function bump(view, name) {
+    const value = ((await view.get(countersCol, { name }))?.value ?? 0) + 1
+    await view.insert(countersCol, { name, value })
+    return value
+  }
+
+  async function insert(view, name, op) {
+    if (name !== COUNTERS) {
+      const existing = op.id != null ? await view.get(col(name), op) : null
+      // an overwrite keeps when the row was first written, whatever the op carries
+      if (existing?.createdAt) op.createdAt = existing.createdAt
+      op.index = existing?.index ?? (await bump(view, name))
+    }
+    await view.insert(col(name), op)
+  }
+
+  // a ctx write runs no hooks: one writing its own ref would recurse
+  const pick = (op, ctx) => {
+    if (ctx.nested) return null
     const before = hooks('before', op)
     const after = hooks('after', op)
     return before.length || after.length ? { before, after } : null
@@ -104,75 +127,97 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
 
   const refName = (ref) => (typeof ref === 'string' ? ref : ref?.name)
   const single = (name) => spec.meta?.refs?.[name]?.kind === SINGLE
+  // a name with no route, a counter or an epoch among them, fails to encode
+  const verbOf = (name) => spec.meta?.refs?.[name]?.verb || name
 
-  // the operators developers know, bound to the open transaction and this op's stamps
-  function operators(view, memberId, ts, seed) {
+  // the operators developers know, bound to this op. A write is dispatched as the op's writer
+  // would append it, so the same rank and `own` rules judge it
+  function operators(ctx, ts) {
     let n = 0
     // every peer must mint the same id: hash the applying op and a per-op counter
-    const mint = () => z32.encode(crypto.hash([seed, c.encode(c.uint, n++)]).subarray(0, 16))
-    const col = (name) => `@${ns}/${name}`
+    const mint = () => z32.encode(crypto.hash([ctx.seed, c.encode(c.uint, n++)]).subarray(0, 16))
     const current = (name, id) =>
-      single(name) ? view.findOne(col(name), {}) : view.get(col(name), { id })
-    const stamp = (row, was) => ({
-      ...was,
-      createdAt: was?.createdAt ?? ts,
-      ...row,
-      updatedAt: row.updatedAt ?? ts,
-      memberId
-    })
-    const store = (name, row) => {
-      touch?.(name)
-      return single(name) ? view.insert(col(name), row) : insert(view, name, col(name), row)
+      single(name) ? ctx.view.findOne(col(name), {}) : ctx.view.get(col(name), { id })
+    // held to the fields as a direct write is, before the encoder drops or chokes on one
+    const held = (name, row, stored) => {
+      checkFields(name, spec.meta?.refs?.[name], row)
+      checkRequired(name, spec.meta?.refs?.[name], stored)
+      return stored
+    }
+    const write = (name, verb, row) => {
+      touch(name)
+      const value = spec.dispatch.encode(`@${ns}/${verb}-${verbOf(name)}`, row)
+      return router.dispatch(value, { ...ctx, nested: true })
     }
     return {
-      get: (ref, query) => read(view, refName(ref), query),
+      get: (ref, query) => read(ctx.view, refName(ref), query),
       put: (ref, row) => {
         const name = refName(ref)
-        return store(name, stamp(single(name) ? row : { ...row, id: row.id ?? mint() }, null))
+        if (single(name)) return write(name, 'set', held(name, row, stamp(row, null, ts)))
+        const stored = stamp({ ...row, id: row.id ?? mint() }, null, ts)
+        return write(name, 'add', held(name, row, stored))
       },
+      // an upsert, as the set operator appends it
       set: async (ref, row) => {
         const name = refName(ref)
         if (!single(name) && !row.id) throw CeroError.INVALID(`set('${name}') needs an id`)
-        return store(name, stamp(row, await current(name, row.id)))
+        const verb = single(name) || BESPOKE.has(verbOf(name)) ? 'set' : 'add'
+        const was = await current(name, row.id)
+        return write(name, verb, held(name, row, stamp({ ...was, ...row }, was?.createdAt, ts)))
       },
       del: (ref, id) => {
         const name = refName(ref)
-        touch?.(name)
-        return view.delete(col(name), single(name) ? {} : { id })
+        return write(name, 'del', { id: single(name) ? '' : id })
       }
     }
   }
 
-  // hooks run inside the op's transaction on every peer, so their verdict is part of the op
-  // a rule never meets a nameless writer: an admitted core with no member row is refused
-  // where a hook would have to judge it
-  async function signer(ctx) {
+  // the writer as the view stands, null for a core no member owns yet: a join, a claim, genesis
+  async function author(ctx) {
     const memberId = await getSignerMember(ctx.view, ctx.key)
-    const role = memberId ? (await getMember(ctx.view, memberId))?.role : null
-    if (!memberId || !role) throw CeroError.REFUSED('member')
-    // a reader's device has a row too, and its optimistic ops still reach apply
-    if (!can(role, WRITE)) throw CeroError.REFUSED('write')
-    return { memberId, role }
+    const role = memberId ? ((await getMember(ctx.view, memberId))?.role ?? null) : null
+    return role ? { memberId, role } : { memberId: null, role: null }
   }
 
+  // hooks run inside the op's transaction on every peer, so their verdict is part of the op.
+  // Resolves to the row that landed, which a before hook may have changed
   async function hooked(fns, { op, name, id = null, row = null, existing = null }, ctx, write) {
-    if (!fns) return write(row)
-    const { memberId, role } = await signer(ctx)
+    if (!fns) {
+      await write(row)
+      return row
+    }
     // never a clock: a derived row must stamp the same timestamp on every peer
     const ts = row?.updatedAt || existing?.updatedAt || 0
-    const hctx = {
-      op,
-      name,
-      row,
-      existing,
-      id,
-      memberId,
-      role,
-      ...operators(ctx.view, memberId, ts, ctx.seed)
-    }
+    const hctx = { op, name, row, existing, id, ...(await author(ctx)), ...operators(ctx, ts) }
     await fire(fns.before, hctx, true)
     await write(hctx.row)
-    await fire(fns.after, hctx, false)
+    // once every row of the op landed: a join's after hooks write as a member
+    ctx.later.push(async () => {
+      Object.assign(hctx, await author(ctx))
+      await fire(fns.after, hctx, false)
+    })
+    return hctx.row
+  }
+
+  // a builtin row lands as a schema ref's does, through its ref's hooks
+  async function save(ctx, op, name, row) {
+    const fns = pick(op, ctx)
+    const existing = fns ? await ctx.view.get(col(name), { id: row.id }) : null
+    const meta = { op, name, id: row.id, row, existing }
+    return hooked(fns, meta, ctx, (r) => insert(ctx.view, name, r))
+  }
+
+  function seat(ctx, writer, memberId, ts) {
+    const row = { id: hid.encode(writer), memberId, createdAt: ts, updatedAt: ts }
+    return save(ctx, 'put', 'devices', row)
+  }
+
+  // deleting a row that is not there changes nothing, and fires nothing
+  async function drop(ctx, name, id) {
+    const fns = pick('del', ctx)
+    const existing = fns ? await ctx.view.get(col(name), { id }) : null
+    const meta = { op: 'del', name, id, existing }
+    await hooked(existing ? fns : null, meta, ctx, () => ctx.view.delete(col(name), { id }))
   }
 
   // a rule that errors must not diverge peers: a throw refuses exactly like a false verdict
@@ -201,45 +246,46 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!can(await getSignerRole(ctx.view, ctx.key), REMOVE)) throw CeroError.REFUSED('own')
   }
 
-  const upsert = (name, col, kind, own, hook) => async (op, ctx) => {
+  const upsert = (name, kind, own) => async (op, ctx) => {
     await requireWrite(ctx)
-    const d = ctx.key && (await getDevice(ctx.view, hid.encode(ctx.key)))
-    op.memberId = d?.memberId || null
-    const fns = pick(hook)
+    op.memberId = await getSignerMember(ctx.view, ctx.key)
     if (kind !== COLLECTION) {
-      const existing = fns ? await ctx.view.findOne(col, {}) : null
-      const meta = { op: hook, name, row: op, existing }
-      return hooked(fns, meta, ctx, (row) => ctx.view.insert(col, row))
+      const fns = pick('set', ctx)
+      const existing = fns ? await ctx.view.findOne(col(name), {}) : null
+      const meta = { op: 'set', name, row: op, existing }
+      return hooked(fns, meta, ctx, (row) => ctx.view.insert(col(name), row))
     }
-    const existing = own || fns ? await ctx.view.get(col, { id: op.id }) : null
     // add on an existing id is an overwrite, same ownership rule as set
-    if (own) await requireOwn(ctx, existing)
-    const meta = { op: hook, name, id: op.id, row: op, existing }
-    await hooked(fns, meta, ctx, (row) => insert(ctx.view, name, col, row))
+    if (own) await requireOwn(ctx, await ctx.view.get(col(name), { id: op.id }))
+    await save(ctx, 'put', name, op)
   }
-  const update = (name, col, own, hook) => async (op, ctx) => {
+  const update = (name, own) => async (op, ctx) => {
     await requireWrite(ctx)
-    const existing = await ctx.view.get(col, { id: op.id })
+    const existing = await ctx.view.get(col(name), { id: op.id })
     if (!existing) return
     if (own) await requireOwn(ctx, existing)
     // memberId is attribution: derived here, never merged off the wire
-    const d = ctx.key && (await getDevice(ctx.view, hid.encode(ctx.key)))
-    const merged = { ...existing, ...op, memberId: d?.memberId || null }
-    const meta = { op: hook, name, id: op.id, row: merged, existing }
-    await hooked(pick(hook), meta, ctx, (row) => insert(ctx.view, name, col, row))
+    const memberId = await getSignerMember(ctx.view, ctx.key)
+    await save(ctx, 'set', name, { ...existing, ...op, memberId })
   }
-  const remove = (name, col, own, hook) => async (op, ctx) => {
+  const remove = (name, own) => async (op, ctx) => {
     await requireWrite(ctx)
-    const fns = pick(hook)
-    const existing = own || fns ? await ctx.view.get(col, { id: op.id }) : null
+    const fns = pick('del', ctx)
+    const existing = own || fns ? await ctx.view.get(col(name), { id: op.id }) : null
     if (own) await requireOwn(ctx, existing)
-    const meta = { op: hook, name, id: op.id, existing }
-    return hooked(fns, meta, ctx, () => ctx.view.delete(col, op))
+    const meta = { op: 'del', name, id: op.id, existing }
+    return hooked(fns, meta, ctx, () => ctx.view.delete(col(name), op))
   }
   // only REFUSED aborts a batch: every peer derives it. Decode failures and unknown routes skip one node
   const isRefusal = (err) => err?.isCeroError === true && err.code === 'REFUSED'
 
-  const add = (verb, fn) => router.add(`@${ns}/${verb}`, fn)
+  // an op's after hooks run once all its rows landed
+  const add = (verb, fn) =>
+    router.add(`@${ns}/${verb}`, async (op, ctx) => {
+      const later = []
+      await fn(op, { ...ctx, later })
+      for (const run of later) await run()
+    })
 
   add('add-writer', async (op, ctx) => {
     if (!isKey(op.master) || !isKey(op.writer) || !isSig(op.sig)) return
@@ -254,13 +300,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (op.memberId && op.memberId !== memberId) throw CeroError.REFUSED('member')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
     await ctx.host.addWriter(op.writer, { isIndexer: true })
-    const ts = op.ts || 0
-    await insert(ctx.view, 'devices', `@${ns}/devices`, {
-      id: hid.encode(op.writer),
-      memberId,
-      createdAt: ts,
-      updatedAt: ts
-    })
+    await seat(ctx, op.writer, memberId, op.ts || 0)
   })
 
   add('del-writer', async (op, ctx) => {
@@ -272,7 +312,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       }
     }
     await ctx.host.removeWriter(op.writer)
-    await ctx.view.delete(`@${ns}/devices`, { id: hid.encode(op.writer) })
+    await drop(ctx, 'devices', hid.encode(op.writer))
   })
 
   add('claim-writer', async (op, ctx) => {
@@ -284,13 +324,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!can(await getRole(ctx.view, op.identity), WRITE)) throw CeroError.REFUSED('write')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
     await ctx.host.addWriter(op.writer, { isIndexer: true })
-    const ts = op.ts || 0
-    await insert(ctx.view, 'devices', `@${ns}/devices`, {
-      id: hid.encode(op.writer),
-      memberId,
-      createdAt: ts,
-      updatedAt: ts
-    })
+    await seat(ctx, op.writer, memberId, op.ts || 0)
   })
 
   // the genesis batch names the creator; everyone after comes in through a signed join
@@ -301,7 +335,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!ctx.host.genesis) throw CeroError.REFUSED('member')
     // every member id is an identity key: rotation seals to it
     if (!isIdentity(op.id)) throw CeroError.REFUSED('member')
-    await insert(ctx.view, 'members', `@${ns}/members`, op)
+    await save(ctx, 'put', 'members', op)
   })
 
   add('set-member', async (op, ctx) => {
@@ -323,16 +357,16 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       }
       next.role = op.role
     }
-    await insert(ctx.view, 'members', `@${ns}/members`, next)
+    const row = await save(ctx, 'set', 'members', next)
     // WRITE decides the writer seats: a demotion takes them, a promotion gives them back.
     // Device rows stay: an unresolvable writer would read as not yet enrolled and pass the gate
-    const writes = can(next.role, WRITE)
+    const writes = can(row.role, WRITE)
     if (can(existing.role, WRITE) === writes) return
     const devices = await ctx.view.find(`@${ns}/devices`, {}).toArray()
-    const seats = devices.filter((d) => d.memberId === next.id).map((d) => hid.decode(d.id))
+    const seats = devices.filter((d) => d.memberId === row.id).map((d) => hid.decode(d.id))
     // only enrolled devices come back: a revoked writer has no device row
     if (writes) for (const key of seats) await ctx.host.addWriter(key, { isIndexer: true })
-    else for (const key of next.key ? [next.key, ...seats] : seats) await ctx.host.removeWriter(key)
+    else for (const key of row.key ? [row.key, ...seats] : seats) await ctx.host.removeWriter(key)
   })
 
   add('del-member', async (op, ctx) => {
@@ -341,16 +375,18 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (op.id !== (await getSignerMember(ctx.view, ctx.key))) {
       const r = await getSignerRole(ctx.view, ctx.key)
       if (!can(r, REMOVE) || !outranks(r, existing.role)) throw CeroError.REFUSED('remove')
+    } else if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
+      throw CeroError.INVALID('the last owner cannot leave: hand the room to another owner first')
     }
     if (existing.key) await ctx.host.removeWriter(existing.key)
     // every device of the member goes with them, and any keys they were still owed
     for (const device of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (device.memberId !== op.id) continue
       await ctx.host.removeWriter(hid.decode(device.id))
-      await ctx.view.delete(`@${ns}/devices`, { id: device.id })
-      await ctx.view.delete(requests, { id: device.id })
+      await drop(ctx, 'devices', device.id)
+      await drop(ctx, 'requests', device.id)
     }
-    await ctx.view.delete(`@${ns}/members`, op)
+    await drop(ctx, 'members', op.id)
     // an invite they could hold, or saw, does not bring them back
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: op.id, index: minted })
@@ -368,12 +404,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const rows = await ctx.view.find(`@${ns}/${EPOCHS}`, {}).toArray()
     if (rows.some((r) => r.stamp === op.stamp)) return
     // sequence numbers order epochs; concurrent rotations get consecutive sequences, both readable
-    const counter = (await ctx.view.get(countersCol, { name: EPOCHS })) ?? {
-      name: EPOCHS,
-      value: 0
-    }
-    const epoch = counter.value + 1
-    await ctx.view.insert(countersCol, { name: EPOCHS, value: epoch })
+    const epoch = await bump(ctx.view, EPOCHS)
     const row = {
       epoch,
       stamp: op.stamp,
@@ -401,30 +432,32 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       }
     }
     await ctx.host.removeWriter(hid.decode(existing.id))
-    await ctx.view.delete(`@${ns}/devices`, op)
+    await drop(ctx, 'devices', op.id)
   })
 
-  // a device row is the writer→role mapping, so memberId never comes off the wire: an unknown id
-  // binds to the signer's own member, or one unauthenticated op could inherit the owner's authority
-  const devices = `@${ns}/devices`
-  const bind = async (ctx, existing) =>
-    existing?.memberId ?? (await getSignerMember(ctx.view, ctx.key))
+  // a device row is the writer→role mapping, so memberId never comes off the wire; a core no
+  // member owns writes none, or any stranger's optimistic node would plant a device in the room
+  const bind = async (ctx) => {
+    const { memberId } = await author(ctx)
+    if (!memberId) throw CeroError.REFUSED('member')
+    return memberId
+  }
   // a device describes only itself: another's record, or a made-up id, would break removing it
   const selfOnly = (op, ctx) => {
     if (!ctx.key || op.id !== hid.encode(ctx.key)) throw CeroError.REFUSED('device')
   }
   add('add-device', async (op, ctx) => {
     selfOnly(op, ctx)
-    const existing = await getDevice(ctx.view, op.id)
-    await insert(ctx.view, 'devices', devices, { ...op, memberId: await bind(ctx, existing) })
+    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx) })
   })
   add('set-device', async (op, ctx) => {
     selfOnly(op, ctx)
+    const memberId = await bind(ctx)
     const existing = await getDevice(ctx.view, op.id)
     const ts = op.updatedAt || 0
-    await insert(ctx.view, 'devices', devices, {
+    await save(ctx, 'set', 'devices', {
       ...op,
-      memberId: await bind(ctx, existing),
+      memberId,
       createdAt: existing?.createdAt || op.createdAt || ts,
       updatedAt: ts
     })
@@ -440,7 +473,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     await requireWrite(ctx)
     if (await ctx.view.get(invites, { id: op.id })) throw CeroError.REFUSED('invite')
     if (!capped(await getSignerRole(ctx.view, ctx.key), op)) throw CeroError.REFUSED('invite')
-    await insert(ctx.view, 'invites', invites, op)
+    await save(ctx, 'put', 'invites', op)
   })
   add('set-invite', async (op, ctx) => {
     const r = await getSignerRole(ctx.view, ctx.key)
@@ -448,22 +481,20 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!existing) return
     const next = { ...existing, ...op }
     if (!can(r, REMOVE) || !capped(r, next)) throw CeroError.REFUSED('invite')
-    await insert(ctx.view, 'invites', invites, next)
+    await save(ctx, 'set', 'invites', next)
   })
   add('del-invite', async (op, ctx) => {
     const existing = await ctx.view.get(invites, { id: op.id })
     if (!existing) return
     const r = await getSignerRole(ctx.view, ctx.key)
     if (!can(r, REMOVE) || !capped(r, existing)) throw CeroError.REFUSED('invite')
-    await spend(ctx.view, existing)
+    await spend(ctx, existing)
   })
   // its joins still waiting for a member go with it; admitted ones are still owed their keys
-  async function spend(view, invite) {
-    await view.delete(invites, { id: invite.id })
-    for (const request of await view.find(requests, {}).toArray()) {
-      if (request.invite === invite.id && !request.admitted) {
-        await view.delete(requests, { id: request.id })
-      }
+  async function spend(ctx, invite) {
+    await drop(ctx, 'invites', invite.id)
+    for (const request of await ctx.view.find(requests, {}).toArray()) {
+      if (request.invite === invite.id && !request.admitted) await drop(ctx, 'requests', request.id)
     }
   }
 
@@ -472,24 +503,23 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   async function admit(ctx, { invite, identity, writer, reply, role, ts }) {
     const memberId = hid.encode(identity)
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
-    const existing = await getMember(ctx.view, memberId)
-    if (!existing) {
-      const member = { id: memberId, key: writer, role, createdAt: ts, updatedAt: ts }
-      await insert(ctx.view, 'members', `@${ns}/members`, member)
-    }
-    if (can(existing?.role ?? role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
-    await insert(ctx.view, 'devices', devices, {
-      id: hid.encode(writer),
-      memberId,
-      createdAt: ts,
-      updatedAt: ts
-    })
-    await insert(ctx.view, 'requests', requests, {
+    const member =
+      (await getMember(ctx.view, memberId)) ??
+      (await save(ctx, 'put', 'members', {
+        id: memberId,
+        key: writer,
+        role,
+        createdAt: ts,
+        updatedAt: ts
+      }))
+    if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
+    await seat(ctx, writer, memberId, ts)
+    await save(ctx, 'put', 'requests', {
       ...request(invite, identity, writer, reply, ts),
       role,
       admitted: true
     })
-    if (!invite.reuse) await spend(ctx.view, invite)
+    if (!invite.reuse) await spend(ctx, invite)
   }
 
   function request(invite, identity, writer, reply, ts) {
@@ -526,7 +556,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (removal && (invite.index ?? 0) <= removal.index) return
     if (invite.confirm && !known) {
       const waiting = request(invite, join.identity, ctx.key, join.reply, ts)
-      return insert(ctx.view, 'requests', requests, waiting)
+      return save(ctx, 'put', 'requests', waiting)
     }
     await admit(ctx, {
       invite,
@@ -559,28 +589,27 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   // a denial, or keys delivered
   add('del-request', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
-    await ctx.view.delete(requests, op)
+    await drop(ctx, 'requests', op.id)
   })
 
-  const files = `@${ns}/files`
   add('add-file', async (op, ctx) => {
-    if (!can(await getSignerRole(ctx.view, ctx.key), WRITE)) throw CeroError.REFUSED('write')
-    await requireOwn(ctx, await ctx.view.get(files, { id: op.id }))
+    await requireWrite(ctx)
+    await requireOwn(ctx, await ctx.view.get(col('files'), { id: op.id }))
     const memberId = await getSignerMember(ctx.view, ctx.key)
-    await insert(ctx.view, 'files', files, {
+    await save(ctx, 'put', 'files', {
       id: op.id,
       name: op.name ?? null,
       memberId,
-      stamp: op.stamp ?? 0
+      stamp: op.stamp ?? 0,
+      from: op.from ?? null
     })
   })
-  add('set-file', update('files', files, true))
-  add('del-file', remove('files', files, true))
+  add('set-file', update('files', true))
+  add('del-file', remove('files', true))
 
-  const handles = `@${ns}/handles`
-  add('add-handle', upsert('handles', handles, COLLECTION))
-  add('set-handle', update('handles', handles))
-  add('del-handle', remove('handles', handles))
+  add('add-handle', upsert('handles', COLLECTION, false))
+  add('set-handle', update('handles', false))
+  add('del-handle', remove('handles', false))
 
   for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
     if (info.internal) continue
@@ -589,29 +618,28 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       // an action does what its after hooks do; one with none here diverges this peer from those
       // that ran them, so it surfaces
       add(name, async (op, ctx) => {
-        const fns = pick(name)
+        const fns = pick(name, ctx)
         if (!fns?.after.length) return onerror(CeroError.UNKNOWN('action hook', name))
+        // an action is a write: a core no member owns, or a reader's optimistic op, runs none
+        await requireWrite(ctx)
         await hooked(fns, { op: name, name, row: op }, ctx, () => {})
       })
       continue
     }
-    const col = `@${ns}/${name}`
-    const kind = info.kind === SINGLE ? SINGLE : COLLECTION
-    const set =
-      kind === SINGLE ? upsert(name, col, kind, false, 'set') : update(name, col, info.own, 'set')
-    add(`set-${name}`, set)
     if (info.kind === SINGLE) {
+      add(`set-${name}`, upsert(name, SINGLE, false))
       // wipe the keyless single row (the dummy id in the op is ignored)
       add(`del-${name}`, async (op, ctx) => {
         await requireWrite(ctx)
-        const fns = pick('del')
-        const existing = fns ? await ctx.view.findOne(col, {}) : null
-        return hooked(fns, { op: 'del', name, existing }, ctx, () => ctx.view.delete(col, {}))
+        const fns = pick('del', ctx)
+        const existing = fns ? await ctx.view.findOne(col(name), {}) : null
+        return hooked(fns, { op: 'del', name, existing }, ctx, () => ctx.view.delete(col(name), {}))
       })
       continue
     }
-    add(`add-${name}`, upsert(name, col, COLLECTION, info.own, 'put'))
-    add(`del-${name}`, remove(name, col, info.own, 'del'))
+    add(`set-${name}`, update(name, info.own))
+    add(`add-${name}`, upsert(name, COLLECTION, info.own))
+    add(`del-${name}`, remove(name, info.own))
   }
 
   return {

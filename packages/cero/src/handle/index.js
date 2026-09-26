@@ -51,6 +51,8 @@ export { Ref } from '../lib/refs.js'
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
  * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
+ * @property {import('../lib/bluetooth.js').Bluetooth | null} [bluetooth]  Root only: the radio, up before the root opens.
+ * @property {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number } | null} [bootstrap]  Root only: provision this device as it opens, its genesis or its recovery.
  *
  * @typedef {object} CreateChildOpts
  * @property {string | null} [name]
@@ -161,6 +163,10 @@ export class Handle extends ReadyResource {
     this._pair = null
     /** @private */
     this._wantsPair = opts.pair !== false
+    /** @private */
+    this._boot = opts.bootstrap || null
+    /** @private */
+    this._bluetooth = opts.bluetooth || null
     // refs before the open, so a hook can attach before any op applies
     Ref.attach(this, this.store.refs, this.spec.handles)
     /** @private */
@@ -168,7 +174,7 @@ export class Handle extends ReadyResource {
       status: { get: () => this._status(), watch: (fn) => this._onStatus(fn) },
       ...(!this.parent && {
         joins: { get: (q) => this._joins(q), watch: (fn) => this._onJoins(fn) },
-        nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) }
+        nearby: { get: () => this._peers(), watch: (fn) => this._onPeers(fn) }
       })
     }
   }
@@ -258,6 +264,8 @@ export class Handle extends ReadyResource {
   /** @private */
   async _open() {
     await this.store.ready()
+    // a fresh device takes writes only once provisioned, and an operator waits for the open
+    if (this._boot) await this.store.bootstrap(this._boot)
     if (this._wantsPair) {
       this._pair = new Pairing({ mailbox: this.mailbox, db: this.store })
       await this._pair.ready()
@@ -266,6 +274,11 @@ export class Handle extends ReadyResource {
     if (!this.parent) {
       await this.fileServer.listen()
       await this.mailbox.ready()
+      if (this._bluetooth) {
+        const off = this.store.onUpdate('profile', () => this._tell().catch(this._onerror))
+        this.once('close', off)
+        await this._tell()
+      }
       await this._carryOn().catch(this._onerror)
       this._reserve().catch(this._onerror)
     }
@@ -341,17 +354,6 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Initialise a fresh database: write the genesis claim, derive the writer.
-   * Forwards to `Database.bootstrap`.
-   *
-   * @param {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number }} [opts]
-   * @returns {Promise<{ id: Uint8Array, writer: KeyPair }>}
-   */
-  bootstrap(opts) {
-    return this.store.bootstrap(opts)
-  }
-
-  /**
    * Claim writer capability on an existing database (paired-device flow).
    * Forwards to `Database.claim`.
    *
@@ -409,6 +411,7 @@ export class Handle extends ReadyResource {
   /** @private */
   async _leave() {
     if (!this.parent) throw CeroError.INVALID('the root cannot be left')
+    await this.store.del('members', this.identity.id)
     await this.parent.store.call('del-handle', { id: hid.encode(this.store.key) })
     await this.close()
   }
@@ -486,14 +489,45 @@ export class Handle extends ReadyResource {
     if (typeof mode === 'string') this.root._rendezvous = bt.announce(mode)
   }
 
+  // what a Bluetooth peer hears: the profile's name and whether this device is a phone
+  /** @private */
+  async _tell() {
+    const profile = this.store.refs.profile ? (await this.store.get('profile')).data : null
+    const { data: device } = await this.store.get('devices', this.device.id)
+    this._bluetooth.tell({ name: profile?.name ?? null, isMobile: device?.isMobile === true })
+  }
+
+  // one row a person: two of their devices in range link twice
   /** @private */
   async _peers() {
     const peers = this._bluetooth ? [...this._bluetooth.peers.keys()] : []
-    const data = peers.map((hex) => ({
-      id: hid.encode(b4a.from(hex, 'hex')),
-      name: this.network.getInfo(hex)?.name ?? null
-    }))
+    const data = []
+    for (const hex of peers) {
+      const peer = this._bluetooth.told(hex)
+      if (peer) data.push({ ...peer, name: peer.name ?? (await this._nameOf(peer.id)) })
+    }
     return { data, total: data.length, size: data.length }
+  }
+
+  // a peer's name as its member row shows it in a room open here; a stranger has none
+  /** @private */
+  async _nameOf(id) {
+    for (const room of this.children) {
+      const { data } = await room.store.get('members', id)
+      if (data?.name) return data.name
+    }
+    return null
+  }
+
+  // a link opening, closing, or a peer telling a new name
+  /** @private */
+  _onPeers(fn) {
+    const off = this._onRadio(fn)
+    this.network.on('peer-info', fn)
+    return () => {
+      off()
+      this.network.off('peer-info', fn)
+    }
   }
 
   /** @private */
@@ -552,7 +586,8 @@ export class Handle extends ReadyResource {
       store: this.store.store,
       network: this.network,
       encryptionKey,
-      name
+      // every handle shares the device's corestore: one core per handle, or its key serves the others
+      name: this.parent ? `${name}/${this.id}` : name
     })
     blobs.stamp = stamp
     blobs
@@ -597,6 +632,27 @@ export class Handle extends ReadyResource {
       if (this !== this.root) (this._blobKeys ??= new Set()).add(hex)
     } catch {
       // ignore invalid ids
+    }
+  }
+
+  /**
+   * The bytes of a file this handle holds, fetched from a peer when this device lacks them.
+   *
+   * @param {string} id
+   * @returns {Promise<Uint8Array>}
+   * @private
+   */
+  async _bytes(id) {
+    const { coreKey, blobId } = decodeId(id)
+    const { data } = await this.store.get('files', id)
+    const encryptionKey = data && this._blobCoreKey(data.stamp || 0)
+    if (!encryptionKey) throw CeroError.UNKNOWN('file', id)
+    const blobs = new Blobs({ store: this.store.store, key: coreKey, encryptionKey })
+    try {
+      await blobs.ready()
+      return await blobs.get(blobId)
+    } finally {
+      await blobs.close()
     }
   }
 
@@ -877,12 +933,17 @@ export class Handle extends ReadyResource {
       encryptionKey: data.encryptionKey,
       keyPair: /** @type {KeyPair} */ (writer)
     })
-    await child.ready()
-    if (firstTime && !child.store.writable) {
-      await child.store.claim()
-    }
-    if (firstTime) {
-      await this._saveKeyPair(id, writer)
+    try {
+      await child.ready()
+      if (firstTime && !child.store.writable) {
+        await child.store.claim()
+      }
+      if (firstTime) {
+        await this._saveKeyPair(id, writer)
+      }
+    } catch (err) {
+      await child.close().catch(safetyCatch)
+      throw err
     }
     this._adopt(child, {})
     return child

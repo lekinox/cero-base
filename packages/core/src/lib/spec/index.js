@@ -244,54 +244,8 @@ const encoding6 = {
   }
 }
 
-// @cero/query
-const encoding7 = {
-  preencode(state, m) {
-    state.end++ // max flag is 64 so always one byte
-
-    if (m.gt) c.string.preencode(state, m.gt)
-    if (m.gte) c.string.preencode(state, m.gte)
-    if (m.lt) c.string.preencode(state, m.lt)
-    if (m.lte) c.string.preencode(state, m.lte)
-    if (m.limit) c.uint.preencode(state, m.limit)
-    if (m.data) c.json.preencode(state, m.data)
-  },
-  encode(state, m) {
-    const flags =
-      (m.gt ? 1 : 0) |
-      (m.gte ? 2 : 0) |
-      (m.lt ? 4 : 0) |
-      (m.lte ? 8 : 0) |
-      (m.limit ? 16 : 0) |
-      (m.reverse ? 32 : 0) |
-      (m.data ? 64 : 0)
-
-    c.uint.encode(state, flags)
-
-    if (m.gt) c.string.encode(state, m.gt)
-    if (m.gte) c.string.encode(state, m.gte)
-    if (m.lt) c.string.encode(state, m.lt)
-    if (m.lte) c.string.encode(state, m.lte)
-    if (m.limit) c.uint.encode(state, m.limit)
-    if (m.data) c.json.encode(state, m.data)
-  },
-  decode(state) {
-    const flags = c.uint.decode(state)
-
-    return {
-      gt: (flags & 1) !== 0 ? c.string.decode(state) : null,
-      gte: (flags & 2) !== 0 ? c.string.decode(state) : null,
-      lt: (flags & 4) !== 0 ? c.string.decode(state) : null,
-      lte: (flags & 8) !== 0 ? c.string.decode(state) : null,
-      limit: (flags & 16) !== 0 ? c.uint.decode(state) : 0,
-      reverse: (flags & 32) !== 0,
-      data: (flags & 64) !== 0 ? c.json.decode(state) : null
-    }
-  }
-}
-
 // @cero/create
-const encoding8 = {
+const encoding7 = {
   preencode(state, m) {
     state.end++ // max flag is 2 so always one byte
 
@@ -317,7 +271,7 @@ const encoding8 = {
 }
 
 // @cero/blob-id
-const encoding9 = {
+const encoding8 = {
   preencode(state, m) {
     c.fixed32.preencode(state, m.coreKey)
     c.uint.preencode(state, m.blockOffset)
@@ -390,12 +344,10 @@ function getEncoding(name) {
       return encoding5
     case '@cero/changes':
       return encoding6
-    case '@cero/query':
-      return encoding7
     case '@cero/create':
-      return encoding8
+      return encoding7
     case '@cero/blob-id':
-      return encoding9
+      return encoding8
     default:
       throw new Error('Encoder not found ' + name)
   }

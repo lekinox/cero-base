@@ -201,7 +201,7 @@ export async function openHandle(t, { local, ...opts } = {}) {
   }
   const me = new Handle({ store, identity, network: net, spec, ...opts })
   await me.ready()
-  if (!opts.key) await me.bootstrap({ name: opts.name || null })
+  if (!opts.key) await me.store.bootstrap({ name: opts.name || null })
   t.teardown(
     async () => {
       await me.close().catch(() => {})

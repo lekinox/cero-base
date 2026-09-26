@@ -33,7 +33,8 @@ place you share with other people. `local` never leaves this device.
 | `t.file`                 | a file id, read back as `{ id, type, size, url }` | `null`      |
 
 Every field is optional, and falsy values are not stored: a string written as `''` reads back
-`null`. `t.required(t.string)` makes a field required, and a write without it throws. A `t.file`
+`null`. `t.required(t.string)` makes a field required: a write that leaves it unset throws
+`INVALID`, naming the field. A `t.file`
 field holds the id of an upload, see [Files](data.md#files).
 
 ## Keep one record
@@ -108,8 +109,7 @@ await cero.put(me.local.drafts, { text: 'half a thought' })
 ```
 
 `local` holds collections and singles that stay on this device, at `me.local.<name>`. They have no
-hooks, batches, actions or `t.file`, an undeclared field is dropped rather than refused, and lists
-come back in id order. Cero keeps its own device data there, so these names are taken: `master`,
+hooks, batches, actions or `t.file`, and lists come back in id order. Cero keeps its own device data there, so these names are taken: `master`,
 `keypair`, `handle-keypairs`, `joins`, `inbox`, `outbox`, `environment`, `serving`.
 
 ## Add fields to a builtin
@@ -124,8 +124,8 @@ extends that builtin in every scope, and inside a handle type it is ignored. Red
 builtin's own field fails the build.
 
 The bundled extensions add fields too. A `profile` you declare replaces the extension's, and each
-of its fields is copied onto your row in `members`, so each must exist there and hold a plain
-value: a synced avatar is a `t.string`, a `t.file` does not sync. See
+of its fields is copied onto your row in `members`, so each must exist there with the same type.
+A `t.file` field is copied with its file, so it resolves in every room. See
 [the two that ship](extensions.md#the-two-that-ship).
 
 ## Reserved names

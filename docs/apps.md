@@ -171,8 +171,7 @@ document.addEventListener('visibilitychange', () => {
 - `before`, `after` and `tx` take functions, so they run in the worker and the client has none. Register hooks in an extension's `setup`, which runs there.
 - `peek` reads a local directory, so it runs in a process that has one: chat-desktop's Electron main calls it, through `isInitialized`, before it starts the worker.
 - `restore(me, phrase)` on a client takes the phrase; the worker turns it into the seed.
-- Errors cross as `code` and `message` only, so match `err.code`. A hook that refuses a UI's write arrives as `REFUSED`.
-- A denied join reaches a UI as `DENIED` with no reason.
+- Errors cross as `code` and `message`, and a denied join with its `reason`, so match `err.code`. A hook that refuses a UI's write arrives as `REFUSED`.
 
 ## Ship one spec to both sides
 

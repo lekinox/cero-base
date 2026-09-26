@@ -183,23 +183,95 @@ test('rpc: create envelope carries the name across the wire', (t) => {
   t.is(dec.name, 'general', 'name preserved')
 })
 
-test('rpc: set { upsert: false } is honored over the wire', async (t) => {
-  const { client } = await openPair(t)
-  const res = await set(client.messages, { id: 'ghost', text: 'x' }, { upsert: false })
-  t.absent(res.data, 'update-only miss did not create a row over RPC')
+test('rpc: a read or an update-only set that finds no row resolves as in the worker', async (t) => {
+  const { me, client } = await openPair(t)
+  const ghost = { id: 'ghost', text: 'x' }
+  t.alike(
+    await set(client.messages, ghost, { upsert: false }),
+    await set(me.messages, ghost, { upsert: false })
+  )
   t.is((await get(client.messages, 'ghost')).data, null, 'no row was created on the server')
+  t.alike(await get(client.profile), await get(me.profile), 'a single with no row')
+})
+
+test('rpc: the worker writes only what the client sent', async (t) => {
+  const { me, client } = await openPair(t)
+  const start = Date.now()
+  const { data: row } = await put(client.messages, { text: 'a', attachment: b4a.from([1, 2]) })
+  const { data: stored } = await get(me.messages, row.id)
+  t.ok(stored.createdAt >= start, 'createdAt is the time of the write')
+  t.ok(stored.updatedAt >= start, 'updatedAt is the time of the write')
+
+  await set(client.messages, { id: row.id, text: 'b' })
+  const { data: merged } = await get(me.messages, row.id)
+  t.is(merged.text, 'b')
+  t.alike(merged.attachment, stored.attachment, 'a field the set left out is kept')
+  t.is(merged.createdAt, stored.createdAt)
+
+  await put(client.local.drafts, { text: 'x' })
+  await put(client.local.drafts, { text: 'y' })
+  t.is((await get(me.local.drafts)).data.length, 2, 'two puts with no id are two rows')
+
+  await t.exception(put(client.messages, { txt: 'typo' }), /INVALID/, 'an unknown field')
+})
+
+test('rpc: a field the schema lacks or requires is held as in the worker', async (t) => {
+  const { me, client } = await openPair(t)
+  const writes = [
+    [(ctx) => ctx.tasks, { done: true }],
+    [(ctx) => ctx.local.drafts, { txt: 'x' }],
+    [(ctx) => ctx.local.tasks, {}]
+  ]
+  for (const [ref, row] of writes) {
+    for (const ctx of [client, me]) {
+      const err = await put(ref(ctx), row).catch((e) => e)
+      t.is(err.code, 'INVALID', err.message)
+    }
+  }
+  const { data } = await put(client.tasks, { title: 'a' })
+  await set(client.tasks, { id: data.id, done: true })
+  const { data: row } = await get(me.tasks, data.id)
+  t.is(row.title, 'a', 'a set may leave a required field out')
+  t.is(row.done, true)
+})
+
+test('rpc: a query reaches the worker as the client wrote it', async (t) => {
+  const { me, client } = await openPair(t)
+  for (const text of ['a', 'b', 'c']) await put(client.messages, { text })
+  const ids = (await get(me.messages)).data.map((r) => r.id).sort()
+  for (const q of [
+    { limit: 0 },
+    { limit: 0, total: true },
+    { reverse: false, limit: 1 },
+    { gt: ids[0] },
+    { gte: ids[1], lt: ids[2] },
+    { lte: ids[1], reverse: true }
+  ]) {
+    t.alike(await get(client.messages, q), await get(me.messages, q), JSON.stringify(q))
+  }
+  const { key } = (await get(me.members)).data[0]
+  t.alike(await get(client.members, { key }), await get(me.members, { key }), 'a bytes field')
+})
+
+test('rpc: get and watch take an id the way they do in the worker', async (t) => {
+  const { me, client } = await openPair(t)
+  const room = await open(client.team, { name: 'a' })
+  const { data: row } = await put(client.messages, { text: 'hi' })
+  const first = async (stream) => {
+    for await (const snap of stream) return snap
+  }
+  t.alike(await get(client.team, room.id), await get(me.team, room.id), 'a room by id')
+  t.alike(await first(watch(client.team, room.id)), await get(me.team, room.id))
+  t.alike(await first(watch(client.messages, row.id)), await get(me.messages, row.id))
 })
 
 // ─── error propagation ─────────────────────────────────────────────────────
 
 test('rpc: a server handler error propagates to the client with its code', async (t) => {
   const { client } = await openPair(t)
-  // get-by-id on a ref the server doesn't know — the server throws
+  // a get on a ref the server doesn't know — the server throws
   // CeroError.UNKNOWN and the code crosses the wire on the rejection.
-  await t.exception(
-    client.rpc.getOne({ handle: client.id, ref: 'nopeRef', id: 'x', local: false }),
-    /UNKNOWN/
-  )
+  await t.exception(client.rpc.get({ handle: client.id, ref: 'nopeRef', local: false }), /UNKNOWN/)
 })
 
 // ─── round-trip operators ─────────────────────────────────────────────────
@@ -575,6 +647,31 @@ test("rpc: the UI sees a confirm invite's requests and answers them", async (t) 
   t.is((await refused).code, 'DENIED', 'denied from the UI')
 })
 
+test('rpc: a join denied to the UI rejects with the reason', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const room = await open(owner.team, { name: 'gated' })
+  const refused = open(client.team, await cero.invite(room, { confirm: true })).catch((e) => e)
+  await deny(room, await nextRequest(room), 'full')
+  const err = await refused
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'full')
+})
+
+test('rpc: a denial after the join stopped waiting reaches onerror with the reason', async (t) => {
+  const errors = []
+  const { me, testnet } = await openPair(t, {}, { onerror: (err) => errors.push(err) })
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const room = await open(owner.team, { name: 'gated' })
+  const invite = await cero.invite(room, { confirm: true })
+  t.is((await me._join(invite, 'team', { timeout: 500 }).catch((e) => e)).code, 'TIMEOUT')
+  await deny(room, await nextRequest(room), 'full')
+  const late = await waitUntil(() => errors.find((err) => err.code === 'DENIED'))
+  t.is(late.reason, 'full')
+})
+
 test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const { client } = await openPair(t)
   const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
@@ -695,6 +792,29 @@ test('rpc: the UI turns the radio off and on, and reads it', async (t) => {
   t.is(await radio(), 'off')
   await cero.nearby(client, true)
   t.is(await radio(), 'on')
+})
+
+test('rpc: the UI reads who is nearby, with their name and device type', async (t) => {
+  const radio = makeMockBluetooth()
+  const { me, client } = await openPair(t, { bluetooth: { backend: radio } })
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap, isMobile: true, bluetooth: { backend: radio } }
+  const other = await cero(await t.tmp(), spec, opts)
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  await set(other.profile, { name: 'bee' })
+
+  const peer = await waitUntil(
+    async () => (await get(client.nearby)).data.find((p) => p.name) ?? null
+  )
+  t.alike(
+    peer,
+    await waitUntil(async () => (await get(me.nearby)).data[0] ?? null),
+    'as the worker sees it'
+  )
+  t.alike(
+    { ...peer, device: typeof peer.device },
+    { id: other.id, device: 'string', name: 'bee', isMobile: true }
+  )
 })
 
 test('rpc: an app function runs the same in the worker and in the UI', async (t) => {

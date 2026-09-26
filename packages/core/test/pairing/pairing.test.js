@@ -60,6 +60,21 @@ async function makeHostJoiner(t, opts = {}) {
   return { host: await makeHost(t, opts), joiner: await makeJoiner(t) }
 }
 
+// another member of the host's database, on its own device, answering its joins too
+async function makeMember(t, host, role) {
+  const { mailbox, net, identity, join } = await makeJoiner(t)
+  const { key, encryptionKey, epochs, writer } = await join(await host.pairing.invite({ role }))
+  const opts = { key, encryptionKey, epochs, keyPair: writer }
+  const db = new Database({ store: net.store, identity, network: net, spec, ...opts })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 1 })
+  await waitFor(() => db.writable)
+  const pairing = new Pairing({ mailbox, db })
+  await pairing.ready()
+  t.teardown(() => pairing.close().catch(() => {}), { order: 0 })
+  return { pairing, db, identity }
+}
+
 const sample = () => ({
   key: crypto.randomBytes(32),
   address: crypto.randomBytes(32),
@@ -322,21 +337,32 @@ test('confirm: a join waits as a request until a member accepts it', async (t) =
 
 test('confirm: accept checks the role and the expiry first', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
-  const capped = await host.pairing.invite({ role: 'member', confirm: true })
-  const open = await host.pairing.invite({ confirm: true })
-  const requests = []
-  host.pairing.on('request', (request) => requests.push(request))
-  const joining = [joiner.join(capped).catch((e) => e), joiner.join(open).catch((e) => e)]
-  await waitFor(() => requests.length === 2)
-  const [first, second] = requests
+  const invite = await host.pairing.invite({ role: 'member', confirm: true, ttl: 2000 })
+  const asked = new Promise((resolve) => host.pairing.once('request', resolve))
+  const joining = joiner.join(invite).catch((e) => e)
+  const request = await asked
 
-  await t.exception(first.accept({ role: 'owner' }), /exceeds the invite role/)
-  await t.exception(second.accept({ role: 'volunteer' }), /not a rank/)
-  first.invite.expires = 1
-  await t.exception(first.accept(), /expired/)
-  await first.deny('no')
-  await second.deny('no')
-  for (const err of await Promise.all(joining)) t.is(err.code, 'DENIED')
+  await t.exception(request.accept({ role: 'owner' }), /exceeds the invite role/)
+  await t.exception(request.accept({ role: 'volunteer' }), /not a rank/)
+  await waitFor(() => Invite.parse(invite).expired)
+  await t.exception(request.accept(), /expired/)
+  t.is((await joining).code, 'EXPIRED')
+})
+
+test('confirm: an accept refused at apply leaves the request answerable', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const peer = await makeMember(t, host, 'member')
+  const invite = await host.pairing.invite({ role: 'admin', confirm: true })
+  const asked = new Promise((resolve) => peer.pairing.once('request', resolve))
+  const joining = joiner.join(invite, { timeout: 10000 }).catch((e) => e)
+  const request = await asked
+
+  const err = await request.accept().catch((e) => e)
+  t.is(err.code, 'REFUSED', 'admin is above the role of the accepter')
+  t.is(await peer.pairing.request(request.id), request, 'still waiting')
+  await request.accept({ role: 'member' })
+  t.alike((await joining).key, host.db.key)
+  t.is((await member(peer.db, joiner.identity)).role, 'member')
 })
 
 test('confirm: a member can deny with a reason', async (t) => {

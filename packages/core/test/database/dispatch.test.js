@@ -243,6 +243,24 @@ test('del-member: an admin cannot evict a peer admin', async (t) => {
   t.ok((await db.get('members', v.id)).data, 'an admin could not evict a peer admin')
 })
 
+test('del-member: anyone removes themselves, whatever their rank', async (t) => {
+  for (const role of ['owner', 'admin', 'member', 'reader']) {
+    const { db, identity } = await withRole(t, role, { members: [inviteOp('owner')] })
+    await db.del('members', identity.id)
+    t.absent((await db.get('members', identity.id)).data, `a ${role} left`)
+  }
+})
+
+test('del-member: the last owner of a room others are in cannot leave it', async (t) => {
+  const { db, identity } = await withRole(t, 'owner', { members: [inviteOp('admin')] })
+  const err = await db.del('members', identity.id).catch((e) => e)
+  t.is(err?.code, 'INVALID', 'refused at the writer')
+  t.ok(/another owner/.test(err?.message), 'names the way out')
+  const forged = await apply(db, db.writerKey, 'del-member', { id: identity.id })
+  t.is(forged?.code, 'INVALID', 'and at apply')
+  t.is((await db.get('members', identity.id)).data?.role, 'owner', 'still the owner')
+})
+
 // ─── del-writer: removal hierarchy + self-removal ─────────────────────────
 
 function delWriterOp(writer) {
@@ -302,6 +320,56 @@ test('fast-forward: a head is only trusted while its writer is a device', async 
   t.absent(await trusted(Identity.randomKeyPair().publicKey), 'an unknown writer is refused')
 })
 
+test("fast-forward: a reader's device is never trusted", async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await minted(db, { role: 'reader' })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+  t.is((await db.get('devices', hid.encode(writer))).data?.memberId, identity.id, 'it has a row')
+  t.absent(await db.bee.trusted.isTrusted(writer, db.view), 'a reader is never trusted')
+})
+
+test("fast-forward: a demoted member's device is no longer trusted", async (t) => {
+  const writer = Identity.randomKeyPair()
+  const id = hid.encode(writer.publicKey)
+  const record = { id, key: writer.publicKey, name: 'b', createdAt: 1, updatedAt: 1 }
+  const { db } = await withRole(t, 'owner', { members: [{ ...record, role: 'member' }] })
+  await seat(db, writer)
+  await apply(db, db.writerKey, 'set-member', { ...record, role: 'reader', updatedAt: 2 })
+  t.ok((await db.get('devices', id)).data, 'its device row stays')
+  t.absent(await db.bee.trusted.isTrusted(writer.publicKey, db.view), 'but is not trusted')
+})
+
+test("fast-forward: only an admin's or an owner's device is trusted", async (t) => {
+  const member = Identity.randomKeyPair()
+  const admin = Identity.randomKeyPair()
+  const row = (kp, role) => {
+    const id = hid.encode(kp.publicKey)
+    return { id, key: kp.publicKey, name: role, role, createdAt: 1, updatedAt: 1 }
+  }
+  const { db } = await withRole(t, 'owner', {
+    members: [row(member, 'member'), row(admin, 'admin')]
+  })
+  await seat(db, member)
+  await seat(db, admin)
+  t.absent(
+    await db.bee.trusted.isTrusted(member.publicKey, db.view),
+    "a member's device is not trusted"
+  )
+  t.ok(await db.bee.trusted.isTrusted(admin.publicKey, db.view), "an admin's is")
+})
+
+test('fast-forward: a core with no member cannot write itself a device row', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const stranger = Identity.randomKeyPair().publicKey
+  const id = hid.encode(stranger)
+  t.is((await apply(db, stranger, 'add-device', { id, updatedAt: 1 }))?.code, 'REFUSED')
+  t.is((await apply(db, stranger, 'set-device', { id, updatedAt: 1 }))?.code, 'REFUSED')
+  t.absent((await db.get('devices', id)).data, 'no row')
+  t.absent(await db.bee.trusted.isTrusted(stranger, db.view), 'and no trust')
+})
+
 test('fast-forward: an empty reference trusts only the genesis writer', async (t) => {
   const { db: other } = await bootstrapped(t)
 
@@ -314,7 +382,7 @@ test('fast-forward: an empty reference trusts only the genesis writer', async (t
 
   t.ok(
     await fresh.bee.trusted.isTrusted(fresh.key, fresh.view),
-    'genesis writer vouches for itself pre-devices'
+    'the genesis writer is trusted before any device'
   )
   t.absent(
     await fresh.bee.trusted.isTrusted(other.writerKey, fresh.view),
@@ -514,6 +582,23 @@ test("own: a member cannot edit or delete another member's row", async (t) => {
     'add-as-overwrite refused'
   )
   t.is((await db.get('records', mine.id)).data.text, 'owner-note', 'the row is untouched')
+})
+
+test("own: a hook's ctx write is judged as its op's writer", async (t) => {
+  const writer = Identity.randomKeyPair()
+  const members = [{ id: hid.encode(writer.publicKey), key: writer.publicKey, role: 'member' }]
+  const after = {
+    put: (ctx) => {
+      if (ctx.name === 'messages') return ctx.set('records', { id: 'owners', text: ctx.row.text })
+    }
+  }
+  const { db } = await withRole(t, 'owner', { members, after })
+  await db.put('records', { id: 'owners', text: 'owner-note' })
+  await seat(db, writer)
+
+  const err = await apply(db, writer.publicKey, 'add-messages', { id: genId(), text: 'tampered' })
+  t.is(err?.code, 'REFUSED', 'the member may not overwrite it through a hook either')
+  t.is((await db.get('records', 'owners')).data.text, 'owner-note', 'the row is untouched')
 })
 
 test('own: the author edits its own row, and REMOVE moderates the rest', async (t) => {
@@ -1377,7 +1462,12 @@ test('invites: revoking one needs a rank that could grant it', async (t) => {
 })
 
 test('devices: a device record is written only by its own device', async (t) => {
-  const { db, as, id } = await withMember(t, 'reader')
+  const { db, as, id, writer, sign } = await withMember(t, 'reader')
+  const invite = await minted(db, { role: 'reader' })
+  // a reader's device row comes from its join
+  const identity = { publicKey: writer.publicKey, sign }
+  const join = joinOp(db, invite, { identity, writer: writer.publicKey })
+  await apply(db, writer.publicKey, 'join', join)
   t.is((await as('add-device', { id: '!', updatedAt: 1 }))?.code, 'REFUSED')
   t.absent((await db.get('devices', '!')).data, 'no made-up record')
   const owners = hid.encode(db.writerKey)

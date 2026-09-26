@@ -1,5 +1,5 @@
 // Internal envelope types for @cero-base/core primitives.
-// Edit this file then run `node schema/build.js` to regenerate src/lib/schema/.
+// Edit this file then run `npm run build` to regenerate src/lib/spec/; delete it first to drop a type.
 
 export const NS = 'cero'
 
@@ -81,21 +81,6 @@ export const types = [
     fields: [
       { name: 'prev', type: 'buffer', required: false, array: true },
       { name: 'next', type: 'buffer', required: false, array: true }
-    ]
-  },
-
-  // Typed query envelope — standard filter fields + a json escape hatch.
-  {
-    name: 'query',
-    compact: false,
-    fields: [
-      { name: 'gt', type: 'string', required: false },
-      { name: 'gte', type: 'string', required: false },
-      { name: 'lt', type: 'string', required: false },
-      { name: 'lte', type: 'string', required: false },
-      { name: 'limit', type: 'uint', required: false },
-      { name: 'reverse', type: 'bool', required: false },
-      { name: 'data', type: 'json', required: false }
     ]
   },
 

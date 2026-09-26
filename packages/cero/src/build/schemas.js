@@ -28,7 +28,6 @@ export const main = {
     name: string,
     createdAt: int,
     updatedAt: int,
-    sig: bytes,
     index: uint
   },
   device: {
@@ -67,7 +66,9 @@ export const main = {
     createdAt: int,
     updatedAt: int,
     index: uint,
-    stamp: uint
+    stamp: uint,
+    // the file this one was copied from, so a sync copies it once
+    from: string
   },
   claim: {
     identity: required(bytes),
@@ -126,10 +127,13 @@ export const main = {
     type: required(string),
     invite: required(string)
   },
-  // a device linked over Bluetooth, by its identity, with the name it declared
+  // a person linked over Bluetooth, by the identity that signed their device's key, with the name
+  // and device type that device told
   peer: {
     id: required(string),
-    name: string
+    name: string,
+    isMobile: bool,
+    device: string
   }
 }
 
@@ -139,7 +143,9 @@ export const local = {
   },
   keypair: {
     publicKey: required(bytes),
-    secretKey: required(bytes)
+    secretKey: required(bytes),
+    // 'create' or 'recover' until this device's setup finished: a killed launch resumes it
+    setup: string
   },
   'handle-keypair': {
     id: required(string),
@@ -190,7 +196,9 @@ export const rpc = {
     ref: required(string),
     data: required(bytes),
     local: bool,
-    noUpsert: bool
+    noUpsert: bool,
+    // the indexes of the fields a set sends: the typed row decodes the others as defaults
+    fields: { ...uint, array: true }
   },
   'req-id': {
     handle: required(string),
@@ -255,7 +263,10 @@ export const rpc = {
   'res-handle': {
     id: required(string),
     type: required(string),
-    name: string
+    name: string,
+    // a join turned away: an error crosses as code and message, without its reason
+    denied: bool,
+    reason: string
   },
   'req-add-file': {
     handle: required(string),
@@ -282,7 +293,8 @@ export const rpc = {
   'res-error': {
     message: required(string),
     code: string,
-    stack: string
+    stack: string,
+    reason: string
   },
   // accept, or deny with a reason
   'req-answer': {

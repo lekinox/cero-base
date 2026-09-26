@@ -10,8 +10,6 @@ import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 
 const { AutobeeEncryption } = autobeeEncryption
-/** @type {typeof import('autobee/lib/encryption.js').WriterEncryption} */
-const WriterEncryption = autobeeEncryption.WriterEncryption
 
 // the same derivation constant autobee's encryption uses
 const NS_HASH_KEY = crypto.namespace('autobase', 4)[2]
@@ -202,12 +200,6 @@ export class Keyring {
     this.version++
   }
 }
-
-/**
- * The epoch-aware provider — the class itself is upstream WriterEncryption; the epoch
- * behavior lives on the (patched) base prototype above.
- */
-export class EpochEncryption extends WriterEncryption {}
 
 /**
  * Autobee with a rotation keyring. Every provider autobee constructs (view/system factory,

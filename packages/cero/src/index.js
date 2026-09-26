@@ -64,6 +64,7 @@ export async function cero(dir, spec, opts = {}) {
   let local = null
   let network = null
   let discovery = null
+  let bluetooth = null
   let me = null
   // background failures reach opts.onerror, else the console, never silence
   const onerror = opts.onerror || ((err) => console.error(err))
@@ -86,10 +87,23 @@ export async function cero(dir, spec, opts = {}) {
       await local.ready()
     }
 
-    const { identity, fresh } = await resolveIdentity(opts, local)
-    const writer = local ? (await local.store.get('keypair')).data : null
-    // a supplied identity on a device with no writer recovers; only a cero-minted identity creates
-    const recovering = !writer && (!!opts.key || !fresh)
+    const { identity, fresh, seed } = await resolveIdentity(opts, local)
+    const device = local ? (await local.store.get('keypair')).data : null
+    const done = !!device && !device.setup
+    // cero creates only an identity it minted, in this launch or in the killed one it resumes
+    const creating =
+      !done && !opts.key && !opts.seed && !opts.identity && (fresh || device?.setup === 'create')
+    const recovering = !done && !creating
+    const setup = done ? null : creating ? 'create' : 'recover'
+    const keyPair =
+      done || device?.setup === setup
+        ? { publicKey: device.publicKey, secretKey: device.secretKey }
+        : Identity.randomKeyPair()
+    // the key before the seed: a seed stored without its create would read as one to recover
+    if (local && !done && device?.setup !== setup) {
+      await local.store.set('keypair', { ...keyPair, setup })
+    }
+    if (local && seed) await local.store.set('master', { seed })
     const timeout = opts.recoveryTimeout || TIMEOUT
 
     // a storage remembers its channel; reopening under another would silently rejoin the global network
@@ -111,6 +125,21 @@ export async function cero(dir, spec, opts = {}) {
       onerror
     })
     await network.ready()
+    // the radio before the pointer read: a phrase recovers from a device in range, no internet
+    if (opts.bluetooth) {
+      const bt = opts.bluetooth === true ? {} : opts.bluetooth
+      bluetooth = new Bluetooth(network, {
+        identity,
+        keyPair,
+        // an omitted backend lazy-loads bare-bluetooth, null disables it
+        backend: bt.backend,
+        autoStart: bt.autoStart !== false,
+        maxOutbound: bt.maxOutbound,
+        maxInbound: bt.maxInbound,
+        pipe: bt.pipe
+      })
+      await bluetooth.ready()
+    }
     discovery = network.join(identity.topic)
     // a fresh identity has no peers yet, flushing the announce would only delay onboarding
     if (!fresh) await Promise.race([discovery.flush(), new Promise((r) => setTimeout(r, FLUSH))])
@@ -118,7 +147,7 @@ export async function cero(dir, spec, opts = {}) {
     // the pointer core: identity-signed, written once by the creating device, holds the root key
     const manifest = pointerManifest(store, identity)
     const pointer = store.get(
-      !writer && !recovering
+      creating
         ? { keyPair: { publicKey: identity.publicKey, secretKey: identity.secretKey }, manifest }
         : { key: Hypercore.key(manifest) }
     )
@@ -139,8 +168,12 @@ export async function cero(dir, spec, opts = {}) {
       dir,
       key,
       encryptionKey: opts.encryptionKey,
-      keyPair: writer ? { publicKey: writer.publicKey, secretKey: writer.secretKey } : undefined,
-      pair: false
+      keyPair,
+      bluetooth,
+      pair: false,
+      bootstrap: done
+        ? null
+        : { name: opts.name || null, isMobile: opts.isMobile === true, recovering, timeout }
     })
     // an extension's hooks see every op the root applies; what else it calls waits for the open
     const setups = Promise.all(me.extensions.map(async (ext) => ext.setup?.(me)))
@@ -151,47 +184,25 @@ export async function cero(dir, spec, opts = {}) {
       pointer.close().catch(safetyCatch)
     })
 
-    if (!writer) {
-      const result = await me.bootstrap({
-        name: opts.name || null,
-        isMobile: opts.isMobile === true,
-        recovering,
-        timeout
-      })
-      if (local) {
-        await local.store.set('keypair', {
-          publicKey: result.writer.publicKey,
-          secretKey: result.writer.secretKey
-        })
-      }
-      if (!recovering && pointer.length === 0) {
+    if (!done) {
+      if (creating && pointer.length === 0) {
         await pointer.append(c.encode(c.fixed32, me.store.key))
       }
+      if (local) await local.store.set('keypair', { setup: null })
     }
 
     for (const off of await setups) {
       if (typeof off === 'function') me.once('close', off)
     }
 
-    if (opts.bluetooth) {
-      const bt = opts.bluetooth === true ? {} : opts.bluetooth
-      me._bluetooth = new Bluetooth(me, {
-        // an omitted backend lazy-loads bare-bluetooth, null disables it
-        backend: bt.backend,
-        autoStart: bt.autoStart !== false,
-        maxOutbound: bt.maxOutbound,
-        maxInbound: bt.maxInbound,
-        pipe: bt.pipe
-      })
-      await me._bluetooth.ready()
-    }
-
     return me
   } catch (err) {
-    // before the root Handle exists, tear the raw resources down in reverse order
-    if (me) await me.close().catch(safetyCatch)
+    // before the root opens, tear the raw resources down in reverse order
+    if (me?.opened) await me.close().catch(safetyCatch)
     else {
+      await me?.store.close().catch(safetyCatch)
       await discovery?.destroy().catch(safetyCatch)
+      await bluetooth?.close().catch(safetyCatch)
       await network?.close().catch(safetyCatch)
       await local?.close().catch(safetyCatch)
       await store?.close().catch(safetyCatch)
@@ -254,12 +265,12 @@ async function readPointer(pointer, timeout) {
   }
 }
 
+// `seed` is the one to store: supplied or minted, null when already stored
 async function resolveIdentity(opts, local) {
-  if (opts.identity) return { identity: opts.identity, fresh: false }
+  if (opts.identity) return { identity: opts.identity, fresh: false, seed: null }
 
   const provided = opts.seed
   const stored = !provided && local && (await local.store.get('master')).data?.seed
   const identity = await Identity.create({ seed: provided || stored || null, words: opts.words })
-  if (local && !stored) await local.store.set('master', { seed: identity.seed })
-  return { identity, fresh: !provided && !stored }
+  return { identity, fresh: !provided && !stored, seed: stored ? null : identity.seed }
 }

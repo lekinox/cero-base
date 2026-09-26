@@ -39,7 +39,7 @@ export class Request {
     /** @private */
     this._reply = row.reply
     /** @private */
-    this._settled = false
+    this._answer = null
   }
 
   /**
@@ -49,7 +49,7 @@ export class Request {
    * @returns {Promise<void>}
    */
   async accept({ role } = {}) {
-    if (this._settled) return
+    if (this._answer) return this._answer
     const { invite } = this
     if (invite.expires > 0 && Date.now() > invite.expires) throw CeroError.EXPIRED()
     role = role || invite.role
@@ -59,8 +59,7 @@ export class Request {
     if (!grants(invite.role, role)) {
       throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
     }
-    this._settled = true
-    await this.pairing.db.call('accept', { id: this.id, role })
+    return this._answering(this.pairing.db.call('accept', { id: this.id, role }))
   }
 
   /**
@@ -70,11 +69,26 @@ export class Request {
    * @returns {Promise<void>}
    */
   async deny(reason = '') {
-    if (this._settled) return
-    this._settled = true
+    if (this._answer) return this._answer
     const { db, mailbox } = this.pairing
-    await db.call('del-request', { id: this.id })
     const denied = { status: STATUS_DENIED, reason, key: null, encryptionKey: null, epochs: null }
-    await mailbox.send(this._reply, c.encode(Response, denied))
+    const denying = async () => {
+      await db.call('del-request', { id: this.id })
+      await mailbox.send(this._reply, c.encode(Response, denied))
+    }
+    return this._answering(denying())
+  }
+
+  // the first answer holds while it is written; refused, the request is answerable again
+  /**
+   * @private
+   * @param {Promise<void>} answer
+   */
+  _answering(answer) {
+    this._answer = answer
+    answer.catch(() => {
+      this._answer = null
+    })
+    return answer
   }
 }

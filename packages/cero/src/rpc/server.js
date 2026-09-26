@@ -1,8 +1,8 @@
+import c from 'compact-encoding'
 import safetyCatch from 'safety-catch'
 
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
-import { encodeId } from '@cero-base/core/blobs/codec'
 
 import { cero, restore, toSeed } from '../index.js'
 import {
@@ -40,7 +40,7 @@ import {
  * @property {string} deviceId  Per-device id (empty when no `local` spec).
  * @property {string} deviceName  This device's name, empty when it has none.
  *
- * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec }} RefAndCodec
+ * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
  *
  * @typedef {import('../lib/spec.js').Spec} Spec
  * @typedef {import('../handle/index.js').Context} Context
@@ -142,21 +142,22 @@ export class Server extends RPCServer {
     this._watchStreams.delete(handle)
   }
 
-  /**
-   * Wire the `init` handler: it waits for the boot and attaches the client.
-   * @private
-   */
+  /** @private */
   _onerror(err) {
     if (!this._errors.size) return this._report(err)
     const frame = {
       message: err?.message || String(err),
       code: err?.code || '',
-      stack: err?.stack || ''
+      stack: err?.stack || '',
+      reason: err?.reason || ''
     }
     for (const stream of this._errors) stream.write(frame)
   }
 
-  /** @private */
+  /**
+   * Wire the `errors` and `init` handlers: init waits for the boot and attaches the client.
+   * @private
+   */
   _wireInit() {
     this.rpc.onErrors((stream) => {
       this._errors.add(stream)
@@ -191,44 +192,28 @@ export class Server extends RPCServer {
   _wireData() {
     this.rpc.onAddFile(async ({ handle, data, name, type }) => {
       const h = this._resolve(handle)
-      const blobs = h.blobs // captured once — the instance carries its epoch stamp
-      await blobs.ready()
-      const blobId = await blobs.put(data)
-      const id = encodeId(blobs.key, blobId, type || '')
-      const codec = h.spec.codec
-      await h.store.call('add-file', { id, name: name || null, stamp: blobs.stamp || 0 })
-      const { data: row } = await get(h.files, id)
-      return { data: codec.encodeRow(h.files.schema, row) }
+      const { data: file } = await put(h.files, { data, type: type || '', name: name || null })
+      const { data: row } = await get(h.files, file.id)
+      return { data: h.spec.codec.encodeRow(h.files.schema, row) }
     })
 
     this.rpc.onAddRow(async ({ handle, ref, data, local }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const { data: row } = await put(r, codec.decodeRow(r.schema, data))
+      const { ref: r, codec, info } = this._refOf(handle, ref, local)
+      const { data: row } = await put(r, received(codec.decodeRow(r.schema, data), info))
       return { data: codec.encodeRow(r.schema, row) }
     })
 
-    this.rpc.onSet(async ({ handle, ref, data, local, noUpsert }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const result = await set(r, codec.decodeRow(r.schema, data), { upsert: !noUpsert })
-      // an update-only miss returns null — encode an empty row back
-      return { data: codec.encodeRow(r.schema, result?.data ?? null) }
+    this.rpc.onSet(async ({ handle, ref, data, fields, local, noUpsert }) => {
+      const { ref: r, codec, info } = this._refOf(handle, ref, local)
+      const row = received(codec.decodeRow(r.schema, data), info, fields)
+      const result = await set(r, row, { upsert: !noUpsert })
+      return { data: result ? codec.encodeRow(r.schema, result.data) : null }
     })
 
     this.rpc.onGet(async ({ handle, ref, query, local }) => {
       const { ref: r, codec } = this._refOf(handle, ref, local)
-      const result = /** @type {GetResult} */ (await get(r, codec.decodeQuery(query)))
-      const data =
-        r.kind === 'single'
-          ? codec.encodeRow(r.schema, result.data)
-          : codec.encodeRows(r.schema, result.data)
-      // total is int on the wire: -1 encodes null
-      return { data, total: result.total ?? -1, size: result.size ?? 0 }
-    })
-
-    this.rpc.onGetOne(async ({ handle, ref, id, local }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const { data } = await get(r, id)
-      return { data: data ? codec.encodeRow(r.schema, data) : null }
+      const q = fromWire(query)
+      return encodeGet(r, codec, q, await get(r, q))
     })
 
     this.rpc.onDel(async ({ handle, ref, id, local }) => {
@@ -237,11 +222,12 @@ export class Server extends RPCServer {
     })
 
     this.rpc.onWatch((stream) => {
-      const { handle, ref, query, local } = stream.data
+      const { handle, ref, local } = stream.data
+      const query = fromWire(stream.data.query)
       let r, codec, live
       try {
         ;({ ref: r, codec } = this._refOf(handle, ref, local))
-        live = watch(r, codec.decodeQuery(query))
+        live = watch(r, query)
       } catch (err) {
         // forward the error over the wire by destroying the response stream with it
         stream.once('error', () => {})
@@ -257,11 +243,7 @@ export class Server extends RPCServer {
           pending = snap
           return
         }
-        const data =
-          r.kind === 'single'
-            ? codec.encodeRow(r.schema, snap.data)
-            : codec.encodeRows(r.schema, snap.data)
-        blocked = stream.write({ data, total: snap.total ?? -1, size: snap.size ?? 0 }) === false
+        blocked = stream.write(encodeGet(r, codec, query, snap)) === false
         if (blocked) {
           stream.once('drain', () => {
             blocked = false
@@ -345,7 +327,13 @@ export class Server extends RPCServer {
 
     this.rpc.onJoin(async ({ parent, ref, invite }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
-      const child = await this.me._join(invite, ref)
+      let child
+      try {
+        child = await this.me._join(invite, ref)
+      } catch (err) {
+        if (err.code !== 'DENIED') throw err
+        return { id: '', type: ref, denied: true, reason: err.reason || '' }
+      }
       const id = child.id
       this.handles.set(id, child)
       return { id, type: ref, name: '' }
@@ -425,12 +413,12 @@ export class Server extends RPCServer {
       if (!info || info.internal) throw CeroError.UNKNOWN('local ref', name)
       const r = this.me.local?.[name]
       if (!r) throw CeroError.UNKNOWN('local ref', name)
-      return { ref: r, codec: this.spec.local.codec }
+      return { ref: r, codec: this.spec.local.codec, info }
     }
     const h = this._resolve(id)
     const r = h[name]
     if (!r) throw CeroError.UNKNOWN('ref', name)
-    return { ref: r, codec: h.spec.codec }
+    return { ref: r, codec: h.spec.codec, info: h.spec.meta?.refs?.[name] }
   }
 
   /**
@@ -474,4 +462,31 @@ export async function serve(ipc, spec, opts) {
   const server = new Server(ipc, spec, opts)
   await server.ready()
   return server
+}
+
+// a query crosses as the client wrote it; no bytes is no query
+function fromWire(buf) {
+  return buf ? c.decode(c.any, buf) : undefined
+}
+
+/**
+ * One row for an id or a single ref, the list otherwise; total is int on the wire: -1 encodes null.
+ * @param {GetResult} res
+ */
+function encodeGet(r, codec, query, { data, total, size }) {
+  const one = typeof query === 'string' || r.kind === 'single'
+  return {
+    data: one ? codec.encodeRow(r.schema, data) : codec.encodeRows(r.schema, data),
+    total: total ?? -1,
+    size: size ?? 0
+  }
+}
+
+// a typed row decodes every field, the ones the client left out as defaults: keep what was sent
+function received(row, info, sent = null) {
+  const declared = info?.fields
+  if (!declared) return row
+  const out = row.id ? { id: row.id } : {}
+  for (const i of sent ?? declared.keys()) out[declared[i]] = row[declared[i]]
+  return out
 }

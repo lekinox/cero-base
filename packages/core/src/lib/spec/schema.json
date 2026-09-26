@@ -218,56 +218,6 @@
       ]
     },
     {
-      "name": "query",
-      "namespace": "cero",
-      "compact": false,
-      "flagsPosition": 0,
-      "fields": [
-        {
-          "name": "gt",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "gte",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "lt",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "lte",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "limit",
-          "required": false,
-          "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "reverse",
-          "required": false,
-          "type": "bool",
-          "version": 1
-        },
-        {
-          "name": "data",
-          "required": false,
-          "type": "json",
-          "version": 1
-        }
-      ]
-    },
-    {
       "name": "create",
       "namespace": "cero",
       "compact": false,

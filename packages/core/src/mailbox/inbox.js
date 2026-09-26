@@ -1,4 +1,5 @@
 import ReadyResource from 'ready-resource'
+import safetyCatch from 'safety-catch'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 
@@ -61,7 +62,8 @@ export class Inbox extends ReadyResource {
   /** @private */
   async _close() {
     this._session?.destroy()
-    await this._discovery?.destroy()
+    // the unannounce is a DHT round trip, never waited on
+    this._discovery?.destroy().catch(safetyCatch)
   }
 
   /** @private */

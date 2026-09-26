@@ -3,7 +3,7 @@ import AbortController from 'bare-abort-controller'
 import { Readable } from 'streamx'
 
 import { Ref } from '../../src/handle/index.js'
-import { put, set, get, del, watch, call } from '../../src/lib/operators.js'
+import { put, set, get, del, watch, call, open } from '../../src/lib/operators.js'
 import { onAbort } from '@cero-base/core/utils'
 import { cero } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -95,15 +95,12 @@ test('call: store.call(name, d)', async (t) => {
 })
 
 test('operators: each ref dispatches to its own name', async (t) => {
-  const a = makeRef('profile', 'single')
-  const b = makeRef('messages', 'collection')
-  // share the same fake store so both calls land on it
-  b.ref.handle = a.ref.handle
-
-  await set(a.ref, { name: 'a' })
-  await put(b.ref, { text: 'b' })
-  t.is(a.store.calls[0].name, 'profile')
-  t.is(a.store.calls[1].name, 'messages')
+  const store = new FakeStore({ profile: { kind: 'single' }, messages: { kind: 'collection' } })
+  const handle = { store }
+  await set(new Ref(handle, 'profile', 'single'), { name: 'a' })
+  await put(new Ref(handle, 'messages', 'collection'), { text: 'b' })
+  t.is(store.calls[0].name, 'profile')
+  t.is(store.calls[1].name, 'messages')
 })
 
 test('watch: changes are opt-in', async (t) => {
@@ -138,4 +135,31 @@ test('watch: replaying the changes of every item rebuilds its data', async (t) =
     }
   }
   t.alike([...rows.values()], [b1])
+})
+
+test('get and watch: an id reads one row, a room too', async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close())
+  const room = await open(me.team, { name: 'a' })
+  const { data: row } = await put(me.messages, { text: 'hi' })
+  const first = async (stream) => {
+    for await (const snap of stream) return snap
+  }
+  t.is((await get(me.team, room.id)).data?.name, 'a', 'a room by id')
+  t.is((await get(me.team, 'nope')).data, null)
+  t.alike(await first(watch(me.team, room.id)), await get(me.team, room.id))
+  t.alike(await first(watch(me.messages, row.id)), await get(me.messages, row.id))
+})
+
+test('get: rooms list in the order they were added', async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close())
+  const names = ['a', 'b', 'c', 'd', 'e', 'f']
+  for (const name of names) await open(me.team, { name })
+  t.alike(
+    (await get(me.team)).data.map((row) => row.name),
+    names
+  )
 })

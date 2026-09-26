@@ -9,7 +9,7 @@ export type BuildOpts = {
      */
     ns?: string;
     /**
-     * The extensions to fold in. A module specifier, relative to `specDir`, is imported here for its `extensions` export and written into the spec, so every process runs the same list. A list is folded in only. The bundled two by default, `[]` for none.
+     * The extensions to fold in. A module specifier, relative to `specDir`, is imported here for its `extensions` export and written into the spec, so every process runs the same list. A list is folded in only, and `cero()` then needs it in its options. The bundled two by default, `[]` for none.
      */
     extensions?: string | import('../extensions/index.js').Extension[];
 };
@@ -20,7 +20,7 @@ export type BuildOpts = {
  *
  * @typedef {object} BuildOpts
  * @property {string} [ns]  Namespace prefix for emitted schema ids. Defaults to `'cero'`.
- * @property {string | import('../extensions/index.js').Extension[]} [extensions]  The extensions to fold in. A module specifier, relative to `specDir`, is imported here for its `extensions` export and written into the spec, so every process runs the same list. A list is folded in only. The bundled two by default, `[]` for none.
+ * @property {string | import('../extensions/index.js').Extension[]} [extensions]  The extensions to fold in. A module specifier, relative to `specDir`, is imported here for its `extensions` export and written into the spec, so every process runs the same list. A list is folded in only, and `cero()` then needs it in its options. The bundled two by default, `[]` for none.
  */
 /**
  * Compile a cero schema into wire-level artifacts and write them to disk.

@@ -153,6 +153,26 @@ test('tx: concurrent transactions land in call order', async (t) => {
   t.alike(await texts(db), ['first', 'second', 'third'], 'serialized in the order they were called')
 })
 
+test(
+  'tx: a write outside the batch during the callback goes through on its own',
+  { timeout: 10000 },
+  async (t) => {
+    const { db } = await withRole(t, 'owner')
+    db.before('put', (ctx) => ctx.name !== 'messages' || ctx.row.text !== 'no')
+
+    await t.exception(
+      db.tx(async (tx) => {
+        await tx.put('messages', { text: 'no' })
+        await db.set('profile', { name: 'outside' })
+      }),
+      /REFUSED/
+    )
+
+    t.is((await db.get('profile')).data?.name, 'outside', 'landed on its own, not with the batch')
+    t.alike(await texts(db), [], 'the batch itself was refused')
+  }
+)
+
 test('tx: racing close settles as CLOSED, not a raw error', async (t) => {
   const { db } = await withRole(t, 'owner')
 

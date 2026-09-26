@@ -78,10 +78,12 @@ net.attach(core) // replicate it on every connection
 | `net.replicate(target)`                                            | Replicate once on the current connections.                                                                                                                                                                           |
 | `net.suspend()`, `net.resume()`                                    | Drop the sockets and keep the state; come back.                                                                                                                                                                      |
 | `net.inject(stream, { isInitiator })`                              | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                |
-| `net.setInfo(info)`, `net.getInfo(key)`                            | Tell connected peers `{ name, … }` about this one; read what a peer told, or `null`.                                                                                                                                 |
+| `net.setInfo(info)`, `net.getInfo(key)`                            | Tell the peers of injected streams `{ name, … }` about this one; read what such a peer told, or `null`. Swarm connections carry none of it.                                                                          |
 | `net.peering()`                                                    | The mirror client, built on first use. Needs `store`.                                                                                                                                                                |
 | `swarm`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live swarm and its state.                                                                                                                                                                                        |
-| `'connection'`, `'peer-info'` events                               | `(stream, info)` per connection; `(key, info)` when a peer tells its info.                                                                                                                                           |
+| `'connection'`, `'peer-info'` events                               | `(stream, info)` per connection; `(key, info)` when an injected stream's peer tells its info.                                                                                                                        |
+
+An `'active'` join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s. After a connection drops, or on `resume()`, active topics look up again, backing off from 5 s to 60 s, until the lost peers are back, and after a network change this peer announces where it is now reached.
 
 `channelTopic(topic, channel)` is the topic a channel really joins.
 
@@ -125,23 +127,23 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `pinned`        | Always search and announce, outside the network's presence budget.                      |
 | `onerror`       | Ops skipped or refused at apply, and the log's own errors.                              |
 
-| Method                                               | Does                                                                                                                    |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `put(name, row)`                                     | `{ data }`: insert into a collection, or overwrite by id.                                                               |
-| `set(name, row, { upsert })`                         | `{ data }`, or `null` when `{ upsert: false }` finds no row. Merges, keeping `createdAt`.                               |
-| `get(name, idOrQuery)`                               | `{ data }`, or `{ data, total, size }` for a query, as Cero's `get`.                                                    |
-| `del(name, id)`                                      | Delete by id, or clear a single.                                                                                        |
-| `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                              |
-| `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                        |
-| `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                     |
-| `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it.                                           |
-| `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref: check `ctx.name`. Each returns its remover.      |
-| `rotate()`                                           | `{ epoch }`: a new key sealed to every member. `INVALID` inside `tx`.                                                   |
-| `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it. |
-| `claim()`                                            | Seat this device's writer where your identity is already a member that writes.                                          |
-| `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                      |
-| `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                          |
-| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                              |
+| Method                                               | Does                                                                                                                                       |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `put(name, row)`                                     | `{ data }`: insert into a collection, or overwrite by id, keeping `createdAt`. It stamps the timestamps, ignoring any you pass.            |
+| `set(name, row, { upsert })`                         | `{ data }`, or `null` when `{ upsert: false }` finds no row. Merges, keeping `createdAt`.                                                  |
+| `get(name, idOrQuery)`                               | `{ data }`, or `{ data, total, size }` for a query, as Cero's `get`.                                                                       |
+| `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                           |
+| `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                 |
+| `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                           |
+| `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                        |
+| `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs. |
+| `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
+| `rotate()`                                           | `{ epoch }`: a new key sealed to every member. `INVALID` inside `tx`.                                                                      |
+| `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
+| `claim()`                                            | Seat this device's writer where your identity is already a member that writes.                                                             |
+| `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
+| `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
+| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
 
 It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view` and `behind`, and emits:
 
@@ -342,7 +344,7 @@ await client.ready()
 await client.rpc.ping('hi') // 'pong:hi'
 ```
 
-Both take `(ipc, spec)`: `spec.rpc` is the hrpc class, `spec.schema` its hyperschema (`REQUIRED`). `.rpc` is the hrpc instance, whose commands are the ones your build declares. `bindCodec(spec)` adds `spec.codec`, the row and query encoders Cero's own channel uses. Cero's `serve(ipc, spec)` and its client's `cero(ipc, spec)` are this with Cero's handlers on one end and its operators on the other.
+Both take `(ipc, spec)`: `spec.rpc` is the hrpc class, `spec.schema` its hyperschema (`REQUIRED`). `.rpc` is the hrpc instance, whose commands are the ones your build declares. `bindCodec(spec)` adds `spec.codec`, the row encoders Cero's own channel uses. Cero's `serve(ipc, spec)` and its client's `cero(ipc, spec)` are this with Cero's handlers on one end and its operators on the other.
 
 ## How Cero puts them together
 

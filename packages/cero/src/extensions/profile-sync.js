@@ -1,5 +1,6 @@
 import { t } from '../lib/spec.js'
-import { get, set, watch } from '../lib/operators.js'
+import { get, watch } from '../lib/operators.js'
+import { mirror } from './mirror.js'
 
 /**
  * Mirror your `profile` onto your `member` row in every handle you're in.
@@ -15,14 +16,8 @@ export function profileSync({ fields = { avatar: t.string } } = {}) {
       members: t.extend(fields)
     },
     setup(me) {
-      const keys = ['name', ...Object.keys(fields)]
-
-      // an unconditional set on every open is a room-wide op forever
-      const publish = async (child, profile) => {
-        const { data: member } = await get(child.members, me.identity.id)
-        if (member && keys.every((k) => member[k] === profile[k])) return
-        await set(child.members, { id: me.identity.id, ...profile }, { upsert: false })
-      }
+      const publish = (child, profile) =>
+        mirror(me.profile, profile, fields, child.members, me.identity.id)
 
       const onHandle = async (child) => {
         const { data: profile } = await get(me.profile)

@@ -15,7 +15,7 @@ test.configure({ timeout: 90000 })
 
 async function joinAsRoot(t, testnet, inviteStr, opts = {}) {
   const peer = await openHandle(t, { testnet, ...opts })
-  await peer.me.bootstrap({ name: 'peer-root' })
+  await peer.me.store.bootstrap({ name: 'peer-root' })
   const child = await open(peer.me.team, inviteStr)
   t.teardown(() => child.close().catch(() => {}))
   return { ...peer, room: child }
@@ -30,7 +30,7 @@ const memberCount = (room, n) =>
 test('invites: a member cannot mint an invite above its own rank', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
 
   const room = await open(a.me.team, { name: 'clinic' })
   const b = await joinAsRoot(t, testnet, await cero.invite(room, { role: 'member' }))
@@ -45,7 +45,7 @@ test('invites: a member cannot mint an invite above its own rank', async (t) => 
 test('invites: a member cannot revoke — an owner can, and every replica drops it', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   const b = await joinAsRoot(t, testnet, await cero.invite(room, { role: 'member' }))
   await memberCount(room, 2)
@@ -66,7 +66,7 @@ test('invites: a member cannot revoke — an owner can, and every replica drops 
 test('invites: survive a close/reopen — answered by a fresh handle', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
 
   const room = await open(a.me.team, { name: 'clinic' })
   const inviteStr = await cero.invite(room)
@@ -92,7 +92,7 @@ test('invites: survive a close/reopen — answered by a fresh handle', async (t)
 test('invites: any member replica answers an invite after the minter goes offline', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
@@ -113,7 +113,7 @@ test('invites: any member replica answers an invite after the minter goes offlin
 test('invites: revoke propagates — other members stop answering', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
@@ -135,7 +135,7 @@ test('invites: revoke propagates — other members stop answering', async (t) =>
 test('invites: reuse admits multiple joiners and its row survives', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 
@@ -151,7 +151,7 @@ test('invites: reuse admits multiple joiners and its row survives', async (t) =>
 test('invites: a removed member comes back only through an invite minted after its removal', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'records' })
   t.teardown(() => room.close().catch(() => {}))
   const before = await cero.invite(room, { reuse: true })
@@ -176,7 +176,7 @@ test('invites: a removed member comes back only through an invite minted after i
 test('invites: after a removal and a rotation, old and new invites admit, and the removed member answers none', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
-  await a.me.bootstrap({ name: 'a-root' })
+  await a.me.store.bootstrap({ name: 'a-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
 

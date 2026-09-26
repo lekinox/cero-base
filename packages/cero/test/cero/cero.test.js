@@ -4,6 +4,7 @@ import fs from 'fs'
 import path from 'path'
 import b4a from 'b4a'
 import c from 'compact-encoding'
+import { discoveryKey } from 'hypercore-crypto'
 
 import { Identity } from '@cero-base/core/identity'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -495,6 +496,82 @@ test('cero: a failed open releases the storage lock so a retry succeeds', async 
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   t.ok(me.id, 'retry opened cleanly — storage was not left locked')
+})
+
+test('cero: a recovery that times out as the root opens releases the storage lock', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const { seed } = await Identity.create()
+  const opts = { bootstrap: testnet.bootstrap, seed, key: b4a.alloc(32, 1), recoveryTimeout: 500 }
+  await t.exception(cero(dir, spec, opts), /TIMEOUT/)
+  await t.exception(cero(dir, spec, opts), /TIMEOUT/, 'the retry recovers again, no lock held')
+})
+
+test('cero: a first launch that dies setting up finishes as the same identity on the next', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  let first = null
+  // the launch dies as the root starts to open, before anything of it landed
+  const dies = {
+    setup(me) {
+      if (first) return
+      first = { id: me.identity.id, writer: me.store.keyPair.publicKey }
+      me.store.close()
+    }
+  }
+  const opts = { bootstrap: testnet.bootstrap, extensions: [dies], recoveryTimeout: 2000 }
+  await t.exception(cero(dir, spec, opts), /CLOSED/)
+
+  const me = await cero(dir, spec, opts)
+  t.is(me.id, first.id, 'the same identity, created, not recovered')
+  t.alike(me.store.keyPair.publicKey, first.writer, 'with the device key it began with')
+  t.ok(me.store.writable, 'set up')
+
+  const row = (await get(me.devices, me.device.id)).data
+  await me.close()
+  const again = await cero(dir, spec, opts)
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const { data } = await get(again.devices, again.device.id)
+  t.alike(data, row, 'a finished setup is not run again')
+})
+
+test('cero: a first launch that dies setting up, reopened with a phrase, recovers it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: a } = await ceroOpen(t, { testnet })
+  const dir = await t.tmp()
+  const dies = { setup: (me) => me.store.close() }
+  await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap, extensions: [dies] }), /CLOSED/)
+
+  const b = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed: a.identity.seed })
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  t.is(b.id, a.id, 'the identity of the phrase')
+  t.alike(b.store.key, a.store.key, 'recovered into its database, never created')
+})
+
+test('cero: a recovery that dies once seated resumes with its device key, no dead seat', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: a } = await ceroOpen(t, { testnet })
+  let seat = null
+  // the launch dies once the other device seated it, before its device row lands
+  const dies = {
+    setup(me) {
+      cero.before(me.devices, async (ctx) => {
+        if (seat || ctx.op !== 'set' || ctx.id !== me.device?.id) return true
+        seat = ctx.id
+        await waitUntil(async () => (await get(a.devices, seat)).data)
+        return false
+      })
+    }
+  }
+  const dir = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap, seed: a.identity.seed, extensions: [dies] }
+  await t.exception(cero(dir, spec, opts), /REFUSED/)
+
+  const b = await cero(dir, spec, opts)
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  t.is(b.device.id, seat, 'resumed with the device key it began with')
+  await waitUntil(async () => (await get(a.devices, b.device.id)).data)
+  t.is((await get(a.devices)).data.length, 2, 'one seat per machine, no dead one')
 })
 
 test('cero(): rejects bad dir', async (t) => {
@@ -1268,6 +1345,68 @@ test('tx: the writes made through the batch land together, or none do', async (t
   )
 })
 
+test(
+  'tx: a write outside the batch during the callback goes through on its own',
+  { timeout: 20000 },
+  async (t) => {
+    const { me } = await ceroOpen(t)
+    cero.before(me.clips, ({ row }) => row.data !== 'no')
+    await t.exception(
+      cero.tx(me, async (tx) => {
+        await put(tx.clips, { data: 'no' })
+        await set(me.profile, { name: 'outside' })
+      }),
+      /REFUSED/
+    )
+    t.is(
+      (await get(me.profile)).data?.name,
+      'outside',
+      'landed on its own, not with the refused batch'
+    )
+    t.is((await get(me.clips)).data.length, 0, 'the batch itself was refused')
+  }
+)
+
+test('open: an open by id that fails closes the room it opened', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await ceroOpen(t, { testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const topic = discoveryKey(room.store.key)
+  const b = await ceroOpen(t, { testnet, seed: a.me.identity.seed })
+  await waitUntil(async () => (await get(b.me.team)).data.length === 1)
+  await a.me.close()
+
+  await t.exception(open(b.me.team, { id: room.id }), /TIMEOUT/)
+  t.is(b.me.network.presence.mode(topic), null, 'the half-opened room left the swarm')
+})
+
+test('leave: you are no longer a member of the room you left', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  const joined = await open(joiner.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
+
+  await cero.leave(joined)
+  t.is((await get(joiner.me.team)).data.length, 0, 'the room left the list')
+  await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
+  t.pass('the owner sees the member gone')
+})
+
+test('leave: the last owner cannot leave members behind', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  await open(joiner.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
+
+  await t.exception(cero.leave(room), /INVALID/)
+  t.is((await get(owner.me.team)).data.length, 1, 'the room stays in the list')
+  t.ok((await get(room.members, owner.me.id)).data, 'and the owner stays in the room')
+})
+
 test('leave: a room can be left, the root cannot', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })
@@ -1290,6 +1429,18 @@ test('extensions: setup runs before the root opens, and what it reads waits for 
   await ceroOpen(t, { extensions })
   t.is(opened, false, 'setup ran first')
   t.alike(read, { data: null }, 'the read waited for the open')
+})
+
+test('extensions: a write awaited in setup waits until the root can take it', async (t) => {
+  const extensions = [
+    {
+      async setup(me) {
+        await set(me.profile, { name: 'set up' })
+      }
+    }
+  ]
+  const { me } = await ceroOpen(t, { extensions })
+  t.is((await get(me.profile)).data?.name, 'set up')
 })
 
 test('extensions: the bundled two run when nothing is named', async (t) => {

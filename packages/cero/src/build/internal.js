@@ -106,11 +106,27 @@ export function refs(ns, scope) {
         kind: def.kind || 'collection',
         path: [name],
         internal: true,
-        ...(scope === 'main' && { verb: def.type }),
+        ...(scope === 'main' && declare({ verb: def.type }, schemas.main[def.type])),
         schema: `@${ns}/${def.type}`
       }
     ])
   )
+}
+
+/**
+ * Add `fields` to a ref: file ones resolve on read, required ones the RPC client fills on a set.
+ *
+ * @param {RefInfo} ref
+ * @param {Record<string, FieldType>} fields
+ * @returns {RefInfo}
+ */
+export function declare(ref, fields) {
+  ref.fields = [...(ref.fields ?? []), ...Object.keys(fields)]
+  for (const [name, m] of Object.entries(fields)) {
+    if (m.prim === 'file') ref.files = [...(ref.files ?? []), name]
+    if (m.required) ref.required = { ...ref.required, [name]: m.prim }
+  }
+  return ref
 }
 
 /**
@@ -161,7 +177,6 @@ const COMMANDS = [
   ['add-handle', 'req-row', 'res-handle'],
   ['set', 'req-row', 'res-data'],
   ['get', 'req-query', 'res-rows'],
-  ['get-one', 'req-id', 'res-data'],
   ['del', 'req-id', 'res-ok'],
   ['watch', 'req-query', 'res-rows', true],
   ['call', 'req-call', 'res-data'],

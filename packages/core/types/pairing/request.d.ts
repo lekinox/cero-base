@@ -68,7 +68,7 @@ export declare class Request {
     /** @private */
     _reply;
     /** @private */
-    _settled;
+    _answer;
     /** @param {RequestOpts} opts */
     constructor({ pairing, invite, row }: RequestOpts);
     /**
@@ -85,4 +85,9 @@ export declare class Request {
      * @returns {Promise<void>}
      */
     deny(reason?: string): Promise<void>;
+    /**
+     * @private
+     * @param {Promise<void>} answer
+     */
+    private _answering;
 }

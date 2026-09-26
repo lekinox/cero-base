@@ -79,17 +79,17 @@ An extension's `setup(me)` also reads these, in process only. App code sticks to
 
 Every context carries these, undeclared. `t.extend` adds fields to the first six.
 
-| Ref        | On    | Rows                                                                                                                                                                                                                                                                                         |
-| ---------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `members`  | every | `{ id, role, name, key, createdAt, updatedAt, index }`. `id` is the member's identity id.                                                                                                                                                                                                    |
-| `devices`  | every | `{ id, memberId, name, isMobile, createdAt, updatedAt, index }`: each member's devices.                                                                                                                                                                                                      |
-| `invites`  | every | `{ id, role, expires, reuse, confirm, createdAt, index }`: live invites. `id` is the invite's public id in hex; `expires` is ms since 1970, `0` for never.                                                                                                                                   |
-| `requests` | every | `{ id, identity, invite, role, admitted, expires, reply, createdAt, index }`: a join until the joiner has its keys. `id` is the joiner's device, `identity` their identity key as raw bytes, `invite` the invite id in hex. `{ admitted: false }` rows wait on `cero.accept` or `cero.deny`. |
-| `handles`  | every | `{ id, type, key, encryptionKey, name, createdAt, updatedAt, index }`: on the root, your rooms, which `me.room` reads by type.                                                                                                                                                               |
-| `files`    | every | `{ id, name, memberId, type, size, url, index }`: files put into the context. `url` is served on this device.                                                                                                                                                                                |
-| `status`   | every | One row, [below](#status). Read-only.                                                                                                                                                                                                                                                        |
-| `joins`    | root  | `{ id, type, invite }`: the joins this device still waits on. `id` is the room's discovery key in hex, not its `room.id`. Read-only.                                                                                                                                                         |
-| `nearby`   | root  | `{ id, name }`: the people linked over Bluetooth, by identity id. `name` is `null`. Read-only.                                                                                                                                                                                               |
+| Ref        | On    | Rows                                                                                                                                                                                                                                                                                                                                                     |
+| ---------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `members`  | every | `{ id, role, name, key, createdAt, updatedAt, index }`. `id` is the member's identity id.                                                                                                                                                                                                                                                                |
+| `devices`  | every | `{ id, memberId, name, isMobile, createdAt, updatedAt, index }`: each member's devices.                                                                                                                                                                                                                                                                  |
+| `invites`  | every | `{ id, role, expires, reuse, confirm, createdAt, index }`: live invites. `id` is the invite's public id in hex; `expires` is ms since 1970, `0` for never.                                                                                                                                                                                               |
+| `requests` | every | `{ id, identity, invite, role, admitted, expires, reply, createdAt, index }`: a join until the joiner has its keys. `id` is the joiner's device, `identity` their identity key as raw bytes, `invite` the invite id in hex. `{ admitted: false }` rows wait on `cero.accept` or `cero.deny`.                                                             |
+| `handles`  | every | `{ id, type, key, encryptionKey, name, createdAt, updatedAt, index }`: on the root, your rooms, which `me.room` reads by type.                                                                                                                                                                                                                           |
+| `files`    | every | `{ id, name, memberId, type, size, url, index }`, and `from` on a copy of another context's file: files put into the context. `url` is served on this device.                                                                                                                                                                                            |
+| `status`   | every | One row, [below](#status). Read-only.                                                                                                                                                                                                                                                                                                                    |
+| `joins`    | root  | `{ id, type, invite }`: the joins this device still waits on. `id` is the room's discovery key in hex, not its `room.id`. Read-only.                                                                                                                                                                                                                     |
+| `nearby`   | root  | `{ id, device, name, isMobile }`: the devices linked over Bluetooth, one row each: `id` is the person's identity (your own other devices carry yours), `device` a key that stays the same for that device. `name` is their `profile`'s, else theirs in a room you share and have open here, else `null`; `isMobile` is their device's option. Read-only. |
 
 `status`, `joins` and `nearby` are computed on the device and never stored. A schema cannot declare `status` anywhere, nor `joins` or `nearby` at the root.
 
@@ -108,19 +108,19 @@ Each row of your own collections carries `id`, `memberId` (its author), `index` 
 
 ## Data
 
-| Call                                        | Resolves                                                                | Notes                                                                                                                                                                      |
-| ------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cero.put(ref, row)`                        | `{ data }`, the stored row                                              | Insert into a collection, or overwrite by `id`. Stamps `id`, `createdAt`, `updatedAt`. A single is written with `set`.                                                     |
-| `cero.put(ctx.files, { data, type, name })` | `{ data }`: the file's `{ id, type, size, url }`, and `name` when given | `data` is the bytes, `type` a MIME type.                                                                                                                                   |
-| `cero.set(ref, row, { upsert })`            | `{ data }`, or `null` when `{ upsert: false }` finds no row             | Merge over the stored row, keeping `createdAt`. On a collection it inserts when `id` is new or missing, unless `{ upsert: false }`.                                        |
-| `cero.get(ref)` on a single                 | `{ data }`, the row or `null`                                           |                                                                                                                                                                            |
-| `cero.get(ref, id)`                         | `{ data }`, the row or `null`                                           |                                                                                                                                                                            |
-| `cero.get(ref, query)`                      | `{ data, total, size }`                                                 | `size` rows in `data`. `total` counts every match, or is `null` when `limit` filled the page: add `total: true` to count anyway. On a handle ref, your rooms of that type. |
-| `cero.del(ref, id)`                         | `undefined`                                                             | Delete by id. `cero.del(ref)` clears a single.                                                                                                                             |
-| `cero.watch(ref, query, { signal })`        | a `Readable`                                                            | Each item is what `get` returns at that moment. [Below](#watch).                                                                                                           |
-| `cero.call(ref, data)`                      | `undefined`                                                             | Run an action: its `after` hooks are what it does. `INVALID` when it has none on this device.                                                                              |
+| Call                                        | Resolves                                                                | Notes                                                                                                                                                                                 |
+| ------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cero.put(ref, row)`                        | `{ data }`, the stored row                                              | Insert into a collection, or overwrite by `id`, keeping its `createdAt`. Stamps `id` when missing, and `createdAt` and `updatedAt` over any you pass. A single is written with `set`. |
+| `cero.put(ctx.files, { data, type, name })` | `{ data }`: the file's `{ id, type, size, url }`, and `name` when given | `data` is the bytes, `type` a MIME type.                                                                                                                                              |
+| `cero.set(ref, row, { upsert })`            | `{ data }`, or `null` when `{ upsert: false }` finds no row             | Merge over the stored row, keeping `createdAt`. On a collection it inserts when `id` is new or missing, unless `{ upsert: false }`.                                                   |
+| `cero.get(ref)` on a single                 | `{ data }`, the row or `null`                                           |                                                                                                                                                                                       |
+| `cero.get(ref, id)`                         | `{ data }`, the row or `null`                                           | On a handle ref, that room's row in your list.                                                                                                                                        |
+| `cero.get(ref, query)`                      | `{ data, total, size }`                                                 | `size` rows in `data`. `total` counts every match, or is `null` when `limit` filled the page: add `total: true` to count anyway. On a handle ref, your rooms of that type.            |
+| `cero.del(ref, id)`                         | `undefined`                                                             | Delete by id. `cero.del(ref)` clears a single.                                                                                                                                        |
+| `cero.watch(ref, query, { signal })`        | a `Readable`                                                            | Each item is what `get` returns at that moment; `query` may be an id. [Below](#watch).                                                                                                |
+| `cero.call(ref, data)`                      | `undefined`                                                             | Run an action: its `after` hooks are what it does. `INVALID` when it has none on this device.                                                                                         |
 
-A write to `me` or a room with a field the schema does not declare throws `INVALID`. Through an index, rows come back ordered by the index fields, then `id`; without one, in insertion order. `me.local` lists in `id` order.
+A write with a field the schema does not declare, or a row missing a `t.required` field, throws `INVALID` naming the field. Through an index, rows come back ordered by the index fields, then `id`; a range (`gt`, `gte`, `lt`, `lte`) in `id` order, reading only the page; otherwise in insertion order. `me.local` lists in `id` order.
 
 | Query key                | Meaning                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------ |
@@ -147,28 +147,28 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 
 ## Rooms
 
-| Call                                          | Resolves                     | Notes                                                                                                                                                         |
-| --------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cero.open(ref, { name })`                    | the room                     | Create one. `name` is optional.                                                                                                                               |
-| `cero.open(ref, { id })`                      | the room                     | Open one in your list. `UNKNOWN` when it is not there.                                                                                                        |
-| `cero.open(ref, invite)`, `(ref, { invite })` | the room                     | Join. [Below](#join).                                                                                                                                         |
-| `cero.invite(room, opts)`                     | the invite, a string         | [Options below](#invite-options). `INVALID` on the root.                                                                                                      |
-| `cero.revoke(room, invite)`                   | `true` if it was live        | Takes the string `cero.invite` returned, not a `room.invites` row. Its waiting requests go with it. Needs remove: `DENIED`.                                   |
-| `cero.accept(room, request, { role })`        | `undefined`                  | Let in a `room.requests` row. `role` is the invite's by default: above it `INVALID`, above your own `REFUSED`. `EXPIRED` past the invite's `ttl`.             |
-| `cero.deny(room, request, reason)`            | `undefined`                  | Turn it away: the joiner's `open` rejects with `DENIED`.                                                                                                      |
-| `cero.rotate(room)`                           | `{ epoch }`                  | Re-key: a member removed before it reads nothing written after. A removal re-keys by itself shortly after; this is the one to await. Needs remove: `REFUSED`. |
-| `cero.leave(room)`                            | `undefined`                  | Drop the room from your list on every device and close it here. You stay a member until removed. `INVALID` on the root.                                       |
-| `cero.close(ctx)`                             | `undefined`                  | Close a room, or `me` and everything under it. The data stays.                                                                                                |
-| `cero.cancel(me, invite)`                     | `true` if a join was waiting | Give up a join for good. Its waiting `open` rejects with `CLOSED`.                                                                                            |
+| Call                                          | Resolves                     | Notes                                                                                                                                                              |
+| --------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cero.open(ref, { name })`                    | the room                     | Create one. `name` is optional.                                                                                                                                    |
+| `cero.open(ref, { id })`                      | the room                     | Open one in your list. `UNKNOWN` when it is not there.                                                                                                             |
+| `cero.open(ref, invite)`, `(ref, { invite })` | the room                     | Join. [Below](#join).                                                                                                                                              |
+| `cero.invite(room, opts)`                     | the invite, a string         | [Options below](#invite-options). `INVALID` on the root.                                                                                                           |
+| `cero.revoke(room, invite)`                   | `true` if it was live        | Takes the string `cero.invite` returned, not a `room.invites` row. Its waiting requests go with it. Needs remove: `DENIED`.                                        |
+| `cero.accept(room, request, { role })`        | `undefined`                  | Let in a `room.requests` row. `role` is the invite's by default: above it `INVALID`, above your own `REFUSED`. `EXPIRED` past the invite's `ttl`.                  |
+| `cero.deny(room, request, reason)`            | `undefined`                  | Turn it away: the joiner's `open` rejects with `DENIED` and your `reason` as `err.reason`.                                                                         |
+| `cero.rotate(room)`                           | `{ epoch }`                  | Re-key: a member removed before it reads nothing written after. A removal re-keys by itself shortly after; this is the one to await. Needs remove: `REFUSED`.      |
+| `cero.leave(room)`                            | `undefined`                  | Remove yourself from its members, drop it from your list on every device and close it here. `INVALID` on the root, and for the last owner of a room others are in. |
+| `cero.close(ctx)`                             | `undefined`                  | Close a room, or `me` and everything under it. The data stays.                                                                                                     |
+| `cero.cancel(me, invite)`                     | `true` if a join was waiting | Give up a join for good. Its waiting `open` rejects with `CLOSED`.                                                                                                 |
 
-`accept` and `deny` need the invite permission (`REFUSED`) and throw `UNKNOWN` for a request already settled or not seen yet. To leave a room for everyone, remove yourself first: `cero.del(room.members, me.id)`, then `cero.leave(room)`.
+`accept` and `deny` need the invite permission (`REFUSED`) and throw `UNKNOWN` for a request already settled or not seen yet.
 
 ### Join
 
 `cero.open(me.room, invite)` resolves the room once a member's device lets you in and hands over its keys. A room already in your list resolves at once.
 
 - After 30 s it rejects with `TIMEOUT` and the join goes on: it is listed in `me.joins`, resumes after a restart, and the room joins `me.room` when you are let in. `open` again with the same invite waits on the same join; `cero.cancel(me, invite)` ends it.
-- It rejects with `DENIED` when a member turned you away, `EXPIRED` when the invite is past its `ttl`, `INVALID_INVITE` when the string is not an invite, and `NETWORK_ERROR` when the join could not be sent: `open` again.
+- It rejects with `DENIED`, their reason in `err.reason`, when a member turned you away, `EXPIRED` when the invite is past its `ttl`, `INVALID_INVITE` when the string is not an invite, and `NETWORK_ERROR` when the join could not be sent: `open` again.
 - A spent or revoked invite is never answered: the join waits until the invite expires, or until you cancel it.
 
 ### Invite options
@@ -190,7 +190,7 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 | `member` | write, invite                            |
 | `reader` | read                                     |
 
-Set a role with `cero.set(room.members, { id, role })`: you need to be an admin or owner, outrank the member's current role, and not grant above your own (`REFUSED` otherwise). Remove a member with `cero.del(room.members, id)`: admin or owner, and outrank them; removing yourself always works. `cero.del(room.devices, id)` removes a device the same way. A member set to reader stops writing at once, and writes again once set back.
+Set a role with `cero.set(room.members, { id, role })`: you need to be an admin or owner, outrank the member's current role, and not grant above your own (`REFUSED` otherwise). Remove a member with `cero.del(room.members, id)`: admin or owner, and outrank them. Anyone may remove themselves, except the last owner of a room others are in (`INVALID`). `cero.del(room.devices, id)` removes a device the same way. A member set to reader stops writing at once, and writes again once set back.
 
 ## App and device
 
@@ -215,8 +215,9 @@ const before = await cero.tx(room, async (tx) => {
 })
 ```
 
-- `cero.tx(ctx, fn)` resolves what `fn` returns. Writes through `tx`, the context `fn` receives, land as one batch, or none do when one is refused. Writes through `room` itself land outside it.
-- `fn` must take `tx` (`INVALID` otherwise). Reads through `tx` see the room as it was before the batch.
+- `cero.tx(ctx, fn)` resolves what `fn` returns. Writes through `tx`, the context `fn` receives, land as one batch, or none do when one is refused. A write through `room` itself lands on its own, outside the batch.
+- `fn` must take `tx` (`INVALID` otherwise). Reads through `tx` see what has landed, not the batch's own writes.
+- Atomic, not isolated: other writes, from this device or another, can land between `fn`'s reads and the commit.
 - `cero.rotate` cannot run inside (`INVALID`). Not on a client.
 
 ## Hooks
@@ -246,18 +247,19 @@ A hook runs where the data lives: at apply, on every peer, inside the op's trans
 | `cero.before(ref, fn, { signal })` | a remover | Runs before a write or action lands. Return `false` to refuse it; change `ctx.row` to change what lands.                                  |
 | `cero.after(ref, fn, { signal })`  | a remover | Runs after it lands, in the same transaction: derive rows with `ctx.put`, `ctx.set`, `ctx.del`. On an action, it is what the action does. |
 
-| `ctx`                      | Holds                                                                                                                                                |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `op`                       | `'put'`, `'set'`, `'del'`, or the action's name. `cero.set` on a collection is an upsert and applies as `'put'`, unless `{ upsert: false }`.         |
-| `name`                     | The ref's name.                                                                                                                                      |
-| `row`                      | The row being written, merged with the stored one on a `'set'`; `null` on a `'del'`; an action's data.                                               |
-| `existing`                 | The stored row, or `null`.                                                                                                                           |
-| `id`                       | The row's id, on a collection.                                                                                                                       |
-| `memberId`, `role`         | Who writes.                                                                                                                                          |
-| `get`, `put`, `set`, `del` | The operators on the room as it stands at this op, in its transaction. They take a ref name or a ref; rows they write carry the writer's `memberId`. |
+| `ctx`                      | Holds                                                                                                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `op`                       | `'put'`, `'set'`, `'del'`, or the action's name. `cero.set` on a collection is an upsert and applies as `'put'`, unless `{ upsert: false }`.                                                       |
+| `name`                     | The ref's name.                                                                                                                                                                                    |
+| `row`                      | The row being written, merged with the stored one on a `'set'`; `null` on a `'del'`; an action's data.                                                                                             |
+| `existing`                 | The stored row, or `null`.                                                                                                                                                                         |
+| `id`                       | The row's id, on a collection.                                                                                                                                                                     |
+| `memberId`, `role`         | Who writes. `null` on a builtin until the writer is a member: a join, a claim, a room's first write.                                                                                               |
+| `get`, `put`, `set`, `del` | The operators on the room as it stands at this op, in its transaction. They take a ref name or a ref, and write as the op's writer: its rank and `own` rules apply, and rows carry its `memberId`. |
 
 - A `false` from `before`, or a throw from either, refuses the op on every peer: the writer's call rejects with `REFUSED` (`err.rule` is `'hook'`, in process) and its whole batch is dropped.
-- Hooks never fire on the builtin refs. `ctx.set` on `members` skips the role checks, so never set a role from an action: use `cero.set(room.members, { id, role })`.
+- A ctx write the writer may not make refuses the whole op, like a throw.
+- Hooks fire on the builtin refs too: a join is a `'put'` on `members`, `devices` and `requests`, a role change a `'set'` on `members`, a removal a `'del'`. A hook that writes on every join checks `ctx.role` first, or it refuses the joins of readers.
 - A hook is deterministic: it reads `ctx` only, never a clock, random numbers or device state. The imported operators throw `INVALID` inside it: use the ones on `ctx`.
 - Not on a client: hooks take functions, so they run in the worker.
 
@@ -278,13 +280,14 @@ const me = await cero('./data', spec, { seed })
 
 ## Extensions
 
-An extension is `{ name, schema, setup }`, and a bare function is `{ setup }`. `schema` adds refs, or `t.extend` on a builtin, nested by handle type like the app schema; the app's own entries win. `setup(me)` runs before the root opens and may return a function to run on close.
+An extension is `{ name, schema, setup }`, and a bare function is `{ setup }`. `schema` adds refs, or `t.extend` on a builtin, nested by handle type like the app schema; the app's own entries win. `setup(me)` runs before the root opens, and an operator it calls waits for the open, so it may write. It may return a function to run on close.
 
 | Where the list goes                                      | What runs                                                                                                                                           |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `build(dir, schema, { extensions: '../extensions.js' })` | A module path, relative to `dir`, exporting `extensions`. The schema folds in and the spec imports the module, so every process runs the same list. |
-| `build(dir, schema, { extensions: [list] })`             | Folds the schema only. Pass the same list to `cero(dir, spec, { extensions })`.                                                                     |
-| neither                                                  | profileSync and handleSync. For none, pass `[]` to both `build` and `cero()`.                                                                       |
+| `build(dir, schema, { extensions: [list] })`             | Folds the schema and records the list's names. Pass the same list to `cero(dir, spec, { extensions })`: without one, `cero()` throws `INVALID`.     |
+| `build(dir, schema, { extensions: [] })`                 | None, at build and at open.                                                                                                                         |
+| neither                                                  | profileSync and handleSync.                                                                                                                         |
 
 ## @cero-base/cero/build
 
@@ -321,8 +324,7 @@ const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
 
 - A client root has `id`, `device`, its refs and `local`. A room has `id`, `type`, `name` and its refs.
 - `before`, `after`, `tx`, `peek` and `toSeed` stay in the worker. `status`, `joins`, `nearby`, `requests` and `cero.phrase(me)` read as in process.
-- Only an error's `code` and `message` cross: a denied joiner gets `DENIED` with no reason. The worker's background errors reach `onerror` with `code`, `message` and `stack`.
-- A missing single reads `{ data: undefined }` through `get`, and `set` with `{ upsert: false }` that finds no row resolves `{ data: undefined }`. A query drops `limit: 0` and `reverse: false`.
+- An error crosses with its `code` and `message`, and a denied join with its `reason`: match `err.code`, `err.rule` stays in the worker. The worker's background errors reach `onerror` with `code`, `message`, `stack` and `reason`.
 - Opening or joining a room from inside a room is `UNSUPPORTED`.
 
 ## @cero-base/cero/extensions
@@ -338,7 +340,7 @@ A light `cero` facade, `t`, `schema` and the 24 operators without the runtime, f
 | `profileSync({ fields })` | a root `profile` single, `{ name, ...fields }`, and `fields` on `members` | Mirrors your `profile` onto your member row in every room you open.                                                                                                                  |
 | `handleSync({ fields })`  | `fields` on `handles`                                                     | Mirrors a room's own `profile` onto its row in `me.handles`, and writes a new room's name into it. The room type must declare its own `profile` single with `name` and the `fields`. |
 
-`fields` defaults to `{ avatar: t.string }` in both. A synced avatar must be `t.string`: a `t.file` avatar does not sync through profileSync.
+`fields` defaults to `{ avatar: t.string }` in both. A `t.file` field is copied with its file into the room or `handles` row it lands on, and resolves there: `profileSync({ fields: { avatar: t.file } })`.
 
 ## Schema types
 
@@ -367,7 +369,7 @@ export const schema = cero.schema({
 | `t.json`                     | Any JSON value.                                                                                                                                                                                   |
 | `t.fixed32`, `t.fixed64`     | Fixed-width bytes, for keys and hashes.                                                                                                                                                           |
 | `t.file`                     | A file id from `cero.put(ctx.files, …)`. Reads resolve to `{ id, type, size, url }`.                                                                                                              |
-| `t.required(type)`           | A required field. Fields are optional by default.                                                                                                                                                 |
+| `t.required(type)`           | A required field: a row without it throws `INVALID`. Fields are optional by default.                                                                                                              |
 | `t.single(fields)`           | One record, written with `set` and read without an id.                                                                                                                                            |
 | `t.collection(fields, opts)` | Rows by `id`. `indexes` names field lists to query by. `own: true`: anyone who writes adds rows, only a row's author changes or deletes it, and admins and owners moderate (`REFUSED` otherwise). |
 | `t.action(fields)`           | A write that stores no row: its `after` hooks are what it does.                                                                                                                                   |

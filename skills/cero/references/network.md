@@ -11,8 +11,9 @@ const me = await cero('./data', spec, {
 })
 ```
 
-Cero finds peers over the DHT and syncs directly with them. These options change how peers meet,
-never what they sync. Give every device of your app the same ones.
+Cero finds peers over the DHT and syncs directly with them. Devices that start together meet within
+seconds, and meet again as fast after a restart, a dropped connection or a network change. These options change how peers
+meet, never what they sync. Give every device of your app the same ones.
 
 ## Keep apps apart with a channel
 
@@ -29,6 +30,10 @@ opening it with a different channel, or none, then throws `CHANNEL_MISMATCH`.
 Two devices sync only while both are online. A mirror is an always-on peer that holds your rooms'
 and files' encrypted blocks, so a device catches up on the writes it missed while offline. It is
 blind: it stores ciphertext and reads nothing.
+
+Without mirrors, every member's device holds a room's full history once caught up, so any member
+online serves it, to a joiner too. With mirrors, a device may hold only part of a room; the mirror
+holds it all.
 
 ```js
 import BlindPeer from 'blind-peer'
@@ -113,13 +118,17 @@ const me = await cero('./data', spec, { channel: 'my-app', bluetooth: true })
 
 const { data: status } = await cero.get(me.status)
 status.nearby // see the table
-const { data: peers } = await cero.get(me.nearby) // [{ id, name: null }]
+const { data: peers } = await cero.get(me.nearby) // [{ id, device, name, isMobile }]
 ```
 
 Bluetooth is a transport, not another API: the same refs, roles and data ride over it with no
-internet. `me.nearby` lists the devices linked over Bluetooth by identity id, with `name: null`,
-strangers on the same channel included; a stranger syncs nothing it has no key for. `cero.watch`
-follows both. macOS 13+, iOS and Android are supported.
+internet, between your own devices too, and a phrase recovers over it. `me.nearby` lists the devices
+linked, one row each: `id` is the person (`me.id` on your other devices), `device` tells two devices
+of one person apart, strangers on the same channel included; a stranger syncs nothing it has no key for. macOS 13+, iOS and Android are supported.
+
+`name` comes from the peer's `me.profile`, else their member row in a room you share and have open, else
+`null`; `isMobile` is their device's option. Only Bluetooth carries them, with proof of whose device
+it is. `cero.watch` follows both refs, renames included.
 
 | `status.nearby`  | means                         | do                                  |
 | ---------------- | ----------------------------- | ----------------------------------- |
@@ -144,6 +153,9 @@ const invite = await cero.invite(room, { ttl: '1h' })
 await cero.nearby(me, invite) // until the next call or the invite expires
 await cero.nearby(me, true) // the QR code closed: back to the mesh
 ```
+
+While a device holds an invite, and on the joiner during its `cero.open`, its other Bluetooth links
+drop until it lets go of the invite and the joiner's link closes.
 
 ## Mixed app versions
 

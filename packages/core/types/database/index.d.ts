@@ -120,13 +120,13 @@ export type HookContext = {
      */
     id: string | null;
     /**
-     * The writer's member id.
+     * The writer's member id, null for a core no member owns yet (a join, a claim, genesis).
      */
-    memberId: string;
+    memberId: string | null;
     /**
-     * The writer's role.
+     * The writer's role, null likewise.
      */
-    role: string;
+    role: string | null;
     get: (ref: string | {
         name: string;
     }, query?: string | Record<string, unknown>) => Promise<{
@@ -172,8 +172,8 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {Record<string, unknown> | null} row       The incoming row; mutate it in `before` to change what lands.
  * @property {Record<string, unknown> | null} existing  The stored row, or null.
  * @property {string | null} id                         The row id for a `del`.
- * @property {string} memberId                          The writer's member id.
- * @property {string} role                              The writer's role.
+ * @property {string | null} memberId                   The writer's member id, null for a core no member owns yet (a join, a claim, genesis).
+ * @property {string | null} role                       The writer's role, null likewise.
  * @property {(ref: string | { name: string }, query?: string | Record<string, unknown>) => Promise<{ data: unknown }>} get
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} put
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} set
@@ -247,6 +247,8 @@ export declare class Database extends ReadyResource {
     /** @private */
     _txChain;
     /** @private */
+    _held;
+    /** @private */
     _before;
     /** @private */
     _after;
@@ -305,7 +307,8 @@ export declare class Database extends ReadyResource {
      */
     after(op: string, fn: HookFn): () => void;
     /**
-     * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
+     * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`: an overwrite keeps
+     * the row's `createdAt`, and timestamps the caller passes are ignored.
      *
      * @param {string} name
      * @param {Record<string, unknown>} row
@@ -357,6 +360,8 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<T>}
      */
     tx<T>(fn: (tx: Database) => Promise<T> | T): Promise<T>;
+    /** @private */
+    private _chain;
     /**
      * Encode and append dispatch ops. Buffers into the active `tx` queue if one
      * is open.
@@ -474,6 +479,10 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _joinSwarm;
     /** @private */
+    private _holdRoom;
+    /** @private */
+    private _hold;
+    /** @private */
     private _hooks;
     /** @private */
     private _inHook;
@@ -505,8 +514,6 @@ export declare class Database extends ReadyResource {
     private _backfilled;
     /** @private */
     private _admission;
-    /** @private */
-    private _checkFields;
     /** @private */
     private _admit;
 }

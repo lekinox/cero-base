@@ -65,7 +65,7 @@ An invite made with `confirm: true` pauses at step 3: the join waits in `room.re
 
 A phrase is the user, and every device of yours holds it. Each device writes only its own log, in the root and in every room, so no two devices write over each other.
 
-The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours online, or from a mirror, copies the root, and admits a fresh log of its own with the phrase's signature. Each room is a row in the root with its keys, so the device takes a seat in a room the same way when it opens it.
+The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with the phrase's signature. Each room is a row in the root with its keys, so the device takes a seat in a room the same way when it opens it.
 
 Removing a device takes its log out, but the device still holds the seed and can admit a fresh log like any new device. Removing retires a device; it does not lock out whoever holds it. `storageKey` keeps the seed encrypted on disk.
 
@@ -80,7 +80,7 @@ A removal takes the member's logs out at once, but their key would still read wh
 - Each re-key starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
 - A removed member never learns a new epoch. The removal lands first, so they see it: `status.role` turns `null` and what they read stops there.
 
-A member who joins later gets every epoch's key and reads the whole history.
+A member who joins later gets every epoch's key and can read the whole history. Without mirrors, every member's device holds all of it once caught up, so any one of them online serves it; with mirrors, a device may hold only part, and the mirror holds all of it.
 
 ## Offline and conflicts
 

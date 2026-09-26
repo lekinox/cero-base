@@ -107,6 +107,10 @@ export declare class Network extends ReadyResource {
     /** @private */
     _blindPeering;
     /** @private */
+    _lost;
+    /** @private */
+    _relookup;
+    /** @private */
     _onerror;
     /** @param {NetworkOpts} [opts] */
     constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
@@ -141,7 +145,7 @@ export declare class Network extends ReadyResource {
      */
     peering(): import('blind-peering');
     /**
-     * Declare this peer's self-reported info ({ name, ... }).
+     * Declare this peer's self-reported info ({ name, ... }) to the peers of injected streams.
      *
      * @param {object | null} info
      */
@@ -210,6 +214,10 @@ export declare class Network extends ReadyResource {
      * @returns {void}
      */
     replicate(target: Replicable): void;
+    /** @private */
+    private _lose;
+    /** @private */
+    private _relook;
     /** @private */
     private _attachInfo;
 }

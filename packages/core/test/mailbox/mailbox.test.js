@@ -275,6 +275,24 @@ test('Mailbox: close closes its inboxes and posts', async (t) => {
   t.is((await box.outbox.list()).length, 1, 'unread mail stays in the outbox')
 })
 
+test('Mailbox: close does not wait on a DHT that went away', async (t) => {
+  const testnet = await makeTestnet(t)
+  const box = await mailbox(t, testnet)
+  await box.receive(crypto.randomBytes(32), () => {}).ready()
+  await box.send(Mailbox.getAddress(crypto.randomBytes(32)), b4a.from('nobody reads this'))
+  await waitFor(() => [...box.network.swarm.topics()].length === 2)
+  await box.network.flush({ timeout: 10000 })
+  await testnet.destroy()
+
+  let start = Date.now()
+  await box.close()
+  // a single unannounce to a dead node costs at least one 150 ms request timeout
+  t.ok(Date.now() - start < 150, `mailbox closed in ${Date.now() - start} ms`)
+  start = Date.now()
+  await box.network.close()
+  t.ok(Date.now() - start < 1500, `network closed in ${Date.now() - start} ms`)
+})
+
 test('Mailbox: sends through the network mirrors while the owner is offline', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)

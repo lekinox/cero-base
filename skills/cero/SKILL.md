@@ -78,10 +78,11 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 1. **Open against the built spec**, never the raw schema. The app, the worker and the UI import the
    same generated `spec/index.js`. Keep `spec/` in git.
 2. **Name extensions at build time, by module path**:
-   `build('./spec', schema, { extensions: '../extensions.js' })`, so the spec carries them. A list
-   passed to `build` folds the schema only; then pass the same list to
-   `cero(dir, spec, { extensions })`. `setup(me)` runs before the root opens, so hooks registered
-   there see every op; a hook on a type ref (`me.room.notes`) reaches every room of the type.
+   `build('./spec', schema, { extensions: '../extensions.js' })`, so the spec carries them:
+   `spec.extensions` is the list `cero()` runs. A list of objects passed to `build` cannot be
+   written into the spec: pass the same list to `cero(dir, spec, { extensions })`, or it throws
+   `INVALID`. `setup(me)` runs before the root opens and may write, so hooks registered there see
+   every op; a hook on a type ref (`me.room.notes`) reaches every room of the type.
 3. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
    fields of the same type swaps their data.
 4. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
@@ -140,7 +141,7 @@ const me = await cero(ipc, spec, { onerror: console.error })
 ```
 
 The UI gets every verb over the wire but `before`, `after` and `tx`, which take functions and run
-only in the worker. Match errors on `err.code`: only the code and message cross. Electron uses a
+only in the worker. Match errors on `err.code`: the code and message cross, and a denied join's reason. Electron uses a
 Bare worker, Expo a Bare worklet, tests a duplex pair.
 
 ## Where to read

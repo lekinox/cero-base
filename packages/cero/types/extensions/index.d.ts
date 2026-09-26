@@ -8,7 +8,7 @@ export declare const cero: {
     put(ref: operators.Ref, row: operators.Row): Promise<operators.SingleResult>;
     set(ref: operators.Ref, row: operators.Row, opts?: {
         upsert?: boolean;
-    }): Promise<operators.SingleResult>;
+    }): Promise<operators.SingleResult | null>;
     del(ref: operators.Ref, id?: string): Promise<void>;
     call(ref: operators.Ref, d?: operators.Row): Promise<void>;
     before(ref: operators.Ref, fn: (ctx: operators.HookContext) => unknown, opts?: {
@@ -18,9 +18,9 @@ export declare const cero: {
         signal?: AbortSignal;
     }): () => void;
     get(ref: operators.Ref, q?: string | Record<string, unknown>): Promise<operators.SingleResult | operators.ListResult>;
-    watch(ref: operators.Ref, query?: Record<string, unknown> & {
+    watch(ref: operators.Ref, query?: string | (Record<string, unknown> & {
         changes?: boolean;
-    }, opts?: {
+    }), opts?: {
         signal?: AbortSignal;
     }): import('streamx').Readable;
     open(ref: operators.Ref, arg?: string | {
@@ -95,7 +95,7 @@ export type Extension = {
 /** The two every app gets unless its build names a list. */
 export declare const bundled: Extension[];
 /**
- * The extensions a spec carries, else the bundled two. A bare function is `{ setup }`.
+ * The override, else the list the spec carries, else the bundled two. A bare function is `{ setup }`.
  *
  * @param {import('../lib/spec.js').Spec | null} spec
  * @param {Array<Extension | Extension['setup']>} [override]

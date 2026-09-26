@@ -3,8 +3,13 @@ import BluetoothSwarm from 'ble-swarm'
 import crypto from 'hypercore-crypto'
 import safetyCatch from 'safety-catch'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 
+import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
+
+// what a person signs to claim one of its devices: the key that device links with
+const DEVICE = b4a.from('cero/device')
 
 /**
  * `me.bluetooth` — the app-facing surface for nearby (Bluetooth) sync, a thin facade over
@@ -14,18 +19,20 @@ import { Invite } from '@cero-base/core/invite'
  */
 export class Bluetooth extends ReadyResource {
   /**
-   * @param {import('../handle/index.js').Handle} handle  The root: its network, identity and channel.
-   * @param {object} [opts]
+   * @param {import('@cero-base/core/network').Network} network  Where links go: its channel scopes the mesh.
+   * @param {object} opts
+   * @param {import('@cero-base/core/identity').Identity} opts.identity  Signs this device's key for the peers it links with.
+   * @param {import('@cero-base/core/identity').KeyPair} opts.keyPair  This device's writer keypair.
    * @param {object | null} [opts.backend]  Injected bare-bluetooth-shaped backend (tests); omitted → ble-swarm loads its own, null/false → unsupported.
-   * @param {boolean} [opts.autoStart]  Start on handle open (from `cero({ bluetooth: true })`).
+   * @param {boolean} [opts.autoStart]  Start on open (from `cero({ bluetooth: true })`).
    * @param {number} [opts.maxOutbound]  Max concurrent outbound links; gossip covers the rest.
    * @param {number} [opts.maxInbound]   Max concurrent inbound sessions; newcomers past this are refused.
    * @param {'l2cap' | 'gatt'} [opts.pipe]  Data pipe — 'l2cap' (default, faster) or 'gatt'. Both peers must match.
    */
-  constructor(handle, { backend, autoStart, maxOutbound, maxInbound, pipe } = {}) {
+  constructor(network, { identity, keyPair, backend, autoStart, maxOutbound, maxInbound, pipe }) {
     super()
     /** @private */
-    this._handle = handle
+    this._network = network
     /** @private */
     this._autoStart = autoStart === true
     /** @type {{ hex: string, count: number, timer: ReturnType<typeof setTimeout> | null } | null} active invite rendezvous (single topic — one at a time) */
@@ -33,15 +40,19 @@ export class Bluetooth extends ReadyResource {
     /** @private */
     this._restorePending = false
 
-    const identity = handle.identity
     // one mesh topic per channel, or a global one when channelless; strangers still sync nothing
     /** @private */
-    this._topic = crypto.hash(b4a.from(handle.network.channel || 'cero-ble'))
+    this._topic = crypto.hash(b4a.from(network.channel || 'cero-ble'))
+    /** @private */
+    this._id = identity.id
+    /** @private */
+    this._proof = b4a.toString(identity.sign(b4a.concat([DEVICE, keyPair.publicKey])), 'hex')
     /** @type {import('ble-swarm')} */
     this.swarm = new BluetoothSwarm({
       backend,
-      // the swarm identity, so one person over Wi-Fi and BLE dedupes to one peer
-      keyPair: { publicKey: identity.publicKey, secretKey: identity.secretKey },
+      // this device's writer keypair, kept across launches: a person's devices each have one, so
+      // they link to each other, where ble-swarm refuses a remote with its own key
+      keyPair,
       topic: this._topic,
       tag: 'cero-ble',
       pipe,
@@ -57,7 +68,7 @@ export class Bluetooth extends ReadyResource {
       this.emit('update')
     })
     this.swarm.on('connection', (conn) => {
-      this._handle.network.inject(conn)
+      network.inject(conn)
     })
   }
 
@@ -80,6 +91,34 @@ export class Bluetooth extends ReadyResource {
   async _close() {
     this._clearAnnounce()
     await this.swarm.destroy()
+  }
+
+  /**
+   * What a peer hears when a Bluetooth link opens: whose device this is, signed, with `info`.
+   *
+   * @param {{ name: string | null, isMobile: boolean }} info
+   */
+  tell({ name, isMobile }) {
+    this._network.setInfo({ id: this._id, proof: this._proof, name, isMobile })
+  }
+
+  /**
+   * Who a linked device says it is: its person, who signed the key it links with, its name and
+   * whether it is a phone. `null` until it said, or when that signature is not its person's.
+   *
+   * @param {string} hex  A key of `peers`.
+   * @returns {{ id: string, name: string | null, isMobile: boolean } | null}
+   */
+  told(hex) {
+    const info = this._network.getInfo(hex)
+    if (!signed(info, b4a.from(hex, 'hex'))) return null
+    const name = typeof info.name === 'string' ? info.name : null
+    return {
+      id: info.id,
+      device: hid.encode(b4a.from(hex, 'hex')),
+      name,
+      isMobile: info.isMobile === true
+    }
   }
 
   /**
@@ -177,5 +216,18 @@ export class Bluetooth extends ReadyResource {
     if (e.timer) clearTimeout(e.timer)
     this._announce = null
     this._restorePending = false
+  }
+}
+
+function signed(info, key) {
+  if (typeof info?.id !== 'string' || typeof info.proof !== 'string') return false
+  try {
+    return Identity.verify(
+      hid.decode(info.id),
+      b4a.concat([DEVICE, key]),
+      b4a.from(info.proof, 'hex')
+    )
+  } catch {
+    return false
   }
 }

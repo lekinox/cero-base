@@ -149,7 +149,7 @@ export async function connectPair(t, a, b, topic = randomTopic()) {
   const da = a.join(topic)
   const db = b.join(topic)
   await Promise.all([da.flush(), db.flush()])
-  // testnet quirk: re-activate after both flushed to force a fresh lookup
+  // both announced: look up now instead of waiting out discovery's 1-3 s re-lookup
   await da.activate()
   await db.activate()
   await Promise.all([waitForConnection(a), waitForConnection(b)])
@@ -157,22 +157,12 @@ export async function connectPair(t, a, b, topic = randomTopic()) {
   return { da, db, topic }
 }
 
-// When both peers dial at once and one leg fails to holepunch, hyperswarm
-// drops the working connection in favour of the half-open one (its duplicate
-// guard prefers the new connection once bytes have flowed), then gives up on
-// the peer after a few retries and only looks again ten minutes later — look
-// again ourselves
 export async function waitForConnection(net, timeout = 30000) {
   const deadline = Date.now() + timeout
-  let lookupAt = Date.now() + 2000
   while (Date.now() < deadline) {
     if (net.connections.size > 0) {
       await new Promise((r) => setTimeout(r, 200))
       if (net.connections.size > 0) return
-    }
-    if (Date.now() >= lookupAt) {
-      lookupAt = Date.now() + 2000
-      for (const d of net._discoveries) d.session.refresh().catch(() => {})
     }
     await new Promise((resolve) => {
       const onConn = () => {

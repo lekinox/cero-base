@@ -18,11 +18,11 @@ export declare function put(ref: Ref, row: Row): Promise<SingleResult>;
  * @param {Ref} ref
  * @param {Row} row
  * @param {{ upsert?: boolean }} [opts]
- * @returns {Promise<SingleResult>}
+ * @returns {Promise<SingleResult | null>}
  */
 export declare function set(ref: Ref, row: Row, opts?: {
     upsert?: boolean;
-}): Promise<SingleResult>;
+}): Promise<SingleResult | null>;
 /**
  * Delete a row by id (collection refs), or wipe the row (single refs).
  *
@@ -88,13 +88,13 @@ export declare function get(ref: Ref, q?: string | Record<string, unknown>): Pro
  * `prev: null`.
  *
  * @param {Ref} ref
- * @param {Record<string, unknown> & { changes?: boolean }} [query]
+ * @param {string | Record<string, unknown> & { changes?: boolean }} [query]
  * @param {{ signal?: AbortSignal }} [opts]
  * @returns {import('streamx').Readable}
  */
-export declare function watch(ref: Ref, query?: Record<string, unknown> & {
+export declare function watch(ref: Ref, query?: string | (Record<string, unknown> & {
     changes?: boolean;
-}, opts?: {
+}), opts?: {
     signal?: AbortSignal;
 }): import('streamx').Readable;
 /**

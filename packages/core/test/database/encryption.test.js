@@ -5,7 +5,7 @@ import autobeeEncryption from 'autobee/lib/encryption.js'
 import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 
-import { Keyring, EpochEncryption, EpochAutobee, wraps } from '../../src/database/encryption.js'
+import { Keyring, EpochAutobee, wraps } from '../../src/database/encryption.js'
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { CeroError } from '../../src/lib/errors.js'
@@ -77,14 +77,12 @@ test('canary: the autobee encryption surface we patch still exists', (t) => {
 })
 
 test('canary: every provider construction path is epoch-aware (incl. ActiveWriters)', async (t) => {
-  // lib/writers.js news WriterEncryption directly — the base-prototype patch
-  // must cover plain upstream instances, not just our subclass
+  // lib/writers.js news WriterEncryption directly: only the base-prototype patch reaches it
   const auto = fakeAuto()
   auto.keyring.add(1, crypto.hash(b4a.from('canary')))
   const upstream = new WriterEncryption(auto)
-  const ours = new EpochEncryption(auto)
   const ctx = fakeCtx()
-  t.alike(await upstream.getKeys(1, ctx), await ours.getKeys(1, ctx), 'upstream class sees epochs')
+  t.is((await upstream.getKeys(1, ctx)).id, 1, 'upstream class sees epochs')
   const block = b4a.alloc(WriterEncryption.PADDING + 4)
   await upstream.encrypt(0, block, 0, ctx)
   t.is(block[4], 1, 'and writes under the current one')
@@ -120,16 +118,16 @@ test('canary: upstream drain body is unchanged (our catch wraps it)', (t) => {
 
 // ─── epoch 0 byte-compat ────────────────────────────────────────────────────
 
-test('epoch 0 derives byte-identical keys to upstream WriterEncryption', async (t) => {
-  const auto = fakeAuto()
+test('epoch 0 keeps the base keys, whatever the keyring holds', async (t) => {
   const ctx = fakeCtx()
+  const base = await new WriterEncryption(fakeAuto()).getKeys(0, ctx)
+  const auto = fakeAuto()
+  auto.keyring.add(1, crypto.hash(b4a.from('e1')), 1)
+  const rotated = await new WriterEncryption(auto).getKeys(0, ctx)
 
-  const ours = await new EpochEncryption(auto).getKeys(0, ctx)
-  const theirs = await new WriterEncryption(auto).getKeys(0, ctx)
-
-  t.alike(ours.block, theirs.block, 'block key identical')
-  t.alike(ours.hash, theirs.hash, 'hash key identical')
-  t.is(ours.id, 0)
+  t.alike(rotated.block, base.block, 'block key identical')
+  t.alike(rotated.hash, base.hash, 'hash key identical')
+  t.is(rotated.id, 0)
 })
 
 // ─── epoch separation ───────────────────────────────────────────────────────
@@ -138,13 +136,13 @@ test('epoch keys: distinct per epoch, deterministic across peers, unknown throws
   const entropy = crypto.hash(b4a.from('epoch-1-secret'))
   const ctx = fakeCtx()
 
-  const a = new EpochEncryption(fakeAuto())
+  const a = new WriterEncryption(fakeAuto())
   a.auto.keyring.add(1, entropy)
   const k0 = await a.getKeys(0, ctx)
   const k1 = await a.getKeys(1, ctx)
   t.unlike(k1.block, k0.block, 'epoch 1 key differs from base era')
 
-  const b = new EpochEncryption(fakeAuto())
+  const b = new WriterEncryption(fakeAuto())
   b.auto.keyring.add(1, entropy)
   t.alike(await b.getKeys(1, ctx), k1, 'same entropy → same keys on another peer')
 
@@ -152,10 +150,10 @@ test('epoch keys: distinct per epoch, deterministic across peers, unknown throws
 })
 
 test('writes follow the latest keyring epoch', async (t) => {
-  const provider = new EpochEncryption(fakeAuto())
+  const provider = new WriterEncryption(fakeAuto())
   const ctx = fakeCtx()
   const stamped = async () => {
-    const block = b4a.alloc(EpochEncryption.PADDING + 4)
+    const block = b4a.alloc(WriterEncryption.PADDING + 4)
     await provider.encrypt(0, block, 0, ctx)
     return block[4]
   }
@@ -173,21 +171,21 @@ test('a peer without the epoch entropy cannot decrypt post-rotation blocks', asy
   const entropy = crypto.hash(b4a.from('rotation-secret'))
   const text = 'seen only by remaining members'
 
-  const writer = new EpochEncryption(auto)
+  const writer = new WriterEncryption(auto)
   writer.auto.keyring.add(1, entropy)
 
-  const block = b4a.alloc(EpochEncryption.PADDING + text.length)
-  block.set(b4a.from(text), EpochEncryption.PADDING)
+  const block = b4a.alloc(WriterEncryption.PADDING + text.length)
+  block.set(b4a.from(text), WriterEncryption.PADDING)
   await writer.encrypt(0, block, 0, ctx)
   t.is(block[4] | (block[5] << 8), 1, 'block is stamped with epoch id 1')
 
-  const survivor = new EpochEncryption({ ...auto, keyring: new Keyring() })
+  const survivor = new WriterEncryption({ ...auto, keyring: new Keyring() })
   survivor.auto.keyring.add(1, entropy)
   const copy = b4a.from(block)
   await survivor.decrypt(0, copy, ctx)
-  t.is(b4a.toString(copy.subarray(EpochEncryption.PADDING)), text, 'entropy holder decrypts')
+  t.is(b4a.toString(copy.subarray(WriterEncryption.PADDING)), text, 'entropy holder decrypts')
 
-  const removed = new EpochEncryption({ ...auto, keyring: new Keyring() })
+  const removed = new WriterEncryption({ ...auto, keyring: new Keyring() })
   await t.exception(
     removed.decrypt(0, b4a.from(block), ctx),
     /unknown encryption epoch/,
@@ -200,15 +198,15 @@ test('pre-rotation blocks stay readable after the keyring advances', async (t) =
   const ctx = fakeCtx()
   const text = 'written before any rotation'
 
-  const writer = new EpochEncryption(auto)
-  const block = b4a.alloc(EpochEncryption.PADDING + text.length)
-  block.set(b4a.from(text), EpochEncryption.PADDING)
+  const writer = new WriterEncryption(auto)
+  const block = b4a.alloc(WriterEncryption.PADDING + text.length)
+  block.set(b4a.from(text), WriterEncryption.PADDING)
   await writer.encrypt(0, block, 0, ctx)
 
-  const later = new EpochEncryption({ ...auto, keyring: new Keyring() })
+  const later = new WriterEncryption({ ...auto, keyring: new Keyring() })
   later.auto.keyring.add(1, crypto.hash(b4a.from('e1')))
   await later.decrypt(0, block, ctx)
-  t.is(b4a.toString(block.subarray(EpochEncryption.PADDING)), text, 'epoch 0 history intact')
+  t.is(b4a.toString(block.subarray(WriterEncryption.PADDING)), text, 'epoch 0 history intact')
 })
 
 // ─── keyring ────────────────────────────────────────────────────────────────
@@ -587,7 +585,7 @@ test('rotate: an envelope failing its commitment is rejected, not adopted', asyn
   t.is(b.db.keyring.seq, 0, 'member refuses an envelope that fails the commitment')
 })
 
-test('rotate: an admin sealing the owner out is healed by the owner', async (t) => {
+test('rotate: an admin sealing the owner out is healed', async (t) => {
   const {
     a,
     members: [b]
@@ -595,18 +593,27 @@ test('rotate: an admin sealing the owner out is healed by the owner', async (t) 
   await waitFor(async () => b.db.writable)
   await waitFor(async () => (await b.db.get('members')).data.length === 2)
 
-  // the admin's own rotation, but the owner's envelope holds a secret that fails the commitment
-  const seal = Identity.seal
-  Identity.seal = (key, secret) =>
-    seal(key, b4a.equals(key, a.identity.publicKey) ? Identity.randomBytes(32) : secret)
-  await b.db.rotate().finally(() => {
-    Identity.seal = seal
+  // every envelope fails the commitment, the admin's own too: one it could open would switch it
+  // to the epoch at apply, before its announcement flushed, and nobody could read that block
+  const commit = crypto.hash(Identity.randomBytes(32))
+  const wrapped = [a, b].map(({ identity }) => ({
+    id: identity.id,
+    box: Identity.seal(identity.publicKey, Identity.randomBytes(32))
+  }))
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 12345,
+    wrapped: c.encode(wraps, wrapped),
+    createdAt: Date.now(),
+    commit
   })
 
-  await waitFor(() => a.db.keyring.seq === 2 && b.db.keyring.seq === 2, { timeout: 30000 })
+  await waitFor(() => a.db.keyring.seq >= 2 && a.db.keyring.seq === b.db.keyring.seq, {
+    timeout: 30000
+  })
   await a.db.put('messages', { text: 'after' })
   await waitFor(async () => (await texts(b.db)).includes('after'))
-  t.pass('the owner re-keyed, and both read the new epoch')
+  t.pass('the room re-keyed past the epoch nobody could open, and both read the new one')
 })
 
 test('wakeup hints: UNKNOWN_EPOCH parks and retries instead of closing the bee', async (t) => {
@@ -663,14 +670,9 @@ test('epochs reload: a primed keyring skips re-processing known rotations', asyn
   await a.db.rotate()
   await a.db.rotate()
 
-  let processed = 0
-  const orig = a.db.rotation.learn.bind(a.db.rotation)
-  a.db.rotation.learn = (row) => {
-    processed++
-    return orig(row)
-  }
+  const { version } = a.db.keyring
   await a.db.rotation.hydrate()
-  t.is(processed, 0, 'known epochs are skipped — no unseal replay')
+  t.is(a.db.keyring.version, version, 'known epochs are skipped, the keyring untouched')
 })
 
 test('rotate: no tx batching; concurrent rotations run one after the other', async (t) => {
@@ -811,6 +813,21 @@ test('rotate: soft delete in a rotated room auto-rotates (healer)', async (t) =>
   await a.db.put('messages', { text: 'post' })
   await new Promise((r) => setTimeout(r, 1500))
   t.absent((await texts(victim.db)).includes('post'), 'victim cannot read past the healed epoch')
+})
+
+test('rotate: a member leaving on its own is re-keyed out', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+
+  await b.db.del('members', b.identity.id)
+  await waitFor(async () => !(await a.db.get('members', b.identity.id)).data)
+  await waitFor(() => a.db.keyring.seq === 1, { timeout: 30000 })
+  const [epoch] = await a.db.view.find('@cero/epochs', {}).toArray()
+  const sealed = c.decode(wraps, epoch.wrapped).map((w) => w.id)
+  t.alike(sealed, [a.identity.id], 'the owner re-keyed to who stayed')
 })
 
 test('rotate: a stamp collision is rejected deterministically', async (t) => {

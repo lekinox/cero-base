@@ -19,6 +19,8 @@ export declare class Discovery {
     _mode;
     /** @private */
     _destroyed;
+    /** @private */
+    _timer;
     /**
      * @param {import('./index.js').Network} network  Owning network.
      * @param {Session} session  Hyperswarm PeerDiscovery session from `swarm.join()`.
@@ -47,6 +49,8 @@ export declare class Discovery {
      * @returns {Promise<void>}
      */
     flush(): Promise<void>;
+    /** @private */
+    private _requery;
     /**
      * Leave the topic and tear down the session. Idempotent.
      *

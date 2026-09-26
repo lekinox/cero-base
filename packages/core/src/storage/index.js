@@ -7,7 +7,7 @@ import ReadyResource from 'ready-resource'
 
 import { ROCKS, BEE, SINGLE, COLLECTION, QUERY_RESERVED } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
-import { subscribe, filter } from '../lib/utils.js'
+import { subscribe, filter, checkFields, checkRequired, stamp } from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
 
 /**
@@ -127,9 +127,10 @@ export class Storage extends ReadyResource {
   async put(name, row) {
     this._guard()
     const ref = this._ref(name)
-    const id = row.id ?? genId()
-    const ts = Date.now()
-    const stored = { id, createdAt: ts, updatedAt: ts, ...row }
+    checkFields(name, this.refs[name], row)
+    const was = row.id == null ? null : await this._read(ref, row.id)
+    const stored = stamp({ ...row, id: row.id ?? genId() }, was?.createdAt)
+    checkRequired(name, this.refs[name], stored)
     await this._write(ref, stored)
     return { data: stored }
   }
@@ -145,16 +146,12 @@ export class Storage extends ReadyResource {
   async set(name, row, { upsert = true } = {}) {
     this._guard()
     const ref = this._ref(name)
-    const ts = Date.now()
+    checkFields(name, this.refs[name], row)
     const existing = await this._read(ref, row?.id)
     if (!upsert && !existing) return null
     /** @type {Row} */
-    const stored = {
-      ...existing,
-      ...row,
-      createdAt: existing?.createdAt ?? ts,
-      updatedAt: ts
-    }
+    const stored = stamp({ ...existing, ...row }, existing?.createdAt)
+    checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     await this._write(ref, stored)
     return { data: stored }
@@ -206,12 +203,13 @@ export class Storage extends ReadyResource {
     }
 
     const data = await this.db.find(col, range(query)).toArray()
-    // a limit caps data, so total needs the unlimited range
-    const total =
-      query?.limit != null
-        ? (await this.db.find(col, range({ ...query, limit: undefined })).toArray()).length
-        : data.length
-    return { data, total, size: data.length }
+    // a full page leaves the count unknown unless asked, so a limited read stops at the page
+    const full = query?.limit != null && data.length >= query.limit
+    if (!full) return { data, total: data.length, size: data.length }
+    const all = query.total
+      ? await this.db.find(col, range({ ...query, limit: undefined })).toArray()
+      : null
+    return { data, total: all?.length ?? null, size: data.length }
   }
 
   /**

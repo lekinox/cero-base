@@ -22,7 +22,6 @@ export declare const main: {
         name: import("@cero-base/core").Prim;
         createdAt: import("@cero-base/core").Prim;
         updatedAt: import("@cero-base/core").Prim;
-        sig: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
     };
     device: {
@@ -61,6 +60,7 @@ export declare const main: {
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+        from: import("@cero-base/core").Prim;
     };
     claim: {
         identity: import("@cero-base/core").Prim;
@@ -113,6 +113,8 @@ export declare const main: {
     peer: {
         id: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
+        isMobile: import("@cero-base/core").Prim;
+        device: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {
@@ -122,6 +124,7 @@ export declare const local: {
     keypair: {
         publicKey: import("@cero-base/core").Prim;
         secretKey: import("@cero-base/core").Prim;
+        setup: import("@cero-base/core").Prim;
     };
     'handle-keypair': {
         id: import("@cero-base/core").Prim;
@@ -166,6 +169,11 @@ export declare const rpc: {
         data: import("@cero-base/core").Prim;
         local: import("@cero-base/core").Prim;
         noUpsert: import("@cero-base/core").Prim;
+        fields: {
+            prim: string;
+            required?: boolean;
+            array: boolean;
+        };
     };
     'req-id': {
         handle: import("@cero-base/core").Prim;
@@ -230,6 +238,8 @@ export declare const rpc: {
         id: import("@cero-base/core").Prim;
         type: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
+        denied: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
     };
     'req-add-file': {
         handle: import("@cero-base/core").Prim;
@@ -257,6 +267,7 @@ export declare const rpc: {
         message: import("@cero-base/core").Prim;
         code: import("@cero-base/core").Prim;
         stack: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
     };
     'req-answer': {
         handle: import("@cero-base/core").Prim;

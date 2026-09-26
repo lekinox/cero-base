@@ -1,5 +1,8 @@
 import { Readable } from 'streamx'
+import b4a from 'b4a'
 import { RPCClient, bindCodec } from '@cero-base/core/rpc'
+import { CeroError } from '@cero-base/core/errors'
+import { checkFields, checkRequired } from '@cero-base/core/utils'
 import c from 'compact-encoding'
 import z32 from 'z32'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -178,11 +181,10 @@ const operators = {
       const decoded = codec.decodeRow(schema, res.data)
       return { data: this._resolveRow(name, this._refInfo(name), decoded) }
     }
-    const input = row?.id ? row : { id: '', ...row }
     const res = await this.rpc.addRow({
       handle: this.id,
       ref: name,
-      data: codec.encodeRow(schema, input),
+      data: this._encode(name, row, true).data,
       local: this._local
     })
     return { data: codec.decodeRow(schema, res.data) }
@@ -194,19 +196,21 @@ const operators = {
    * @param {string} name
    * @param {Row} row
    * @param {{ upsert?: boolean }} [opts]
-   * @returns {Promise<SingleResult>}
+   * @returns {Promise<SingleResult | null>}
    */
   async set(name, row, opts) {
     const codec = this._codec()
     const schema = this.schemaOf(name)
+    const { data, fields } = this._encode(name, row, false)
     const res = await this.rpc.set({
       handle: this.id,
       ref: name,
-      data: codec.encodeRow(schema, row),
+      data,
+      fields,
       local: this._local,
       noUpsert: opts?.upsert === false || undefined
     })
-    return { data: codec.decodeRow(schema, res.data) }
+    return res.data ? { data: codec.decodeRow(schema, res.data) } : null
   },
 
   /**
@@ -218,31 +222,52 @@ const operators = {
    * @returns {Promise<SingleResult | ListResult>}
    */
   async get(name, query) {
-    const codec = this._codec()
-    const schema = this.schemaOf(name)
-    if (typeof query === 'string') {
-      const res = await this.rpc.getOne({
-        handle: this.id,
-        ref: name,
-        id: query,
-        local: this._local
-      })
-      const decoded = res.data ? codec.decodeRow(schema, res.data) : null
-      return { data: this._resolveFiles(name, decoded) }
-    }
+    const one = typeof query === 'string' || this._refInfo(name)?.kind === 'single'
     const res = await this.rpc.get({
       handle: this.id,
       ref: name,
-      query: codec.encodeQuery(query),
+      query: toWire(query),
       local: this._local
     })
+    return this._read(name, one, res)
+  },
+
+  /**
+   * The typed row and the indexes of the declared fields it carries, checked as the worker
+   * would: the encoder drops an undeclared field and fails on a missing required one.
+   *
+   * @param {string} name
+   * @param {Row} row
+   * @param {boolean} whole  A put's row; a set's may leave fields out.
+   * @returns {{ data: Uint8Array, fields: number[] }}
+   * @private
+   */
+  _encode(name, row, whole) {
     const info = this._refInfo(name)
-    const raw =
-      info?.kind === 'single'
-        ? codec.decodeRow(schema, res.data)
-        : codec.decodeRows(schema, res.data)
+    checkFields(name, info, row)
+    if (whole) checkRequired(name, info, row)
+    const declared = info?.fields || []
+    const fields = Object.keys(row)
+      .map((k) => declared.indexOf(k))
+      .filter((i) => i !== -1)
+    return { data: this._codec().encodeRow(this.schemaOf(name), filled(row, info)), fields }
+  },
+
+  /**
+   * Decode a result: one row or null when `one`, the list with its counts otherwise.
+   *
+   * @param {string} name
+   * @param {boolean} one
+   * @param {{ data: Uint8Array | null, total?: number, size?: number }} res
+   * @returns {SingleResult | ListResult}
+   * @private
+   */
+  _read(name, one, res) {
+    const codec = this._codec()
+    const schema = this.schemaOf(name)
+    if (one) return { data: this._resolveFiles(name, codec.decodeRow(schema, res.data) ?? null) }
     return {
-      data: this._resolveFiles(name, raw),
+      data: this._resolveFiles(name, codec.decodeRows(schema, res.data)),
       total: res.total === -1 ? null : res.total,
       size: res.size
     }
@@ -264,17 +289,15 @@ const operators = {
    * underlying mutation. Destroy the stream to stop watching.
    *
    * @param {string} name
-   * @param {Record<string, unknown>} [query]
+   * @param {string | Record<string, unknown>} [query]
    * @returns {import('streamx').Readable}
    */
   watch(name, query) {
-    const refInfo = this._refInfo(name)
-    const codec = this._codec()
-    const schema = refInfo?.schema
+    const one = typeof query === 'string' || this._refInfo(name)?.kind === 'single'
     const wire = this.rpc.watch({
       handle: this.id,
       ref: name,
-      query: codec.encodeQuery(query),
+      query: toWire(query),
       local: this._local
     })
     const out = new Readable({
@@ -282,17 +305,7 @@ const operators = {
         wire.destroy()
       }
     })
-    wire.on('data', (snap) => {
-      const raw =
-        refInfo.kind === 'single'
-          ? (codec.decodeRow(schema, snap.data) ?? null)
-          : codec.decodeRows(schema, snap.data)
-      out.push({
-        data: this._resolveFiles(name, raw),
-        total: snap.total === -1 ? null : snap.total,
-        size: snap.size
-      })
-    })
+    wire.on('data', (snap) => out.push(this._read(name, one, snap)))
     // end exactly once whether the wire ends or the server destroys it (handle close)
     let ended = false
     const end = () => {
@@ -468,8 +481,15 @@ export class Client extends RPCClient {
   _pumpErrors() {
     const report = this._onerror
     const pump = async () => {
-      for await (const { message, code, stack } of this.rpc.errors({})) {
-        report(Object.assign(new Error(message), code && { code }, stack && { stack }))
+      for await (const { message, code, stack, reason } of this.rpc.errors({})) {
+        report(
+          Object.assign(
+            new Error(message),
+            code && { code },
+            stack && { stack },
+            reason && { reason }
+          )
+        )
       }
     }
     pump().catch((err) => {
@@ -533,6 +553,7 @@ export class Client extends RPCClient {
    */
   async _join(invite, type) {
     const stub = await this.rpc.join({ parent: this.id, ref: type, invite })
+    if (stub.denied) throw CeroError.DENIED(stub.reason || null)
     return new Handle(this, stub.id, stub.type, stub.name || null)
   }
 }
@@ -602,4 +623,36 @@ Object.assign(cero, remote, { connect, restore, t, schema })
 // the same shape a local root has
 function device({ deviceId, deviceName }) {
   return deviceId ? { id: deviceId, name: deviceName || null } : null
+}
+
+// the typed row carries an id and every required field: what a row leaves out is filled, the
+// worker keeps only the fields sent
+function filled(row, info) {
+  let out = row.id === undefined ? { id: '', ...row } : row
+  for (const key in info?.required) {
+    if (out[key] == null) out = { ...out, [key]: ZERO[info.required[key]] }
+  }
+  return out
+}
+
+const ZERO = {
+  string: '',
+  file: '',
+  json: null,
+  uint: 0,
+  int: 0,
+  bool: false,
+  bytes: b4a.alloc(0),
+  fixed32: b4a.alloc(32),
+  fixed64: b4a.alloc(64)
+}
+
+// c.any carries undefined as null, and in a query undefined is absent
+function toWire(query) {
+  if (query === undefined) return null
+  const defined =
+    query && typeof query === 'object'
+      ? Object.fromEntries(Object.entries(query).filter(([, v]) => v !== undefined))
+      : query
+  return c.encode(c.any, defined)
 }

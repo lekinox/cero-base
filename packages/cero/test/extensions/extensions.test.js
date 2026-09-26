@@ -1,6 +1,7 @@
 import test from 'brittle'
 import AbortController from 'bare-abort-controller'
 import process from 'process'
+import b4a from 'b4a'
 import { promises as fs, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -20,8 +21,8 @@ import {
   t
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { profileSync, handleSync } from '../../src/extensions/index.js'
-import { makeTestnet, waitUntil, waitForConnection } from '../helpers/index.js'
+import { profileSync, handleSync, bundled } from '../../src/extensions/index.js'
+import { makeTestnet, waitUntil, waitForConnection, fetch } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
 
@@ -78,6 +79,25 @@ const handleStatusSchema = schema({
 })
 const handleStatus = handleSync({ fields: { status: t.string } })
 
+// avatars as files, on the profile and on a room's own profile
+const fileSchema = schema({
+  profile: t.single({ name: t.string, avatar: t.file }),
+  room: {
+    messages: t.collection({ text: t.string }),
+    profile: t.single({ name: t.string, avatar: t.file })
+  }
+})
+const fileSync = [
+  profileSync({ fields: { avatar: t.file } }),
+  handleSync({ fields: { avatar: t.file } })
+]
+
+// the bytes behind a resolved file, read through its url
+async function bytesOf(file) {
+  const res = await fetch(file.url)
+  return res.ok ? b4a.from(new Uint8Array(await res.arrayBuffer())) : null
+}
+
 // a profile WIDER than the mirrored field set — reflect must not push the
 // extra fields onto the handles row (they would fail its schema)
 const handleWideSchema = schema({
@@ -87,28 +107,27 @@ const handleWideSchema = schema({
   }
 })
 
-// the list a build names; tests hand it to the spec the way a named module would
-async function buildSpec(t, sub, sch = base, exts = []) {
+// a list build gets in memory reaches cero() through its options
+async function buildSpec(t, sub, sch = base, extensions = []) {
   const dir = join(buildRoot, sub)
   await fs.rm(dir, { recursive: true, force: true })
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
-  await build(dir, sch, { extensions: exts })
+  await build(dir, sch, { extensions })
   const { spec } = await import(pathToFileURL(join(dir, 'index.js')).href)
-  spec.extensions = exts
-  return { spec, dir }
+  return { spec, dir, extensions }
 }
 
-async function openCero(t, spec, opts = {}) {
+async function openCero(t, { spec, extensions }, opts = {}) {
   const testnet = await makeTestnet(t)
-  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, ...opts })
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions, ...opts })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return me
 }
 
-async function openTwo(t, spec) {
+async function openTwo(t, { spec, extensions }) {
   const testnet = await makeTestnet(t)
   const mk = async () => {
-    const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+    const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions })
     t.teardown(() => me.close().catch(() => {}), { order: 5 })
     return me
   }
@@ -125,7 +144,7 @@ async function memberType(dir) {
 // ─── after(ref): write events ───────────────────────────────────────────────
 
 test('after(ref): fires on a single set with ctx { op, name, row }', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'after-single')).spec)
+  const me = await openCero(t, await buildSpec(t, 'after-single'))
   let ctx = null
   after(me.profile, (c) => (ctx = c))
   await set(me.profile, { name: 'a' })
@@ -135,7 +154,7 @@ test('after(ref): fires on a single set with ctx { op, name, row }', async (t) =
 })
 
 test('before(ref): a single is guarded on del as well as set', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'before-single-del')).spec)
+  const me = await openCero(t, await buildSpec(t, 'before-single-del'))
   const seen = []
   before(me.profile, ({ op, existing }) => {
     seen.push([op, existing?.name ?? null])
@@ -149,7 +168,7 @@ test('before(ref): a single is guarded on del as well as set', async (t) => {
 
 // a hook runs twice on the writer: once in its dry run, once at apply
 test('after(ref): fires on collection put / set / del', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'after-coll')).spec)
+  const me = await openCero(t, await buildSpec(t, 'after-coll'))
   const ops = []
   after(me.notes, (c) => ops.push(c.op))
   const { data } = await put(me.notes, { text: 'x' })
@@ -160,7 +179,7 @@ test('after(ref): fires on collection put / set / del', async (t) => {
 })
 
 test('after(ref): only the named ref, and unsubscribes', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'after-filter')).spec)
+  const me = await openCero(t, await buildSpec(t, 'after-filter'))
   let hits = 0
   const off = after(me.profile, () => hits++)
   await put(me.notes, { text: 'x' })
@@ -173,7 +192,7 @@ test('after(ref): only the named ref, and unsubscribes', async (t) => {
 })
 
 test('after(ref): multiple subscribers all fire', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'after-multi')).spec)
+  const me = await openCero(t, await buildSpec(t, 'after-multi'))
   let a = 0
   let b = 0
   after(me.profile, () => a++)
@@ -184,8 +203,7 @@ test('after(ref): multiple subscribers all fire', async (t) => {
 })
 
 test('after(ref): a derived row written through ctx.put lands on every peer', async (t) => {
-  const { spec } = await buildSpec(t, 'hook-tx')
-  const { host, joiner } = await openTwo(t, spec)
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'hook-tx'))
 
   const room = await open(host.room)
   const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
@@ -216,7 +234,7 @@ test('after(ref): a derived row written through ctx.put lands on every peer', as
 })
 
 test('before(ref): ctx.get reads the room as it stands at this op', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'hook-read')).spec)
+  const me = await openCero(t, await buildSpec(t, 'hook-read'))
   const room = await open(me.room)
 
   before(room.messages, async ({ memberId, get: read }) => {
@@ -234,7 +252,7 @@ test('before(ref): ctx.get reads the room as it stands at this op', async (t) =>
 // ─── before(ref): write hooks ───────────────────────────────────────────────
 
 test('before(ref): returning false refuses the write', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'before-cancel')).spec)
+  const me = await openCero(t, await buildSpec(t, 'before-cancel'))
   before(me.notes, (c) => (c.row.text === 'no' ? false : undefined))
   const err = await put(me.notes, { text: 'no' }).catch((e) => e)
   t.is(err.code, 'REFUSED', 'the writer learns at its own dry run')
@@ -245,7 +263,7 @@ test('before(ref): returning false refuses the write', async (t) => {
 })
 
 test('before(ref): mutating ctx.row rewrites the stored row', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'before-mutate')).spec)
+  const me = await openCero(t, await buildSpec(t, 'before-mutate'))
   before(me.notes, (c) => {
     c.row.text = c.row.text.toUpperCase()
   })
@@ -256,8 +274,7 @@ test('before(ref): mutating ctx.row rewrites the stored row', async (t) => {
 })
 
 test('before(ref): a mutated row lands identically on every peer', async (t) => {
-  const { spec } = await buildSpec(t, 'hook-mutate-two')
-  const { host, joiner } = await openTwo(t, spec)
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'hook-mutate-two'))
 
   const room = await open(host.room)
   const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
@@ -280,7 +297,7 @@ test('before(ref): a mutated row lands identically on every peer', async (t) => 
 })
 
 test('before(ref): only the named ref, and unsubscribes', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'before-filter')).spec)
+  const me = await openCero(t, await buildSpec(t, 'before-filter'))
   let hits = 0
   const off = before(me.notes, () => {
     hits++
@@ -295,7 +312,7 @@ test('before(ref): only the named ref, and unsubscribes', async (t) => {
 })
 
 test('before(ref): refusing a del keeps the row', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'before-del')).spec)
+  const me = await openCero(t, await buildSpec(t, 'before-del'))
   const { data: row } = await put(me.notes, { text: 'keep' })
   before(me.notes, (c) => (c.op === 'del' ? false : undefined))
   const err = await del(me.notes, row.id).catch((e) => e)
@@ -306,7 +323,7 @@ test('before(ref): refusing a del keeps the row', async (t) => {
 })
 
 test('before(ref): an operator called inside a hook throws INVALID', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'before-nested')).spec)
+  const me = await openCero(t, await buildSpec(t, 'before-nested'))
   let err = null
   before(me.notes, async () => {
     try {
@@ -323,7 +340,7 @@ test('before(ref): an operator called inside a hook throws INVALID', async (t) =
 // ─── me.on('handle') ────────────────────────────────────────────────────────
 
 test('me.on("handle"): fires on create and on re-open', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'handle-evt')).spec)
+  const me = await openCero(t, await buildSpec(t, 'handle-evt'))
   const seen = []
   me.on('handle', (room) => seen.push(room))
 
@@ -339,7 +356,7 @@ test('me.on("handle"): fires on create and on re-open', async (t) => {
 })
 
 test('me.on("handle"): re-loading an already-open handle is idempotent — no re-sync', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'handle-idempotent')).spec)
+  const me = await openCero(t, await buildSpec(t, 'handle-idempotent'))
   let fired = 0
   me.on('handle', () => fired++)
 
@@ -356,7 +373,7 @@ test('me.on("handle"): re-loading an already-open handle is idempotent — no re
 })
 
 test('me.on("handle"): concurrent open() of the same id loads once', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'concurrent-open')).spec)
+  const me = await openCero(t, await buildSpec(t, 'concurrent-open'))
   const room = await open(me.room)
   const { id } = room
   await room.close() // drop it from me.children so the reopen goes through _load
@@ -375,7 +392,7 @@ test('me.on("handle"): concurrent open() of the same id loads once', async (t) =
 })
 
 test('me.on("handle"): carries the open opts (the create name)', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'handle-opts')).spec)
+  const me = await openCero(t, await buildSpec(t, 'handle-opts'))
   let opts = null
   me.on('handle', (room, o) => (opts = o))
   await open(me.room, { name: 'general' })
@@ -398,8 +415,7 @@ test('extensions: a nested schema folds into the handle type', async (t) => {
 })
 
 test('extensions: a setup hook on a type guards every room', async (t) => {
-  const { spec } = await buildSpec(t, 'ext-feature', base, [notes])
-  const me = await openCero(t, spec)
+  const me = await openCero(t, await buildSpec(t, 'ext-feature', base, [notes]))
   const room = await open(me.room, { name: 'r' })
   await put(room.todos, { text: 'kept' })
   await t.exception(
@@ -414,7 +430,7 @@ test('extensions: a setup hook on a type guards every room', async (t) => {
 })
 
 test('hooks: a hook on a type ref covers rooms already open, and off() lifts it', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'type-hook-late', base, [notes])).spec)
+  const me = await openCero(t, await buildSpec(t, 'type-hook-late', base, [notes]))
   const room = await open(me.room, { name: 'early' })
   const off = before(me.room.messages, ({ row }) => row.text !== 'nope')
   await t.exception(put(room.messages, { text: 'nope' }), /REFUSED/, 'the open room got the hook')
@@ -425,24 +441,30 @@ test('hooks: a hook on a type ref covers rooms already open, and off() lifts it'
   t.ok((await put(later.messages, { text: 'nope' })).data, 'and on the later one')
 })
 
-test('extensions: a module named at build time reaches the runtime through the spec', async (t) => {
-  const dir = join(buildRoot, 'ext-module')
+// a spec built from a module path carries its list; `source` is the module's body
+async function buildModule(t, sub, source) {
+  const dir = join(buildRoot, sub)
   await fs.rm(dir, { recursive: true, force: true })
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
   await fs.mkdir(dir, { recursive: true })
   const src = pathToFileURL(join(here, '..', '..', 'src', 'extensions', 'index.js')).href
-  await fs.writeFile(
-    join(dir, 'ext.js'),
-    `import { t } from '${src}'
-export let ran = 0
+  await fs.writeFile(join(dir, 'ext.js'), `import { t } from '${src}'\n${source}`)
+  await build(join(dir, 'spec'), base, { extensions: '../ext.js' })
+  const { spec } = await import(pathToFileURL(join(dir, 'spec', 'index.js')).href)
+  const mod = await import(pathToFileURL(join(dir, 'ext.js')).href)
+  return { spec, mod, dir }
+}
+
+test('extensions: a module named at build time reaches the runtime through the spec', async (t) => {
+  const { spec, mod, dir } = await buildModule(
+    t,
+    'ext-module',
+    `export let ran = 0
 export const extensions = [
   { schema: { room: { todos: t.collection({ text: t.string }) } }, setup() { ran++ } }
 ]
 `
   )
-  await build(join(dir, 'spec'), base, { extensions: '../ext.js' })
-  const { spec } = await import(pathToFileURL(join(dir, 'spec', 'index.js')).href)
-  const mod = await import(pathToFileURL(join(dir, 'ext.js')).href)
   t.is(spec.extensions, mod.extensions, 'the spec imports the extensions it was built from')
   t.ok(spec.handles.room.meta.refs.todos, 'and folded its schema')
   const types = JSON.parse(await fs.readFile(join(dir, 'spec/main/schema/schema.json'), 'utf-8'))
@@ -452,7 +474,7 @@ export const extensions = [
     'a named list leaves the bundled two out'
   )
 
-  const me = await openCero(t, spec)
+  const me = await openCero(t, { spec })
   t.is(mod.ran, 1, 'setup ran with nothing registered')
   const room = await open(me.room, { name: 'r' })
   await put(room.todos, { text: 'through the spec' })
@@ -462,43 +484,45 @@ export const extensions = [
 test('extensions: an object runs its setup with the ready handle', async (t) => {
   let captured = null
   const exts = [{ setup: (me) => (captured = me) }]
-  const me = await openCero(t, (await buildSpec(t, 'ext-obj', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ext-obj', base, exts))
   t.is(captured, me)
 })
 
 test('extensions: a bare function is shorthand for { setup }', async (t) => {
   let captured = null
   const exts = [(me) => (captured = me)]
-  const me = await openCero(t, (await buildSpec(t, 'ext-fn', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ext-fn', base, exts))
   t.is(captured, me)
 })
 
 test('extensions: every setup in the list runs', async (t) => {
   const ran = []
   const exts = [() => ran.push('a'), () => ran.push('b'), () => ran.push('c')]
-  await openCero(t, (await buildSpec(t, 'ext-multi', base, exts)).spec)
+  await openCero(t, await buildSpec(t, 'ext-multi', base, exts))
   t.alike(ran.sort(), ['a', 'b', 'c'])
 })
 
 test('extensions: the instance list replaces the one the spec carries', async (t) => {
+  const { spec, mod } = await buildModule(
+    t,
+    'ext-override',
+    `export let ran = 0
+export const extensions = [() => { ran++ }]
+`
+  )
   const ran = []
-  const { spec } = await buildSpec(t, 'ext-override', base, [() => ran.push('spec')])
-  const testnet = await makeTestnet(t)
-  const me = await cero(await t.tmp(), spec, {
-    bootstrap: testnet.bootstrap,
-    extensions: [() => ran.push('instance')]
-  })
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await openCero(t, { spec }, { extensions: [() => ran.push('instance')] })
   t.alike(ran, ['instance'])
+  t.is(mod.ran, 0, 'the carried list did not run')
 })
 
 test('extensions: a schema-only extension merges and runs without a setup', async (t) => {
-  const { spec, dir } = await buildSpec(t, 'ext-schema-only', base, [tagExtension])
+  const built = await buildSpec(t, 'ext-schema-only', base, [tagExtension])
   t.ok(
-    (await memberType(dir)).fields.find((f) => f.name === 'tag'),
+    (await memberType(built.dir)).fields.find((f) => f.name === 'tag'),
     'schema merged'
   )
-  const me = await openCero(t, spec)
+  const me = await openCero(t, built)
   t.ok(me.id, 'cero ran fine with no setup')
 })
 
@@ -507,7 +531,7 @@ test('extensions: a setup disposer runs on close', async (t) => {
   const exts = [() => () => (disposed = true)]
   const testnet = await makeTestnet(t)
   const { spec } = await buildSpec(t, 'ext-dispose', base, exts)
-  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions: exts })
   await me.close()
   t.ok(disposed, 'disposer called on me.close()')
 })
@@ -520,7 +544,10 @@ test('extensions: a throwing setup rejects cero() without leaking', async (t) =>
   ]
   const testnet = await makeTestnet(t)
   const { spec } = await buildSpec(t, 'ext-throw', base, exts)
-  await t.exception(cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap }), /boom/)
+  await t.exception(
+    cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions: exts }),
+    /boom/
+  )
 })
 
 // ─── build: schema merge ────────────────────────────────────────────────────
@@ -542,7 +569,7 @@ test('build: app extend + extension extend combine on the same builtin', async (
 // ─── cero is schema-agnostic ────────────────────────────────────────────────
 
 test('cero(): works with a spec that has no profile', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'no-profile', noProfileSchema)).spec)
+  const me = await openCero(t, await buildSpec(t, 'no-profile', noProfileSchema))
   const room = await open(me.room)
   await put(room.messages, { text: 'ok' })
   const { data } = await get(room.messages)
@@ -553,7 +580,7 @@ test('cero(): works with a spec that has no profile', async (t) => {
 
 test('profileSync: declares its own profile when the app has none', async (t) => {
   const exts = [profileSync()]
-  const me = await openCero(t, (await buildSpec(t, 'ps-byo', roomOnly, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ps-byo', roomOnly, exts))
   t.ok(me.profile, 'profile ref exists — declared by the extension')
 
   await set(me.profile, { name: 'jb', avatar: 'a.png' })
@@ -567,7 +594,7 @@ test('profileSync: declares its own profile when the app has none', async (t) =>
 
 test('profileSync: mirrors profile onto your member row (open + edit)', async (t) => {
   const exts = [profileSync()]
-  const me = await openCero(t, (await buildSpec(t, 'ps-solo', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ps-solo', base, exts))
 
   await set(me.profile, { name: 'jb', avatar: 'a.png' })
   const room = await open(me.room)
@@ -587,7 +614,7 @@ test('profileSync: mirrors profile onto your member row (open + edit)', async (t
 
 test('profileSync: syncs custom fields', async (t) => {
   const exts = [statusSync]
-  const me = await openCero(t, (await buildSpec(t, 'ps-custom', customSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ps-custom', customSchema, exts))
 
   await set(me.profile, { name: 'x', status: 'busy' })
   const room = await open(me.room)
@@ -602,7 +629,7 @@ test('profileSync: syncs custom fields', async (t) => {
 // broadcasts to the whole room each time
 test('extensions: reopening a handle with an unchanged profile writes zero new ops', async (t) => {
   const exts = [profileSync(), handleSync()]
-  const me = await openCero(t, (await buildSpec(t, 'ext-noop', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ext-noop', base, exts))
 
   await set(me.profile, { name: 'jb', avatar: 'a.png' })
   const room = await open(me.room, { name: 'general' })
@@ -624,6 +651,21 @@ test('extensions: reopening a handle with an unchanged profile writes zero new o
   await waitUntil(async () => (await get(again.members, me.identity.id)).data)
   t.is(await settled(() => me.store.length), rootLen, 'handle-sync skipped the unchanged row')
   t.is(again.store.length, roomLen, 'profile-sync skipped the unchanged member row')
+})
+
+test('extensions: reopening a handle with an unchanged file avatar writes zero new ops', async (t) => {
+  const me = await openCero(t, await buildSpec(t, 'ext-noop-file', fileSchema, fileSync))
+  const { data: file } = await put(me.files, { data: b4a.from('av'), type: 'image/png' })
+  await set(me.profile, { name: 'jb', avatar: file.id })
+  const room = await open(me.room)
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data?.avatar)
+
+  const length = await settled(() => room.store.length)
+  const id = room.id
+  await room.close()
+  const again = await open(me.room, { id })
+  await waitUntil(async () => (await get(again.members, me.identity.id)).data)
+  t.is(await settled(() => again.store.length), length, 'the avatar was not copied again')
 })
 
 // wait until a counter stops moving — asserting the ABSENCE of a write needs a
@@ -657,10 +699,42 @@ test('bundled extensions: the default build equals naming the two by hand', asyn
   )
 })
 
+test('a default build carries the bundled extensions in the spec', async (t) => {
+  const dir = join(buildRoot, 'ext-default')
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await build(dir, base)
+  const { spec } = await import(pathToFileURL(join(dir, 'index.js')).href)
+  const names = (list) => list?.map((e) => e.name)
+  t.alike(names(spec.extensions), names(bundled), 'spec.extensions is the list cero() runs')
+})
+
+test('extensions: [] at build means none at open', async (t) => {
+  const { spec } = await buildSpec(t, 'ext-none-build', base, [])
+  t.alike(spec.extensions, [], 'the spec carries the empty list')
+  const me = await openCero(t, { spec })
+  t.is(me.listenerCount('handle'), 0, 'neither bundled extension runs')
+})
+
+test('extensions: [] at open means none', async (t) => {
+  const dir = join(buildRoot, 'ext-none-open')
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await build(dir, base)
+  const { spec } = await import(pathToFileURL(join(dir, 'index.js')).href)
+  const me = await openCero(t, { spec }, { extensions: [] })
+  t.is(me.listenerCount('handle'), 0, 'neither bundled extension runs')
+})
+
+test('extensions: a spec built from a list in memory opens only with that list', async (t) => {
+  const { spec, extensions } = await buildSpec(t, 'ext-memory', base, [notes])
+  await t.exception(openCero(t, { spec }), /INVALID/, 'no silent fallback to the bundled two')
+  const me = await openCero(t, { spec, extensions })
+  const room = await open(me.room)
+  await t.exception(put(room.todos, { text: ' ' }), /REFUSED/, 'the list it was built with runs')
+})
+
 test('profileSync: a joiner profile is visible on the host member list', async (t) => {
   const exts = [profileSync()]
-  const { spec } = await buildSpec(t, 'ps-two', base, exts)
-  const { host, joiner } = await openTwo(t, spec)
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'ps-two', base, exts))
 
   const room = await open(host.room)
   const invite = await cero.invite(room, { role: 'member', ttl: 60_000 })
@@ -681,7 +755,7 @@ test('profileSync: a joiner profile is visible on the host member list', async (
 
 test('profileSync: a room opened before the profile syncs once it is set', async (t) => {
   const exts = [profileSync()]
-  const me = await openCero(t, (await buildSpec(t, 'ps-late', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ps-late', base, exts))
 
   const room = await open(me.room)
   const { data: before } = await get(room.members, me.identity.id)
@@ -700,11 +774,11 @@ test('profileSync: a profile set on another device republishes here', async (t) 
   const testnet = await makeTestnet(t)
   const { spec } = await buildSpec(t, 'ps-device', base, exts)
 
-  const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions: exts })
   t.teardown(() => a.close().catch(() => {}), { order: 5 })
   const room = await open(a.room)
 
-  let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions: exts })
   b = await restore(b, a.identity.seed)
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
   await waitForConnection(a.network)
@@ -722,7 +796,7 @@ test('profileSync: a profile set on another device republishes here', async (t) 
 
 test('profileSync: a profile edit propagates to every open room', async (t) => {
   const exts = [profileSync()]
-  const me = await openCero(t, (await buildSpec(t, 'ps-multi', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'ps-multi', base, exts))
 
   const avatarOf = (room, want) =>
     waitUntil(async () => {
@@ -743,6 +817,26 @@ test('profileSync: a profile edit propagates to every open room', async (t) => {
   t.is(b.avatar, 'b.png', 'second room re-synced')
 })
 
+test('profileSync: a t.file avatar lands in the room and resolves there for every member', async (t) => {
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'ps-file', fileSchema, fileSync))
+  const room = await open(host.room)
+  const joined = await open(joiner.room, await cero.invite(room, { role: 'member' }))
+
+  const avatar = b4a.from('host-avatar')
+  const { data: file } = await put(host.files, { data: avatar, type: 'image/png' })
+  await set(host.profile, { name: 'jb', avatar: file.id })
+
+  const onHost = await waitUntil(
+    async () => (await get(room.members, host.identity.id)).data?.avatar
+  )
+  t.alike(await bytesOf(onHost), avatar, 'the member row resolves in the room')
+  const onJoiner = await waitUntil(async () => {
+    const { data } = await get(joined.members, host.identity.id)
+    return data?.avatar && (await bytesOf(data.avatar))
+  })
+  t.alike(onJoiner, avatar, 'and for another member of it')
+})
+
 // ─── handleSync ─────────────────────────────────────────────────────────
 
 test('handleSync: extends the handle builtin with avatar', async (t) => {
@@ -760,7 +854,7 @@ test('handleSync: extends the handle builtin with avatar', async (t) => {
 
 test('handleSync: mirrors a handle profile onto its handles row', async (t) => {
   const exts = [handleSync()]
-  const me = await openCero(t, (await buildSpec(t, 'his-solo', handleSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-solo', handleSchema, exts))
 
   const room = await open(me.room)
   await set(room.profile, { name: 'general', avatar: 'pic.png' })
@@ -776,8 +870,7 @@ test('handleSync: mirrors a handle profile onto its handles row', async (t) => {
 
 test('handleSync: a joiner handles row gets named from the handle profile', async (t) => {
   const exts = [handleSync()]
-  const { spec } = await buildSpec(t, 'his-join', handleSchema, exts)
-  const { host, joiner } = await openTwo(t, spec)
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'his-join', handleSchema, exts))
 
   const room = await open(host.room)
   await set(room.profile, { name: 'general' })
@@ -795,7 +888,7 @@ test('handleSync: a joiner handles row gets named from the handle profile', asyn
 
 test('handleSync: a profile wider than the mirrored set still mirrors', async (t) => {
   const exts = [handleStatus]
-  const me = await openCero(t, (await buildSpec(t, 'his-wide', handleWideSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-wide', handleWideSchema, exts))
 
   const room = await open(me.room)
   await set(room.profile, { name: 'general', status: 'open', motto: 'be kind' })
@@ -813,7 +906,7 @@ test('handleSync: a profile wider than the mirrored set still mirrors', async (t
 test('handleSync: a handle without a profile is left untouched', async (t) => {
   const exts = [handleSync()]
   // `base.room` declares no profile — there is nothing to mirror.
-  const me = await openCero(t, (await buildSpec(t, 'his-no-profile', base, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-no-profile', base, exts))
 
   const room = await open(me.room, { name: 'general' })
   await put(room.messages, { text: 'ok' })
@@ -827,7 +920,7 @@ test('handleSync: a handle without a profile is left untouched', async (t) => {
 
 test('handleSync: seeds the handle name from the open name', async (t) => {
   const exts = [handleSync()]
-  const me = await openCero(t, (await buildSpec(t, 'his-seed', handleSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-seed', handleSchema, exts))
 
   const room = await open(me.room, { name: 'general' })
   const row = await waitUntil(async () => {
@@ -841,7 +934,7 @@ test('handleSync: seeds the handle name from the open name', async (t) => {
 
 test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
   const exts = [handleSync()]
-  const me = await openCero(t, (await buildSpec(t, 'his-avatar', handleSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-avatar', handleSchema, exts))
 
   const room = await open(me.room)
   const avatarOf = (want) =>
@@ -859,6 +952,18 @@ test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
   t.is(row.avatar, 'b.png', 'edit re-synced to the handles row')
 })
 
+test('handleSync: a t.file room avatar lands in the handles list and resolves there', async (t) => {
+  const me = await openCero(t, await buildSpec(t, 'his-file', fileSchema, fileSync))
+  const room = await open(me.room)
+  const avatar = b4a.from('room-avatar')
+  const { data: file } = await put(room.files, { data: avatar, type: 'image/png' })
+  await set(room.profile, { name: 'general', avatar: file.id })
+
+  const row = await waitUntil(async () => (await get(me.handles, room.id)).data?.avatar)
+  await room.close()
+  t.alike(await bytesOf(row), avatar, 'the handles row resolves with the room closed')
+})
+
 // SKIP: blocked by an upstream autobee 1.0.9 bug. Two handles syncing their
 // profile names fire two concurrent local appends to `me.handles`, which under a
 // live swarm strands one in autobee's apply pipeline (the view never converges).
@@ -866,7 +971,7 @@ test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
 // once autobee ships a fix.
 test.skip('handleSync: multiple handles are named independently', async (t) => {
   const exts = [handleSync()]
-  const me = await openCero(t, (await buildSpec(t, 'his-many', handleSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-many', handleSchema, exts))
 
   const roomA = await open(me.room)
   const roomB = await open(me.room)
@@ -885,7 +990,7 @@ test.skip('handleSync: multiple handles are named independently', async (t) => {
 
 test('handleSync: syncs custom fields', async (t) => {
   const exts = [handleStatus]
-  const me = await openCero(t, (await buildSpec(t, 'his-custom', handleStatusSchema, exts)).spec)
+  const me = await openCero(t, await buildSpec(t, 'his-custom', handleStatusSchema, exts))
 
   const room = await open(me.room)
   await set(room.profile, { name: 'general', status: 'open' })
@@ -901,16 +1006,16 @@ test('handleSync: syncs custom fields', async (t) => {
 
 // ─── disposers ──────────────────────────────────────────────────────────────
 
-async function openManual(t, spec) {
+async function openManual(t, { spec, extensions }) {
   const testnet = await makeTestnet(t)
-  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return me
 }
 
 test('profileSync: detaches its handle listener on close', async (t) => {
   const exts = [profileSync()]
-  const me = await openManual(t, (await buildSpec(t, 'ps-dispose', base, exts)).spec)
+  const me = await openManual(t, await buildSpec(t, 'ps-dispose', base, exts))
   t.is(me.listenerCount('handle'), 1, 'extension registered its handle listener')
   await me.close()
   t.is(me.listenerCount('handle'), 0, 'listener detached on close')
@@ -918,7 +1023,7 @@ test('profileSync: detaches its handle listener on close', async (t) => {
 
 test('handleSync: detaches its handle listener on close', async (t) => {
   const exts = [handleSync()]
-  const me = await openManual(t, (await buildSpec(t, 'his-dispose', handleSchema, exts)).spec)
+  const me = await openManual(t, await buildSpec(t, 'his-dispose', handleSchema, exts))
   t.is(me.listenerCount('handle'), 1, 'extension registered its handle listener')
   await me.close()
   t.is(me.listenerCount('handle'), 0, 'listener detached on close')
@@ -927,7 +1032,7 @@ test('handleSync: detaches its handle listener on close', async (t) => {
 // ─── watch ownership: auto-cleanup on close ──────────────────────────────────
 
 test('watch: a data-ref stream is destroyed when its handle closes', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-data')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-data'))
   const stream = watch(me.notes)
   t.absent(stream.destroyed, 'live before close')
   await me.close()
@@ -935,7 +1040,7 @@ test('watch: a data-ref stream is destroyed when its handle closes', async (t) =
 })
 
 test('watch: a handle-ref stream is destroyed when its handle closes', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-handle')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-handle'))
   const stream = watch(me.room)
   t.absent(stream.destroyed)
   await me.close()
@@ -943,7 +1048,7 @@ test('watch: a handle-ref stream is destroyed when its handle closes', async (t)
 })
 
 test('watch: a child stream dies with the child, not the root', async (t) => {
-  const me = await openCero(t, (await buildSpec(t, 'own-child')).spec)
+  const me = await openCero(t, await buildSpec(t, 'own-child'))
   const room = await open(me.room)
   const stream = watch(room.messages)
   t.absent(stream.destroyed)
@@ -952,7 +1057,7 @@ test('watch: a child stream dies with the child, not the root', async (t) => {
 })
 
 test('watch: closing the root cascades and destroys child streams', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-cascade')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-cascade'))
   const room = await open(me.room)
   const stream = watch(room.messages)
   await me.close()
@@ -960,7 +1065,7 @@ test('watch: closing the root cascades and destroys child streams', async (t) =>
 })
 
 test('watch: destroying manually de-registers — close does not double-destroy', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-manual')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-manual'))
   const stream = watch(me.notes)
   stream.destroy()
   await waitUntil(() => stream.destroyed)
@@ -970,7 +1075,7 @@ test('watch: destroying manually de-registers — close does not double-destroy'
 })
 
 test('watch: open/close churn does not accumulate owned streams', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-churn')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-churn'))
   const streams = []
   for (let i = 0; i < 20; i++) {
     const room = await open(me.room)
@@ -985,7 +1090,7 @@ test('watch: open/close churn does not accumulate owned streams', async (t) => {
 })
 
 test('own(): ties an arbitrary destroyable to the handle close', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-custom')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-custom'))
   let destroyed = false
   me.own({ destroy: () => (destroyed = true) })
   await me.close()
@@ -993,7 +1098,7 @@ test('own(): ties an arbitrary destroyable to the handle close', async (t) => {
 })
 
 test('own(): destroys immediately when the handle is already closed', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'own-late')).spec)
+  const me = await openManual(t, await buildSpec(t, 'own-late'))
   await me.close()
   let destroyed = false
   me.own({ destroy: () => (destroyed = true) })
@@ -1003,7 +1108,7 @@ test('own(): destroys immediately when the handle is already closed', async (t) 
 // ─── signal: scope-bound cleanup ─────────────────────────────────────────────
 
 test('signal: me.signal aborts when the handle closes', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-close')).spec)
+  const me = await openManual(t, await buildSpec(t, 'sig-close'))
   const { signal } = me
   t.absent(signal.aborted, 'live before close')
   await me.close()
@@ -1011,15 +1116,9 @@ test('signal: me.signal aborts when the handle closes', async (t) => {
 })
 
 test('signal: me.signal works without a global AbortController (Bare)', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-bare')).spec)
-  const saved = globalThis.AbortController
-  delete globalThis.AbortController
-  let signal
-  try {
-    signal = me.signal // a ReferenceError here before cero imported bare-abort-controller
-  } finally {
-    globalThis.AbortController = saved
-  }
+  if (globalThis.Bare) t.absent(globalThis.AbortController, 'Bare has no global to lean on')
+  const me = await openManual(t, await buildSpec(t, 'sig-bare'))
+  const { signal } = me
   t.ok(signal && typeof signal.addEventListener === 'function', 'built without the global')
   t.absent(signal.aborted, 'live before close')
   await me.close()
@@ -1027,7 +1126,7 @@ test('signal: me.signal works without a global AbortController (Bare)', async (t
 })
 
 test('signal: after(ref, fn, { signal }) stops firing on abort', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-after')).spec)
+  const me = await openManual(t, await buildSpec(t, 'sig-after'))
   const ctrl = new AbortController()
   let hits = 0
   after(me.profile, () => hits++, { signal: ctrl.signal })
@@ -1040,7 +1139,7 @@ test('signal: after(ref, fn, { signal }) stops firing on abort', async (t) => {
 })
 
 test('signal: before(ref, fn, { signal }) stops refusing on abort', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-before')).spec)
+  const me = await openManual(t, await buildSpec(t, 'sig-before'))
   const ctrl = new AbortController()
   before(me.notes, (c) => (c.row.text === 'no' ? false : undefined), { signal: ctrl.signal })
 
@@ -1055,7 +1154,7 @@ test('signal: before(ref, fn, { signal }) stops refusing on abort', async (t) =>
 })
 
 test('signal: watch(ref, q, { signal }) destroys on abort without closing the handle', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-watch')).spec)
+  const me = await openManual(t, await buildSpec(t, 'sig-watch'))
   const ctrl = new AbortController()
   const stream = watch(me.notes, null, { signal: ctrl.signal })
   t.absent(stream.destroyed)
@@ -1069,7 +1168,7 @@ test('signal: watch(ref, q, { signal }) destroys on abort without closing the ha
 })
 
 test('signal: an already-aborted signal cleans up immediately', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-pre')).spec)
+  const me = await openManual(t, await buildSpec(t, 'sig-pre'))
   const ctrl = new AbortController()
   ctrl.abort()
   const stream = watch(me.notes, null, { signal: ctrl.signal })
@@ -1077,7 +1176,7 @@ test('signal: an already-aborted signal cleans up immediately', async (t) => {
 })
 
 test('signal: a pre-aborted signal tears down after/before immediately', async (t) => {
-  const me = await openManual(t, (await buildSpec(t, 'sig-pre-ops')).spec)
+  const me = await openManual(t, await buildSpec(t, 'sig-pre-ops'))
   const ctrl = new AbortController()
   ctrl.abort()
 

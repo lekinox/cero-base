@@ -22,24 +22,24 @@ Each primitive but `Identity` is a `ReadyResource`: construct it, `await x.ready
 
 ## Exports
 
-| Subpath                               | What it gives you                                                                                                                                                  |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@cero-base/core`                     | Every subpath below in one import, but `/database/encryption` and `/blobs/server`                                                                                  |
-| `@cero-base/core/identity`            | `Identity`: a keypair from a seed; signs, verifies, seals, names a swarm topic                                                                                     |
-| `@cero-base/core/network`             | `Network`: Hyperswarm plus wakeup, with managed discovery sessions; `channelTopic`                                                                                 |
-| `@cero-base/core/database`            | `Database`: multi-writer, permissions checked at apply, hooks, key rotation                                                                                        |
-| `@cero-base/core/database/encryption` | `Keyring`, `EpochAutobee`, `EpochEncryption`, `blobEpochKey`, `loadEpochs`, `seal`, `opened`, `wraps`, `epochEntries`: the key epochs a `Database` rotates through |
-| `@cero-base/core/mailbox`             | `Mailbox`: messages to an address, delivered directly or held by a mirror                                                                                          |
-| `@cero-base/core/pairing`             | `Pairing`: invites into a database, joins admitted at apply; `sealJoin`                                                                                            |
-| `@cero-base/core/invite`              | `Invite`: parse an invite string, read its `data` before joining                                                                                                   |
-| `@cero-base/core/storage`             | `Storage`: local tables on Hyperbee or RocksDB, for device-only data                                                                                               |
-| `@cero-base/core/blobs`               | `Blobs`: bytes in a Hyperblobs core, addressed by position, encrypted; `encodeId`, `decodeId`                                                                      |
-| `@cero-base/core/blobs/codec`         | `encodeId`, `decodeId`: a core key, blob id and type as one string                                                                                                 |
-| `@cero-base/core/blobs/server`        | `FileServer`: a file id served at a local url                                                                                                                      |
-| `@cero-base/core/rpc`                 | `RPCServer`, `RPCClient`, `bindCodec`: a typed channel over any duplex stream                                                                                      |
-| `@cero-base/core/schema`              | `t`, `schema`: the field types and the wrapper a build takes                                                                                                       |
-| `@cero-base/core/utils`               | `WRITE`, `INVITE`, `ASSIGN`, `REMOVE`, `can`, `grants`, `outranks`, `isRank`, `filter`, `searchHit`, `onAbort`, `subscribe`, `admission`, `ownership`, `joining`   |
-| `@cero-base/core/errors`              | `CeroError`                                                                                                                                                        |
+| Subpath                               | What it gives you                                                                                                                                                                                         |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@cero-base/core`                     | Every subpath below in one import, but `/database/encryption` and `/blobs/server`                                                                                                                         |
+| `@cero-base/core/identity`            | `Identity`: a keypair from a seed; signs, verifies, seals, names a swarm topic                                                                                                                            |
+| `@cero-base/core/network`             | `Network`: Hyperswarm plus wakeup, with managed discovery sessions; `channelTopic`                                                                                                                        |
+| `@cero-base/core/database`            | `Database`: multi-writer, permissions checked at apply, hooks, key rotation                                                                                                                               |
+| `@cero-base/core/database/encryption` | `Keyring`, `EpochAutobee`, `blobEpochKey`, `loadEpochs`, `seal`, `opened`, `wraps`, `epochEntries`: the key epochs a `Database` rotates through                                                           |
+| `@cero-base/core/mailbox`             | `Mailbox`: messages to an address, delivered directly or held by a mirror                                                                                                                                 |
+| `@cero-base/core/pairing`             | `Pairing`: invites into a database, joins admitted at apply; `sealJoin`                                                                                                                                   |
+| `@cero-base/core/invite`              | `Invite`: parse an invite string, read its `data` before joining                                                                                                                                          |
+| `@cero-base/core/storage`             | `Storage`: local tables on Hyperbee or RocksDB, for device-only data                                                                                                                                      |
+| `@cero-base/core/blobs`               | `Blobs`: bytes in a Hyperblobs core, addressed by position, encrypted; `encodeId`, `decodeId`                                                                                                             |
+| `@cero-base/core/blobs/codec`         | `encodeId`, `decodeId`: a core key, blob id and type as one string                                                                                                                                        |
+| `@cero-base/core/blobs/server`        | `FileServer`: a file id served at a local url                                                                                                                                                             |
+| `@cero-base/core/rpc`                 | `RPCServer`, `RPCClient`, `bindCodec`: a typed channel over any duplex stream                                                                                                                             |
+| `@cero-base/core/schema`              | `t`, `schema`: the field types and the wrapper a build takes                                                                                                                                              |
+| `@cero-base/core/utils`               | `WRITE`, `INVITE`, `ASSIGN`, `REMOVE`, `can`, `grants`, `outranks`, `isRank`, `filter`, `searchHit`, `onAbort`, `subscribe`, `admission`, `ownership`, `joining`, `checkFields`, `checkRequired`, `stamp` |
+| `@cero-base/core/errors`              | `CeroError`                                                                                                                                                                                               |
 
 Runs on Node and Bare, with TypeScript declarations.
 
