@@ -103,7 +103,7 @@
     "b4a": "^1.9.0",
     "bare-abort-controller": "^1.1.2",
     "bare-crypto": "^1.15.3",
-    "bare-fs": "^4.8.1",
+    "bare-fs": "^4.8.2",
     "bare-path": "^3.1.2",
     "ble-swarm": "^2.3.2",
     "compact-encoding": "^3.5.2",
