@@ -762,12 +762,15 @@ export class Database extends ReadyResource {
   /** @private */
   _inHook(fn) {
     return async (ctx) => {
+      // only the hook's own synchronous run is inside it: other work interleaves at its awaits
       this._hooking++
+      let result
       try {
-        return await fn(ctx)
+        result = fn(ctx)
       } finally {
         this._hooking--
       }
+      return await result
     }
   }
 

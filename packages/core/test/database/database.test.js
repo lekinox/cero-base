@@ -1439,6 +1439,25 @@ test('after("put") does not fire when before refuses', async (t) => {
   t.is(after, 0)
 })
 
+test('an operator running beside a waiting hook is not refused as inside it', async (t) => {
+  const { db } = await bootstrapped(t)
+  let release
+  const held = new Promise((resolve) => (release = resolve))
+  const entered = new Promise((resolve) =>
+    db.after('put', async (ctx) => {
+      if (ctx.name !== 'messages') return
+      resolve()
+      await held
+    })
+  )
+  const writing = db.put('messages', { text: 'a' })
+  await entered
+  const read = await db.get('records').catch((e) => e)
+  release()
+  await writing
+  t.absent(read instanceof Error, read?.message ?? 'read beside the hook')
+})
+
 test('an operator called inside a hook throws INVALID', async (t) => {
   const { db } = await bootstrapped(t)
   let err = null

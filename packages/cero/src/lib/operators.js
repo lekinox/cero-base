@@ -6,7 +6,7 @@ import { onAbort, subscribe } from '@cero-base/core/utils'
 /**
  * @typedef {import('./refs.js').Ref} Ref
  * @typedef {import('@cero-base/core/database').HookContext} HookContext
- * @typedef {import('../handle/index.js').Context} Context
+ * @typedef {import('../handle/index.js').Context | import('../rpc/client.js').Context} Context
  * @typedef {import('@cero-base/core/database').Row} Row
  * @typedef {import('@cero-base/core/database').SingleResult} SingleResult
  * @typedef {import('@cero-base/core/database').ListResult} ListResult
@@ -36,7 +36,10 @@ function resolveFile(handle, id, name) {
  * @returns {Promise<SingleResult>}
  */
 export async function put(ref, row) {
-  await opened(ref.handle)
+  // an extension's setup runs while the root opens, so a call there waits for the open; on an open
+  // handle nothing is awaited, so the call reaches the database in the caller's run, where a hook's
+  // guard sees it
+  if (ref.handle.opened === false) await ref.handle.ready()
   return ref.name === 'files' ? putFile(ref, row) : ref.handle.store.put(ref.name, row)
 }
 
@@ -61,7 +64,7 @@ async function putFile(ref, row) {
  * @returns {Promise<SingleResult | null>}
  */
 export async function set(ref, row, opts) {
-  await opened(ref.handle)
+  if (ref.handle.opened === false) await ref.handle.ready()
   return ref.handle.store.set(ref.name, row, opts)
 }
 
@@ -73,7 +76,7 @@ export async function set(ref, row, opts) {
  * @returns {Promise<void>}
  */
 export async function del(ref, id) {
-  await opened(ref.handle)
+  if (ref.handle.opened === false) await ref.handle.ready()
   return ref.handle.store.del(ref.name, id)
 }
 
@@ -85,13 +88,8 @@ export async function del(ref, id) {
  * @returns {Promise<void>}
  */
 export async function call(ref, d) {
-  await opened(ref.handle)
+  if (ref.handle.opened === false) await ref.handle.ready()
   return ref.handle.store.call(ref.name, d)
-}
-
-// an extension's setup runs while the root opens: what it reads or writes waits for the open
-function opened(handle) {
-  return handle.opened === false ? handle.ready() : null
 }
 
 const WRITES = { single: ['set', 'del'], collection: ['put', 'set', 'del'] }
@@ -199,7 +197,7 @@ function resolveRow(ref, row) {
  * @returns {Promise<SingleResult | ListResult>}
  */
 export async function get(ref, q) {
-  await opened(ref.handle)
+  if (ref.handle.opened === false) await ref.handle.ready()
   const live = ref.handle._live?.[ref.name]
   if (live) return live.get(q)
   if (ref.kind === 'handle') {
