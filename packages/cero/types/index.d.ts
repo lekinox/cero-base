@@ -1,6 +1,9 @@
 import { Identity } from '@cero-base/core/identity';
 import { Handle, Ref } from './handle/index.js';
 import { Local } from './local/index.js';
+import * as verbs from './lib/operators.js';
+import { peek } from './lib/peek.js';
+import { t, schema } from './lib/spec.js';
 export { Handle, Ref, Local };
 export * from './lib/operators.js';
 export { peek } from './lib/peek.js';
@@ -120,7 +123,7 @@ export type CeroOpts = {
  * @param {CeroOpts} [opts]
  * @returns {Promise<Context>}
  */
-export declare function cero(dir: string, spec: import('./lib/spec.js').Spec, opts?: CeroOpts): Promise<Context>;
+declare function start(dir: string, spec: import('./lib/spec.js').Spec, opts?: CeroOpts): Promise<Context>;
 /**
  * Restore a cero instance from a seed.
  *
@@ -136,3 +139,11 @@ export declare function restore(me: Context, seed: Uint8Array): Promise<Handle>;
  * @returns {Uint8Array}
  */
 export declare function toSeed(phrase: string): Uint8Array;
+/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, toSeed: typeof toSeed }} */
+export declare const cero: typeof start & typeof verbs & {
+    t: typeof t;
+    schema: typeof schema;
+    peek: typeof peek;
+    restore: typeof restore;
+    toSeed: typeof toSeed;
+};

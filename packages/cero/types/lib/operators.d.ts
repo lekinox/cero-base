@@ -1,6 +1,6 @@
 export type Ref = import('./refs.js').Ref;
 export type HookContext = import('@cero-base/core/database').HookContext;
-export type Context = import('../handle/index.js').Context;
+export type Context = import('../handle/index.js').Context | import('../rpc/client.js').Context;
 export type Row = import('@cero-base/core/database').Row;
 export type SingleResult = import('@cero-base/core/database').SingleResult;
 export type ListResult = import('@cero-base/core/database').ListResult;

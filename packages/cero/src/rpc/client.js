@@ -52,6 +52,8 @@ export { t, schema }
  * @property {string} id
  * @property {string} type
  * @property {string|null} name
+ *
+ * @typedef {(Client | Handle) & Record<string, Ref>} Context  A UI's root or room: the verbs take it like an in-process one.
  */
 
 const blobIdEnc = {
@@ -613,12 +615,14 @@ export async function connect(ipc, spec, opts) {
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
  * @param {{ onerror?: (err: Error) => void }} [opts]
- * @returns {Promise<Client>}
+ * @returns {Promise<Context>}
  */
-export function cero(ipc, spec, opts) {
-  return connect(ipc, spec, opts)
+function start(ipc, spec, opts) {
+  return /** @type {Promise<Context>} */ (connect(ipc, spec, opts))
 }
-Object.assign(cero, remote, { connect, restore, t, schema })
+
+/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, t: typeof t, schema: typeof schema }} */
+export const cero = Object.assign(start, remote, { connect, restore, t, schema })
 
 // the same shape a local root has
 function device({ deviceId, deviceName }) {

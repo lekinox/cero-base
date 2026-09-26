@@ -55,7 +55,7 @@ export { t, schema } from './lib/spec.js'
  * @param {CeroOpts} [opts]
  * @returns {Promise<Context>}
  */
-export async function cero(dir, spec, opts = {}) {
+async function start(dir, spec, opts = {}) {
   if (typeof dir !== 'string' || !dir) throw CeroError.INVALID('dir must be a non-empty string')
   if (!spec) throw CeroError.REQUIRED('spec')
 
@@ -237,7 +237,7 @@ export async function restore(me, seed) {
   await me.close()
   await fs.promises.rm(`${dir}/main`, { recursive: true, force: true })
 
-  return cero(dir, spec, { ...opts, seed })
+  return start(dir, spec, { ...opts, seed })
 }
 
 /**
@@ -251,7 +251,8 @@ export function toSeed(phrase) {
 }
 
 // the facade: cero.put and import { put } are the same function
-Object.assign(cero, verbs, { t, schema, peek, restore, toSeed })
+/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, toSeed: typeof toSeed }} */
+export const cero = Object.assign(start, verbs, { t, schema, peek, restore, toSeed })
 
 function pointerManifest(store, identity) {
   return { version: store.manifestVersion, signers: [{ publicKey: identity.publicKey }] }
