@@ -232,11 +232,13 @@ export class Pairing extends ReadyResource {
       post.close().catch(safetyCatch)
     }
     for (const row of rows) {
-      if (this._replies.has(row.id)) continue
       if (!expired(row)) {
-        this._reply(row)
+        if (!this._replies.has(row.id)) this._reply(row)
         continue
       }
+      // a device already offering the keys stops: nobody waits for them any more
+      this._replies.get(row.id)?.close().catch(safetyCatch)
+      this._replies.delete(row.id)
       if (can(role, REMOVE)) {
         await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
       }

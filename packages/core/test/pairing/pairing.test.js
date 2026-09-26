@@ -310,6 +310,25 @@ test('expiry: a joiner admitted past its invite is removed, not answered', async
   t.alike((await host.db.get('requests')).data, [], 'nothing left owed')
 })
 
+test('expiry: a joiner admitted but gone is removed at expiry, even while offered its keys', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite({ ttl: 4000 })
+  await host.pairing.close()
+  const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
+  await waitFor(async () => !!(await member(host.db, joiner.identity)))
+  // it leaves before reading its keys
+  await joiner.mailbox.close()
+  await joining
+
+  // a device of the host back online before the expiry offers the keys to nobody
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  t.ok(Date.now() < Invite.parse(invite).expires, 'offered before the invite ran out')
+  const gone = async () => !(await member(host.db, joiner.identity))
+  t.ok(await waitFor(gone, { timeout: 8000 }).catch(() => false), 'removed once it ran out')
+})
+
 // ─── confirm invites: a member accepts ─────────────────────────────────────
 
 test('confirm: a join waits as a request until a member accepts it', async (t) => {
