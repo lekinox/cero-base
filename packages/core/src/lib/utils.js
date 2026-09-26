@@ -2,6 +2,7 @@ import b4a from 'b4a'
 import { Readable } from 'streamx'
 
 import { ROLE_PERMS, RANK, QUERY_RESERVED } from './constants.js'
+import { CeroError } from './errors.js'
 
 // can() callers need the capability names, and constants.js is not public
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
@@ -9,6 +10,10 @@ export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 // binding the db key makes an admission unreplayable across rooms
 const ADD_WRITER_TAG = b4a.from('cero/add-writer')
 const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer')
+const JOIN_TAG = b4a.from('cero/join')
+
+// fields the write path stamps itself, always allowed
+const SYSTEM_FIELDS = new Set(['id', 'memberId', 'index', 'createdAt', 'updatedAt'])
 
 /** @type {(dbKey: Uint8Array, writer: Uint8Array, appender: Uint8Array) => Uint8Array} */
 export function admission(dbKey, writer, appender) {
@@ -18,6 +23,12 @@ export function admission(dbKey, writer, appender) {
 /** @type {(dbKey: Uint8Array, writer: Uint8Array) => Uint8Array} */
 export function ownership(dbKey, writer) {
   return b4a.concat([CLAIM_WRITER_TAG, dbKey, writer])
+}
+
+// what a joiner's identity signs: this room, this invite, this writer, where the keys go
+/** @type {(dbKey: Uint8Array, invite: Uint8Array, writer: Uint8Array, reply: Uint8Array) => Uint8Array} */
+export function joining(dbKey, invite, writer, reply) {
+  return b4a.concat([JOIN_TAG, dbKey, invite, writer, reply])
 }
 
 /**
@@ -33,13 +44,16 @@ export function can(role, perm) {
 }
 
 // an unknown role grants nothing; callers taking a role from an app must check it
+/** @type {(role: string) => boolean} */
 export function isRank(role) {
   return RANK[role] != null
 }
 
+/** @type {(a: string, b: string) => boolean} */
 export function grants(a, b) {
   return RANK[a] != null && RANK[b] != null && RANK[a] >= RANK[b]
 }
+/** @type {(a: string, b: string) => boolean} */
 export function outranks(a, b) {
   return RANK[a] != null && RANK[b] != null && RANK[a] > RANK[b]
 }
@@ -107,6 +121,7 @@ const fold = (s) =>
     .replace(/\s/g, '')
 
 // every term must be a substring of a searched field
+/** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
 export function searchHit(row, term, fields) {
   const terms = String(term).split(/\s+/).map(fold).filter(Boolean)
   // memberId is a random z32, it would produce spurious hits
@@ -119,9 +134,10 @@ export function searchHit(row, term, fields) {
  * The in-memory query grammar over rows: equality on any non-reserved field,
  * id ranges, `search`, then `reverse` and `limit`.
  *
- * @param {any[]} rows
- * @param {Record<string, any>} [query]
- * @returns {any[]}
+ * @template {Record<string, unknown>} T
+ * @param {T[]} rows
+ * @param {Record<string, unknown>} [query]
+ * @returns {T[]}
  */
 export function filter(rows, query) {
   if (!query) return rows
@@ -157,4 +173,42 @@ export function onAbort(signal, cb) {
   if (signal.aborted) return void cb()
   signal.addEventListener('abort', cb, { once: true })
   return () => signal.removeEventListener('abort', cb)
+}
+
+/** @type {<T>(row: T, createdAt?: number | null, ts?: number) => T & { createdAt: number, updatedAt: number }} */
+export function stamp(row, createdAt, ts = Date.now()) {
+  return { ...row, createdAt: createdAt ?? ts, updatedAt: ts }
+}
+
+/**
+ * Refuse a field the ref does not declare: the encoder would drop it and the returned row would lie.
+ *
+ * @param {string} name
+ * @param {{ fields?: string[] } | undefined} ref
+ * @param {Record<string, unknown> | null | undefined} row
+ */
+export function checkFields(name, ref, row) {
+  const declared = ref?.fields
+  if (!declared || !row) return
+  for (const key of Object.keys(row)) {
+    if (declared.includes(key) || SYSTEM_FIELDS.has(key)) continue
+    throw CeroError.INVALID(
+      `unknown field '${key}' on '${name}' — declared: ${declared.join(', ') || '(none)'}`
+    )
+  }
+}
+
+/**
+ * Refuse a whole row that lacks a required field: the encoder would fail on it with no code.
+ *
+ * @param {string} name
+ * @param {{ required?: Record<string, string> } | undefined} ref
+ * @param {Record<string, unknown>} row
+ */
+export function checkRequired(name, ref, row) {
+  for (const key in ref?.required) {
+    if (row[key] == null && !SYSTEM_FIELDS.has(key)) {
+      throw CeroError.INVALID(`'${key}' is required on '${name}'`)
+    }
+  }
 }

@@ -3,8 +3,54 @@ import * as operators from '../lib/operators.js';
 export * from './profile-sync.js';
 export * from './handle-sync.js';
 export { t, schema };
-export declare const put: typeof operators.put, set: typeof operators.set, get: typeof operators.get, del: typeof operators.del, watch: typeof operators.watch, changes: typeof operators.changes, call: typeof operators.call, open: typeof operators.open, rotate: typeof operators.rotate, before: typeof operators.before, after: typeof operators.after;
+export * from '../lib/operators.js';
 export declare const cero: {
+    put(ref: operators.Ref, row: operators.Row): Promise<operators.SingleResult>;
+    set(ref: operators.Ref, row: operators.Row, opts?: {
+        upsert?: boolean;
+    }): Promise<operators.SingleResult | null>;
+    del(ref: operators.Ref, id?: string): Promise<void>;
+    call(ref: operators.Ref, d?: operators.Row): Promise<void>;
+    before(ref: operators.Ref, fn: (ctx: operators.HookContext) => unknown, opts?: {
+        signal?: AbortSignal;
+    }): () => void;
+    after(ref: operators.Ref, fn: (ctx: operators.HookContext) => unknown, opts?: {
+        signal?: AbortSignal;
+    }): () => void;
+    get(ref: operators.Ref, q?: string | Record<string, unknown>): Promise<operators.SingleResult | operators.ListResult>;
+    watch(ref: operators.Ref, query?: string | (Record<string, unknown> & {
+        changes?: boolean;
+    }), opts?: {
+        signal?: AbortSignal;
+    }): import('streamx').Readable;
+    open(ref: operators.Ref, arg?: string | {
+        invite?: string;
+        id?: string;
+        name?: string;
+    } | undefined): Promise<operators.Context>;
+    invite(ctx: operators.Context, opts?: import("@cero-base/core").InviteOpts): Promise<string>;
+    revoke(ctx: operators.Context, code: string): Promise<boolean>;
+    rotate(ctx: operators.Context): Promise<{
+        epoch: number;
+    }>;
+    tx<T>(ctx: operators.Context, fn: (tx: operators.Context) => Promise<T>): Promise<T>;
+    accept(ctx: operators.Context, request: {
+        id: string;
+    }, { role }?: {
+        role?: string;
+    }): Promise<void>;
+    deny(ctx: operators.Context, request: {
+        id: string;
+    }, reason?: string): Promise<void>;
+    leave(ctx: operators.Context): Promise<void>;
+    close(ctx: operators.Context): Promise<void>;
+    cancel(me: operators.Context, code: string): Promise<boolean>;
+    suspend(me: operators.Context): Promise<void>;
+    resume(me: operators.Context): Promise<void>;
+    activate(room: operators.Context): Promise<void>;
+    deactivate(room: operators.Context): Promise<void>;
+    phrase(me: operators.Context): Promise<string>;
+    nearby(ctx: operators.Context, mode: boolean | string): Promise<void>;
     t: {
         string: import("@cero-base/core").Prim;
         uint: import("@cero-base/core").Prim;
@@ -28,77 +74,31 @@ export declare const cero: {
         };
     };
     schema: typeof schema;
-    put: typeof operators.put;
-    set: typeof operators.set;
-    get: typeof operators.get;
-    del: typeof operators.del;
-    watch: typeof operators.watch;
-    changes: typeof operators.changes;
-    call: typeof operators.call;
-    open: typeof operators.open;
-    rotate: typeof operators.rotate;
-    before: typeof operators.before;
-    after: typeof operators.after;
 };
 export type Extension = {
+    name?: string;
     /**
      * Refs to add, or `t.extend` on a builtin, nested by handle type like the app schema.
      */
-    schema?: Record<string, any>;
+    schema?: Record<string, object>;
     /**
-     * Runs once the root is ready; a returned function runs on close.
+     * Runs before the root opens; a returned function runs on close.
      */
-    setup?: (me: any) => any;
+    setup?: (me: import('../handle/index.js').Context) => void | (() => void) | Promise<void | (() => void)>;
 };
 /**
  * @typedef {object} Extension
- * @property {Record<string, any>} [schema]  Refs to add, or `t.extend` on a builtin, nested by handle type like the app schema.
- * @property {(me: any) => any} [setup]      Runs once the root is ready; a returned function runs on close.
+ * @property {string} [name]
+ * @property {Record<string, object>} [schema]  Refs to add, or `t.extend` on a builtin, nested by handle type like the app schema.
+ * @property {(me: import('../handle/index.js').Context) => void | (() => void) | Promise<void | (() => void)>} [setup]  Runs before the root opens; a returned function runs on close.
  */
 /** The two every app gets unless its build names a list. */
-export declare const bundled: ({
-    name: string;
-    schema: {
-        profile: import("@cero-base/core").TypeDef;
-        members: {
-            kind: 'extend';
-            fields: Record<string, import("@cero-base/core").Prim>;
-        };
-    };
-    setup(me: any): void;
-} | {
-    name: string;
-    schema: {
-        handles: {
-            kind: 'extend';
-            fields: Record<string, import("@cero-base/core").Prim>;
-        };
-    };
-    setup(me: any): void;
-})[];
+export declare const bundled: Extension[];
 /**
- * The extensions a spec carries, else the bundled two. A bare function is `{ setup }`.
+ * The override, else the list the spec carries, else the bundled two. A bare function is `{ setup }`.
  *
- * @param {any} spec
- * @param {Array<any>} [override]
+ * @param {import('../lib/spec.js').Spec | null} spec
+ * @param {Array<Extension | Extension['setup']>} [override]
  * @returns {Extension[]}
  */
-export declare function extensionsOf(spec: any, override?: Array<any>): Extension[];
-/**
- * The operators a spec carries: functions taking the handle first, keyed by namespace, a
- * key naming a handle type holding that type's namespaces.
- *
- * @param {any} spec
- * @param {Record<string, any>} [override]
- * @returns {Record<string, any>}
- */
-export declare function operatorsOf(spec: any, override?: Record<string, any>): Record<string, any>;
-/**
- * Put the operators for `handle` on it: the root when `type` is null, else a child of `type`.
- *
- * @param {any} handle
- * @param {string | null} type
- * @param {Record<string, any>} operators
- * @returns {any} handle
- */
-export declare function bind(handle: any, type: string | null, operators: Record<string, any>): any;
+export declare function extensionsOf(spec: import('../lib/spec.js').Spec | null, override?: Array<Extension | Extension['setup']>): Extension[];

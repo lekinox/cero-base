@@ -1,46 +1,22 @@
 {
-  "version": 2,
+  "version": 1,
   "schema": [
     {
-      "name": "invite-body",
+      "name": "link",
       "namespace": "cero",
-      "compact": false,
-      "flagsPosition": 4,
+      "compact": true,
+      "flagsPosition": -1,
       "fields": [
         {
-          "name": "version",
-          "required": true,
-          "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "publicKey",
+          "name": "key",
           "required": true,
           "type": "fixed32",
           "version": 1
         },
         {
-          "name": "role",
-          "required": true,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "expires",
+          "name": "length",
           "required": true,
           "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "data",
-          "required": false,
-          "type": "buffer",
-          "version": 1
-        },
-        {
-          "name": "blind",
-          "required": true,
-          "type": "buffer",
           "version": 1
         }
       ]
@@ -49,24 +25,12 @@
       "name": "invite",
       "namespace": "cero",
       "compact": false,
-      "flagsPosition": 4,
+      "flagsPosition": 6,
       "fields": [
         {
           "name": "version",
           "required": true,
           "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "publicKey",
-          "required": true,
-          "type": "fixed32",
-          "version": 1
-        },
-        {
-          "name": "role",
-          "required": true,
-          "type": "string",
           "version": 1
         },
         {
@@ -76,21 +40,103 @@
           "version": 1
         },
         {
+          "name": "key",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "address",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "seed",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "link",
+          "required": true,
+          "type": "@cero/link",
+          "version": 1
+        },
+        {
           "name": "data",
           "required": false,
           "type": "buffer",
           "version": 1
-        },
+        }
+      ]
+    },
+    {
+      "name": "join",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 5,
+      "fields": [
         {
-          "name": "blind",
+          "name": "invite",
           "required": true,
-          "type": "buffer",
+          "type": "fixed32",
           "version": 1
         },
         {
-          "name": "sig",
+          "name": "reply",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "proof",
           "required": true,
           "type": "fixed64",
+          "version": 1
+        },
+        {
+          "name": "identity",
+          "required": true,
+          "type": "fixed32",
+          "version": 1
+        },
+        {
+          "name": "signature",
+          "required": true,
+          "type": "fixed64",
+          "version": 1
+        },
+        {
+          "name": "ts",
+          "required": false,
+          "type": "uint",
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "epoch",
+      "namespace": "cero",
+      "compact": true,
+      "flagsPosition": -1,
+      "fields": [
+        {
+          "name": "epoch",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "stamp",
+          "required": true,
+          "type": "uint",
+          "version": 1
+        },
+        {
+          "name": "entropy",
+          "required": true,
+          "type": "fixed32",
           "version": 1
         }
       ]
@@ -126,9 +172,10 @@
           "version": 1
         },
         {
-          "name": "extra",
+          "name": "epochs",
           "required": false,
-          "type": "buffer",
+          "array": true,
+          "type": "@cero/epoch",
           "version": 1
         }
       ]
@@ -149,51 +196,23 @@
       ]
     },
     {
-      "name": "query",
+      "name": "changes",
       "namespace": "cero",
       "compact": false,
       "flagsPosition": 0,
       "fields": [
         {
-          "name": "gt",
+          "name": "prev",
           "required": false,
-          "type": "string",
+          "array": true,
+          "type": "buffer",
           "version": 1
         },
         {
-          "name": "gte",
+          "name": "next",
           "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "lt",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "lte",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "limit",
-          "required": false,
-          "type": "uint",
-          "version": 1
-        },
-        {
-          "name": "reverse",
-          "required": false,
-          "type": "bool",
-          "version": 1
-        },
-        {
-          "name": "data",
-          "required": false,
-          "type": "json",
+          "array": true,
+          "type": "buffer",
           "version": 1
         }
       ]
@@ -214,18 +233,6 @@
           "name": "name",
           "required": false,
           "type": "string",
-          "version": 1
-        },
-        {
-          "name": "role",
-          "required": false,
-          "type": "string",
-          "version": 1
-        },
-        {
-          "name": "noAccept",
-          "required": false,
-          "type": "bool",
           "version": 1
         }
       ]
@@ -271,28 +278,6 @@
           "required": true,
           "type": "string",
           "version": 1
-        }
-      ]
-    },
-    {
-      "name": "changes",
-      "namespace": "cero",
-      "compact": false,
-      "flagsPosition": 0,
-      "fields": [
-        {
-          "name": "prev",
-          "required": false,
-          "array": true,
-          "type": "buffer",
-          "version": 2
-        },
-        {
-          "name": "next",
-          "required": false,
-          "array": true,
-          "type": "buffer",
-          "version": 2
         }
       ]
     }

@@ -4,15 +4,18 @@ import ReadyResource from 'ready-resource';
  * hrpc binding.
  */
 export declare class RPCPeer extends ReadyResource {
-    ipc: any;
+    ipc: import("streamx").Duplex<import("streamx").DuplexEvents>;
     spec: import("./index.js").Spec;
-    framed: any;
-    rpc: any;
+    /** @type {import('framed-stream')} */
+    framed: import('framed-stream');
+    rpc: object;
     /**
-     * @param {any} ipc                                Duplex IPC stream (e.g. a socket or pipe).
+     * @param {import('streamx').Duplex} ipc           Duplex IPC stream (e.g. a socket or pipe).
      * @param {import('./index.js').Spec} spec         Spec object exposing `rpc` and `schema`.
      */
-    constructor(ipc: any, spec: import('./index.js').Spec);
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    constructor(ipc: import('streamx').Duplex, spec: import('./index.js').Spec);
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
 }

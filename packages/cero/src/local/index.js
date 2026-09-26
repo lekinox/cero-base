@@ -1,4 +1,5 @@
 import ReadyResource from 'ready-resource'
+import b4a from 'b4a'
 
 import { Storage } from '@cero-base/core/storage'
 import { CeroError } from '@cero-base/core/errors'
@@ -7,8 +8,8 @@ import { Ref } from '../lib/refs.js'
 
 /**
  * @typedef {object} LocalOpts
- * @property {any} [root]   Pre-existing HypercoreStorage to reuse.
- * @property {any} [store]  Pre-existing Corestore to reuse.
+ * @property {import('hypercore-storage')} [root]   Pre-existing HypercoreStorage to reuse.
+ * @property {import('corestore')} [store]  Pre-existing Corestore to reuse.
  * @property {Uint8Array} [storageKey]  32-byte key encrypting the local store at rest.
  */
 
@@ -19,7 +20,7 @@ import { Ref } from '../lib/refs.js'
 export class Local extends ReadyResource {
   /**
    * @param {string | null} dir   Directory for the local store, or `null` when reusing an external `store`.
-   * @param {any} spec            Built cero spec — must include `spec.local.database` and `spec.meta.local`.
+   * @param {import('../lib/spec.js').Spec} spec  Built cero spec, with `spec.local.database` and `spec.meta.local`.
    * @param {LocalOpts} [opts]
    */
   constructor(dir, spec, { root, store, storageKey } = {}) {
@@ -40,12 +41,35 @@ export class Local extends ReadyResource {
     })
   }
 
+  /** @private */
   async _open() {
     await this.store.ready()
     Ref.attach(this, this.store.refs)
   }
 
+  /** @private */
   async _close() {
     await this.store.close()
   }
+}
+
+/**
+ * One of the mailbox's boxes, kept in the local store so mail survives a restart.
+ *
+ * @param {import('@cero-base/core/storage').Storage} store
+ * @param {'inbox' | 'outbox'} name
+ * @returns {import('@cero-base/core/mailbox').Box}
+ */
+export function box(store, name) {
+  return {
+    list: async () => (await store.get(name)).data.map(unpack),
+    put: (mail) => store.put(name, { ...mail, mirrors: b4a.concat(mail.mirrors || []) }),
+    del: (id) => store.del(name, id)
+  }
+}
+
+function unpack({ id, address, message, mirrors }) {
+  const keys = []
+  for (let i = 0; i < (mirrors?.byteLength || 0); i += 32) keys.push(mirrors.subarray(i, i + 32))
+  return { id, address, message, mirrors: keys }
 }

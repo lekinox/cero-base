@@ -1,157 +1,113 @@
 export type InviteFields = {
     /**
-     * Signer's long-lived public key.
-     */
-    publicKey: Uint8Array;
-    /**
-     * Optional role tag baked into the signed body.
-     */
-    role: string;
-    /**
      * Absolute expiry timestamp; `0` means never.
      */
     expires: number;
     /**
-     * Encoded payload (raw or via `encoding`).
+     * Key of the database the invite opens.
      */
-    data: Uint8Array | null;
+    key: Uint8Array;
     /**
-     * Raw blind-pairing invite handed to candidates.
+     * The database's address: a join is sealed to it.
      */
-    blind: Uint8Array;
+    address: Uint8Array;
     /**
-     * Ed25519 signature over the canonical body.
+     * The invite's secret; its keypair proves a join.
      */
-    sig?: Uint8Array;
+    seed: Uint8Array;
     /**
-     * Cached z32 string form.
+     * The node that added its record: a join links it, so no member applies the join first.
      */
-    _str?: string | null;
-};
-export type CreateInviteOpts = {
+    link: {
+        key: Uint8Array;
+        length: number;
+    } | null;
     /**
-     * 64-byte Ed25519 secret key used to sign.
+     * The app's payload, readable before joining. Unsigned: a hint, not proof.
      */
-    secretKey: Uint8Array;
-    /**
-     * 32-byte Ed25519 public key matching `secretKey`.
-     */
-    publicKey: Uint8Array;
-    /**
-     * Optional role tag for the joiner.
-     */
-    role: string;
-    /**
-     * TTL in ms from now; `0` means never expires.
-     */
-    expiresIn: number;
-    /**
-     * Caller payload; encoded via `encoding` when provided.
-     */
-    data: any;
-    /**
-     * Raw blind-pairing invite to wrap.
-     */
-    blind: Uint8Array;
-    /**
-     * compact-encoding type used to encode `data`.
-     */
-    encoding?: any;
-};
-export type ParseInviteOpts = {
-    /**
-     * compact-encoding type used to decode the embedded payload.
-     */
-    encoding?: any;
+    data?: Uint8Array | null;
 };
 /**
  * @typedef {object} InviteFields
- * @property {Uint8Array} publicKey                 Signer's long-lived public key.
- * @property {string} role                          Optional role tag baked into the signed body.
- * @property {number} expires                       Absolute expiry timestamp; `0` means never.
- * @property {Uint8Array | null} data               Encoded payload (raw or via `encoding`).
- * @property {Uint8Array} blind                     Raw blind-pairing invite handed to candidates.
- * @property {Uint8Array} [sig]                     Ed25519 signature over the canonical body.
- * @property {string | null} [_str]                 Cached z32 string form.
- *
- * @typedef {object} CreateInviteOpts
- * @property {Uint8Array} secretKey                 64-byte Ed25519 secret key used to sign.
- * @property {Uint8Array} publicKey                 32-byte Ed25519 public key matching `secretKey`.
- * @property {string} role                          Optional role tag for the joiner.
- * @property {number} expiresIn                     TTL in ms from now; `0` means never expires.
- * @property {any} data                             Caller payload; encoded via `encoding` when provided.
- * @property {Uint8Array} blind                     Raw blind-pairing invite to wrap.
- * @property {any} [encoding]                       compact-encoding type used to encode `data`.
- *
- * @typedef {object} ParseInviteOpts
- * @property {any} [encoding]                       compact-encoding type used to decode the embedded payload.
+ * @property {number} expires           Absolute expiry timestamp; `0` means never.
+ * @property {Uint8Array} key           Key of the database the invite opens.
+ * @property {Uint8Array} address       The database's address: a join is sealed to it.
+ * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
+ * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
+ * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 /**
- * Signed, expirable pairing invite. Wraps a blind-pairing invite with a role, optional
- * payload and an Ed25519 signature so the host can be authenticated by the joiner before
- * any handshake happens.
- *
- * @property {any} [_rawData]                         Decoded payload kept alongside the encoded `data` for convenience.
- * @property {Uint8Array} _discoveryKey               Cached discovery key of the wrapped blind invite.
+ * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
+ * proves the joiner holds the invite. Role and expiry come from the database's own record;
+ * `expires` is here so a joiner fails fast.
  */
 export declare class Invite {
     version: number;
-    publicKey: Uint8Array<ArrayBufferLike>;
-    role: string;
     expires: number;
+    key: Uint8Array<ArrayBufferLike>;
+    address: Uint8Array<ArrayBufferLike>;
+    seed: Uint8Array<ArrayBufferLike>;
+    link: {
+        key: Uint8Array;
+        length: number;
+    };
     data: Uint8Array<ArrayBufferLike>;
-    blind: Uint8Array<ArrayBufferLike>;
-    sig: Uint8Array<ArrayBufferLike>;
-    _str: string;
-    _discoveryKey: any;
-    /** @param {InviteFields} fields */
-    constructor(fields: InviteFields);
-    /**
-     * Whether the invite is past its TTL (always `false` when `expires === 0`).
-     *
-     * @returns {boolean}
-     */
+    /** @private */
+    _str;
+    /** @private */
+    _keyPair;
+    /** @param {InviteFields & { _str?: string }} fields */
+    constructor({ expires, key, address, seed, link, data, _str }: InviteFields & {
+        _str?: string;
+    });
+    /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */
     get expired(): boolean;
+    /** @returns {Uint8Array} Discovery key of the database the invite opens. */
+    get discoveryKey(): Uint8Array;
+    /** @returns {Uint8Array} The invite's id: the public key of its seed's keypair. */
+    get id(): Uint8Array;
     /**
-     * Discovery key of the wrapped blind-pairing invite — the topic it targets.
+     * Sign a writer with the invite's key, proving the join in that writer's core comes from its
+     * holder.
      *
+     * @param {Uint8Array} writer
      * @returns {Uint8Array}
      */
-    get discoveryKey(): Uint8Array;
+    prove(writer: Uint8Array): Uint8Array;
+    /** @returns {string} The z32 wire form. */
+    toString(): string;
+    /** @private */
+    private _pair;
     /**
-     * Verify the embedded signature against the encoded body.
+     * Whether `proof` is the invite `id`'s signature over `writer`.
      *
+     * @param {Uint8Array} id
+     * @param {Uint8Array} writer
+     * @param {Uint8Array} proof
      * @returns {boolean}
      */
-    verify(): boolean;
+    static proven(id: Uint8Array, writer: Uint8Array, proof: Uint8Array): boolean;
     /**
-     * Serialise to the canonical z32 wire form (cached).
+     * A new invite with a fresh seed.
      *
-     * @returns {string}
-     */
-    toString(): string;
-    /**
-     * Build and sign a new invite envelope wrapping a blind-pairing invite.
-     *
-     * @param {CreateInviteOpts} opts
+     * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null }} opts
      * @returns {Invite}
      */
-    static create({ secretKey, publicKey, role, expiresIn, data, blind, encoding }: CreateInviteOpts): Invite;
+    static create({ ttl, key, address, link, data }: {
+        ttl?: number | string;
+        key: Uint8Array;
+        address: Uint8Array;
+        link?: {
+            key: Uint8Array;
+            length: number;
+        } | null;
+        data?: Uint8Array | null;
+    }): Invite;
     /**
-     * Parse a z32 invite string, verify its signature and (optionally) decode
-     * its payload.
+     * Parse an invite string.
      *
      * @param {string} str
-     * @param {ParseInviteOpts} [opts]
      * @returns {Invite}
      */
-    static parse(str: string, { encoding }?: ParseInviteOpts): Invite;
-    /**
-     * Cheap structural test — does `str` decode as an invite envelope? Does not
-     * verify the signature.
-     *
-     * @param {unknown} str
-     * @returns {boolean}
-     */
-    static isInvite(str: unknown): boolean;
+    static parse(str: string): Invite;
 }

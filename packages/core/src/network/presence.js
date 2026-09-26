@@ -22,6 +22,7 @@ export class Presence {
     this.active = active
     this.announced = announced
     this.idle = idle
+    /** @type {Map<string, { topic: Uint8Array, pinned: boolean, refs: number, touched: number, off: boolean, discovery: import('./discovery.js').Discovery | null, timer: ReturnType<typeof setTimeout> | null, pending: 'active' | 'passive' | null }>} */
     this.entries = new Map()
   }
 
@@ -34,7 +35,7 @@ export class Presence {
    * @returns {Slot}
    */
   add(topic, { pinned = false } = {}) {
-    const id = b4a.toString(topic, 'hex')
+    const id = b4a.toHex(topic)
     let e = this.entries.get(id)
     if (!e) {
       e = {
@@ -78,7 +79,7 @@ export class Presence {
    * @returns {'active' | 'passive' | null}
    */
   mode(topic) {
-    const e = this.entries.get(b4a.toString(topic, 'hex'))
+    const e = this.entries.get(b4a.toHex(topic))
     return e?.discovery ? e.discovery.mode : null
   }
 
@@ -102,6 +103,7 @@ export class Presence {
   }
 
   // up at once, down after idle: a room at the edge of the budget must not churn the DHT
+  /** @private */
   _want(e, mode) {
     const current = e.discovery ? e.discovery.mode : null
     if (rank(mode) < rank(current)) {
@@ -116,12 +118,14 @@ export class Presence {
     else e.discovery.activate().catch(safetyCatch)
   }
 
+  /** @private */
   _settle(e) {
     e.timer = null
     if (e.pending === PASSIVE) e.discovery.deactivate().catch(safetyCatch)
     else this._leave(e)
   }
 
+  /** @private */
   _leave(e) {
     clearTimeout(e.timer)
     e.timer = null

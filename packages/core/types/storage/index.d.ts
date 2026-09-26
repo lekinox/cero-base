@@ -1,7 +1,7 @@
 import ReadyResource from 'ready-resource';
 export type StorageOpts = {
     spec: {
-        database: any;
+        database: object;
         meta?: {
             ns?: string;
             refs?: Record<string, {
@@ -13,11 +13,11 @@ export type StorageOpts = {
     /**
      * Pre-existing HypercoreStorage to reuse.
      */
-    root?: any;
+    root?: import('hypercore-storage');
     /**
      * Pre-existing Corestore to reuse.
      */
-    store?: any;
+    store?: import('corestore');
     /**
      * 32-byte key encrypting the backing core at rest (bee backend only).
      */
@@ -27,36 +27,21 @@ export type Ref = {
     name: string;
     kind: string;
 };
-export type StoredRow = {
-    id?: string;
-    createdAt: number;
-    updatedAt: number;
-    [k: string]: any;
-};
-export type SingleResult = {
-    data: any;
-};
-export type ListResult = {
-    data: any[];
-    total: number;
-    size: number;
-};
-export type GetByIdResult = {
-    data: any | null;
-};
+export type Row = import('../database/index.js').Row;
+export type SingleResult = import('../database/index.js').SingleResult;
+export type ListResult = import('../database/index.js').ListResult;
 /**
  * @typedef {object} StorageOpts
- * @property {{ database: any, meta?: { ns?: string, refs?: Record<string, { kind?: string }> } }} spec
+ * @property {{ database: object, meta?: { ns?: string, refs?: Record<string, { kind?: string }> } }} spec
  * @property {'rocks' | 'bee'} backend
- * @property {any} [root]   Pre-existing HypercoreStorage to reuse.
- * @property {any} [store]  Pre-existing Corestore to reuse.
+ * @property {import('hypercore-storage')} [root]  Pre-existing HypercoreStorage to reuse.
+ * @property {import('corestore')} [store]         Pre-existing Corestore to reuse.
  * @property {Uint8Array} [storageKey]  32-byte key encrypting the backing core at rest (bee backend only).
  *
  * @typedef {{ name: string, kind: string }} Ref
- * @typedef {{ id?: string, createdAt: number, updatedAt: number, [k: string]: any }} StoredRow
- * @typedef {{ data: any }} SingleResult
- * @typedef {{ data: any[], total: number, size: number }} ListResult
- * @typedef {{ data: any | null }} GetByIdResult
+ * @typedef {import('../database/index.js').Row} Row
+ * @typedef {import('../database/index.js').SingleResult} SingleResult
+ * @typedef {import('../database/index.js').ListResult} ListResult
  */
 /**
  * Local, single-writer storage. Backed by either RocksDB (`rocks`) or a Hyperbee on top of
@@ -65,7 +50,7 @@ export type GetByIdResult = {
 export declare class Storage extends ReadyResource {
     dir: string;
     spec: {
-        database: any;
+        database: object;
         meta?: {
             ns?: string;
             refs?: Record<string, {
@@ -79,36 +64,46 @@ export declare class Storage extends ReadyResource {
     refs: Record<string, {
         kind?: string;
     }>;
-    _cf: string;
-    _ownsRoot: boolean;
-    _ownsStore: boolean;
-    root: any;
-    store: any;
-    db: any;
+    /** @private */
+    _cf;
+    /** @private */
+    _ownsRoot;
+    /** @private */
+    _ownsStore;
+    /** @type {import('hypercore-storage') | null} */
+    root: import('hypercore-storage') | null;
+    /** @type {import('corestore') | null} */
+    store: import('corestore') | null;
+    /** @type {import('hyperdb') | null} */
+    db: import('hyperdb') | null;
+    /** @private */
+    _writing;
     /**
      * @param {string} dir
      * @param {StorageOpts} [opts]
      */
     constructor(dir: string, { spec, backend, root, store, storageKey }?: StorageOpts);
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
     /**
      * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
      *
      * @param {string} name
-     * @param {Record<string, any>} row
+     * @param {Record<string, unknown>} row
      * @returns {Promise<SingleResult>}
      */
-    put(name: string, row: Record<string, any>): Promise<SingleResult>;
+    put(name: string, row: Record<string, unknown>): Promise<SingleResult>;
     /**
      * Upsert by merging with the existing row, preserving `createdAt`.
      *
      * @param {string} name
-     * @param {Record<string, any>} row
+     * @param {Record<string, unknown>} row
      * @param {{ upsert?: boolean }} [opts]
      * @returns {Promise<SingleResult | null>}
      */
-    set(name: string, row: Record<string, any>, { upsert }?: {
+    set(name: string, row: Record<string, unknown>, { upsert }?: {
         upsert?: boolean;
     }): Promise<SingleResult | null>;
     /**
@@ -124,28 +119,43 @@ export declare class Storage extends ReadyResource {
      * record (single). With a string id: fetch that specific row.
      *
      * @param {string} name
-     * @param {string | Record<string, any>} [query]
-     * @returns {Promise<SingleResult | ListResult | GetByIdResult>}
+     * @param {string | Record<string, unknown>} [query]
+     * @returns {Promise<SingleResult | ListResult>}
      */
-    get(name: string, query?: string | Record<string, any>): Promise<SingleResult | ListResult | GetByIdResult>;
+    get(name: string, query?: string | Record<string, unknown>): Promise<SingleResult | ListResult>;
     /**
      * Live snapshot stream — re-emits the latest `get()` result on every
      * underlying mutation. Destroy the stream to stop watching.
      *
      * @param {string} name
-     * @param {Record<string, any>} [query]
+     * @param {Record<string, unknown>} [query]
      * @returns {import('streamx').Readable}
      */
-    watch(name: string, query?: Record<string, any>): import('streamx').Readable;
-    _guard(): void;
-    /** @param {string} name @returns {Ref} */
-    _ref(name: string): Ref;
-    /** @param {Ref} ref @returns {string} */
-    _col(ref: Ref): string;
-    /** @param {Ref} ref @param {string} [id] @returns {Promise<any | null>} */
-    _read(ref: Ref, id?: string): Promise<any | null>;
-    /** @param {Ref} ref @param {Record<string, any>} row @returns {Promise<void>} */
-    _write(ref: Ref, row: Record<string, any>): Promise<void>;
+    watch(name: string, query?: Record<string, unknown>): import('streamx').Readable;
+    /** @private */
+    private _guard;
+    /**
+     * @param {string} name @returns {Ref}
+     * @private
+     */
+    private _ref;
+    /**
+     * @param {Ref} ref @returns {string}
+     * @private
+     */
+    private _col;
+    /**
+     * @param {Ref} ref @param {string} [id] @returns {Promise<Row | null>}
+     * @private
+     */
+    private _read;
+    /**
+     * @param {Ref} ref @param {Row} row @returns {Promise<void>}
+     * @private
+     */
+    private _write;
+    /** @private */
+    private _serial;
     /**
      * Construct a RocksDB-backed Storage.
      *

@@ -1,4 +1,4 @@
-import { peek } from '@cero-base/cero'
+import { cero } from '@cero-base/cero'
 import { spec } from './spec/index.js'
 
 export { spec, meta } from './spec/index.js'
@@ -12,5 +12,5 @@ export { schema } from './schema.js'
  * @returns {Promise<boolean>}
  */
 export function isInitialized(storage) {
-  return peek(storage, spec)
+  return cero.peek(storage, spec)
 }

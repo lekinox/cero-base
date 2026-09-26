@@ -3,14 +3,14 @@
  * lifecycle.
  *
  * @param {{ port?: number, host?: string, token?: string | null }} [opts]
- * @returns {{ accept(handler: (socket: any) => void): void, ready(): Promise<{ port: number }>, port: number | null, close(): void }}
+ * @returns {{ accept(handler: (socket: import('streamx').Duplex) => void): void, ready(): Promise<{ port: number }>, port: number | null, close(): void }}
  */
 export declare function loopback(opts?: {
     port?: number;
     host?: string;
     token?: string | null;
 }): {
-    accept(handler: (socket: any) => void): void;
+    accept(handler: (socket: import('streamx').Duplex) => void): void;
     ready(): Promise<{
         port: number;
     }>;
@@ -22,9 +22,9 @@ export declare function loopback(opts?: {
  * `connect()`.
  *
  * @param {{ port: number, host?: string }} [opts]
- * @returns {any} A streamx-compatible Duplex socket.
+ * @returns {import('streamx').Duplex} A streamx-compatible Duplex socket.
  */
 export declare function dial(opts?: {
     port: number;
     host?: string;
-}): any;
+}): import('streamx').Duplex;

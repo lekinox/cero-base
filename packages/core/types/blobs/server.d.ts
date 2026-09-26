@@ -10,7 +10,8 @@ export type Resolved = {
  */
 export declare class FileServer {
     resolve: (coreKey: Buffer, info: object) => Resolved | null | Promise<Resolved | null>;
-    server: any;
+    /** @type {import('hypercore-blob-server')} */
+    server: import('hypercore-blob-server');
     /**
      * @param {object} opts
      * @param {import('corestore')} opts.store
@@ -20,7 +21,8 @@ export declare class FileServer {
         store: import('corestore');
         resolve: (coreKey: Buffer, info: object) => Resolved | null | Promise<Resolved | null>;
     });
-    get port(): any;
+    /** @returns {number} */
+    get port(): number;
     listen(): Promise<void>;
     /**
      * Build a renderable localhost URL for a string file id.

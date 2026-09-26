@@ -1,6 +1,6 @@
-import BlindPairing from 'blind-pairing'
-import sodium from 'sodium-universal'
+import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
+import ms from 'ms'
 import z32 from 'z32'
 import c from 'compact-encoding'
 
@@ -8,194 +8,133 @@ import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 
 const VERSION = 1
-const Envelope = getEncoding('@cero/invite')
-const SignBody = getEncoding('@cero/invite-body')
+const Encoding = getEncoding('@cero/invite')
+const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
 
 /**
  * @typedef {object} InviteFields
- * @property {Uint8Array} publicKey                 Signer's long-lived public key.
- * @property {string} role                          Optional role tag baked into the signed body.
- * @property {number} expires                       Absolute expiry timestamp; `0` means never.
- * @property {Uint8Array | null} data               Encoded payload (raw or via `encoding`).
- * @property {Uint8Array} blind                     Raw blind-pairing invite handed to candidates.
- * @property {Uint8Array} [sig]                     Ed25519 signature over the canonical body.
- * @property {string | null} [_str]                 Cached z32 string form.
- *
- * @typedef {object} CreateInviteOpts
- * @property {Uint8Array} secretKey                 64-byte Ed25519 secret key used to sign.
- * @property {Uint8Array} publicKey                 32-byte Ed25519 public key matching `secretKey`.
- * @property {string} role                          Optional role tag for the joiner.
- * @property {number} expiresIn                     TTL in ms from now; `0` means never expires.
- * @property {any} data                             Caller payload; encoded via `encoding` when provided.
- * @property {Uint8Array} blind                     Raw blind-pairing invite to wrap.
- * @property {any} [encoding]                       compact-encoding type used to encode `data`.
- *
- * @typedef {object} ParseInviteOpts
- * @property {any} [encoding]                       compact-encoding type used to decode the embedded payload.
+ * @property {number} expires           Absolute expiry timestamp; `0` means never.
+ * @property {Uint8Array} key           Key of the database the invite opens.
+ * @property {Uint8Array} address       The database's address: a join is sealed to it.
+ * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
+ * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
+ * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  */
 
 /**
- * Signed, expirable pairing invite. Wraps a blind-pairing invite with a role, optional
- * payload and an Ed25519 signature so the host can be authenticated by the joiner before
- * any handshake happens.
- *
- * @property {any} [_rawData]                         Decoded payload kept alongside the encoded `data` for convenience.
- * @property {Uint8Array} _discoveryKey               Cached discovery key of the wrapped blind invite.
+ * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
+ * proves the joiner holds the invite. Role and expiry come from the database's own record;
+ * `expires` is here so a joiner fails fast.
  */
 export class Invite {
-  /** @param {InviteFields} fields */
-  constructor(fields) {
+  /** @param {InviteFields & { _str?: string }} fields */
+  constructor({ expires, key, address, seed, link = null, data = null, _str = null }) {
     this.version = VERSION
-    this.publicKey = fields.publicKey
-    this.role = fields.role
-    this.expires = fields.expires
-    this.data = fields.data
-    this.blind = fields.blind
-    this.sig = fields.sig
-    this._str = fields._str || null
-
-    this._discoveryKey = null
+    this.expires = expires
+    this.key = key
+    this.address = address
+    this.seed = seed
+    this.link = link
+    this.data = data
+    /** @private */
+    this._str = _str
+    /** @private */
+    this._keyPair = null
   }
 
-  /**
-   * Whether the invite is past its TTL (always `false` when `expires === 0`).
-   *
-   * @returns {boolean}
-   */
+  /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */
   get expired() {
     return this.expires > 0 && Date.now() > this.expires
   }
 
+  /** @returns {Uint8Array} Discovery key of the database the invite opens. */
+  get discoveryKey() {
+    return crypto.discoveryKey(this.key)
+  }
+
+  /** @returns {Uint8Array} The invite's id: the public key of its seed's keypair. */
+  get id() {
+    return this._pair().publicKey
+  }
+
   /**
-   * Discovery key of the wrapped blind-pairing invite — the topic it targets.
+   * Sign a writer with the invite's key, proving the join in that writer's core comes from its
+   * holder.
    *
+   * @param {Uint8Array} writer
    * @returns {Uint8Array}
    */
-  get discoveryKey() {
-    if (!this._discoveryKey) {
-      this._discoveryKey = BlindPairing.decodeInvite(this.blind).discoveryKey
-    }
-    return this._discoveryKey
+  prove(writer) {
+    return crypto.sign(crypto.hash([NS_PROOF, writer]), this._pair().secretKey)
   }
 
-  /**
-   * Verify the embedded signature against the encoded body.
-   *
-   * @returns {boolean}
-   */
-  verify() {
-    const body = c.encode(SignBody, this)
-    return sodium.crypto_sign_verify_detached(this.sig, body, this.publicKey)
-  }
-
-  /**
-   * Serialise to the canonical z32 wire form (cached).
-   *
-   * @returns {string}
-   */
+  /** @returns {string} The z32 wire form. */
   toString() {
-    if (this._str) return this._str
-    const buf = c.encode(Envelope, this)
-    this._str = z32.encode(buf)
+    this._str ??= z32.encode(c.encode(Encoding, this))
     return this._str
   }
 
-  /**
-   * Build and sign a new invite envelope wrapping a blind-pairing invite.
-   *
-   * @param {CreateInviteOpts} opts
-   * @returns {Invite}
-   */
-  static create({ secretKey, publicKey, role, expiresIn, data, blind, encoding }) {
-    if (!secretKey || secretKey.length !== 64) {
-      throw CeroError.INVALID('secretKey must be a 64-byte buffer')
-    }
-    if (!publicKey || publicKey.length !== 32) {
-      throw CeroError.INVALID('publicKey must be a 32-byte buffer')
-    }
-    if (!b4a.isBuffer(blind)) {
-      throw CeroError.INVALID('blind invite must be a buffer')
-    }
-
-    const expires = expiresIn ? Date.now() + expiresIn : 0
-    const encoded = data == null ? null : encoding ? c.encode(encoding, data) : data
-
-    const fields = {
-      version: VERSION,
-      publicKey,
-      role: role || '',
-      expires,
-      data: encoded,
-      blind
-    }
-
-    const body = c.encode(SignBody, fields)
-    const sig = b4a.alloc(64)
-    sodium.crypto_sign_detached(sig, body, secretKey)
-    fields.sig = sig
-
-    const inv = new Invite(fields)
-    inv._rawData = data // remember decoded form for convenience
-    return inv
+  /** @private */
+  _pair() {
+    this._keyPair ??= crypto.keyPair(crypto.hash([NS_KEY, this.seed]))
+    return this._keyPair
   }
 
   /**
-   * Parse a z32 invite string, verify its signature and (optionally) decode
-   * its payload.
+   * Whether `proof` is the invite `id`'s signature over `writer`.
    *
-   * @param {string} str
-   * @param {ParseInviteOpts} [opts]
-   * @returns {Invite}
-   */
-  static parse(str, { encoding } = {}) {
-    if (typeof str !== 'string') throw CeroError.INVALID_INVITE('invite must be a string')
-
-    let buf
-    try {
-      buf = z32.decode(str)
-    } catch {
-      throw CeroError.INVALID_INVITE('invite is not valid z32')
-    }
-
-    let fields
-    try {
-      fields = c.decode(Envelope, buf)
-    } catch {
-      throw CeroError.INVALID_INVITE('invite envelope failed to decode')
-    }
-
-    if (fields.version !== VERSION) throw CeroError.INVALID_INVITE('unknown invite version')
-
-    const inv = new Invite({ ...fields, _str: str })
-    if (!inv.verify()) throw CeroError.INVALID_INVITE('invite signature is invalid')
-
-    if (encoding && inv.data) {
-      try {
-        inv._rawData = c.decode(encoding, inv.data)
-      } catch {
-        throw CeroError.INVALID_INVITE('invite data failed to decode')
-      }
-    }
-
-    return inv
-  }
-
-  /**
-   * Cheap structural test — does `str` decode as an invite envelope? Does not
-   * verify the signature.
-   *
-   * @param {unknown} str
+   * @param {Uint8Array} id
+   * @param {Uint8Array} writer
+   * @param {Uint8Array} proof
    * @returns {boolean}
    */
-  static isInvite(str) {
-    if (typeof str !== 'string') return false
-    try {
-      const buf = z32.decode(str)
-      const fields = c.decode(Envelope, buf)
-      if (fields.blind) BlindPairing.decodeInvite(fields.blind)
-      return true
-    } catch {
-      return false
-    }
+  static proven(id, writer, proof) {
+    return crypto.verify(crypto.hash([NS_PROOF, writer]), proof, id)
   }
+
+  /**
+   * A new invite with a fresh seed.
+   *
+   * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null }} opts
+   * @returns {Invite}
+   */
+  static create({ ttl = 0, key, address, link = null, data = null }) {
+    if (key?.byteLength !== 32) throw CeroError.INVALID('key must be a 32-byte buffer')
+    if (address?.byteLength !== 32) throw CeroError.INVALID('address must be a 32-byte buffer')
+    const expires = ttl ? Date.now() + toMs(ttl) : 0
+    if (data !== null && !b4a.isBuffer(data)) throw CeroError.INVALID('data must be a buffer')
+    return new Invite({
+      expires,
+      key,
+      address,
+      seed: crypto.randomBytes(32),
+      link,
+      data
+    })
+  }
+
+  /**
+   * Parse an invite string.
+   *
+   * @param {string} str
+   * @returns {Invite}
+   */
+  static parse(str) {
+    if (typeof str !== 'string') throw CeroError.INVALID_INVITE('invite must be a string')
+    let fields
+    try {
+      fields = c.decode(Encoding, z32.decode(str))
+    } catch {
+      throw CeroError.INVALID_INVITE('not an invite')
+    }
+    if (fields.version !== VERSION) throw CeroError.INVALID_INVITE('unknown invite version')
+    return new Invite({ ...fields, _str: str })
+  }
+}
+
+// ms, or a duration like '12h' or '2d'
+function toMs(ttl) {
+  const value = typeof ttl === 'string' ? ms(ttl) : ttl
+  if (!Number.isFinite(value)) throw CeroError.INVALID(`ttl '${ttl}' is not a duration`)
+  return value
 }

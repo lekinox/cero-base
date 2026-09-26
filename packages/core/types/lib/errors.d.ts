@@ -15,10 +15,10 @@ export declare class CeroError extends Error {
     /**
      * Type-guard for `err instanceof CeroError` that survives realm boundaries.
      *
-     * @param {any} err
+     * @param {unknown} err
      * @returns {err is CeroError}
      */
-    static isCeroError(err: any): err is CeroError;
+    static isCeroError(err: unknown): err is CeroError;
     /**
      * Missing required argument.
      *
@@ -78,7 +78,7 @@ export declare class CeroError extends Error {
      *
      * @param {string} what
      */
-    static TIMED_OUT(what: string): CeroError;
+    static TIMEOUT(what: string): CeroError;
     /**
      * Feature is not yet implemented.
      *
@@ -113,12 +113,6 @@ export declare class CeroError extends Error {
      * @param {string} [msg]
      */
     static REFUSED(rule: string, msg?: string): CeroError;
-    /**
-     * Pairing handshake did not complete in time.
-     *
-     * @param {string} [msg]
-     */
-    static TIMEOUT(msg?: string): CeroError;
     /**
      * Underlying swarm/transport failure.
      *

@@ -6,7 +6,7 @@ export type DatabaseOpts = {
     /**
      * Corestore (or compatible) used to materialize the autobee.
      */
-    store: any;
+    store: import('corestore');
     /**
      * Long-lived member identity used to sign writer changes.
      */
@@ -19,20 +19,24 @@ export type DatabaseOpts = {
      * Generated hyperdb + hyperdispatch spec.
      */
     spec: {
-        database: any;
-        dispatch: any;
+        database: object;
+        dispatch: {
+            Router: new () => object;
+            encode: (name: string, value: unknown) => Uint8Array;
+            decode: (buf: Uint8Array) => {
+                name: string;
+                value: unknown;
+            };
+        };
         meta?: {
             ns?: string;
+            version?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
             }>;
         };
     };
-    /**
-     * Custom action handlers keyed by route name.
-     */
-    routes?: Record<string, Function>;
     /**
      * Corestore namespace; defaults to `cero`.
      */
@@ -69,11 +73,12 @@ export type DatabaseOpts = {
      */
     onerror?: (err: Error) => void;
 };
+export type Row = Record<string, unknown>;
 export type SingleResult = {
-    data: any | null;
+    data: Row | null;
 };
 export type ListResult = {
-    data: any[];
+    data: Row[];
     total: number | null;
     size: number;
 };
@@ -115,13 +120,13 @@ export type HookContext = {
      */
     id: string | null;
     /**
-     * The writer's member id.
+     * The writer's member id, null for a core no member owns yet (a join, a claim, genesis).
      */
-    memberId: string;
+    memberId: string | null;
     /**
-     * The writer's role.
+     * The writer's role, null likewise.
      */
-    role: string;
+    role: string | null;
     get: (ref: string | {
         name: string;
     }, query?: string | Record<string, unknown>) => Promise<{
@@ -140,11 +145,10 @@ export type HookContext = {
 export type HookFn = (ctx: HookContext) => unknown;
 /**
  * @typedef {object} DatabaseOpts
- * @property {any} store                                              Corestore (or compatible) used to materialize the autobee.
+ * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
- * @property {{ database: any, dispatch: any, meta?: { ns?: string, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
- * @property {Record<string, Function>} [routes]                      Custom action handlers keyed by route name.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -157,8 +161,9 @@ export type HookFn = (ctx: HookContext) => unknown;
  * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
  * `behind` (an op from a newer app version was skipped).
  *
- * @typedef {{ data: any | null }} SingleResult
- * @typedef {{ data: any[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
+ * @typedef {Record<string, unknown>} Row  A row, fields by name.
+ * @typedef {{ data: Row | null }} SingleResult
+ * @typedef {{ data: Row[], total: number | null, size: number }} ListResult  `total` is null when a limited read skipped the full count — pass `{ total: true }` to force it.
  * @typedef {{ gt?: string, gte?: string, lt?: string, lte?: string, reverse?: boolean, limit?: number, search?: string, fields?: string[], total?: boolean }} Query
  * @typedef {{ kind: string, verb: string, name: string }} Ref
  * @typedef {object} HookContext
@@ -167,8 +172,8 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {Record<string, unknown> | null} row       The incoming row; mutate it in `before` to change what lands.
  * @property {Record<string, unknown> | null} existing  The stored row, or null.
  * @property {string | null} id                         The row id for a `del`.
- * @property {string} memberId                          The writer's member id.
- * @property {string} role                              The writer's role.
+ * @property {string | null} memberId                   The writer's member id, null for a core no member owns yet (a join, a claim, genesis).
+ * @property {string | null} role                       The writer's role, null likewise.
  * @property {(ref: string | { name: string }, query?: string | Record<string, unknown>) => Promise<{ data: unknown }>} get
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} put
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} set
@@ -179,14 +184,23 @@ export type HookFn = (ctx: HookContext) => unknown;
  * Multi-writer database built on Autobee + HyperDB.
  */
 export declare class Database extends ReadyResource {
-    store: any;
+    /** @type {import('corestore')} */
+    store: import('corestore');
     identity: Identity;
     network: import("../index.js").Network;
     spec: {
-        database: any;
-        dispatch: any;
+        database: object;
+        dispatch: {
+            Router: new () => object;
+            encode: (name: string, value: unknown) => Uint8Array;
+            decode: (buf: Uint8Array) => {
+                name: string;
+                value: unknown;
+            };
+        };
         meta?: {
             ns?: string;
+            version?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -195,6 +209,7 @@ export declare class Database extends ReadyResource {
     };
     meta: {
         ns?: string;
+        version?: number;
         refs?: Record<string, {
             kind?: string;
             verb?: string;
@@ -205,9 +220,9 @@ export declare class Database extends ReadyResource {
         kind?: string;
         verb?: string;
     }>;
-    version: any;
-    behind: any;
-    routes: Record<string, Function>;
+    version: number;
+    /** @type {number | null} */
+    behind: number | null;
     namespace: string;
     encryptionKey: Uint8Array<ArrayBufferLike>;
     keyring: Keyring;
@@ -215,7 +230,10 @@ export declare class Database extends ReadyResource {
     key: Uint8Array<ArrayBufferLike>;
     pinned: boolean;
     keyPair: import("../index.js").KeyPair;
-    _onerror: (err: Error) => void;
+    /** @private */
+    _onerror;
+    /** @private */
+    _room;
     bee: EpochAutobee;
     dispatcher: {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
@@ -224,19 +242,32 @@ export declare class Database extends ReadyResource {
             key: Buffer;
         }>, view: object, host: object) => Promise<void>;
     };
-    _presence: import("../network/presence.js").Slot;
-    _txChain: any;
-    _before: Map<any, any>;
-    _after: Map<any, any>;
-    _hooking: number;
-    _verbs: Map<any, any>;
-    _touched: Set<any>;
-    _seq: number;
-    txQueue: any;
+    /** @private */
+    _presence;
+    /** @private */
+    _txChain;
+    /** @private */
+    _held;
+    /** @private */
+    _before;
+    /** @private */
+    _after;
+    /** @private */
+    _hooking;
+    /** @private */
+    _verbs;
+    /** @private */
+    _touched;
+    /** @private */
+    _seq;
+    /** @type {Array<[string, unknown]> | null} */
+    txQueue: Array<[string, unknown]> | null;
     /** @param {Partial<DatabaseOpts>} [opts] */
     constructor(opts?: Partial<DatabaseOpts>);
     /** @returns {Uint8Array | null} discovery key of the underlying bee */
     get discoveryKey(): Uint8Array | null;
+    /** @returns {Uint8Array | null} where a join is sealed to: the address the encryption key owns */
+    get address(): Uint8Array | null;
     /** @returns {Uint8Array | null} this device's local writer key */
     get writerKey(): Uint8Array | null;
     /** @returns {boolean} whether the bee accepts local writes */
@@ -245,8 +276,10 @@ export declare class Database extends ReadyResource {
     get length(): number;
     /** @returns {object | null} the materialized HyperDB view */
     get view(): object | null;
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
     /**
      * `true` ranks this database as just touched, `false` takes it out of the swarm until the
      * next update lands in it.
@@ -258,37 +291,39 @@ export declare class Database extends ReadyResource {
      * Register a pre-op hook. It runs at apply on every peer, inside the op's transaction;
      * returning `false` (or throwing) refuses the op everywhere.
      *
-     * @param {string} op
+     * @param {string} op  A write (`put`, `set`, `del`), or an action's name.
      * @param {HookFn} fn
      * @returns {() => void} disposer
      */
     before(op: string, fn: HookFn): () => void;
     /**
      * Register a post-op hook. It runs at apply on every peer, in the op's transaction, so it
-     * may write derived rows through `ctx.put` / `ctx.set` / `ctx.del`.
+     * may write derived rows through `ctx.put` / `ctx.set` / `ctx.del`. On an action it is what
+     * the action does.
      *
-     * @param {string} op
+     * @param {string} op  A write (`put`, `set`, `del`), or an action's name.
      * @param {HookFn} fn
      * @returns {() => void} disposer
      */
     after(op: string, fn: HookFn): () => void;
     /**
-     * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
+     * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`: an overwrite keeps
+     * the row's `createdAt`, and timestamps the caller passes are ignored.
      *
      * @param {string} name
-     * @param {Record<string, any>} row
+     * @param {Record<string, unknown>} row
      * @returns {Promise<SingleResult | null>}
      */
-    put(name: string, row: Record<string, any>): Promise<SingleResult | null>;
+    put(name: string, row: Record<string, unknown>): Promise<SingleResult | null>;
     /**
      * Upsert by merging with the existing row, preserving `createdAt`.
      *
      * @param {string} name
-     * @param {Record<string, any>} row
+     * @param {Record<string, unknown>} row
      * @param {{ upsert?: boolean }} [opts]
      * @returns {Promise<SingleResult | null>}
      */
-    set(name: string, row: Record<string, any>, opts?: {
+    set(name: string, row: Record<string, unknown>, opts?: {
         upsert?: boolean;
     }): Promise<SingleResult | null>;
     /**
@@ -300,13 +335,13 @@ export declare class Database extends ReadyResource {
      */
     del(name: string, id?: string): Promise<void | null>;
     /**
-     * Dispatch a custom action route by name.
+     * Run a declared action: what the `after` hooks on its name do, at apply on every peer.
      *
      * @param {string} op
-     * @param {Record<string, any>} [data]
+     * @param {Record<string, unknown>} [data]
      * @returns {Promise<void>}
      */
-    call(op: string, data?: Record<string, any>): Promise<void>;
+    call(op: string, data?: Record<string, unknown>): Promise<void>;
     /**
      * Rotate the encryption epoch: generate a fresh 32-byte secret, seal it to every current
      * member's identity key, and announce it through the log.
@@ -325,14 +360,16 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<T>}
      */
     tx<T>(fn: (tx: Database) => Promise<T> | T): Promise<T>;
+    /** @private */
+    private _chain;
     /**
      * Encode and append dispatch ops. Buffers into the active `tx` queue if one
      * is open.
      *
-     * @param {Array<[string, any]>} ops
+     * @param {Array<[string, unknown]>} ops
      * @returns {Promise<void>}
      */
-    write(ops: Array<[string, any]>): Promise<void>;
+    write(ops: Array<[string, unknown]>): Promise<void>;
     /**
      * Read a row. With no `query`: list all (collection) or fetch the one
      * record (single). With a string id: fetch that specific row.
@@ -342,15 +379,8 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<SingleResult | ListResult>}
      */
     get(name: string, query?: string | Query): Promise<SingleResult | ListResult>;
-    _read(view: any, name: any, query: any): Promise<{
-        data: any;
-        total?: undefined;
-        size?: undefined;
-    } | {
-        data: any[];
-        total: any;
-        size: number;
-    }>;
+    /** @private */
+    private _read;
     /**
      * Live snapshot stream — re-emits the latest `get()` result on every
      * underlying mutation. Destroy the stream to stop watching.
@@ -401,14 +431,12 @@ export declare class Database extends ReadyResource {
         timeout?: number;
     }): Promise<void>;
     /**
-     * Admit a device as a writer for `memberId`, an existing member. Omit it to
-     * admit another device of this identity.
+     * Admit another device of this identity as a writer. Another member's device seats itself.
      *
      * @param {Uint8Array} publicKey
-     * @param {string} [memberId]
      * @returns {Promise<void>}
      */
-    addWriter(publicKey: Uint8Array, memberId?: string): Promise<void>;
+    addWriter(publicKey: Uint8Array): Promise<void>;
     /**
      * Remove a peer's writer key from the indexer set.
      *
@@ -436,59 +464,56 @@ export declare class Database extends ReadyResource {
      * @returns {string}
      */
     col(ref: Ref): string;
-    _preload(): Promise<void>;
-    _boot(): Promise<void>;
-    _replay(): Promise<boolean>;
-    _isTrusted(writer: any, view: any): Promise<boolean>;
-    _apply(nodes: any, view: any, host: any): Promise<void>;
-    _update(db: any): Promise<void>;
-    _joinSwarm(bee: any, discoveryKey: any): void;
-    _hooks(phase: any, op: any): any;
-    _inHook(fn: any): (ctx: any) => Promise<any>;
-    onUpdate(name: any, fn: any): () => this;
-    _opOf(node: any): {
-        op: any;
-        name: any;
-        value: any;
-    };
-    _notify(nodes: any): void;
-    _merge(name: any, row: any, { upsert }?: {
-        upsert?: boolean;
-    }): Promise<{
-        row: any;
-    }>;
-    _prepare(name: any, row: any): Ref;
-    _append(stored: any, verb: any): Promise<{
-        row: any;
-    }>;
-    _done(ctx: any): {
-        data: any;
-    };
-    _onfuture(version: any): void;
-    _dryRun(encoded: any): Promise<any>;
-    _plan(name: any, query?: {}): {
-        path: string;
-        range: {
-            gte: {};
-            lte: {};
-        };
-        rest: {};
-        sorted: boolean;
-    } | {
-        path: string;
-        range: {};
-        rest: {};
-        sorted: boolean;
-    };
-    _total(view: any, path: any, range: any, matched: any, query: any): Promise<any>;
-    _optimistic(op: any, opts: any): Promise<void>;
-    _backfilled(timeout: any): Promise<void>;
-    _admission(writer: any, ts?: number): {
-        master: Uint8Array<ArrayBufferLike>;
-        writer: any;
-        sig: Uint8Array<ArrayBufferLike>;
-        ts: number;
-    };
-    _checkFields(name: any, row: any): void;
-    _admit(verb: any, publicKey: any, memberId: any): Promise<void>;
+    /** @private */
+    private _preload;
+    /** @private */
+    private _boot;
+    /** @private */
+    private _replay;
+    /** @private */
+    private _isTrusted;
+    /** @private */
+    private _apply;
+    /** @private */
+    private _update;
+    /** @private */
+    private _joinSwarm;
+    /** @private */
+    private _holdRoom;
+    /** @private */
+    private _hold;
+    /** @private */
+    private _hooks;
+    /** @private */
+    private _inHook;
+    /** @param {string} name @param {() => void} fn @returns {() => void} */
+    onUpdate(name: string, fn: () => void): () => void;
+    /** @private */
+    private _opOf;
+    /** @private */
+    private _notify;
+    /** @private */
+    private _merge;
+    /** @private */
+    private _prepare;
+    /** @private */
+    private _append;
+    /** @private */
+    private _done;
+    /** @private */
+    private _onfuture;
+    /** @private */
+    private _dryRun;
+    /** @private */
+    private _plan;
+    /** @private */
+    private _total;
+    /** @private */
+    private _optimistic;
+    /** @private */
+    private _backfilled;
+    /** @private */
+    private _admission;
+    /** @private */
+    private _admit;
 }

@@ -32,7 +32,7 @@
     "bare-os": "^3.9.3",
     "bare-path": "^3.1.2",
     "chat-backend": "*",
-    "expo": "~57.0.24",
+    "expo": "~57.0.25",
     "expo-clipboard": "~57.0.2",
     "expo-file-system": "~57.0.7",
     "react": "19.3.0",

@@ -1,146 +1,112 @@
-# Identity
+# Your devices
 
-[Docs](README.md) · Previous: [Handles](handles.md) · Next: [Apps](apps.md)
+[Docs](README.md) · Previous: [Sharing](handles.md) · Next: [Network](network.md)
 
-```js
-// first device
-const me = await cero('./data', spec)
-const phrase = me.identity.toPhrase() // show it once, then forget it
-
-// second device, nothing but the phrase
-const me = await cero('./data', spec, { phrase })
-```
-
-You are your phrase. Every device of yours derives the same identity from it.
-
-## The phrase
+Be the same user on every device, add a device from the phrase, and remove one you lost.
 
 ```js
-me.identity.toPhrase() // 'apple brave cider ...'
-const me = await cero('./data', spec, { words: 24 }) // a longer phrase for a new identity
+import { cero } from '@cero-base/cero'
+import { spec } from './spec/index.js'
+
+// the first device
+const laptop = await cero('./laptop-data', spec, { name: 'laptop' })
+const phrase = await cero.phrase(laptop) // show it to the user once
+
+// a second device, from nothing but the phrase, while the laptop is online
+const phone = await cero('./phone-data', spec, { seed: cero.toSeed(phrase), name: 'phone' })
+phone.id === laptop.id // true: one identity, the same data and rooms
+phone.device.id === laptop.device.id // false: each device has its own id
 ```
 
-An identity is 16 or 32 bytes of entropy, written as a BIP-39 mnemonic of 12 or
-24 words. From that entropy cero derives a signing keypair, an encryption key,
-the canonical id `me.id` and the swarm topic the identity announces on.
-Derivation is deterministic, so the same phrase always gives the same identity.
-Pass `{ words: 24 }` to `cero()` to generate a longer one.
+You are your phrase: 12 words, or 24, that every device of yours opens with. Each device, one
+install of your app, has the same `me.id` and the same data, and is the same member in every room.
+Invites are for rooms and other people; your own devices join by phrase.
 
-## The first device
+## First run
 
 ```js
-import { cero, peek } from '@cero-base/cero'
-
-if (!(await peek('./data', spec))) {
-  const me = await cero('./data', spec, { name: 'laptop' })
-  showOnce(me.identity.toPhrase())
-}
+const fresh = !(await cero.peek('./data', spec))
+const me = await cero('./data', spec, { name: 'laptop' })
+if (fresh) showOnce(await cero.phrase(me)) // showOnce is your UI
 ```
 
-`cero(dir, spec)` with no identity option generates a fresh identity and stores
-its seed in the local, per-device store. That is the only way an identity is
-created.
+`cero(dir, spec)` on an empty directory creates a new identity and stores it there. `cero.peek`
+tells a first run from a returning one without opening anything. Show the phrase once and make
+keeping it the user's job: Cero never sends it anywhere. Pass `{ words: 24 }` for a 24-word phrase.
 
-Show `me.identity.toPhrase()` once, when the user first opens the app, and make
-it their job to keep it. cero never sends it anywhere. Over RPC it is not part
-of `init` either: the client fetches it on demand with
-`await me.identity.toPhrase()`, so an app that never shows it never pulls it
-into UI memory.
-
-## A second device
-
-A device of yours joins by phrase. Invites are for rooms and other people, never
-for your own devices.
-
-```js
-const phone = await cero('./phone-data', spec, { phrase, name: 'phone' })
-
-phone.id === laptop.id // same identity
-phone.store.key.equals(laptop.store.key) // same database
-phone.store.writerKey.equals(laptop.store.writerKey) // false, its own writer core
-```
-
-What happens underneath:
-
-1. The phrase derives the identity, so the device knows the identity keypair.
-2. The device that created the identity wrote one block into a small pointer
-   core, signed by the identity key, holding the root database key.
-3. The new device derives that pointer core's key from the phrase and reads the
-   block from whichever device is reachable.
-4. It opens that database and mints its own writer core. A device is the only
-   author of its own writer core, ever.
-5. It admits itself with an `add-writer` signed by the identity, which only the
-   phrase can produce.
-
-Nothing here needs a flag. A supplied phrase or seed on a device with no stored
-writer means recover. A supplied phrase never creates an identity.
-
-Afterwards there is one member row for the identity and one device row per
-machine, and writes converge in both directions. Rooms follow through the root:
-each room's row replicates in `handles`, so the new device opens it by id, mints
-a per-room keypair, claims writer capability and reads every era.
-
-## When no device is reachable
+## Add a device
 
 ```js
 try {
-  await cero('./data', spec, { phrase, recoveryTimeout: 10_000 })
+  const me = await cero('./data', spec, {
+    seed: cero.toSeed(phrase), // throws INVALID on a mistyped phrase
+    channel: 'my-app', // the same channel and mirrors as your other devices
+    mirrors: [mirrorKey] // mirrorKey from your mirror, see Network
+  })
 } catch (err) {
-  if (err.code === 'TIMED_OUT') tell('none of your devices is online')
+  // tell is your UI
+  if (err.code === 'TIMEOUT') tell('open the app on one of your other devices, then retry')
 }
 ```
 
-Recovery needs another device of the identity to be online, or a
-[mirror](network.md) holding the data. `recoveryTimeout` bounds the wait for the
-pointer, the backfill and the writer admission, and defaults to 30000 ms. When
-nothing answers, the open rejects with `TIMED_OUT`.
+Use a fresh directory, and have a device of yours online, or in range with `bluetooth` on both: the
+new one finds it and is let in by it, with the phrase as proof. It waits in three steps, each up to
+`recoveryTimeout` (30 s by default), and rejects `TIMEOUT` when no device of yours answers.
 
-A failed open closes everything it had opened, so the storage lock is not leaked
-and a retry on the same directory works.
+The seed is stored before that wait, so a retry is plain `cero(dir, spec)` with the same channel and
+mirrors, and `cero.peek` reports the directory as used. It rejects `TIMEOUT` again until one of your
+devices is reachable. [How it works](how-it-works.md) has the steps.
 
-## `restore(me, phrase)`
-
-`restore` swaps a running instance to a different identity. It closes the
-instance, deletes the `main/` tree under its directory and reopens with the
-phrase, which recovers.
+## Open your rooms on it
 
 ```js
-import { cero, restore } from '@cero-base/cero'
-
-let me = await cero('./data', spec)
-me = await restore(me, phrase)
+// me from the device you just added
+const { data: rooms } = await cero.get(me.room)
+for (const { id } of rooms) await cero.open(me.room, { id })
 ```
 
-Prior data in that directory is gone. Every other option carries forward,
-`channel` above all: without it the recovered instance would announce on the
-global topic and never meet its peers. A phrase that is already the running
-identity makes `restore` a no-op.
+Rooms do not open by themselves on a new device. The list arrives with the rest of your data, and
+you open each room by id. The first open by id waits for a device already in that room, and rejects
+`TIMEOUT` after 30 s.
 
-## `peek(dir, spec)`
-
-`peek` reports whether a directory already holds an identity, without opening
-the instance. Use it to tell a first run from a returning one before you boot.
+## Switch to another identity
 
 ```js
-import { peek } from '@cero-base/cero'
-
-await peek('./data', spec) // false on a fresh dir, true once cero() has run
+// me is open on a directory that holds another identity
+const restored = await cero.restore(me, cero.toSeed(phrase))
 ```
 
-## `storageKey`
+`cero.restore` closes `me`, deletes the directory's data, then opens it with the new seed and every
+other option `me` had, the channel and mirrors included. It recovers like a new device, so it can
+reject `TIMEOUT` after the delete; the new seed is stored by then, so retry with `cero(dir, spec)`.
+Never pass a new seed to `cero()` on a used directory: switching goes through `cero.restore`.
+
+A seed that is already `me`'s returns `me` unchanged. Over RPC the client's `cero.restore(me, phrase)`
+takes the phrase itself.
+
+## Remove a device
 
 ```js
-const storageKey = await keychain.get('cero') // 32 bytes you keep
+const { data: devices } = await cero.get(me.devices) // [{ id, memberId, name, isMobile, ... }]
+await cero.del(me.devices, lostId) // lostId: the id of the device you lost
+```
+
+`me.device.id` is this device's own id. A removed device cannot write to your data. It is not
+locked out, though: a device that still holds the seed can add itself back like any new device, and
+anyone with the phrase is you.
+
+## Encrypt the seed at rest
+
+```js
+const storageKey = await keychain.get('cero') // 32 bytes; keychain is your OS keychain binding
 const me = await cero('./data', spec, { storageKey })
 ```
 
-The seed and the device keypairs live in the local store under `dir/main`, which
-cero chmods to `0700` on open. Pass a 32-byte `storageKey` to `cero()` to
-encrypt that key material at rest. cero never stores the key: source it from the
-OS keychain, and pass the same one to reopen.
+The seed and this device's keys sit in the data directory unencrypted unless you pass `storageKey`.
+Cero never stores the key: source it from the OS keychain and pass the same one on every open.
 
 ## Next
 
-- [Apps](apps.md) to run cero in a worker and keep the phrase out of the UI.
-- [Handles](handles.md) for the other kind of joining, by invite.
-- [Network](network.md) for mirrors, which keep recovery working when no device is online.
+- [Network](network.md) for the channel and mirrors every device of yours shares.
+- [Apps](apps.md) to run Cero in a worker and keep the phrase out of the UI.
+- [How it works](how-it-works.md) for what recovery does step by step.

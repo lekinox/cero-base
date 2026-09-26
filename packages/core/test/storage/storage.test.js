@@ -17,7 +17,8 @@ const spec = {
       master: { kind: 'single' },
       keypair: { kind: 'single' },
       settings: { kind: 'single' },
-      drafts: { kind: 'collection' },
+      drafts: { kind: 'collection', fields: ['text'] },
+      tasks: { kind: 'collection', fields: ['title'], required: { title: 'string' } },
       'handle-keypairs': { kind: 'collection' }
     }
   }
@@ -103,6 +104,15 @@ for (const backend of backends) {
     t.is(data.text, 'hello')
   })
 
+  test(`[${backend}] concurrent writes all land`, async (t) => {
+    const { storage } = await make(t, backend)
+    const ids = Array.from({ length: 20 }, (_, i) => `d${i}`)
+    await Promise.all(ids.map((id) => storage.put('drafts', { id, text: id })))
+    await Promise.all(ids.slice(0, 10).map((id) => storage.del('drafts', id)))
+    const { data } = await storage.get('drafts')
+    t.alike(data.map((d) => d.id).sort(), ids.slice(10).sort())
+  })
+
   test(`[${backend}] put on collection: respects given id`, async (t) => {
     const { storage } = await make(t, backend)
     const { data } = await storage.put('drafts', { id: 'fixed-id', text: 'hi' })
@@ -168,7 +178,9 @@ for (const backend of backends) {
     }
     const r = await storage.get('drafts', { limit: 2 })
     t.is(r.size, 2)
-    t.is(r.total, 5)
+    t.is(r.total, null, 'a full page leaves the count to total: true, the read stops at the page')
+    t.is((await storage.get('drafts', { limit: 2, total: true })).total, 5)
+    t.is((await storage.get('drafts', { limit: 10 })).total, 5, 'a short page is the whole count')
   })
 
   // hyperdb ignores equality fields, so they must be applied in memory or a
@@ -445,5 +457,31 @@ for (const backend of backends) {
       'gt without an equality field'
     )
     t.is((await storage.get('drafts', { lte: 'b' })).total, 2, 'total without an equality field')
+  })
+}
+
+for (const backend of backends) {
+  test(`[${backend}] put: timestamps are the store's, createdAt survives a put over the id`, async (t) => {
+    const { storage } = await make(t, backend)
+    await storage.put('drafts', { id: 'd', text: 'a', createdAt: 0, updatedAt: 0 })
+    const { data: first } = await storage.get('drafts', 'd')
+    t.ok(first.createdAt > 0, 'a zero createdAt is not stored')
+    await storage.put('drafts', { id: 'd', text: 'b', createdAt: 1, updatedAt: 1 })
+    const { data: second } = await storage.get('drafts', 'd')
+    t.is(second.createdAt, first.createdAt, 'createdAt is when the id was first written')
+    t.ok(second.updatedAt > 1, 'updatedAt is now, not what the caller passed')
+  })
+
+  test(`[${backend}] put and set: an undeclared or a missing required field throws INVALID`, async (t) => {
+    const { storage } = await make(t, backend)
+    const writes = [
+      storage.put('drafts', { txt: 'typo' }),
+      storage.set('drafts', { id: 'd', txt: 'typo' }),
+      storage.put('tasks', {}),
+      storage.set('tasks', { id: 't' })
+    ]
+    for (const write of writes) t.is((await write.catch((e) => e)).code, 'INVALID')
+    await storage.put('tasks', { id: 't', title: 'a' })
+    t.is((await storage.set('tasks', { id: 't' })).data.title, 'a', 'a set may leave it out')
   })
 }

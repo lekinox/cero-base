@@ -30,6 +30,9 @@ jobs:
           cache: npm
       - run: npm ci -w packages/core -w packages/cero -w packages/tools --include-workspace-root --ignore-scripts
       - run: npm run lint
+      # the skill's references are docs/, regenerated
+      - run: npm run build:skill
+      - run: git diff --exit-code -- skills
 
   test:
     strategy:

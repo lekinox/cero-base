@@ -22,8 +22,6 @@ test('bindCodec: attaches all codec methods', async (t) => {
   t.ok(typeof c.decodeRow === 'function')
   t.ok(typeof c.encodeRows === 'function')
   t.ok(typeof c.decodeRows === 'function')
-  t.ok(typeof c.encodeQuery === 'function')
-  t.ok(typeof c.decodeQuery === 'function')
   t.ok(typeof c.encodeCreate === 'function')
   t.ok(typeof c.decodeCreate === 'function')
   t.ok(typeof c.encodeAction === 'function')
@@ -84,51 +82,6 @@ test('decodeRows: empty buffer → []', async (t) => {
   const spec = freshSpec()
   bindCodec(spec)
   t.alike(spec.codec.decodeRows(T.ROW, b4a.alloc(0)), [])
-})
-
-test('encodeQuery / decodeQuery: standard fields round-trip', async (t) => {
-  const spec = freshSpec()
-  bindCodec(spec)
-  const q = { gt: 'a', lte: 'z', limit: 10, reverse: true }
-  const buf = spec.codec.encodeQuery(q)
-  const back = spec.codec.decodeQuery(buf)
-  t.alike(back, q)
-})
-
-test('encodeQuery / decodeQuery: data escape hatch round-trips arbitrary object', async (t) => {
-  const spec = freshSpec()
-  bindCodec(spec)
-  const q = { gt: 'x', limit: 5, custom: 'value', nested: { n: 42 } }
-  const buf = spec.codec.encodeQuery(q)
-  const back = spec.codec.decodeQuery(buf)
-  t.is(back.gt, 'x')
-  t.is(back.limit, 5)
-  t.is(back.custom, 'value')
-  t.alike(back.nested, { n: 42 })
-})
-
-test('decodeQuery: empty buffer → undefined', async (t) => {
-  const spec = freshSpec()
-  bindCodec(spec)
-  t.is(spec.codec.decodeQuery(b4a.alloc(0)), undefined)
-})
-
-test('decodeQuery: empty envelope → undefined', async (t) => {
-  const spec = freshSpec()
-  bindCodec(spec)
-  const buf = spec.codec.encodeQuery(undefined)
-  t.is(spec.codec.decodeQuery(buf), undefined)
-})
-
-test('decodeQuery: strips zero defaults (limit: 0, reverse: false)', async (t) => {
-  const spec = freshSpec()
-  bindCodec(spec)
-  // gt-only query — encode then decode; limit shouldn't reappear as 0, etc.
-  const buf = spec.codec.encodeQuery({ gt: 'a' })
-  const back = spec.codec.decodeQuery(buf)
-  t.alike(back, { gt: 'a' })
-  t.absent('limit' in back)
-  t.absent('reverse' in back)
 })
 
 test('encodeCreate / decodeCreate: round-trip with id', async (t) => {

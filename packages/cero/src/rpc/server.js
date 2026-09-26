@@ -1,11 +1,29 @@
+import c from 'compact-encoding'
 import safetyCatch from 'safety-catch'
 
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
-import { encodeId } from '@cero-base/core/blobs/codec'
 
-import { cero, restore } from '../index.js'
-import { put, set, get, del, watch, changes, call } from '../lib/operators.js'
+import { cero, restore, toSeed } from '../index.js'
+import {
+  put,
+  set,
+  get,
+  del,
+  watch,
+  call,
+  invite,
+  revoke,
+  rotate,
+  cancel,
+  leave,
+  suspend,
+  resume,
+  activate,
+  deactivate,
+  phrase,
+  nearby
+} from '../lib/operators.js'
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCServer} BaseRPCServer
@@ -20,21 +38,25 @@ import { put, set, get, del, watch, changes, call } from '../lib/operators.js'
  * @typedef {object} Identity
  * @property {string} id        Long-lived cero identity id.
  * @property {string} deviceId  Per-device id (empty when no `local` spec).
+ * @property {string} deviceName  This device's name, empty when it has none.
  *
- * @typedef {{ ref: any, codec: any }} RefAndCodec
+ * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
  *
- * @typedef {{ data: any, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
+ * @typedef {import('../lib/spec.js').Spec} Spec
+ * @typedef {import('../handle/index.js').Context} Context
+ *
+ * @typedef {{ data: import('../lib/spec.js').Row | import('../lib/spec.js').Row[] | null, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
  */
 
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree:
- * lazy-initializes the root via `cero()` on the first `init` call, then exposes data ops,
- * pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
+ * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
+ * exposes data ops, pairing, and handle lifecycle.
  */
 export class Server extends RPCServer {
   /**
-   * @param {any} ipc                Framed IPC stream (must be writable).
-   * @param {object} spec
+   * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
+   * @param {Spec} spec
    * @param {Partial<ServerOpts>} [opts]
    */
   constructor(ipc, spec, { storage, ...opts } = {}) {
@@ -43,19 +65,25 @@ export class Server extends RPCServer {
     super(ipc, spec)
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     this.storage = storage
+    /** @private */
     this._report = opts.onerror || ((err) => console.error(err))
+    /** @type {Omit<Partial<ServerOpts>, 'storage'> & { onerror: (err: Error) => void }} */
     this.opts = { ...opts, onerror: (err) => this._onerror(err) }
     /** @type {Set<object>} open error streams, one per connected client */
     this._errors = new Set()
+    /** @type {Context | null} */
     this.me = null
+    /** @type {Map<string, Context>} */
     this.handles = new Map()
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     this._watchStreams = new Map()
+    /** @private */
+    this._booting = null
     this._wireInit()
   }
 
   /**
-   * Root cero id (null until `init` has run).
+   * Root cero id (undefined until booted).
    *
    * @returns {string|undefined}
    */
@@ -64,15 +92,37 @@ export class Server extends RPCServer {
   }
 
   /**
-   * Root identity object (null until `init` has run).
+   * Root identity object (undefined until booted).
    *
-   * @returns {any}
+   * @returns {import('@cero-base/core/identity').Identity | undefined}
    */
   get identity() {
     return this.me?.identity
   }
 
+  /** @private */
+  async _open() {
+    await super._open()
+    this._booting = this._boot()
+    // it surfaces on init
+    this._booting.catch(() => {})
+  }
+
+  /** @private */
+  async _boot() {
+    this.me = await cero(this.storage, this.spec, this.opts)
+    this.handles.set(this.me.id, this.me)
+    await this.me.fileServer.listen()
+    this._wireData()
+    this._wirePairing()
+    this._wireHandles()
+    this._wireRestore()
+    this._wireSeed()
+  }
+
+  /** @private */
   async _close() {
+    await this._booting?.catch(() => {})
     if (this.me) {
       try {
         await this.me.close()
@@ -81,7 +131,10 @@ export class Server extends RPCServer {
     await super._close()
   }
 
-  /** End every watch stream bound to a handle (e.g. when it closes or leaves). */
+  /**
+   * End every watch stream bound to a handle (e.g. when it closes or leaves).
+   * @private
+   */
   _endWatches(handle) {
     const set = this._watchStreams.get(handle)
     if (!set) return
@@ -89,17 +142,22 @@ export class Server extends RPCServer {
     this._watchStreams.delete(handle)
   }
 
-  /** Wire the `init` handler that lazily constructs the root cero handle. */
+  /** @private */
   _onerror(err) {
     if (!this._errors.size) return this._report(err)
     const frame = {
       message: err?.message || String(err),
       code: err?.code || '',
-      stack: err?.stack || ''
+      stack: err?.stack || '',
+      reason: err?.reason || ''
     }
     for (const stream of this._errors) stream.write(frame)
   }
 
+  /**
+   * Wire the `errors` and `init` handlers: init waits for the boot and attaches the client.
+   * @private
+   */
   _wireInit() {
     this.rpc.onErrors((stream) => {
       this._errors.add(stream)
@@ -107,75 +165,55 @@ export class Server extends RPCServer {
       stream.on('close', () => this._errors.delete(stream))
     })
     this.rpc.onInit(async () => {
+      await this._booting
       // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end
-      if (this.me) {
-        for (const handle of this._watchStreams.keys()) this._endWatches(handle)
-        return this._identity()
-      }
-      this.me = await cero(this.storage, this.spec, this.opts)
-      this.handles.set(this.me.id, this.me)
-      await this.me.fileServer.listen()
-      this._wireData()
-      this._wirePairing()
-      this._wireHandles()
-      this._wireRestore()
-      this._wireSeed()
+      for (const handle of this._watchStreams.keys()) this._endWatches(handle)
       return this._identity()
     })
   }
 
-  /** Wire the `restore` handler that rebuilds the local store from a phrase. */
+  /**
+   * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.
+   * @private
+   */
   _wireRestore() {
     this.rpc.onRestore(async ({ phrase }) => {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      this.me = await restore(this.me, phrase)
+      this.me = await restore(this.me, toSeed(phrase))
       this.handles = new Map([[this.me.id, this.me]])
       return this._identity()
     })
   }
 
-  /** Register the row-level RPC handlers (put/set/get/del/watch/call). */
+  /**
+   * Register the row-level RPC handlers (put/set/get/del/watch/call).
+   * @private
+   */
   _wireData() {
     this.rpc.onAddFile(async ({ handle, data, name, type }) => {
       const h = this._resolve(handle)
-      const blobs = h.blobs // captured once — the instance carries its epoch stamp
-      await blobs.ready()
-      const blobId = await blobs.put(data)
-      const id = encodeId(blobs.key, blobId, type || '')
-      const codec = h.spec.codec
-      await h.store.call('add-file', { id, name: name || null, stamp: blobs.stamp || 0 })
-      const { data: row } = await get(h.files, id)
-      return { data: codec.encodeRow(h.files.schema, row) }
+      const { data: file } = await put(h.files, { data, type: type || '', name: name || null })
+      const { data: row } = await get(h.files, file.id)
+      return { data: h.spec.codec.encodeRow(h.files.schema, row) }
     })
 
     this.rpc.onAddRow(async ({ handle, ref, data, local }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const { data: row } = await put(r, codec.decodeRow(r.schema, data))
+      const { ref: r, codec, info } = this._refOf(handle, ref, local)
+      const { data: row } = await put(r, received(codec.decodeRow(r.schema, data), info))
       return { data: codec.encodeRow(r.schema, row) }
     })
 
-    this.rpc.onSet(async ({ handle, ref, data, local, noUpsert }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const result = await set(r, codec.decodeRow(r.schema, data), { upsert: !noUpsert })
-      // an update-only miss returns null — encode an empty row back
-      return { data: codec.encodeRow(r.schema, result?.data ?? null) }
+    this.rpc.onSet(async ({ handle, ref, data, fields, local, noUpsert }) => {
+      const { ref: r, codec, info } = this._refOf(handle, ref, local)
+      const row = received(codec.decodeRow(r.schema, data), info, fields)
+      const result = await set(r, row, { upsert: !noUpsert })
+      return { data: result ? codec.encodeRow(r.schema, result.data) : null }
     })
 
     this.rpc.onGet(async ({ handle, ref, query, local }) => {
       const { ref: r, codec } = this._refOf(handle, ref, local)
-      const result = /** @type {GetResult} */ (await get(r, codec.decodeQuery(query)))
-      const data =
-        r.kind === 'single'
-          ? codec.encodeRow(r.schema, result.data)
-          : codec.encodeRows(r.schema, result.data)
-      // total is int on the wire: -1 encodes null
-      return { data, total: result.total ?? -1, size: result.size ?? 0 }
-    })
-
-    this.rpc.onGetOne(async ({ handle, ref, id, local }) => {
-      const { ref: r, codec } = this._refOf(handle, ref, local)
-      const { data } = await get(r, id)
-      return { data: data ? codec.encodeRow(r.schema, data) : null }
+      const q = fromWire(query)
+      return encodeGet(r, codec, q, await get(r, q))
     })
 
     this.rpc.onDel(async ({ handle, ref, id, local }) => {
@@ -184,11 +222,12 @@ export class Server extends RPCServer {
     })
 
     this.rpc.onWatch((stream) => {
-      const { handle, ref, query, local } = stream.data
+      const { handle, ref, local } = stream.data
+      const query = fromWire(stream.data.query)
       let r, codec, live
       try {
         ;({ ref: r, codec } = this._refOf(handle, ref, local))
-        live = watch(r, codec.decodeQuery(query))
+        live = watch(r, query)
       } catch (err) {
         // forward the error over the wire by destroying the response stream with it
         stream.once('error', () => {})
@@ -204,11 +243,7 @@ export class Server extends RPCServer {
           pending = snap
           return
         }
-        const data =
-          r.kind === 'single'
-            ? codec.encodeRow(r.schema, snap.data)
-            : codec.encodeRows(r.schema, snap.data)
-        blocked = stream.write({ data, total: snap.total ?? -1, size: snap.size ?? 0 }) === false
+        blocked = stream.write(encodeGet(r, codec, query, snap)) === false
         if (blocked) {
           stream.once('drain', () => {
             blocked = false
@@ -232,39 +267,6 @@ export class Server extends RPCServer {
       })
     })
 
-    this.rpc.onChanges((stream) => {
-      const { handle, ref, query, local } = stream.data
-      let r, codec, live
-      try {
-        ;({ ref: r, codec } = this._refOf(handle, ref, local))
-        live = changes(r, codec.decodeQuery(query))
-      } catch (err) {
-        stream.once('error', () => {})
-        stream.writeStream.destroy(err)
-        stream.destroy()
-        return
-      }
-      let set = this._watchStreams.get(handle)
-      if (!set) this._watchStreams.set(handle, (set = new Set()))
-      set.add(stream)
-      // deltas are not idempotent: hold the iteration on backpressure instead
-      const pump = async () => {
-        for await (const batch of live) {
-          const ok = stream.write({
-            changes: codec.encodeChanges(r.schema, batch.changes),
-            reset: batch.reset === true
-          })
-          if (ok === false) await new Promise((resolve) => stream.once('drain', resolve))
-        }
-      }
-      pump().catch(safetyCatch)
-      stream.on('error', safetyCatch)
-      stream.on('close', () => {
-        live.destroy()
-        this._watchStreams.get(handle)?.delete(stream)
-      })
-    })
-
     this.rpc.onCall(async ({ handle, op, data }) => {
       const h = this._resolve(handle)
       const r = h[op]
@@ -274,61 +276,81 @@ export class Server extends RPCServer {
     })
   }
 
-  /** Register invite/revoke/join RPC handlers. */
+  /**
+   * Register invite/revoke/join RPC handlers.
+   * @private
+   */
   _wirePairing() {
-    this.rpc.onInvite(async ({ handle, role, expiresIn, reuse }) => {
-      const h = this._resolve(handle)
-      const invite = await h.invite({
+    this.rpc.onInvite(async ({ handle, role, ttl, reuse, confirm, data }) => {
+      const code = await invite(this._resolve(handle), {
         role: role || undefined,
-        expiresIn: expiresIn || undefined,
-        reuse: reuse === true
+        ttl: ttl || undefined,
+        reuse: reuse === true,
+        confirm: confirm === true,
+        data: data || null
       })
-      return { invite }
+      return { invite: code }
     })
 
-    this.rpc.onRevoke(async ({ handle, invite }) => {
-      const ok = await this._resolve(handle).revoke(invite)
-      return { ok }
+    this.rpc.onRevoke(async ({ handle, invite: code }) => {
+      return { ok: await revoke(this._resolve(handle), code) }
     })
 
-    this.rpc.onRotate(async ({ handle }) => {
-      const { epoch } = await this._resolve(handle).store.rotate()
-      return { epoch }
-    })
+    this.rpc.onRotate(({ handle }) => rotate(this._resolve(handle)))
 
-    this.rpc.onSetActive(({ handle, active }) => {
-      this._resolve(handle).setActive(active)
+    this.rpc.onAnswer(async ({ handle, id, accept, role, reason }) => {
+      await this._resolve(handle)._answer(id, { accept, role: role || undefined, reason })
       return {}
     })
 
-    this.rpc.onSuspend(async () => {
-      await this.me.suspend()
+    this.rpc.onSuspend(async ({ handle }) => {
+      await suspend(this._resolve(handle))
       return {}
     })
 
-    this.rpc.onResume(async () => {
-      await this.me.resume()
+    this.rpc.onResume(async ({ handle }) => {
+      await resume(this._resolve(handle))
       return {}
     })
+
+    this.rpc.onSetActive(async ({ handle, active: on }) => {
+      await (on ? activate : deactivate)(this._resolve(handle))
+      return {}
+    })
+
+    this.rpc.onNearby(async ({ on, invite }) => {
+      await nearby(this.me, invite || on)
+      return {}
+    })
+
+    this.rpc.onCancel(async ({ invite: code }) => ({ ok: await cancel(this.me, code) }))
 
     this.rpc.onJoin(async ({ parent, ref, invite }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
-      const child = await this.me._join(invite, ref)
+      let child
+      try {
+        child = await this.me._join(invite, ref)
+      } catch (err) {
+        if (err.code !== 'DENIED') throw err
+        return { id: '', type: ref, denied: true, reason: err.reason || '' }
+      }
       const id = child.id
       this.handles.set(id, child)
       return { id, type: ref, name: '' }
     })
   }
 
-  /** Register add/open/close/leave RPC handlers for child handles. */
+  /**
+   * Register add/open/close/leave RPC handlers for child handles.
+   * @private
+   */
   _wireHandles() {
     this.rpc.onAddHandle(async ({ handle, ref, data }) => {
       const parent = this._resolve(handle)
       const info = parent.spec.meta.refs?.[ref] || parent.spec.handles?.[ref]
       if (!info) throw CeroError.UNKNOWN('handle type', ref)
       const wire = parent.spec.codec.decodeCreate(data) || {}
-      // routes are functions and cannot cross the wire
-      const opts = { name: wire.name, role: wire.role, accept: wire.noAccept ? false : undefined }
+      const opts = { name: wire.name }
       const child = await this.me._create(ref, opts)
       const id = child.id
       this.handles.set(id, child)
@@ -354,12 +376,9 @@ export class Server extends RPCServer {
     })
 
     this.rpc.onLeave(async ({ handle }) => {
-      const h = this.handles.get(handle)
-      if (!h || h === this.me) return {}
+      await leave(this._resolve(handle))
       this._endWatches(handle)
-      await this.me.store.call('del-handle', { id: handle })
       this.handles.delete(handle)
-      await h.close()
       return {}
     })
   }
@@ -369,7 +388,8 @@ export class Server extends RPCServer {
    * codec on first use.
    *
    * @param {string} id
-   * @returns {any}
+   * @returns {Context}
+   * @private
    */
   _resolve(id) {
     const h = this.handles.get(id)
@@ -385,6 +405,7 @@ export class Server extends RPCServer {
    * @param {string} name
    * @param {boolean} [local]
    * @returns {RefAndCodec}
+   * @private
    */
   _refOf(id, name, local) {
     if (local) {
@@ -392,34 +413,39 @@ export class Server extends RPCServer {
       if (!info || info.internal) throw CeroError.UNKNOWN('local ref', name)
       const r = this.me.local?.[name]
       if (!r) throw CeroError.UNKNOWN('local ref', name)
-      return { ref: r, codec: this.spec.local.codec }
+      return { ref: r, codec: this.spec.local.codec, info }
     }
     const h = this._resolve(id)
     const r = h[name]
     if (!r) throw CeroError.UNKNOWN('ref', name)
-    return { ref: r, codec: h.spec.codec }
+    return { ref: r, codec: h.spec.codec, info: h.spec.meta?.refs?.[name] }
   }
 
   /**
    * Snapshot the current identity for return to the client.
    *
    * @returns {Identity}
+   * @private
    */
   _identity() {
     const fs = this.me.fileServer
     return {
       id: this.me.id,
       deviceId: this.me.device?.id || '',
+      deviceName: this.me.device?.name || '',
       fileBase: `http://127.0.0.1:${fs.port}`,
       fileToken: fs.server.token || ''
     }
   }
 
-  /** Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked. */
+  /**
+   * Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked.
+   * @private
+   */
   _wireSeed() {
     this.rpc.onSeed(async () => {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      return { phrase: this.me.identity.toPhrase() }
+      return { phrase: await phrase(this.me) }
     })
   }
 }
@@ -427,8 +453,8 @@ export class Server extends RPCServer {
 /**
  * Construct a `Server`, wait for it to be ready, and return it.
  *
- * @param {any} ipc
- * @param {object} spec
+ * @param {import('streamx').Duplex} ipc
+ * @param {Spec} spec
  * @param {ServerOpts} opts
  * @returns {Promise<Server>}
  */
@@ -436,4 +462,31 @@ export async function serve(ipc, spec, opts) {
   const server = new Server(ipc, spec, opts)
   await server.ready()
   return server
+}
+
+// a query crosses as the client wrote it; no bytes is no query
+function fromWire(buf) {
+  return buf ? c.decode(c.any, buf) : undefined
+}
+
+/**
+ * One row for an id or a single ref, the list otherwise; total is int on the wire: -1 encodes null.
+ * @param {GetResult} res
+ */
+function encodeGet(r, codec, query, { data, total, size }) {
+  const one = typeof query === 'string' || r.kind === 'single'
+  return {
+    data: one ? codec.encodeRow(r.schema, data) : codec.encodeRows(r.schema, data),
+    total: total ?? -1,
+    size: size ?? 0
+  }
+}
+
+// a typed row decodes every field, the ones the client left out as defaults: keep what was sent
+function received(row, info, sent = null) {
+  const declared = info?.fields
+  if (!declared) return row
+  const out = row.id ? { id: row.id } : {}
+  for (const i of sent ?? declared.keys()) out[declared[i]] = row[declared[i]]
+  return out
 }

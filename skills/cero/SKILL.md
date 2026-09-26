@@ -1,39 +1,39 @@
 ---
 name: cero
 description: >-
-  How to build local-first, peer-to-peer apps with cero (@cero-base/cero).
-  Use for any task on a project that depends on @cero-base/*: designing a
-  schema, using the operators, child handles and invites, roles, multi-device
-  identity and phrase recovery, split apps with serve/connect over a Bare
-  worker or worklet, extensions and operators, or "build a p2p app
-  with cero".
+  How to build local-first, peer-to-peer apps with Cero (@cero-base/cero), the
+  SDK of Cero Base. Use for any task on a project that depends on @cero-base/*:
+  designing a schema, reading and writing data, rooms and invites, roles,
+  confirming joins, multi-device identity and phrase recovery, apps with a UI
+  over a Bare worker or worklet, extensions and hooks, mirrors and Bluetooth,
+  or "build a p2p app with cero".
 ---
 
-# cero
+# Cero
 
-A simple peer-to-peer SDK on top of the Pear stack by Holepunch. One function, a
-schema, and a handful of operators. cero stores data on the
-device, syncs it between a user's devices, and shares it with the people they
-invite. No server, no accounts. Runs on Node and on Bare.
+Cero is a local-first, peer-to-peer SDK on the Pear stack by Holepunch: describe your data, and Cero
+stores it on the device, syncs it between a user's devices and shares it with the people they
+invite. No server, no accounts. Runs on Node and on Bare. It is one of the two packages of Cero Base;
+the other, Core (`@cero-base/core`), holds the primitives Cero is built from.
 
 Experimental: the API is subject to change and may break at any time.
 
-This file is the short version. The `references/` folder holds the full guides, one file per topic; the table at the end names the file for each task.
+This file is the short version. `references/` holds the full guides; the table at the end names the
+file for each task.
 
 ## Mental model
 
-**Everything is a handle. Handles contain refs. Refs contain rows.**
-
-- `me = await cero(dir, spec)` is the root handle: the user, their devices,
-  their child handles.
-- A child handle is a space opened from `me` and shared with other people:
-  `cero.open(me.room, { name })` creates one, `cero.open(me.room, { invite })`
-  joins one, `{ id }` reopens one. The examples call theirs rooms.
-- A ref is a table on a handle: `me.notes`, `room.messages`, `room.members`.
-  Every operator takes a ref first. Builtin refs on every handle: `members`,
-  `devices`, `invites`, `handles`, `files`.
-- The identity is a phrase. The same phrase on another device is the same
-  user, with that device's own writer and the full history.
+- `me = await cero(dir, spec)` is the root: the user, their devices, their rooms.
+- A room is a space shared with other people: `cero.open(me.room, { name })` creates one,
+  `cero.open(me.room, invite)` joins one, `cero.open(me.room, { id })` reopens one.
+- `me` and every room are contexts: plain state, no methods. Refs hang off them: `me.notes`,
+  `room.messages`, and the builtins `members`, `devices`, `invites`, `requests`, `handles`,
+  `files`, `status` on every context, `joins` and `nearby` on `me`.
+- Every act is a verb on the `cero` facade. Data verbs take a ref first
+  (`cero.put(room.messages, row)`); the rest take the context first (`cero.invite(room)`,
+  `cero.leave(room)`, `cero.suspend(me)`). What changes is read with `get` and followed with `watch`.
+- The identity is a phrase. The same phrase on another device is the same user; each device writes
+  its own log.
 
 ## The workflow, always the same three files
 
@@ -43,13 +43,13 @@ import { cero, t } from '@cero-base/cero'
 
 export const schema = cero.schema({
   notes: t.collection({ title: t.string, body: t.string }),
-  room: { messages: t.collection({ text: t.string }) }, // an object = a child handle type
-  local: { settings: t.collection({ key: t.string, value: t.string }) } // device only
+  room: { messages: t.collection({ text: t.string }) }, // an object is a room type
+  local: { settings: t.collection({ key: t.string, value: t.string }) } // this device only
 })
 ```
 
 ```js
-// build.js, run once and after every schema change
+// build.js: run it after every schema change, over the same spec/
 import { build } from '@cero-base/cero/build'
 import { schema } from './schema.js'
 
@@ -57,7 +57,7 @@ await build('./spec', schema)
 ```
 
 ```js
-// app
+// app.js
 import { cero } from '@cero-base/cero'
 import { spec } from './spec/index.js'
 
@@ -65,95 +65,100 @@ const me = await cero('./data', spec)
 await cero.put(me.notes, { title: 'first', body: 'hello' })
 
 const room = await cero.open(me.room, { name: 'general' })
-const invite = await room.invite()
+const invite = await cero.invite(room) // give this string to a friend
 await cero.put(room.messages, { text: 'hi' })
-for await (const { data } of cero.watch(room.messages)) render(data)
+for await (const { data } of cero.watch(room.messages)) console.log(data)
 ```
 
-Another device, same built spec: `cero('./data', spec, { phrase })` becomes
-the same user; `cero.open(me.room, { invite })` joins the handle.
+A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another device of yours:
+`cero('./data', spec, { seed: cero.toSeed(phrase) })` in a fresh directory.
 
 ## Rules
 
-1. **Open against the built spec**, never the raw schema. Build, server and
-   client all import the same generated `spec/index.js`.
-2. **Name extensions and operators once, at build time**:
-   `build('./spec', schema, { extensions: '../extensions.js', operators: '../operators.js' })`.
-   The spec imports both modules, so `cero()` and `connect()` register nothing.
-   An extension is `{ schema, setup }`, nested by handle type; operators are a
-   map keyed by namespace, a handle-type key holding that type's. Both modules
-   import from `@cero-base/cero/extensions`, never `@cero-base/cero`.
-3. **The schema is append-only.** Fields and refs are numbered in declaration
-   order. Add at the end; never insert, remove or reorder.
-4. **`put` inserts, `set` merges.** `set` reads the stored row, merges your
-   fields over it, and writes, atomically. A one-field update is
-   `cero.set(ref, { id, field })`. On a single, `cero.set(me.profile, { name })`.
-5. **Use the facade.** `import { cero } from '@cero-base/cero'` and call
-   `cero.put`, `cero.get`, `cero.open`. In a UI process,
-   `import * as cero from '@cero-base/cero/client'`. Never alias named imports.
-6. **Cleanup follows the handle.** `watch` streams end with their handle; pass
-   `{ signal: me.signal }` to `before` / `after` / `on`; `await me.close()` on
-   shutdown.
-7. **Invites come from child handles.** `room.invite({ role })` admits a
-   member. The root handle has no invites; a new device joins with the
-   phrase. Roles are the ranks `owner`, `admin`, `member`, `reader`; map app
-   roles onto them.
-8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase
-   mints an identity and you show `me.identity.toPhrase()` once. With a phrase
-   and no stored writer, cero finds one of the user's devices and recovers;
-   with none reachable it rejects with `TIMED_OUT` after `recoveryTimeout`.
-9. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no
-   `node:` prefix; the package maps them to `bare-*` under Bare.
+1. **Open against the built spec**, never the raw schema. The app, the worker and the UI import the
+   same generated `spec/index.js`. Keep `spec/` in git.
+2. **Name extensions at build time, by module path**:
+   `build('./spec', schema, { extensions: '../extensions.js' })`, so the spec carries them:
+   `spec.extensions` is the list `cero()` runs. A list of objects passed to `build` cannot be
+   written into the spec: pass the same list to `cero(dir, spec, { extensions })`, or it throws
+   `INVALID`. `setup(me)` runs before the root opens and may write, so hooks registered there see
+   every op; a hook on a type ref (`me.room.notes`) reaches every room of the type.
+3. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
+   fields of the same type swaps their data.
+4. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
+   pass an existing `id`. `set` merges your fields over the stored row on this device and writes it:
+   of two devices setting one row at once, the one applied last wins. On a single, always `set`.
+5. **Use the facade.** `import { cero } from '@cero-base/cero'` (or `/client` in a UI) and call
+   `cero.put`, `cero.get`, `cero.open`. Never alias named imports. Contexts have no methods.
+6. **Cleanup follows the context.** `watch` streams end with their context, or pass
+   `cero.watch(ref, query, { signal })`; `await cero.close(me)` on shutdown.
+7. **Invites come from rooms.** `cero.invite(room, { role })` admits a member at that rank
+   (`owner`, `admin`, `member`, `reader`; `member` by default). A `confirm` invite holds each join in
+   `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
+   `cero.del(room.members, id)` removes a member and re-keys the room shortly after;
+   `await cero.rotate(room)` re-keys at once.
+8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no seed makes a new identity;
+   show `await cero.phrase(me)` to the user once. With a seed, Cero finds one of the user's devices
+   (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT`.
+9. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no `node:` prefix, and map
+   them in your package.json `imports` (`"fs": { "bare": "bare-fs", "default": "fs" }`), as Cero
+   does for its own.
+10. **An action is its `after` hook.** `cero.after(me.room.promote, fn)` in an extension's `setup`
+    is what `cero.call(room.promote, args)` does, on every peer. An action with no `after` hook
+    throws `INVALID`. In a hook, `row` is `null` on a delete.
 
 ## Reading
 
 ```js
-const { data, total } = await cero.get(me.notes, { pinned: true, reverse: true, limit: 20 })
-cero.watch(me.notes, { pinned: true }).on('data', ({ data }) => render(data))
-for await (const { changes } of cero.changes(room.messages)) apply(changes)
+const { data, total } = await cero.get(me.notes, { title: 'first', reverse: true, limit: 20 })
+cero.watch(me.notes, {}).on('data', ({ data }) => console.log(data))
+const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, nearby }
 ```
 
-- `get(ref)` lists, `get(ref, id)` fetches one, `get(ref, { field })` filters.
-  Queries: equality fields, `gt` / `gte` / `lt` / `lte` on the id, `reverse`,
-  `limit`, `total`, `search` with optional `fields`. Declared indexes
-  (`t.collection(fields, { indexes: { 'by-name': ['name'] } })`) serve equality
-  queries natively.
-- `watch(ref, query)` streams the current rows now and after every change,
-  local or remote. `changes(ref, query)` streams `{ prev, next }` deltas.
+- `get(ref)` lists, `get(ref, id)` fetches one, `get(ref, { field })` filters. Queries: equality on
+  fields, `gt` / `gte` / `lt` / `lte` on the id, `reverse`, `limit`, `total`, `search` with
+  optional `fields`. There is no sort: sort in memory.
+- `watch(ref, query)` streams `{ data }`: the result now and after every change, local or remote.
+  With `changes: true` in the query each item also carries `changes`, the `{ prev, next }` rows
+  that changed since the item before, and `reset` on the first.
+- `status` is this device's view of a context: `writable` and `role` turn `false` / `null` when you
+  are removed, `suspended` follows `cero.suspend(me)` / `cero.resume(me)` (the app's background and
+  foreground), `behind` asks for an app update. `cero.activate(room)` ranks the room on screen first
+  on the swarm.
 
-## Split apps
+## Apps with a UI
 
 ```js
-// backend (Node, Bare worker or worklet)
+// the worker (Node, a Bare worker or worklet)
+import { serve } from '@cero-base/cero/server'
 const server = await serve(ipc, spec, { storage: './data' })
-// UI
-import * as cero from '@cero-base/cero/client'
-const me = await cero.connect(ipc, spec)
 ```
 
-The process that owns the data runs `serve(ipc, spec, { storage })`; the UI
-runs `connect(ipc, spec)` and gets the same operators over the wire. Electron
-uses a Bare worker, Expo a Bare worklet, tests a duplex pair. Same code on
-every transport. See [apps](references/apps.md).
+```js
+// the UI
+import { cero } from '@cero-base/cero/client'
+const me = await cero(ipc, spec, { onerror: console.error })
+```
+
+The UI gets every verb over the wire but `before`, `after` and `tx`, which take functions and run
+only in the worker. Match errors on `err.code`: the code and message cross, and a denied join's reason. Electron uses a
+Bare worker, Expo a Bare worklet, tests a duplex pair.
 
 ## Where to read
 
-| Task                                                       | Page                                   |
-| ---------------------------------------------------------- | -------------------------------------- |
-| First app, first device, second device                     | [quickstart](references/quickstart.md) |
-| Field types, singles, collections, handles, local, indexes | [schema](references/schema.md)         |
-| Operators, queries, watch, changes, hooks                  | [data](references/data.md)             |
-| Invites, roles, members, devices, leaving                  | [handles](references/handles.md)       |
-| The phrase, recovery, restore, peek                        | [identity](references/identity.md)     |
-| serve, connect, Electron, Expo                             | [apps](references/apps.md)             |
-| extensions, profileSync, handleSync, hooks on every room   | [extensions](references/extensions.md) |
-| operators, the map, bound on both sides                    | [operators](references/operators.md)   |
-| Files next to rows                                         | [files](references/files.md)           |
-| Channels, mirrors, suspend, Bluetooth, app versions        | [network](references/network.md)       |
-| Every export and option                                    | [api reference](references/api.md)     |
-| Every error code                                           | [errors](references/errors.md)         |
-| Encryption epochs and key rotation                         | [encryption](references/encryption.md) |
+| Task                                                           | Page                                       |
+| -------------------------------------------------------------- | ------------------------------------------ |
+| A first app running in two terminals                           | [quickstart](references/quickstart.md)     |
+| Field types, singles, collections, rooms, local, indexes       | [schema](references/schema.md)             |
+| Writes, queries, watch, hooks, batches, files                  | [data](references/data.md)                 |
+| Rooms, invites, confirming joins, roles, removing, leaving     | [sharing](references/handles.md)           |
+| The phrase, a second device, recovery, restore                 | [your devices](references/identity.md)     |
+| Mirrors, channels, background, many rooms, Bluetooth, versions | [network](references/network.md)           |
+| A worker behind an Electron or Expo UI, the examples           | [apps](references/apps.md)                 |
+| Your own functions, extensions, actions                        | [extensions](references/extensions.md)     |
+| What happens offline, on a join, on a removal, on recovery     | [how it works](references/how-it-works.md) |
+| Every export and option                                        | [api reference](references/api.md)         |
+| Every error code                                               | [errors](references/errors.md)             |
+| Testing an app                                                 | [testing](references/testing.md)           |
 
-## References in this skill
-
-Every guide the table names lives in `references/`, plus [references/testing.md](references/testing.md) on how cero apps are tested. Copy the whole `skills/cero` folder; nothing points outside it.
+Copy the whole `skills/cero` folder; nothing points outside it.

@@ -5,29 +5,16 @@ import { Duplex } from 'streamx'
 import { encodeId, decodeId } from '@cero-base/core/blobs'
 
 import { cero, put, get, del, watch, open } from '../../src/index.js'
-import { spec } from '../fixtures/spec/index.js'
-import { makeTestnet, waitForConnection, waitUntil, observe, fetch } from '../helpers/index.js'
+import {
+  makeTestnet,
+  waitForConnection,
+  waitUntil,
+  observe,
+  fetch,
+  ceroOpen
+} from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
-
-async function ceroOpen(t, opts = {}) {
-  const testnet = opts.testnet || (await makeTestnet(t))
-  const dir = await t.tmp()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  return { me, dir, testnet }
-}
-
-async function publishMember(me) {
-  await me.store.call('add-member', {
-    id: me.id,
-    key: me.identity.publicKey,
-    role: 'owner',
-    name: null,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-}
 
 // ─── del replicates ───────────────────────────────────────────────────────
 
@@ -36,7 +23,6 @@ test('replicate: del propagates A → B', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await publishMember(a.me)
   const { data: row } = await put(a.me.messages, { text: 'gonna die' })
 
   const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
@@ -64,7 +50,6 @@ test('replicate: watch on B fires when A writes', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await publishMember(a.me)
 
   const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
   await waitForConnection(a.me.network)
@@ -93,20 +78,13 @@ test('replicate: three-peer public scope converges (A invites B + C)', async (t)
 
   const a = await ceroOpen(t, { testnet })
   const team = await open(a.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
   await put(team.messages, { text: 'from-a' })
 
-  const inviteB = await team.invite({ role: 'member' })
+  const inviteB = await cero.invite(team, { role: 'member' })
   const b = await ceroOpen(t, { testnet })
   const teamB = await open(b.me.team, inviteB)
 
-  const inviteC = await team.invite({ role: 'member' })
+  const inviteC = await cero.invite(team, { role: 'member' })
   const c = await ceroOpen(t, { testnet })
   const teamC = await open(c.me.team, inviteC)
 
@@ -139,17 +117,8 @@ test('replicate: re-joining a room you are in is idempotent', async (t) => {
 
   const a = await ceroOpen(t, { testnet })
   const team = await open(a.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      if (!e.message.includes('already') && !e.message.includes('duplicate')) {
-        t.fail('candidate accept failed: ' + e.message)
-      }
-    }
-  })
 
-  const inviteB = await team.invite({ role: 'member' })
+  const inviteB = await cero.invite(team, { role: 'member' })
   const b = await ceroOpen(t, { testnet })
   const teamB = await open(b.me.team, inviteB)
   await waitForConnection(a.me.network)
@@ -157,7 +126,7 @@ test('replicate: re-joining a room you are in is idempotent', async (t) => {
   await waitUntil(() => teamB.store.writable)
 
   // join again with a fresh invite for the same room
-  const inviteB2 = await team.invite({ role: 'member' })
+  const inviteB2 = await cero.invite(team, { role: 'member' })
   const teamB2 = await open(b.me.team, inviteB2)
 
   t.is(teamB2.id, teamB.id, 'returns the existing room handle')
@@ -178,17 +147,10 @@ test('replicate: pre-join writes are visible to joiner after admission', async (
 
   const a = await ceroOpen(t, { testnet })
   const team = await open(a.me.team)
-  team.pair.on('candidate', async (cand) => {
-    try {
-      await team.accept(cand, { role: 'member' })
-    } catch (e) {
-      t.fail('candidate accept failed: ' + e.message)
-    }
-  })
 
   for (let i = 0; i < 5; i++) await put(team.messages, { text: `msg-${i}` })
 
-  const invite = await team.invite({ role: 'member' })
+  const invite = await cero.invite(team, { role: 'member' })
   const b = await ceroOpen(t, { testnet })
   const teamB = await open(b.me.team, invite)
 
@@ -213,7 +175,6 @@ test('replicate: a member resolves + fetches a file; a non-member core 404s', as
 
   const a = await ceroOpen(t, { testnet })
   const seed = a.me.identity.seed
-  await publishMember(a.me)
 
   await a.me.blobs.ready()
   const data = b4a.from('replicated-bytes')
@@ -277,7 +238,7 @@ test('offline: invite → join → replicate purely over an injected connection'
 
   const team = await open(a.me.team, { name: 'field-expo' })
   await put(team.messages, { text: 'registered-before-join' })
-  const invite = await team.invite({ role: 'member' })
+  const invite = await cero.invite(team, { role: 'member' })
 
   const teamB = await open(b.me.team, invite)
   t.ok(teamB.id, 'late volunteer joined with zero internet')

@@ -4,11 +4,11 @@ export type LocalOpts = {
     /**
      * Pre-existing HypercoreStorage to reuse.
      */
-    root?: any;
+    root?: import('hypercore-storage');
     /**
      * Pre-existing Corestore to reuse.
      */
-    store?: any;
+    store?: import('corestore');
     /**
      * 32-byte key encrypting the local store at rest.
      */
@@ -16,8 +16,8 @@ export type LocalOpts = {
 };
 /**
  * @typedef {object} LocalOpts
- * @property {any} [root]   Pre-existing HypercoreStorage to reuse.
- * @property {any} [store]  Pre-existing Corestore to reuse.
+ * @property {import('hypercore-storage')} [root]   Pre-existing HypercoreStorage to reuse.
+ * @property {import('corestore')} [store]  Pre-existing Corestore to reuse.
  * @property {Uint8Array} [storageKey]  32-byte key encrypting the local store at rest.
  */
 /**
@@ -26,14 +26,24 @@ export type LocalOpts = {
  */
 export declare class Local extends ReadyResource {
     dir: string;
-    spec: any;
+    spec: import("../lib/spec.js").Spec;
     store: Storage;
     /**
      * @param {string | null} dir   Directory for the local store, or `null` when reusing an external `store`.
-     * @param {any} spec            Built cero spec — must include `spec.local.database` and `spec.meta.local`.
+     * @param {import('../lib/spec.js').Spec} spec  Built cero spec, with `spec.local.database` and `spec.meta.local`.
      * @param {LocalOpts} [opts]
      */
-    constructor(dir: string | null, spec: any, { root, store, storageKey }?: LocalOpts);
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    constructor(dir: string | null, spec: import('../lib/spec.js').Spec, { root, store, storageKey }?: LocalOpts);
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
 }
+/**
+ * One of the mailbox's boxes, kept in the local store so mail survives a restart.
+ *
+ * @param {import('@cero-base/core/storage').Storage} store
+ * @param {'inbox' | 'outbox'} name
+ * @returns {import('@cero-base/core/mailbox').Box}
+ */
+export declare function box(store: import('@cero-base/core/storage').Storage, name: 'inbox' | 'outbox'): import('@cero-base/core/mailbox').Box;

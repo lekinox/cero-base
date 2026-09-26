@@ -86,63 +86,29 @@ export declare class Identity {
      */
     toPhrase(): string;
     /**
-     * Build an identity from 16- or 32-byte entropy.
+     * An identity from its seed, 16 or 32 bytes; a fresh one without.
      *
-     * @param {Uint8Array} seed
+     * @param {{ seed?: Uint8Array | null, words?: 12 | 24 }} [opts]  `words` sizes a fresh one.
      * @returns {Promise<Identity>}
      */
-    static fromSeed(seed: Uint8Array): Promise<Identity>;
-    /**
-     * Build an identity from a BIP-39 mnemonic.
-     *
-     * @param {string} phrase
-     * @returns {Promise<Identity>}
-     */
-    static fromPhrase(phrase: string): Promise<Identity>;
-    /**
-     * Generate a fresh identity from CSPRNG entropy.
-     *
-     * @param {{ words?: 12 | 24 }} [opts]
-     * @returns {Promise<Identity>}
-     */
-    static generate({ words }?: {
+    static create({ seed, words }?: {
+        seed?: Uint8Array | null;
         words?: 12 | 24;
     }): Promise<Identity>;
     /**
-     * Generate a random BIP-39 mnemonic.
-     *
-     * @param {12 | 24} [words]
-     * @returns {string}
-     */
-    static genPhrase(words?: 12 | 24): string;
-    /**
-     * Phrase → seed entropy.
+     * The seed a BIP-39 phrase writes out.
      *
      * @param {string} phrase
      * @returns {Uint8Array}
      */
     static toSeed(phrase: string): Uint8Array;
     /**
-     * Seed entropy → phrase.
+     * A seed written out as a BIP-39 phrase.
      *
      * @param {Uint8Array} seed
      * @returns {string}
      */
     static toPhrase(seed: Uint8Array): string;
-    /**
-     * Validate that a value is a 16- or 32-byte buffer.
-     *
-     * @param {any} x
-     * @returns {x is Uint8Array}
-     */
-    static isSeed(x: any): x is Uint8Array;
-    /**
-     * Validate that a string is a BIP-39 mnemonic.
-     *
-     * @param {unknown} x
-     * @returns {x is string}
-     */
-    static isPhrase(x: unknown): x is string;
     /**
      * Verify a signature against an arbitrary public key.
      *
@@ -174,11 +140,4 @@ export declare class Identity {
      * @returns {Uint8Array}
      */
     static randomBytes(n?: number): Uint8Array;
-    /**
-     * Fresh seed entropy sized for the chosen mnemonic length.
-     *
-     * @param {12 | 24} [words]
-     * @returns {Uint8Array}
-     */
-    static randomSeed(words?: 12 | 24): Uint8Array;
 }

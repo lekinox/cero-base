@@ -20,8 +20,7 @@ import * as internal from './internal.js'
  *
  * @typedef {object} BuildOpts
  * @property {string} [ns]  Namespace prefix for emitted schema ids. Defaults to `'cero'`.
- * @property {string | import('../extensions/index.js').Extension[]} [extensions]  The extensions to fold in. A module specifier, relative to `specDir`, is imported here for its `extensions` export and written into the spec, so every process runs the same list. A list is folded in only. The bundled two by default, `[]` for none.
- * @property {string} [operators]  A module specifier, relative to `specDir`, written into the spec for its `operators` export, so every process binds the same map.
+ * @property {string | import('../extensions/index.js').Extension[]} [extensions]  The extensions to fold in. A module specifier, relative to `specDir`, is imported here for its `extensions` export and written into the spec, so every process runs the same list. A list is folded in only, and `cero()` then needs it in its options. The bundled two by default, `[]` for none.
  */
 
 /**
@@ -32,14 +31,11 @@ import * as internal from './internal.js'
  * @param {BuildOpts} [opts]
  * @returns {Promise<void>}
  */
-export async function build(specDir, schema, { ns = NS, extensions, operators } = {}) {
+export async function build(specDir, schema, { ns = NS, extensions } = {}) {
   const raw = /** @type {SchemaDefs & { local?: SchemaDefs }} */ (schema?.defs || schema)
   if (!raw || typeof raw !== 'object') throw CeroError.REQUIRED('schema')
-  const from = { extensions: str(extensions), operators: str(operators) }
-  const exts = extensionsOf(
-    null,
-    from.extensions ? await load(from.extensions, specDir) : extensions
-  )
+  const from = str(extensions)
+  const exts = extensionsOf(null, from ? await load(from, specDir) : extensions)
 
   // t.extend entries by internal type: the app schema first, then each extension at its scope
   const extend = {}
@@ -61,12 +57,13 @@ export async function build(specDir, schema, { ns = NS, extensions, operators } 
   fold(raw, defs, false)
   for (const ext of exts) if (ext.schema) fold(ext.schema, defs, true)
 
-  const main = compile(splitMain(defs), ns, 'main')
+  const main = compile(splitMain(defs), ns, 'main', true)
   const local = compile(defs.local || {}, ns, 'local')
   const handles = {}
   for (const [name, child] of Object.entries(splitHandles(defs))) {
-    handles[name] = compile(child, ns, 'main')
+    handles[name] = compile(child, ns, 'main', false)
   }
+  for (const { meta } of [main, ...Object.values(handles)]) extendBuiltins(meta.refs, extend)
 
   emitMain(join(specDir, 'main'), ns, main, { rpc: true, extend })
   emitLocal(join(specDir, 'local'), ns, local)
@@ -90,7 +87,7 @@ export async function build(specDir, schema, { ns = NS, extensions, operators } 
 
   await fs.writeFile(
     join(specDir, 'index.js'),
-    wireModule(meta, Object.keys(handles), from),
+    wireModule(meta, Object.keys(handles), from, extensions),
     'utf-8'
   )
 }
@@ -134,7 +131,7 @@ function isPlainHandle(v) {
   return v && typeof v === 'object' && !v.kind && !v.prim
 }
 
-function compile(root, ns, scope = 'main') {
+function compile(root, ns, scope = 'main', top = false) {
   const ctx = {
     types: [],
     collections: [],
@@ -155,6 +152,13 @@ function compile(root, ns, scope = 'main') {
     register(name, node, ctx)
   }
 
+  if (scope === 'main') {
+    for (const [name, ref] of Object.entries(internal.live(ns, top))) {
+      if (name in root) throw CeroError.INVALID(`'${name}' is a builtin ref, rename it`)
+      ctx.meta.refs[name] = ref
+    }
+  }
+
   return {
     types: ctx.types,
     collections: ctx.collections,
@@ -164,10 +168,11 @@ function compile(root, ns, scope = 'main') {
   }
 }
 
-function fileFieldNames(fields) {
-  return Object.entries(fields)
-    .filter(([, m]) => m.prim === 'file')
-    .map(([name]) => name)
+// a field a builtin gains through t.extend is declared like its own
+function extendBuiltins(refs, extend) {
+  for (const [name, { type }] of Object.entries(internal.defs.main)) {
+    if (extend[type]) internal.declare(refs[name], extend[type])
+  }
 }
 
 function register(name, node, ctx) {
@@ -183,10 +188,10 @@ function register(name, node, ctx) {
     ctx.collections.push({ name, schema: fqn, key: [] })
     ctx.dispatches.push({ name: `set-${name}`, requestType: fqn })
     ctx.dispatches.push({ name: `del-${name}`, requestType: `@${ctx.ns}/del-by-id` })
-    const refEntry = { kind: 'single', path: [name], schema: fqn, fields: Object.keys(node.fields) }
-    const fileFields = fileFieldNames(node.fields)
-    if (fileFields.length) refEntry.files = fileFields
-    ctx.meta.refs[name] = refEntry
+    ctx.meta.refs[name] = internal.declare(
+      { kind: 'single', path: [name], schema: fqn },
+      node.fields
+    )
     return
   }
   if (node.kind === 'collection') {
@@ -206,15 +211,11 @@ function register(name, node, ctx) {
     ctx.dispatches.push({ name: `add-${name}`, requestType: fqn })
     ctx.dispatches.push({ name: `set-${name}`, requestType: fqn })
     ctx.dispatches.push({ name: `del-${name}`, requestType: `@${ctx.ns}/del-by-id` })
-    const refEntry = {
-      kind: 'collection',
-      path: [name],
-      schema: fqn,
-      fields: Object.keys(node.fields)
-    }
+    const refEntry = internal.declare(
+      { kind: 'collection', path: [name], schema: fqn },
+      node.fields
+    )
     if (node.own) refEntry.own = true
-    const fileFields = fileFieldNames(node.fields)
-    if (fileFields.length) refEntry.files = fileFields
     ctx.meta.refs[name] = refEntry
     if (node.indexes) {
       for (const [idx, fields] of Object.entries(node.indexes)) {
@@ -319,10 +320,15 @@ function handleEntries(names, kinds) {
     .join(',\n')
 }
 
-// the spec imports what the build named, so every process finds the same lists
-const named = (what, from) => (from ? `import { ${what} } from '${from}'` : `const ${what} = null`)
+// the spec carries the list cero() runs, so every process runs the same one; a list of objects
+// given to build cannot be written, so cero() asks for it
+function named(from, list) {
+  if (from) return `import { extensions } from '${from}'`
+  if (!list) return "import { bundled as extensions } from '@cero-base/cero/extensions'"
+  return `const extensions = ${list.length === 0 ? '[]' : 'null'}`
+}
 
-function wireModule(meta, names, from) {
+function wireModule(meta, names, from, list) {
   const kinds = ['database', 'dispatch', 'schema']
   return `// autogenerated by cero/build
 import database from './main/db/index.js'
@@ -332,8 +338,7 @@ import rpc from './main/rpc/index.js'
 import localDatabase from './local/db/index.js'
 import * as localSchema from './local/schema/index.js'
 ${handleImports(names, kinds)}
-${named('extensions', from.extensions)}
-${named('operators', from.operators)}
+${named(from, list)}
 
 export const meta = ${JSON.stringify(meta, null, 2)}
 
@@ -345,7 +350,6 @@ export const spec = {
   local: { database: localDatabase, schema: localSchema, meta: meta.local },
   meta,
   extensions,
-  operators,
   handles: {
 ${handleEntries(names, kinds)}
   }

@@ -23,7 +23,7 @@ export class CeroError extends Error {
   /**
    * Type-guard for `err instanceof CeroError` that survives realm boundaries.
    *
-   * @param {any} err
+   * @param {unknown} err
    * @returns {err is CeroError}
    */
   static isCeroError(err) {
@@ -107,8 +107,8 @@ export class CeroError extends Error {
    *
    * @param {string} what
    */
-  static TIMED_OUT(what) {
-    return new CeroError('TIMED_OUT', `${what} timed out`)
+  static TIMEOUT(what) {
+    return new CeroError('TIMEOUT', `${what} timed out`)
   }
   /**
    * Feature is not yet implemented.
@@ -154,14 +154,6 @@ export class CeroError extends Error {
    */
   static REFUSED(rule, msg = `refused by ${rule}`) {
     return new CeroError('REFUSED', msg, { rule })
-  }
-  /**
-   * Pairing handshake did not complete in time.
-   *
-   * @param {string} [msg]
-   */
-  static TIMEOUT(msg = 'pairing timed out') {
-    return new CeroError('TIMEOUT', msg)
   }
   /**
    * Underlying swarm/transport failure.

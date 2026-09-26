@@ -57,7 +57,7 @@ test('host invites + joiner sees existing messages', async (t) => {
   const room = await open(host.room, { name: 'general' })
   await put(room.messages, { text: 'welcome' })
 
-  const inv = await room.invite()
+  const inv = await cero.invite(room)
   const joined = await open(guest.room, { invite: inv })
 
   const stream = watch(joined.messages)
@@ -110,7 +110,7 @@ test('joiner sees the room name in their handles list', async (t) => {
   const host = await makeChat(t, { bootstrap: net.bootstrap })
   const guest = await makeChat(t, { bootstrap: net.bootstrap })
   await open(host.room, { name: 'general' })
-  const invite = await (await open(host.room, { name: 'general-2' })).invite()
+  const invite = await cero.invite(await open(host.room, { name: 'general-2' }))
   await open(guest.room, { invite })
   // handleSync mirrors the name asynchronously (replication → watch), so wait for it.
   let rooms = []
@@ -133,7 +133,7 @@ test('member.name in a room mirrors identity profile.name', async (t) => {
   await set(guest.profile, { name: 'Bob' })
 
   const room = await open(host.room, { name: 'general' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   await open(guest.room, { invite })
 
   // Both members eventually show their respective profile names in the room.
@@ -175,7 +175,7 @@ test('guest messages are attributed to guest identity, not host', async (t) => {
   const guest = await makeChat(t, { bootstrap: net.bootstrap })
 
   const room = await open(host.room, { name: 'general' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   const joined = await open(guest.room, { invite })
 
   await put(joined.messages, { text: 'hi from guest' })
@@ -197,7 +197,7 @@ test('messages get a monotonic index and sort consistently across writers', asyn
   const guest = await makeChat(t, { bootstrap: net.bootstrap })
 
   const room = await open(host.room, { name: 'general' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   const joined = await open(guest.room, { invite })
 
   await put(room.messages, { text: 'h1' })
@@ -238,7 +238,7 @@ test('two separate ceros: host with multiple handles, guest joins specific room'
   const roomA = await open(hostMe.room, { name: 'roomA' })
   const roomB = await open(hostMe.room, { name: 'roomB' })
 
-  const inviteB = await roomB.invite()
+  const inviteB = await cero.invite(roomB)
 
   // Guest joins roomB specifically — host has 3 pairings (root + roomA + roomB)
   // all listening on the same identity topic in current cero2 design.
@@ -279,7 +279,7 @@ test('serve() + connect(): full pairing flow with both sides over RPC', async (t
   // Host creates a room over RPC + invites
   const hostRoom = await open(hostClient.room, { name: 'general' })
   await put(hostRoom.messages, { text: 'welcome' })
-  const invite = await hostRoom.invite()
+  const invite = await cero.invite(hostRoom)
   t.ok(invite, 'invite created via RPC')
 
   // Guest joins via RPC
@@ -316,7 +316,7 @@ test('serve() + connect(): joined room persists in handles list across reopen', 
 
   const hostMe = await makeChat(t, { bootstrap: net.bootstrap })
   const hostRoom = await open(hostMe.room, { name: 'general' })
-  const invite = await hostRoom.invite()
+  const invite = await cero.invite(hostRoom)
 
   // First boot: guest joins
   const guest1 = await cero(storage, spec, { bootstrap: net.bootstrap })
@@ -336,7 +336,7 @@ test('serve() + connect(): open(client.room, invite) joins via RPC', async (t) =
   const hostMe = await makeChat(t, { bootstrap: net.bootstrap })
   const room = await open(hostMe.room, { name: 'general' })
   await put(room.messages, { text: 'welcome' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
 
   const [s, c] = streamPair()
   const guestMe = await serve(s, { storage: await t.tmp(), bootstrap: net.bootstrap })
@@ -363,7 +363,7 @@ test('serve() + connect(): open(client.room, invite) joins via RPC', async (t) =
   t.is(msgs[0]?.text, 'welcome')
 })
 
-test('serve() + connect(): SubHandle.invite() round-trips over the wire', async (t) => {
+test('serve() + connect(): cero.invite(room) round-trips over the wire', async (t) => {
   const [s, c] = streamPair()
   const server = await serve(s, { storage: await t.tmp() })
   t.teardown(() => server.close())
@@ -379,13 +379,13 @@ test('serve() + connect(): SubHandle.invite() round-trips over the wire', async 
   })
 
   const room = await open(client.room, { name: 'general' })
-  t.is(typeof room.invite, 'function', 'invite is a function')
-  const invite = await room.invite({ role: 'member' })
+  t.absent(room.invite, 'the room has no methods, the verb does it')
+  const invite = await cero.invite(room, { role: 'member' })
   t.is(typeof invite, 'string', 'invite is a non-empty string')
   t.ok(invite.length > 0)
 })
 
-test('serve() + connect(): room.revoke(invite) over RPC', async (t) => {
+test('serve() + connect(): cero.revoke(room, invite) over RPC', async (t) => {
   const [s, c] = streamPair()
   const server = await serve(s, { storage: await t.tmp() })
   t.teardown(() => server.close())
@@ -401,10 +401,10 @@ test('serve() + connect(): room.revoke(invite) over RPC', async (t) => {
   })
 
   const room = await open(client.room, { name: 'general' })
-  t.is(typeof room.revoke, 'function', 'revoke is a function')
-  const invite = await room.invite({ role: 'member' })
-  t.is(await room.revoke(invite), true, 'first revoke returns true')
-  t.is(await room.revoke(invite), false, 'second revoke returns false')
+  t.absent(room.revoke, 'the room has no methods, the verb does it')
+  const invite = await cero.invite(room, { role: 'member' })
+  t.is(await cero.revoke(room, invite), true, 'first revoke returns true')
+  t.is(await cero.revoke(room, invite), false, 'second revoke returns false')
 })
 
 test('serve() + connect(): open(me.room, { id }) loads existing room over the wire', async (t) => {
@@ -439,7 +439,7 @@ test('restore() over RPC: swaps client identity to the given phrase', async (t) 
   // peer device A holds the identity; its phrase recovers it elsewhere
   const a = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap })
   t.teardown(() => a.close())
-  const phrase = a.identity.toPhrase()
+  const phrase = await cero.phrase(a)
 
   // device B: serve over RPC, fresh identity, then restore via the wire
   const [s, c] = streamPair()
@@ -461,7 +461,7 @@ test('restore() over RPC: swaps client identity to the given phrase', async (t) 
   t.not(client.id, before, 'client identity changed')
   t.is(client.id, a.id, 'client matches peer with same phrase')
   t.is(server.id, client.id, 'server identity updated alongside client')
-  t.is(await client.identity.toPhrase(), phrase, 'phrase round-trips')
+  t.is(await cero.phrase(client), phrase, 'phrase round-trips')
 })
 
 test('restore() over RPC: client sees data from the peer after recovery', async (t) => {
@@ -469,7 +469,7 @@ test('restore() over RPC: client sees data from the peer after recovery', async 
 
   const a = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap })
   t.teardown(() => a.close())
-  const phrase = a.identity.toPhrase()
+  const phrase = await cero.phrase(a)
   await set(a.profile, { name: 'jb' })
 
   const [s, c] = streamPair()
@@ -519,11 +519,11 @@ test('seed: data persists across boots when the same phrase is supplied', async 
   const storage = await t.tmp()
 
   const first = await cero(storage, spec)
-  const phrase = first.identity.toPhrase()
+  const phrase = await cero.phrase(first)
   await set(first.profile, { name: 'jb' })
   await first.close()
 
-  const second = await cero(storage, spec, { phrase })
+  const second = await cero(storage, spec, { seed: cero.toSeed(phrase) })
   t.teardown(() => second.close())
 
   t.is(second.id, first.id, 'same identity from same phrase + storage')
@@ -536,12 +536,12 @@ test('seed: recovery from a phrase yields that identity on a fresh dir', async (
 
   const a = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap })
   t.teardown(() => a.close())
-  const phrase = a.identity.toPhrase()
-  const b = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap, phrase })
+  const phrase = await cero.phrase(a)
+  const b = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap, seed: cero.toSeed(phrase) })
   t.teardown(() => b.close())
 
   t.is(a.id, b.id, 'same identity from same phrase across storages')
-  t.is(b.identity.toPhrase(), phrase, 'phrase round-trips')
+  t.is(await cero.phrase(b), phrase, 'phrase round-trips')
 })
 
 // ─── handle leave() — drops the room from the joiner's handles list ──────
@@ -553,8 +553,8 @@ test("handle leave() removes the room from the joiner's handles, others untouche
 
   const stay = await open(host.room, { name: 'stay' })
   const leaveRoom = await open(host.room, { name: 'leaveme' })
-  const stayInvite = await stay.invite()
-  const leaveInvite = await leaveRoom.invite()
+  const stayInvite = await cero.invite(stay)
+  const leaveInvite = await cero.invite(leaveRoom)
 
   const joinedStay = await open(guest.room, { invite: stayInvite })
   const joinedLeave = await open(guest.room, { invite: leaveInvite })
@@ -562,7 +562,7 @@ test("handle leave() removes the room from the joiner's handles, others untouche
   let { data: rooms } = await get(guest.room)
   t.is(rooms.length, 2, 'guest has both rooms')
 
-  await joinedLeave.leave()
+  await cero.leave(joinedLeave)
 
   rooms = (await get(guest.room)).data
   t.is(rooms.length, 1, "leave() dropped one row from the guest's handles")
@@ -575,7 +575,7 @@ test('handle close() detaches without removing the row (resume on next open)', a
   const guest = await makeChat(t, { bootstrap: net.bootstrap })
 
   const room = await open(host.room, { name: 'persistent' })
-  const invite = await room.invite()
+  const invite = await cero.invite(room)
   const joined = await open(guest.room, { invite })
   const joinedId = joined.id
 

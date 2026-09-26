@@ -10,7 +10,8 @@
   ],
   "scripts": {
     "format": "prettier . --write",
-    "lint": "prettier . --check && lunte",
+    "lint": "prettier . --check && lunte && node scripts/docs.js",
+    "build:skill": "node scripts/skill.js",
     "build": "npm run build -w chat-backend && npm run build -w chat-mobile",
     "build:desktop": "npm run build -w chat-backend",
     "build:mobile": "npm run build -w chat-backend && npm run build -w chat-mobile",
@@ -31,14 +32,11 @@
   },
   "author": "lekinox",
   "license": "Apache-2.0",
-  "packageManager": "npm@11.19.1",
+  "packageManager": "npm@12.1.0",
   "devDependencies": {
     "bare": "^1.33.5",
     "lunte": "^1.8.4",
     "prettier-config-holepunch": "^2.0.0",
     "turbo": "^2"
-  },
-  "overrides": {
-    "autobee-encryption": "0.1.4"
   }
 }

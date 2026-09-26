@@ -10,7 +10,7 @@ test.configure({ timeout: 90000 })
 
 async function peer(t, testnet, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const network = new Network({ bootstrap: testnet.bootstrap, store, mirrors: opts.mirrors })
   await network.ready()
   const db = new Database({
@@ -43,7 +43,7 @@ test('mirrors: B syncs a room the writer only mirrored — writer offline', asyn
 
   // B opens the same room with only the mirror as a path to A's data
   const b = await peer(t, testnet, {
-    identity: await Identity.generate(),
+    identity: await Identity.create(),
     key: a.db.key,
     encryptionKey: a.db.encryptionKey,
     mirrors: [mirror]
@@ -65,7 +65,7 @@ test('mirrors: a joiner boots from the mirror even when the writer reached it on
   const network = new Network({ bootstrap: testnet.bootstrap, store, mirrors: [mirror] })
   await network.ready()
   await network.suspend()
-  const a = new Database({ store, identity: await Identity.generate(), network, spec })
+  const a = new Database({ store, identity: await Identity.create(), network, spec })
   await a.ready()
   t.teardown(
     async () => {

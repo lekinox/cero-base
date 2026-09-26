@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { useCero } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { useTheme } from '../hooks/use-theme'
@@ -15,11 +15,10 @@ export function Settings() {
   const { theme, toggle } = useTheme()
   const toast = useToast()
   const [seed, setSeed] = useState(null)
-  const [invite, setInvite] = useState('')
 
   const reveal = async () => {
     try {
-      setSeed(await me.identity.toPhrase())
+      setSeed(await cero.phrase(me))
     } catch {
       setSeed('(no seed stored)')
     }
@@ -101,21 +100,6 @@ export function Settings() {
             </div>
           </Card>
         ))}
-        {invite ? (
-          <>
-            <Card className='text-xs font-mono text-muted break-all'>{invite}</Card>
-            <div className='flex gap-2'>
-              <Button onClick={() => copy(invite)}>Copy</Button>
-              <Button onClick={() => setInvite('')} variant='secondary'>
-                Clear
-              </Button>
-            </div>
-          </>
-        ) : (
-          <Button onClick={() => me.invite().then(setInvite)} className='w-full'>
-            Pair New Device
-          </Button>
-        )}
       </Section>
 
       <Toast message={toast.message} />

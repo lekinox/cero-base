@@ -16,6 +16,7 @@ const NS = `${NAMESPACE}/blobs`
  * @property {import('../network/index.js').Network} [network]        Optional network used to announce + replicate the core.
  * @property {Uint8Array} [key]                                       Pre-existing blob core key — joins an existing blob feed.
  * @property {Uint8Array} [encryptionKey]                             Explicit encryption key, overrides `identity.encryptionKey`.
+ * @property {string} [name]                                          Core name in the store when no `key` is given; `blobs` by default.
  *
  * @typedef {import('./codec.js').RawBlobId} RawBlobId
  */
@@ -34,9 +35,13 @@ export class Blobs extends ReadyResource {
     this.encryptionKey = encryptionKey || (identity && identity.encryptionKey) || null
     this.name = name || 'blobs'
 
+    /** @private */
     this._coreKey = key || null
+    /** @type {import('hypercore') | null} */
     this.core = null
+    /** @type {import('hyperblobs') | null} */
     this.hyperblobs = null
+    /** @private */
     this._discovery = null
   }
 
@@ -67,6 +72,7 @@ export class Blobs extends ReadyResource {
     return this.core ? this.core.discoveryKey : null
   }
 
+  /** @private */
   async _open() {
     await this.store.ready()
     if (this.network) await this.network.ready()
@@ -88,6 +94,7 @@ export class Blobs extends ReadyResource {
     }
   }
 
+  /** @private */
   async _close() {
     if (this._discovery) await this._discovery.destroy()
     if (this.network && this.core) this.network.detach(this.core)
@@ -147,6 +154,7 @@ export class Blobs extends ReadyResource {
   /**
    * @param {import('streamx').Readable} input
    * @returns {Promise<RawBlobId>}
+   * @private
    */
   async _putStream(input) {
     const ws = this.hyperblobs.createWriteStream()
@@ -159,6 +167,7 @@ export class Blobs extends ReadyResource {
     return ws.id
   }
 
+  /** @private */
   _guard() {
     if (this.closed) throw CeroError.CLOSED('Blobs')
     if (!this.opened) throw CeroError.NOT_READY('Blobs', 'blobs')

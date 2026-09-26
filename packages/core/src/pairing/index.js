@@ -1,341 +1,415 @@
-import BlindPairing from 'blind-pairing'
 import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
 import b4a from 'b4a'
 import c from 'compact-encoding'
-import { discoveryKey } from 'hypercore-crypto'
+import crypto from 'hypercore-crypto'
+import hid from 'hypercore-id-encoding'
+import Autobee from 'autobee'
 
 import { Invite } from './invite.js'
-import { Candidate } from './candidate.js'
-import { Request } from './request.js'
-import { channelTopic } from '../network/index.js'
+import { Request, Response, STATUS_ACCEPTED, STATUS_DENIED } from './request.js'
+import { Mailbox } from '../mailbox/index.js'
+import { Post } from '../mailbox/post.js'
+import { wrap } from '../database/envelope.js'
+import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
+import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
+import { NAMESPACE, MEMBER } from '../lib/constants.js'
+
+const Join = getEncoding('@cero/join')
+const MAX_DELAY = 2 ** 31 - 1
 
 /**
- * @typedef {object} PairingOpts
- * @property {import('../network/index.js').Network} network         Network to host the BlindPairing member.
- * @property {import('../identity/index.js').Identity} identity      Identity used to sign invites and derive the topic.
- * @property {Uint8Array} [topic]                                    Optional override topic; defaults to `identity.publicKey`.
- * @property {boolean} [host]                                        Register the member listener that serves invites (default `true`). Join-only pairings pass `false` — a listener is one-per-topic, so a joiner registering one collides with any concurrent join.
- * @property {any} [inviteEncoding]                                  compact-encoding type for the invite payload `data`.
- * @property {any} [joinerEncoding]                                  compact-encoding type for the joiner-supplied `userData`.
- * @property {(err: Error) => void} [onerror]                        Called when a background candidate fails to process.
+ * @typedef {{ publicKey: Uint8Array, secretKey: Uint8Array }} KeyPair
  *
- * @typedef {object} CreateInviteOpts
- * @property {string} [role]                                         Role tag bound into the invite.
- * @property {number} [expiresIn]                                    TTL in ms; `0`/omitted = no expiry.
- * @property {any} [data]                                            Arbitrary payload (encoded via `inviteEncoding` when set).
- * @property {boolean} [reuse]                                       Reusable until expiry/revoke; default `false` (consumed on first settle).
+ * @typedef {object} PairingOpts
+ * @property {Mailbox} mailbox                      The device's mailbox: replies are sent from there.
+ * @property {import('../database/index.js').Database} db  The database the invites open. Its `invites` collection holds them, and apply admits their joins.
+ *
+ * @typedef {object} InviteOpts
+ * @property {string} [role]                        Role granted, at most your own. Member by default.
+ * @property {number | string} [ttl]                How long it is valid: ms, or `'12h'`, `'2d'`… Never expires when omitted.
+ * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise spent by the first.
+ * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
+ * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
  *
  * @typedef {object} JoinOpts
- * @property {any} userData                                          Payload sent with the candidate request. Required: blind-pairing derives the handshake token from it, so a candidate without one is never served.
- * @property {number} [timeout]                                      Deadline for the handshake, in ms. Defaults to 30000.
+ * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
+ * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
+ * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
+ * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
+ * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
  *
- * @typedef {{ key: Uint8Array, encryptionKey: Uint8Array | null, additional: Uint8Array | null }} JoinResult
+ * @typedef {object} JoinResult
+ * @property {Uint8Array} key
+ * @property {Uint8Array | null} encryptionKey
+ * @property {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
+ * @property {KeyPair} writer                       The writer the join admitted: open the database with it.
  */
 
 /**
- * Blind-pairing membership wrapper. Hosts invites, dispatches incoming candidates to the
- * application for accept/deny, and provides the joiner side of the handshake.
+ * Invites into a database. An invite is a record in the database; a joiner writes one signed
+ * `join` op into its own writer core and announces it to the database's peers, and apply admits
+ * it. The admission stays in the database until the joiner has its keys: every device of a member
+ * that may invite offers them while online, and the first one read settles it for all. A
+ * `confirm` invite's joins wait as requests until a member accepts or denies them; `'request'`
+ * fires for each new one.
+ * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
   /** @param {PairingOpts} [opts] */
-  constructor({
-    network,
-    identity,
-    topic,
-    host = true,
-    inviteEncoding = null,
-    joinerEncoding = null,
-    onerror = (err) => console.error(err),
-    onconsume = null
-  } = {}) {
+  constructor({ mailbox, db } = {}) {
     super()
-    if (!network) throw CeroError.REQUIRED('network')
-    if (!identity) throw CeroError.REQUIRED('identity')
+    if (!mailbox) throw CeroError.REQUIRED('mailbox')
+    if (!db) throw CeroError.REQUIRED('db')
 
-    this.network = network
-    this.identity = identity
-    this.topic = topic || identity.publicKey
-    this.host = host
-    this.inviteEncoding = inviteEncoding
-    this.joinerEncoding = joinerEncoding
-    this._onerror = onerror
-    // fired when this instance stops serving an invite, so the owner drops its row
-    this.onconsume = onconsume
+    this.mailbox = mailbox
+    this.db = db
+    /** @type {Set<Request>} requests not answered yet: whoever attaches after one fired goes through these first */
+    this.pending = new Set()
+    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed their keys exist. */
+    this.serving = false
 
-    this._blind = null
-    this._member = null
-    this._invites = new Map() // inviteId.hex → record
-    this._candidates = new Set() // active joiner candidates
+    /** @private */
+    this._requests = new Map() // writer id → Request
+    /** @private */
+    this._replies = new Map() // writer id → the Post offering its keys
+    /** @private */
+    this._expiry = null
+    /** @private */
+    this._onupdate = (touched) => {
+      if (['*', 'invites', 'requests', 'members'].some((name) => touched.has(name))) {
+        this._sync().catch(safetyCatch)
+      }
+    }
   }
 
-  /**
-   * Whether the underlying blind-pairing layer is suspended.
-   *
-   * @returns {boolean}
-   */
-  get suspended() {
-    return this._blind?.suspended === true
-  }
-
+  /** @private */
   async _open() {
-    await this.network.ready()
-    // shared instance — one set of swarm/DHT listeners for every handle
-    this._blind = await this.network.blind()
-
-    // blind-pairing allows one member listener per discovery key
-    if (this.host) {
-      this._member = this._blind.addMember({
-        // channel-scoped; the candidate hashes identically (no channel → identity)
-        discoveryKey: channelTopic(discoveryKey(this.topic), this.network.channel),
-        onadd: (req) => this._oncandidate(req).catch(this._onerror)
-      })
-    }
-    await this.network.refreshInjected()
+    await this.mailbox.ready()
+    await this.db.ready()
+    await this._sync()
+    this.db.on('update', this._onupdate)
   }
 
+  /** @private */
   async _close() {
-    for (const candidate of [...this._candidates]) candidate._fail(CeroError.CLOSED('Pairing'))
-    this._candidates.clear()
-
-    if (this._member) {
-      await this._member.close()
-      this._member = null
-    }
-    // the BlindPairing is network-owned and shared — never close it here
-    this._blind = null
-    this._invites.clear()
+    this.db.off('update', this._onupdate)
+    clearTimeout(this._expiry)
+    const posts = [...this._replies.values()]
+    this._replies.clear()
+    await Promise.allSettled(posts.map((post) => post.close()))
   }
 
   /**
-   * Mint a new pairing invite. Returns its canonical wire form (z32 string).
+   * Mint an invite. Returns its wire form, a z32 string.
    *
-   * @param {CreateInviteOpts} [opts]
+   * @param {InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async createInvite({ role = '', expiresIn = 0, data = null, reuse = false } = {}) {
+  async invite({ role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
-    // a join-only pairing serves no invites
-    if (!this.host) throw CeroError.INVALID('cannot create invites on a join-only Pairing')
     if (!this.opened) await this.ready()
+    // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently
+    await this._checkGrant(role)
+    // a rank above member is handed out once
+    if (reuse && !grants(MEMBER, role)) {
+      throw CeroError.INVALID(`a reusable invite admits at most member, not '${role}'`)
+    }
 
-    // the rendezvous key matches the member topic
-    const blind = BlindPairing.createInvite(this.topic)
-
-    const invite = Invite.create({
-      secretKey: this.identity.secretKey,
-      publicKey: this.identity.publicKey,
+    const invite = Invite.create({ ttl, data, key: this.db.key, address: this.db.address })
+    await this.db.call('add-invite', {
+      id: b4a.toHex(invite.id),
       role,
-      expiresIn,
-      data,
-      blind: blind.invite,
-      encoding: this.inviteEncoding
-    })
-
-    const id = b4a.toString(blind.id, 'hex')
-    this._invites.set(id, {
-      id: blind.id,
-      seed: blind.seed,
-      publicKey: blind.publicKey,
-      invite,
       reuse,
-      // minted here, maybe not persisted yet: syncRows must keep it
-      local: true
+      confirm,
+      expires: invite.expires,
+      createdAt: Date.now()
     })
-
+    invite.link = { key: this.db.writerKey, length: this.db.length }
+    await this._sync()
     return invite.toString()
   }
 
   /**
-   * Look up the in-memory record for a minted invite by its string form.
-   *
-   * @param {string} inviteStr
-   * @returns {{ id: Uint8Array, seed: Uint8Array, publicKey: Uint8Array, invite: import('./invite.js').Invite, reuse: boolean } | null}
-   */
-  recordOf(inviteStr) {
-    for (const record of this._invites.values()) {
-      if (record.invite.toString() === inviteStr) return record
-    }
-    return null
-  }
-
-  /**
-   * Reconcile the served-invite set with persisted rows (the room's `invites` collection).
-   *
-   * @param {Array<{ id: string, invite: Uint8Array, publicKey: Uint8Array, seed: Uint8Array, reuse?: boolean }>} rows
-   */
-  syncRows(rows) {
-    const seen = new Set()
-    for (const row of rows) {
-      if (!row?.id || !row.invite || !row.publicKey || !row.seed) continue
-      seen.add(row.id)
-      const existing = this._invites.get(row.id)
-      if (existing) {
-        existing.local = false
-        continue
-      }
-      let invite
-      try {
-        invite = Invite.parse(b4a.toString(row.invite))
-      } catch {
-        continue
-      }
-      if (invite.expired) continue
-      this._invites.set(row.id, {
-        id: b4a.from(row.id, 'hex'),
-        seed: row.seed,
-        publicKey: row.publicKey,
-        invite,
-        reuse: !!row.reuse,
-        local: false
-      })
-    }
-    for (const [id, record] of this._invites) {
-      if (!seen.has(id) && !record.local) this._invites.delete(id)
-    }
-  }
-
-  /**
-   * Forget a previously-minted invite. New candidates carrying it will be
-   * dropped silently.
-   *
-   * @param {string} inviteStr
-   * @returns {boolean}
-   */
-  revoke(inviteStr) {
-    for (const [id, record] of this._invites) {
-      if (record.invite.toString() === inviteStr) {
-        this._invites.delete(id)
-        return true
-      }
-    }
-    return false
-  }
-
-  /**
-   * Joiner side — start a pairing handshake against `inviteStr` and resolve
-   * with the host's response when the host confirms.
-   *
-   * @param {string} inviteStr
-   * @param {JoinOpts} [opts]
-   * @returns {Promise<JoinResult>}
-   */
-  async join(inviteStr, { userData, timeout = 30000 } = {}) {
-    if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
-    if (!this.opened) await this.ready()
-
-    let invite
-    try {
-      invite = Invite.parse(inviteStr, { encoding: this.inviteEncoding })
-    } catch (err) {
-      if (err instanceof CeroError) throw err
-      throw CeroError.INVALID_INVITE(err.message)
-    }
-
-    if (invite.expired) throw CeroError.EXPIRED()
-
-    const data = encodeUserData(userData, this.joinerEncoding)
-    const candidate = new Candidate(this, invite, data, timeout)
-    return candidate.start()
-  }
-
-  /**
-   * Pause blind-pairing — keeps state, drops sockets. Idempotent.
-   *
-   * @returns {Promise<void>}
-   */
-  async suspend() {
-    if (!this._blind || this.closing || this.closed) return
-    if (this._blind.suspended) return
-    await this._blind.suspend()
-  }
-
-  /**
-   * Resume a suspended blind-pairing layer. Idempotent.
-   *
-   * @returns {Promise<void>}
-   */
-  async resume() {
-    if (!this._blind || this.closing || this.closed) return
-    if (!this._blind.suspended) return
-    await this._blind.resume()
-  }
-
-  async _oncandidate(req) {
-    const id = b4a.toString(req.inviteId, 'hex')
-    const record = this._invites.get(id)
-    if (!record) return
-    if (record.invite.expired) {
-      this._invites.delete(id)
-      this.onconsume?.(id)
-      return
-    }
-
-    try {
-      req.open(record.publicKey)
-    } catch (err) {
-      this._onerror(err)
-      return
-    }
-
-    const userData = decodeUserData(req.userData, this.joinerEncoding)
-
-    const request = new Request({
-      pairing: this,
-      req,
-      invite: record.invite,
-      seed: record.seed,
-      userData,
-      onsettle: () => {
-        if (!record.reuse) {
-          this._invites.delete(id)
-          this.onconsume?.(id)
-        }
-      }
-    })
-
-    this.emit('candidate', request)
-  }
-
-  /**
-   * Resolve the resource discovery key an invite targets — without pairing.
+   * Revoke an invite, for every member. Needs the remove permission.
    *
    * @param {string} invite
-   * @returns {Uint8Array | null}
+   * @returns {Promise<boolean>}  Whether it was live.
    */
-  static inviteTopic(invite) {
-    try {
-      return Invite.parse(invite).discoveryKey
-    } catch {
-      return null
+  async revoke(invite) {
+    if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
+    if (!this.opened) await this.ready()
+    // apply refuses a revoke below REMOVE
+    const me = await this._me()
+    if (me && !can(me.role, REMOVE)) {
+      throw CeroError.DENIED(null, 'revoking an invite needs the remove permission')
+    }
+    const id = getInviteId(invite)
+    if (!id || !(await this.db.get('invites', id)).data) return false
+    await this.db.call('del-invite', { id })
+    await this._sync()
+    return true
+  }
+
+  /**
+   * A join waiting on a `confirm` invite, by its id in the `requests` collection.
+   *
+   * @param {string} id
+   * @returns {Promise<Request>}
+   */
+  async request(id) {
+    // the row can be read before this device has caught up with it
+    if (!this._requests.has(id)) await this._sync()
+    const request = this._requests.get(id)
+    if (!request) throw CeroError.UNKNOWN('request', id)
+    return request
+  }
+
+  // follow the log: the invites that ran out, the joins waiting for a member, the keys owed
+  /** @private */
+  async _sync() {
+    const me = await this._me()
+    const { data: invites } = await this.db.get('invites')
+    const { data: requests } = await this.db.get('requests')
+    if (this.closing || this.closed) return
+    const role = me?.role
+    // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting
+    if (can(role, REMOVE)) {
+      for (const row of invites.filter(expired)) {
+        await this.db.call('del-invite', { id: row.id }).catch(safetyCatch)
+      }
+    }
+    this._arm([...invites, ...requests])
+    const inviter = can(role, INVITE)
+    const owed = inviter ? requests.filter((row) => row.admitted) : []
+    this._pending(inviter ? requests.filter((row) => !row.admitted) : [], invites)
+    await this._answer(owed, role)
+    this.serving = inviter && (invites.some((row) => !expired(row)) || owed.length > 0)
+    this.emit('serving', this.serving)
+  }
+
+  // wakes the next _sync just past the nearest expiry: expired() only holds after it
+  /** @private */
+  _arm(rows) {
+    clearTimeout(this._expiry)
+    const live = rows.filter((row) => row.expires > 0 && !expired(row))
+    const next = Math.min(...live.map((row) => row.expires))
+    if (!Number.isFinite(next)) return
+    this._expiry = setTimeout(
+      () => this._sync().catch(safetyCatch),
+      Math.min(next - Date.now() + 1, MAX_DELAY)
+    )
+  }
+
+  /** @private */
+  _pending(rows, invites) {
+    const live = new Set(rows.map((row) => row.id))
+    // settled elsewhere: accepted or denied by another member, or its invite revoked
+    for (const [id, request] of this._requests) {
+      if (live.has(id)) continue
+      this._requests.delete(id)
+      this.pending.delete(request)
+    }
+    for (const row of rows) {
+      const invite = invites.find((i) => i.id === row.invite)
+      if (!invite || this._requests.has(row.id)) continue
+      const request = new Request({ pairing: this, invite, row })
+      this._requests.set(row.id, request)
+      this.pending.add(request)
+      this.emit('request', request)
+    }
+  }
+
+  // an admitted joiner is offered its keys by every inviter device online, until one is read.
+  // Past the invite's expiry the joiner has given up: a member who can remove drops it instead
+  /** @private */
+  async _answer(rows, role) {
+    const owed = new Set(rows.map((row) => row.id))
+    for (const [id, post] of this._replies) {
+      if (owed.has(id)) continue
+      this._replies.delete(id)
+      post.close().catch(safetyCatch)
+    }
+    for (const row of rows) {
+      if (this._replies.has(row.id)) continue
+      if (!expired(row)) {
+        this._reply(row)
+        continue
+      }
+      if (can(role, REMOVE)) {
+        await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
+      }
+    }
+  }
+
+  // kept in memory, not in the outbox: the admission in the log is what outlives a restart
+  /** @private */
+  _reply({ id, reply }) {
+    const { network } = this.mailbox
+    const keys = {
+      status: STATUS_ACCEPTED,
+      reason: '',
+      key: this.db.key,
+      encryptionKey: this.db.encryptionKey,
+      epochs: this.db.keyring.all()
+    }
+    const post = new Post(network, reply, c.encode(Response, keys), { mirrors: network.mirrors })
+    this._replies.set(id, post)
+    const settle = async () => {
+      await post.ready()
+      await post.delivered
+      await this.db.call('del-request', { id })
+    }
+    settle().catch(safetyCatch)
+  }
+
+  /** @private */
+  async _me() {
+    return (await this.db.get('members', this.db.identity.id)).data
+  }
+
+  // `grants` treats an unknown role as "no", so an app role name must fail loudly
+  /** @private */
+  async _checkGrant(role) {
+    if (!isRank(role)) {
+      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
+    }
+    const me = await this._me()
+    // no member row yet = genesis, nothing to cap
+    if (me && !grants(me.role, role)) {
+      throw CeroError.DENIED(null, `role '${role}' exceeds your own role '${me.role}'`)
     }
   }
 
   /**
-   * Cheap structural test for a candidate invite string.
+   * Join with an invite: write the join into the writer's own core, announce it to the
+   * database's peers, and resolve with the database's keys once a member replies.
    *
-   * @param {unknown} str
-   * @returns {boolean}
+   * @param {Mailbox} mailbox
+   * @param {string} invite
+   * @param {JoinOpts} opts
+   * @returns {Promise<JoinResult>}
    */
-  static isInvite(str) {
-    return Invite.isInvite(str)
+  static async join(
+    mailbox,
+    invite,
+    { identity, spec, writer = crypto.keyPair(), timeout = 30000, signal = null } = {}
+  ) {
+    if (!mailbox) throw CeroError.REQUIRED('mailbox')
+    if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
+    if (!spec?.dispatch) throw CeroError.REQUIRED('spec')
+    if (writer?.publicKey?.byteLength !== 32 || writer.secretKey?.byteLength !== 64) {
+      throw CeroError.INVALID('writer must be a keypair')
+    }
+    const parsed = Invite.parse(invite)
+    if (parsed.expired) throw CeroError.EXPIRED()
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
+    if (!mailbox.opened) await mailbox.ready()
+
+    let resolve, fail
+    const answered = new Promise((res, rej) => {
+      resolve = res
+      fail = rej
+    })
+    const onreply = (message) => {
+      const response = decode(Response, message)
+      if (response?.status === STATUS_DENIED) fail(CeroError.DENIED(response.reason || null))
+      else if (response?.key && b4a.equals(response.key, parsed.key)) {
+        const { key, encryptionKey, epochs } = response
+        resolve({ key, encryptionKey, epochs: epochs || [], writer })
+      }
+    }
+
+    // in the network's store, which every connection replicates: open the database from it
+    const { network } = mailbox
+    const { store } = network
+    const core = store.get({
+      keyPair: writer,
+      manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+    })
+    const inbox = mailbox.receive(writer.secretKey, onreply)
+    // the database pulls the join in like any optimistic append, from us or from a mirror
+    const post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
+
+    const onabort = () => fail(CeroError.CLOSED('join'))
+    if (signal?.aborted) onabort()
+    signal?.addEventListener('abort', onabort)
+    mailbox.once('close', onabort)
+    const timer = timeout > 0 ? setTimeout(() => fail(CeroError.TIMEOUT('join')), timeout) : null
+    const left = parsed.expires - Date.now()
+    // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
+    const expiry =
+      parsed.expires && left < MAX_DELAY ? setTimeout(() => fail(CeroError.EXPIRED()), left) : null
+    write(core, spec, parsed, identity, writer)
+      .then(() => post.ready())
+      .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))
+    try {
+      return await answered
+    } finally {
+      clearTimeout(timer)
+      clearTimeout(expiry)
+      signal?.removeEventListener('abort', onabort)
+      mailbox.off('close', onabort)
+      await Promise.allSettled([inbox.close(), post.close()])
+    }
   }
 }
 
-function encodeUserData(data, encoding) {
-  if (data == null) throw CeroError.REQUIRED('userData')
-  if (encoding) return c.encode(encoding, data)
-  if (b4a.isBuffer(data)) return data
-  throw CeroError.INVALID('userData must be a buffer when no joinerEncoding is provided')
+/**
+ * A join's payload: sealed to the database's address, so only its members read who joins; proven
+ * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ *
+ * @param {Invite} invite
+ * @param {import('../identity/index.js').Identity} identity
+ * @param {Uint8Array} writer
+ * @param {Uint8Array} reply
+ * @returns {{ box: Uint8Array }}
+ */
+export function sealJoin(invite, identity, writer, reply) {
+  const join = {
+    invite: invite.id,
+    reply,
+    proof: invite.prove(writer),
+    identity: identity.publicKey,
+    signature: identity.sign(joining(invite.key, invite.id, writer, reply)),
+    ts: Date.now()
+  }
+  return { box: crypto.encrypt(c.encode(Join, join), invite.address) }
 }
 
-function decodeUserData(buf, encoding) {
-  if (!buf || buf.length === 0) return null
-  if (!encoding) return buf
+// one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
+// another. Plain, since the joiner has no key yet, and linked to the invite's node, so no member
+// applies it before the invite
+async function write(core, spec, invite, identity, writer) {
+  await core.ready()
+  const last = await core.getUserData('cero/join')
+  if (last && b4a.equals(last, invite.id)) return
+  const { ns = NAMESPACE, version = 1 } = spec.meta || {}
+  const payload = sealJoin(invite, identity, core.key, Mailbox.getAddress(writer.secretKey))
+  const op = wrap(version, spec.dispatch.encode(`@${ns}/join`, payload))
+  const links = [invite.link]
+  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links }))
+  await core.setUserData('cero/join', invite.id)
+}
+
+function expired({ expires }) {
+  return expires > 0 && Date.now() > expires
+}
+
+// anyone can send to an address: what does not decode is dropped, never thrown
+function decode(encoding, message) {
   try {
-    return c.decode(encoding, buf)
+    return c.decode(encoding, message)
   } catch {
-    return buf
+    return null
+  }
+}
+
+function getInviteId(invite) {
+  try {
+    return b4a.toHex(Invite.parse(invite).id)
+  } catch {
+    return null
   }
 }

@@ -28,7 +28,6 @@ export const main = {
     name: string,
     createdAt: int,
     updatedAt: int,
-    sig: bytes,
     index: uint
   },
   device: {
@@ -42,16 +41,13 @@ export const main = {
   },
   invite: {
     id: required(string),
-    invite: required(bytes),
-    publicKey: required(bytes),
-    data: bytes,
-    sig: bytes,
     role: required(string),
     expires: int,
+    reuse: bool,
     createdAt: int,
     index: uint,
-    seed: bytes,
-    reuse: bool
+    // its joins wait for a member to accept them
+    confirm: bool
   },
   handle: {
     id: required(string),
@@ -70,7 +66,9 @@ export const main = {
     createdAt: int,
     updatedAt: int,
     index: uint,
-    stamp: uint
+    stamp: uint,
+    // the file this one was copied from, so a sync copies it once
+    from: string
   },
   claim: {
     identity: required(bytes),
@@ -84,6 +82,58 @@ export const main = {
     createdAt: int,
     commit: bytes,
     stamp: uint
+  },
+  // appended by the joiner's own writer core, sealed to the database's address
+  join: {
+    box: required(bytes)
+  },
+  accept: {
+    id: required(string),
+    role: string
+  },
+  // a join from its arrival until the joiner has its keys: waiting for a member on a confirm
+  // invite, then admitted and owed its reply. `id` is the joiner's writer
+  request: {
+    id: required(string),
+    identity: required(bytes),
+    invite: required(string),
+    reply: required(bytes),
+    createdAt: int,
+    index: uint,
+    admitted: bool,
+    expires: int,
+    // what the join asks for, the invite's role; once admitted, the role granted
+    role: string
+  },
+  // a removed member comes back only through an invite minted after `index`
+  removal: {
+    id: required(string),
+    index: required(uint)
+  },
+  // this device's live view of a context: computed on read, never stored
+  status: {
+    role: string,
+    writable: bool,
+    epoch: uint,
+    suspended: bool,
+    // an app version this one cannot read ops from, 0 when current
+    behind: uint,
+    // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
+    nearby: string
+  },
+  // a join this device still waits on, without its keys
+  joining: {
+    id: required(string),
+    type: required(string),
+    invite: required(string)
+  },
+  // a person linked over Bluetooth, by the identity that signed their device's key, with the name
+  // and device type that device told
+  peer: {
+    id: required(string),
+    name: string,
+    isMobile: bool,
+    device: string
   }
 }
 
@@ -93,13 +143,41 @@ export const local = {
   },
   keypair: {
     publicKey: required(bytes),
-    secretKey: required(bytes)
+    secretKey: required(bytes),
+    // 'create' or 'recover' until this device's setup finished: a killed launch resumes it
+    setup: string
   },
   'handle-keypair': {
     id: required(string),
     publicKey: required(bytes),
     secretKey: required(bytes),
     encryptionKey: bytes
+  },
+  // a room with invites, reopened at boot so its joins are answered
+  serving: {
+    id: required(string),
+    type: required(string)
+  },
+  // a join not answered yet: the writer is fixed before the join is written, so a resumed one
+  // hears the reply to it
+  join: {
+    id: required(string),
+    type: required(string),
+    invite: required(string),
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    // the reply, once it landed: the join then opens the room without joining again
+    key: bytes,
+    encryptionKey: bytes,
+    epochs: bytes
+  },
+  // mail the device's mailbox keeps: received until handled, sent until read. `mirrors` are
+  // 32-byte keys back to back
+  mail: {
+    id: required(string),
+    address: required(bytes),
+    message: required(bytes),
+    mirrors: bytes
   },
   environment: {
     channel: required(string)
@@ -118,7 +196,9 @@ export const rpc = {
     ref: required(string),
     data: required(bytes),
     local: bool,
-    noUpsert: bool
+    noUpsert: bool,
+    // the indexes of the fields a set sends: the typed row decodes the others as defaults
+    fields: { ...uint, array: true }
   },
   'req-id': {
     handle: required(string),
@@ -140,8 +220,11 @@ export const rpc = {
   'req-invite': {
     handle: required(string),
     role: string,
-    expiresIn: uint,
-    reuse: bool
+    // ms, or a duration like '12h'
+    ttl: string,
+    reuse: bool,
+    data: bytes,
+    confirm: bool
   },
   'req-revoke': {
     handle: required(string),
@@ -150,6 +233,9 @@ export const rpc = {
   'req-join': {
     parent: required(string),
     ref: required(string),
+    invite: required(string)
+  },
+  'req-cancel': {
     invite: required(string)
   },
   'req-open': {
@@ -171,17 +257,16 @@ export const rpc = {
     total: required(int),
     size: required(int)
   },
-  'res-changes': {
-    changes: required(bytes),
-    reset: bool
-  },
   'res-invite': {
     invite: required(string)
   },
   'res-handle': {
     id: required(string),
     type: required(string),
-    name: string
+    name: string,
+    // a join turned away: an error crosses as code and message, without its reason
+    denied: bool,
+    reason: string
   },
   'req-add-file': {
     handle: required(string),
@@ -193,7 +278,8 @@ export const rpc = {
     id: required(string),
     deviceId: string,
     fileBase: string,
-    fileToken: string
+    fileToken: string,
+    deviceName: string
   },
   'res-seed': {
     phrase: string
@@ -207,6 +293,20 @@ export const rpc = {
   'res-error': {
     message: required(string),
     code: string,
-    stack: string
+    stack: string,
+    reason: string
+  },
+  // accept, or deny with a reason
+  'req-answer': {
+    handle: required(string),
+    id: required(string),
+    accept: bool,
+    role: string,
+    reason: string
+  },
+  // the mesh when `on`, one invite's rendezvous when `invite` is set
+  'req-nearby': {
+    on: bool,
+    invite: string
   }
 }

@@ -18,7 +18,12 @@ import {
   waitForConnection,
   waitFor,
   collect,
-  replay
+  replay,
+  makePeer,
+  makeBlindPeer,
+  waitForMirrored,
+  admit,
+  withRole
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
@@ -28,7 +33,7 @@ test.configure({ timeout: 60000 })
 
 async function makeDb(t, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.generate())
+  const identity = opts.identity || (await Identity.create())
   const db = new Database({ store, identity, spec, ...opts })
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
@@ -38,48 +43,7 @@ async function makeDb(t, opts = {}) {
 async function bootstrapped(t, opts = {}) {
   const { db, store, identity } = await makeDb(t, opts)
   await db.bootstrap({ name: 'first', isMobile: false })
-  await enroll(db, identity)
   return { db, store, identity }
-}
-
-// every real open lands the member row with the writer; the fixture does the same
-async function enroll(db, identity, role = 'owner') {
-  const ts = Date.now()
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey,
-    role,
-    createdAt: ts,
-    updatedAt: ts
-  })
-}
-
-async function makeNetworked(t, testnet, opts = {}) {
-  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = opts.identity || (await Identity.generate())
-  const { presence, ...rest } = opts
-  const network = new Network({ bootstrap: testnet.bootstrap, presence })
-  await network.ready()
-  const topic = opts.topic || identity.topic
-  const discovery = network.join(topic)
-  await discovery.flush()
-  const db = new Database({ store, identity, network, spec, ...rest })
-  await db.ready()
-  t.teardown(
-    async () => {
-      try {
-        await db.close()
-      } catch {}
-      try {
-        await discovery.destroy()
-      } catch {}
-      try {
-        await network.close()
-      } catch {}
-    },
-    { order: 5 }
-  )
-  return { db, store, identity, network, discovery, topic }
 }
 
 // ─── construction validation ──────────────────────────────────────────────
@@ -95,13 +59,13 @@ test('constructor: rejects missing identity', async (t) => {
 
 test('constructor: rejects missing spec', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   t.exception.all(() => new Database({ store, identity }), /spec/)
 })
 
 test('constructor: rejects spec without dispatch', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   t.exception.all(
     () => new Database({ store, identity, spec: { database: spec.database } }),
     /spec/
@@ -110,7 +74,7 @@ test('constructor: rejects spec without dispatch', async (t) => {
 
 test('constructor: refuses the identity keypair as the writer', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const keyPair = { publicKey: identity.publicKey, secretKey: identity.secretKey }
   t.exception.all(() => new Database({ store, identity, spec, keyPair }), /device keypair/)
 })
@@ -124,7 +88,7 @@ test('constructor: mints a device keypair of its own by default', async (t) => {
 
 test('ready/close: opens and closes cleanly', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const db = new Database({ store, identity, spec })
   await db.ready()
   t.is(db.opened, true)
@@ -144,7 +108,7 @@ test('close: one database does not destroy the network-shared wakeup', async (t)
   await network.ready()
   t.teardown(() => network.close().catch(() => {}), { order: 9 })
 
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const mk = async () => {
     const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
     const db = new Database({ store, identity, network, spec })
@@ -172,7 +136,7 @@ test('replicate: N databases on one store replicate it once per connection', asy
   await network.ready()
   t.teardown(() => network.close().catch(() => {}), { order: 9 })
 
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const mkDb = async (ns) => {
     const db = new Database({
       store,
@@ -202,7 +166,7 @@ test('replicate: N databases on one store replicate it once per connection', asy
 
 test('close is idempotent', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const db = new Database({ store, identity, spec })
   await db.ready()
   await db.close()
@@ -212,7 +176,7 @@ test('close is idempotent', async (t) => {
 
 test('close detaches the bee from the network (no _replicateables leak)', async (t) => {
   const testnet = await makeTestnet(t)
-  const { db, network } = await makeNetworked(t, testnet)
+  const { db, network } = await makePeer(t, testnet)
   t.is(network._replicateables.size, 1, 'bee attached on open')
   await db.close()
   t.is(network._replicateables.size, 0, 'bee detached on close — not left to replicate forever')
@@ -220,7 +184,7 @@ test('close detaches the bee from the network (no _replicateables leak)', async 
 
 test('bootstrap recovering: times out instead of hanging when no peer replicates', async (t) => {
   const testnet = await makeTestnet(t)
-  const { db } = await makeNetworked(t, testnet)
+  const { db } = await makePeer(t, testnet)
   const before = db.bee.local.listenerCount('append')
   await t.exception(db.bootstrap({ recovering: true, timeout: 200 }), /timed out/)
   t.is(db.bee.local.listenerCount('append'), before, 'append listener removed — no leak')
@@ -234,16 +198,16 @@ test('bootstrap recovering: times out instead of hanging when no peer replicates
 // writer is dead, and the recovered history must stay canonical.
 test('bootstrap recovering: fresh core recovers from a passive reader after every writer died', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   await a.db.put('messages', { text: 'pre-disaster' })
 
   // passive reader (mirror stand-in): unrelated identity, never a writer
-  const reader = await Identity.generate()
-  const o = await makeNetworked(t, testnet, {
+  const reader = await Identity.create()
+  const o = await makePeer(t, testnet, {
     identity: reader,
     topic,
     key: a.db.key,
@@ -251,7 +215,7 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
   })
   await waitForConnection(a.network)
   await waitForConnection(o.network)
-  await waitUntil(async () => {
+  await waitFor(async () => {
     const { data } = await o.db.get('messages')
     return data.length === 1 || null
   })
@@ -260,7 +224,7 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
   await a.db.close()
   await a.network.close()
 
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ name: 'b', recovering: true })
   t.ok(b.db.bee.writable, 'recovered device is writable with zero live writers')
   t.absent(
@@ -272,7 +236,7 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
   t.is(rows.length, 1, 'recovered the pre-disaster data')
   await b.db.put('messages', { text: 'post-recovery' })
 
-  const seen = await waitUntil(async () => {
+  const seen = await waitFor(async () => {
     const { data } = await o.db.get('messages')
     return data.length === 2 ? data : null
   })
@@ -311,6 +275,26 @@ test('put respects given id', async (t) => {
   const { db } = await bootstrapped(t)
   const { data } = await db.put('messages', { id: 'fixed', text: 'x' })
   t.is(data.id, 'fixed')
+})
+
+// a row decoded off the RPC wire carries zero timestamps
+test('put: timestamps are the database’s, createdAt survives a put over the id', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { id: 'm', text: 'a', createdAt: 0, updatedAt: 0 })
+  const { data: first } = await db.get('messages', 'm')
+  t.ok(first.createdAt > 0, 'a zero createdAt is not stored')
+  t.ok(first.updatedAt > 0, 'nor a zero updatedAt')
+
+  const { data: returned } = await db.put('messages', {
+    id: 'm',
+    text: 'b',
+    createdAt: 1,
+    updatedAt: 1
+  })
+  const { data: second } = await db.get('messages', 'm')
+  t.is(second.createdAt, first.createdAt, 'createdAt is when the id was first written')
+  t.ok(second.updatedAt >= first.updatedAt, 'updatedAt is now, not what the caller passed')
+  t.is(returned.createdAt, second.createdAt, 'the call returns what was stored')
 })
 
 test('get on missing id returns null', async (t) => {
@@ -483,23 +467,17 @@ test('get: reverse/limit reads push down to the order index (bounded read)', asy
   const { db } = await bootstrapped(t)
   for (let i = 0; i < 5; i++) await db.put('messages', { text: `m${i}` })
 
-  const calls = []
-  const view = db.view
-  const orig = view.find.bind(view)
-  view.find = (path, ...args) => (calls.push(path), orig(path, ...args))
-  const r = await db.get('messages', { reverse: true, limit: 2 })
-  view.find = orig
-
+  const query = { reverse: true, limit: 2 }
+  const r = await db.get('messages', query)
   t.alike(
     r.data.map((m) => m.text),
     ['m4', 'm3'],
     'latest first, index order'
   )
   t.is(r.total, null, 'full page → total skipped')
-  t.ok(
-    calls.every((p) => p.endsWith('/messages-index')),
-    'served from the order index only, no collection scan'
-  )
+  const { path, range } = db._plan('messages', query)
+  t.ok(path.endsWith('/messages-index'), 'served from the order index, no collection scan')
+  t.alike(range, { reverse: true, limit: 2 }, 'reverse and limit reach hyperdb')
 
   const partial = await db.get('messages', { reverse: true, limit: 10 })
   t.is(partial.total, 5, 'non-full page → set exhausted, total free')
@@ -527,6 +505,18 @@ test('put: rejects an undeclared field instead of silently dropping it', async (
   )
 })
 
+test('put and set: a missing required field throws INVALID naming it', async (t) => {
+  const { db } = await bootstrapped(t)
+  for (const write of [db.put('tasks', { done: true }), db.set('tasks', { done: true })]) {
+    const err = await write.catch((e) => e)
+    t.is(err.code, 'INVALID')
+    t.ok(/'title' is required on 'tasks'/.test(err.message), err.message)
+  }
+  const { data } = await db.put('tasks', { title: 'a' })
+  const { data: merged } = await db.set('tasks', { id: data.id, done: true })
+  t.is(merged.title, 'a', 'a set that leaves it out keeps the stored one')
+})
+
 test('set: rejects an undeclared field on a single', async (t) => {
   const { db } = await bootstrapped(t)
   await t.exception(db.set('profile', { name: 'jb', nope: 1 }), /unknown field 'nope'/)
@@ -539,34 +529,35 @@ test('put: accepts declared + system fields', async (t) => {
   t.is(data.id, 'm1')
 })
 
-// ─── action routing ─────────────────────────────────────────────────────────
+// ─── actions ─────────────────────────────────────────────────────────
 
-async function teamDb(t, routes) {
+async function teamDb(t, after = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.generate()
-  const db = new Database({ store, identity, spec: spec.handles.team, routes })
+  const identity = await Identity.create()
+  const db = new Database({ store, identity, spec: spec.handles.team })
+  for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
   await db.bootstrap({ name: 'first', isMobile: false })
   return db
 }
 
-test('call: a declared action with no route throws (not a silent no-op)', async (t) => {
+test('call: a declared action with no after hook throws (not a silent no-op)', async (t) => {
   const db = await teamDb(t)
   await t.exception(
     db.call('promote', { memberId: 'm', role: 'admin' }),
-    /action 'promote' has no route/,
+    /action 'promote' has no after hook/,
     'fails loud instead of writing a dead op'
   )
 })
 
-test('call: a declared action with a registered route succeeds', async (t) => {
+test('call: a declared action with an after hook succeeds', async (t) => {
   const db = await teamDb(t, { promote: async () => {} })
   await db.call('promote', { memberId: 'm', role: 'admin' })
-  t.pass('routed action call did not throw')
+  t.pass('the action call did not throw')
 })
 
-test('call: a route gets the hook ctx and writes through it', async (t) => {
+test('call: an action hook gets the ctx and writes through it', async (t) => {
   const db = await teamDb(t, {
     promote: async ({ row, memberId, role, get, put }) => {
       const { data: before } = await get('notes', { text: row.memberId })
@@ -580,7 +571,7 @@ test('call: a route gets the hook ctx and writes through it', async (t) => {
   t.alike(
     data.map((n) => n.text),
     ['m:admin:0:owner', 'second'],
-    'the route read and wrote the room through ctx'
+    'the hook read and wrote the room through ctx'
   )
   t.ok(
     data.every((n) => n.id.length > 0),
@@ -594,21 +585,21 @@ test('call: a route gets the hook ctx and writes through it', async (t) => {
   )
 })
 
-test('call: rows a route writes get the same ids on every peer', async (t) => {
+test('call: rows an action hook writes get the same ids on every peer', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const routes = {
+  const after = {
     promote: async ({ row, put }) => put('notes', { text: `promoted ${row.memberId}` })
   }
-  const a = await makeNetworked(t, testnet, { topic, spec: spec.handles.team, routes })
+  const a = await makePeer(t, testnet, { topic, spec: spec.handles.team, after })
   await a.db.bootstrap({ name: 'a' })
-  const b = await makeNetworked(t, testnet, {
-    identity: await Identity.generate(),
+  const b = await makePeer(t, testnet, {
+    identity: await Identity.create(),
     topic,
     spec: spec.handles.team,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey,
-    routes
+    after
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -622,22 +613,29 @@ test('call: rows a route writes get the same ids on every peer', async (t) => {
   t.alike(onB, onA, 'identical row, id included, derived independently on B')
 })
 
-test('a writer is always a member: admitting one for an unknown member is refused', async (t) => {
+test('call: an action hook cannot raise its caller’s role, ctx writes run the rank rules', async (t) => {
+  const { db, identity } = await withRole(t, 'member', {
+    spec: spec.handles.team,
+    after: { promote: ({ row, set }) => set('members', { id: row.memberId, role: row.role }) }
+  })
+  const err = await db.call('promote', { memberId: identity.id, role: 'admin' }).catch((e) => e)
+  t.is(err?.code, 'REFUSED', 'refused as a direct set of the role would be')
+  t.is((await db.get('members', identity.id)).data.role, 'member', 'the role did not land')
+})
+
+test('addWriter admits another device of this identity', async (t) => {
   const { db, store } = await bootstrapped(t)
   const stranger = Identity.randomKeyPair()
   const core = Hypercore.key({
     version: store.manifestVersion,
     signers: [{ publicKey: stranger.publicKey }]
   })
-  await t.exception(db.addWriter(stranger.publicKey, 'nobody'), /REFUSED/)
-  t.absent((await db.get('devices', hid.encode(core))).data, 'no device row')
-  // without a member the key is admitted as another device of this identity
   await db.addWriter(stranger.publicKey)
   const { data: device } = await db.get('devices', hid.encode(core))
   t.is(device.memberId, db.identity.id, 'bound to the admitting identity')
 })
 
-test('call: a route that throws refuses the action', async (t) => {
+test('call: an action hook that throws refuses the action', async (t) => {
   const db = await teamDb(t, {
     promote: async ({ row }) => {
       if (row.role === 'god') throw new Error('no such rank')
@@ -645,10 +643,10 @@ test('call: a route that throws refuses the action', async (t) => {
   })
   await t.exception(db.call('promote', { memberId: 'm', role: 'god' }), /REFUSED/)
   await db.call('promote', { memberId: 'm', role: 'admin' })
-  t.pass('a passing route still applies')
+  t.pass('a passing hook still applies')
 })
 
-test('call: an operator called inside a route throws INVALID', async (t) => {
+test('call: an operator called inside an action hook throws INVALID', async (t) => {
   let err = null
   const db = await teamDb(t, {
     promote: async () => {
@@ -660,7 +658,7 @@ test('call: an operator called inside a route throws INVALID', async (t) => {
     }
   })
   await db.call('promote', { memberId: 'm', role: 'admin' })
-  t.is(err?.code, 'INVALID', 'cero operators are off limits inside a route')
+  t.is(err?.code, 'INVALID', 'cero operators are off limits inside a hook')
 })
 
 test('apply event: fires per applied op with op/name/row/writerKey, and unsubscribes', async (t) => {
@@ -694,11 +692,11 @@ test('apply event: zero cost when nobody listens', async (t) => {
 // tests above (shared identity, recovering peer, waitUntil on B).
 test('apply event: fires for REMOTE ops with the remote writerKey (two-peer)', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -707,7 +705,7 @@ test('apply event: fires for REMOTE ops with the remote writerKey (two-peer)', a
   b.db.on('apply', (e) => seen.push(e))
   await a.db.put('messages', { text: 'from-a' })
 
-  const e = await waitUntil(
+  const e = await waitFor(
     () => seen.find((x) => x.name === 'messages' && x.row?.text === 'from-a') || null
   )
   t.ok(e, "B observed A's op via apply on the merged log")
@@ -776,6 +774,28 @@ test('get range queries: gt / gte / lt / lte', async (t) => {
     ids(await db.get('messages', { gt: 'id-0', lt: 'id-3' })),
     ['id-1', 'id-2'],
     'bounds compose'
+  )
+})
+
+test('get range queries: id order, reverse and limit read off the range', async (t) => {
+  const { db } = await bootstrapped(t)
+  for (const id of ['c', 'a', 'e', 'b', 'd']) await db.put('messages', { id, text: id })
+  const ids = (r) => r.data.map((x) => x.id)
+  t.alike(
+    ids(await db.get('messages', { gt: 'a', limit: 2 })),
+    ['b', 'c'],
+    'the lowest ids past it'
+  )
+  t.alike(
+    ids(await db.get('messages', { lt: 'e', reverse: true, limit: 2 })),
+    ['d', 'c'],
+    'reverse walks down from it'
+  )
+  t.is(db._plan('messages', { gt: 'a', limit: 2 }).range.limit, 2, 'the read stops at the page')
+  t.is(
+    (await db.get('messages', { gt: 'a', limit: 2, total: true })).total,
+    4,
+    'total counts the range'
   )
 })
 
@@ -913,22 +933,17 @@ test('get: an indexed-field query pushes reverse/limit down to the index', async
     await db.put('messages', { id: `m${i}`, text: i % 2 ? 'odd' : 'even' })
   }
 
-  const calls = []
-  const view = db.view
-  const orig = view.find.bind(view)
-  view.find = (path, range) => (calls.push({ path, range }), orig(path, range))
-  const r = await db.get('messages', { text: 'even', reverse: true, limit: 1 })
-  view.find = orig
-
+  const query = { text: 'even', reverse: true, limit: 1 }
+  const r = await db.get('messages', query)
   t.alike(
     r.data.map((m) => m.id),
     ['m2'],
     'last even row'
   )
-  t.is(r.total, null, 'full page, total skipped')
-  t.is(calls.length, 1, 'one read')
-  t.ok(calls[0].path.endsWith('/messages-by-text'), 'served by the secondary index')
-  t.is(calls[0].range.limit, 1, 'limit reached hyperdb')
+  t.is(r.total, null, 'full page, total skipped: one read')
+  const { path, range } = db._plan('messages', query)
+  t.ok(path.endsWith('/messages-by-text'), 'served by the secondary index')
+  t.is(range.limit, 1, 'limit reached hyperdb')
 })
 
 test('get reverse returns reversed index order', async (t) => {
@@ -1014,32 +1029,22 @@ test('watch: a write to another collection does not re-run the watcher query', a
   const { db } = await bootstrapped(t)
   await db.set('profile', { name: 'before' })
 
-  const gets = []
-  const orig = db.get.bind(db)
-  db.get = (name, q) => {
-    gets.push(name)
-    return orig(name, q)
-  }
-  t.teardown(() => {
-    db.get = orig
-  })
-
   // one persistent listener — a re-attached once('data') misses snapshots the
   // stream pushed while nobody listened (streamx buffers but stays paused)
   const snaps = []
   const stream = db.watch('profile')
   t.teardown(() => stream.destroy())
   stream.on('data', (s) => snaps.push(s))
-  await waitUntil(() => snaps.length > 0 || null)
+  await waitFor(() => snaps.length > 0 || null)
 
-  gets.length = 0
+  // the tick a watch re-runs its query on
+  let ticks = 0
+  t.teardown(db.onUpdate('profile', () => ticks++))
   for (let i = 0; i < 3; i++) await db.put('messages', { text: `m${i}` })
-  await new Promise((r) => setTimeout(r, 150))
-  t.is(gets.filter((n) => n === 'profile').length, 0, 'profile watcher stayed asleep')
-
   await db.set('profile', { name: 'after' })
-  const snap = await waitUntil(() => snaps.find((s) => s.data.name === 'after') || null)
+  const snap = await waitFor(() => snaps.find((s) => s.data.name === 'after') || null)
   t.is(snap.data.name, 'after', 'its own ref still wakes it')
+  t.is(ticks, 1, 'the message writes never woke the profile watcher')
 })
 
 // ─── bootstrap ────────────────────────────────────────────────────────────
@@ -1103,22 +1108,14 @@ test('set-device: a set keeps structural fields (memberId + createdAt)', async (
   t.is(after.createdAt, createdAt, 'createdAt preserved')
 })
 
-test('set-device creates a missing row (intentionally no resurrection guard)', async (t) => {
+test('set-device: a device writes only its own record', async (t) => {
   const { db } = await bootstrapped(t)
-  const fresh = b4a.alloc(32)
-  for (let i = 0; i < 32; i++) fresh[i] = i + 41 // an id no existing device uses
-  const id = z32.encode(fresh)
-  t.absent((await db.get('devices', id)).data, 'device absent before the set')
-  await db.call('set-device', { id, name: 'newphone', isMobile: true })
-  const { data: after } = await db.get('devices', id)
-  t.ok(after, 'set-device created the missing row — unlike set-member, no if(!existing) return')
-  t.is(after.name, 'newphone')
-  t.is(after.isMobile, true)
-  t.is(
-    after.memberId,
-    (await db.get('devices', hid.encode(db.writerKey))).data.memberId,
-    'a created row binds to the signer, never to a wire-supplied memberId'
+  const other = z32.encode(b4a.alloc(32, 41))
+  await t.exception(
+    db.call('set-device', { id: other, name: 'newphone', isMobile: true }),
+    /REFUSED/
   )
+  t.absent((await db.get('devices', other)).data, 'no record for another device')
 })
 
 test('bootstrap: post-bootstrap puts replicate identity', async (t) => {
@@ -1129,26 +1126,15 @@ test('bootstrap: post-bootstrap puts replicate identity', async (t) => {
 
 // ─── claim (same identity, new device) ────────────────────────────────────
 
-test('claim: same identity on second db admits writer via add-member then claim', async (t) => {
+test('claim: same identity on second db claims against its member record', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  // First device announces its membership so the second can claim against it.
-  // member.key must be the writer hypercore key (= device.id), NOT identity.publicKey.
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-
-  const b = await makeNetworked(t, testnet, {
+  const b = await makePeer(t, testnet, {
     identity,
     topic,
     key: a.db.key
@@ -1157,7 +1143,7 @@ test('claim: same identity on second db admits writer via add-member then claim'
   // Wait until b sees the bootstrap state from a.
   await waitForConnection(a.network)
   await waitForConnection(b.network)
-  await waitUntil(async () => (await b.db.get('members', identity.id)).data)
+  await waitFor(async () => (await b.db.get('members', identity.id)).data)
 
   // claim admits the writer; the device is named by a later set-device, which
   // the bootstrap tests cover
@@ -1167,16 +1153,8 @@ test('claim: same identity on second db admits writer via add-member then claim'
 
 // ─── key-type invariants ──────────────────────────────────────────────────
 
-test('add-member backlinks device.id to writer key, not identity pubkey', async (t) => {
+test('the genesis device row is keyed by the writer, bound to the identity', async (t) => {
   const { db, identity } = await bootstrapped(t)
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey, // writer hypercore key
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   // The backlink device row must use z32(writer hypercore key) as its id, AND
   // its memberId must match the identity id.
   const { data: device } = await db.get('devices', z32.encode(db.writerKey))
@@ -1189,14 +1167,6 @@ test('add-member backlinks device.id to writer key, not identity pubkey', async 
 
 test('put on a collection stamps memberId from the writer→member backlink', async (t) => {
   const { db, identity } = await bootstrapped(t)
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
   const { data: row } = await db.put('messages', { text: 'hello' })
   // memberId is stamped by the apply handler, so read it back from the view.
   const { data: stored } = await db.get('messages', row.id)
@@ -1401,6 +1371,39 @@ test('after("put") writes a derived row through ctx.put', async (t) => {
   t.is(data?.text, 'audited', 'the derived row landed in the same transaction')
 })
 
+test('a ctx.put over an id keeps createdAt and ignores the timestamps it passes', async (t) => {
+  const { db } = await bootstrapped(t)
+  db.after('put', (ctx) => {
+    if (ctx.name !== 'messages') return
+    return ctx.put('records', { id: 'r', text: ctx.row.text, createdAt: 1, updatedAt: 1 })
+  })
+  const { data: m1 } = await db.put('messages', { text: 'a' })
+  const { data: first } = await db.get('records', 'r')
+  t.is(first.createdAt, m1.updatedAt, 'stamped from its op, not by the hook')
+
+  await waitFor(() => Date.now() > m1.updatedAt)
+  const { data: m2 } = await db.put('messages', { text: 'b' })
+  const { data: second } = await db.get('records', 'r')
+  t.is(second.createdAt, first.createdAt, 'createdAt is when the id was first written')
+  t.is(second.updatedAt, m2.updatedAt, 'updatedAt is its op’s')
+})
+
+test('a ctx write is held to the fields as a direct write is', async (t) => {
+  const { db } = await bootstrapped(t)
+  const writes = [
+    (ctx) => ctx.put('records', { text: 'x', bogus: 1 }),
+    (ctx) => ctx.set('records', { id: 'r', bogus: 1 }),
+    (ctx) => ctx.put('tasks', { done: true })
+  ]
+  for (const write of writes) {
+    const off = db.after('put', (ctx) => (ctx.name === 'messages' ? write(ctx) : null))
+    const err = await db.put('messages', { text: 'm' }).catch((e) => e)
+    off()
+    t.is(err.code, 'REFUSED', 'the op whose hook wrote it is refused')
+    t.ok(/INVALID/.test(err.message), err.message)
+  }
+})
+
 test('after("del") removes a derived row through ctx.del', async (t) => {
   const { db } = await bootstrapped(t)
   db.after('put', (ctx) => ctx.put('records', { id: `a-${ctx.row.id}`, text: ctx.row.text }))
@@ -1418,10 +1421,10 @@ test('a hook write wakes watchers of the collection it wrote', async (t) => {
   const stream = db.watch('records')
   stream.on('data', ({ data }) => seen.push(data.length))
   t.teardown(() => stream.destroy())
-  await waitUntil(() => seen.length > 0 || null)
+  await waitFor(() => seen.length > 0 || null)
 
   await db.put('messages', { text: 'x' })
-  await waitUntil(() => (seen.includes(1) ? true : null))
+  await waitFor(() => (seen.includes(1) ? true : null))
   t.pass('the derived row reached a subscriber')
 })
 
@@ -1451,6 +1454,33 @@ test('an operator called inside a hook throws INVALID', async (t) => {
   t.ok(/inside a hook/.test(err.message), 'points at the ctx operators')
 })
 
+test('hooks fire on builtin refs as on schema refs', async (t) => {
+  const { db, identity } = await bootstrapped(t)
+  const seen = new Set()
+  for (const op of ['put', 'set', 'del']) {
+    db.before(op, (ctx) => void seen.add(`before ${ctx.op} ${ctx.name} ${ctx.role}`))
+    db.after(op, (ctx) => void seen.add(`after ${ctx.op} ${ctx.name} ${ctx.role}`))
+  }
+  await db.set('members', { id: identity.id, name: 'renamed' })
+  await db.call('add-invite', { id: 'inv', role: 'member', createdAt: 1 })
+  await db.del('invites', 'inv')
+  await db.put('handles', { type: 'room', key: b4a.alloc(32) })
+  t.alike([...seen].sort(), [
+    'after del invites owner',
+    'after put handles owner',
+    'after put invites owner',
+    'after set members owner',
+    'before del invites owner',
+    'before put handles owner',
+    'before put invites owner',
+    'before set members owner'
+  ])
+
+  db.before('set', (ctx) => ctx.name !== 'members' || ctx.row.name !== 'blocked')
+  await t.exception(db.set('members', { id: identity.id, name: 'blocked' }), /refused by hook/)
+  t.is((await db.get('members', identity.id)).data.name, 'renamed', 'a builtin write refused')
+})
+
 // ─── events ───────────────────────────────────────────────────────────────
 
 test('"update" event fires on commit', async (t) => {
@@ -1470,34 +1500,22 @@ test('"update" event fires on commit', async (t) => {
 // concurrent writes, writer admission/removal, recovery, and hook behavior
 // across the network boundary.
 
-async function waitUntil(fn, { timeout = 15000, interval = 50 } = {}) {
-  const deadline = Date.now() + timeout
-  while (Date.now() < deadline) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, interval))
-  }
-  // throw, not return null — a timed-out wait must fail loud, not let the test
-  // continue as if the condition held (masking the real cause behind a later error)
-  throw new Error('waitUntil: condition not met before timeout')
-}
-
 test('replication: two databases converge on testnet', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   await a.db.put('messages', { text: 'from a' })
 
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const hit = await waitUntil(async () => {
+  const hit = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length > 0 ? data : null
   })
@@ -1507,20 +1525,20 @@ test('replication: two databases converge on testnet', async (t) => {
 
 test('replication: put propagates A → B', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   const { data: row } = await a.db.put('messages', { text: 'hello' })
 
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const seen = await waitUntil(async () => {
+  const seen = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data || null
   })
@@ -1530,20 +1548,20 @@ test('replication: put propagates A → B', async (t) => {
 
 test('replication: set on single propagates A → B', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   await a.db.set('profile', { name: 'alice' })
 
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const profile = await waitUntil(async () => {
+  const profile = await waitFor(async () => {
     const { data } = await b.db.get('profile')
     return data && data.name === 'alice' ? data : null
   })
@@ -1553,21 +1571,21 @@ test('replication: set on single propagates A → B', async (t) => {
 
 test('replication: del propagates A → B (row disappears)', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   const { data: row } = await a.db.put('messages', { text: 'soon-gone' })
 
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
   // First confirm B saw the row.
-  const before = await waitUntil(async () => {
+  const before = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data || null
   })
@@ -1575,7 +1593,7 @@ test('replication: del propagates A → B (row disappears)', async (t) => {
 
   await a.db.del('messages', row.id)
 
-  const gone = await waitUntil(async () => {
+  const gone = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data === null ? true : null
   })
@@ -1584,16 +1602,16 @@ test('replication: del propagates A → B (row disappears)', async (t) => {
 
 test('replication: concurrent puts from two writers — both rows visible to both', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
   // Give B its own writer keypair (different identity, just used as a writer).
   // Encryption key must be shared so B can decrypt the autobee state.
-  const bIdentity = await Identity.generate()
-  const b = await makeNetworked(t, testnet, {
+  const bIdentity = await Identity.create()
+  const b = await makePeer(t, testnet, {
     identity: bIdentity,
     topic,
     key: a.db.key,
@@ -1606,7 +1624,7 @@ test('replication: concurrent puts from two writers — both rows visible to bot
   await a.db.addWriter(b.db.keyPair.publicKey)
 
   // Wait for B to become writable.
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b became writable after addWriter')
 
   // Each side writes concurrently.
@@ -1617,11 +1635,11 @@ test('replication: concurrent puts from two writers — both rows visible to bot
   t.ok(ra.data.id && rb.data.id)
 
   // Both rows should land on both peers.
-  const onA = await waitUntil(async () => {
+  const onA = await waitFor(async () => {
     const { data } = await a.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
-  const onB = await waitUntil(async () => {
+  const onB = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
@@ -1635,14 +1653,14 @@ test('replication: concurrent puts from two writers — both rows visible to bot
 
 test('replication: addWriter promotes B → B can put → A sees', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  const bIdentity = await Identity.generate()
-  const b = await makeNetworked(t, testnet, {
+  const bIdentity = await Identity.create()
+  const b = await makePeer(t, testnet, {
     identity: bIdentity,
     topic,
     key: a.db.key,
@@ -1654,12 +1672,12 @@ test('replication: addWriter promotes B → B can put → A sees', async (t) => 
   t.is(b.db.writable, false, 'b is not writable before addWriter')
 
   await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b became writable after admission')
 
   const { data: row } = await b.db.put('messages', { text: 'from-b' })
 
-  const onA = await waitUntil(async () => {
+  const onA = await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1669,23 +1687,14 @@ test('replication: addWriter promotes B → B can put → A sees', async (t) => 
 
 test('replication: removeWriter — B can no longer write', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-  // A is the owner — required to remove a writer (eviction is owner-only)
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'a',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
-  const bIdentity = await Identity.generate()
-  const b = await makeNetworked(t, testnet, {
+  const bIdentity = await Identity.create()
+  const b = await makePeer(t, testnet, {
     identity: bIdentity,
     topic,
     key: a.db.key,
@@ -1695,12 +1704,12 @@ test('replication: removeWriter — B can no longer write', async (t) => {
   await waitForConnection(b.network)
 
   await a.db.addWriter(b.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b writable after add')
 
   // B writes once successfully so we have a baseline.
   const { data: r1 } = await b.db.put('messages', { text: 'still-allowed' })
-  await waitUntil(async () => {
+  await waitFor(async () => {
     const { data } = await a.db.get('messages', r1.id)
     return data || null
   })
@@ -1708,21 +1717,21 @@ test('replication: removeWriter — B can no longer write', async (t) => {
   await a.db.removeWriter(b.db.keyPair.publicKey)
 
   // B should observe its writer admission revoked.
-  const lostWritable = await waitUntil(() => b.db.writable === false)
+  const lostWritable = await waitFor(() => b.db.writable === false)
   t.ok(lostWritable, 'b became non-writable after removeWriter')
 })
 
 test('replication: bootstrap recovery — same identity, second device, no fork', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   await a.db.put('messages', { text: 'before-recovery' })
 
   // Second device, same identity, joins later with the existing key.
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
@@ -1733,7 +1742,7 @@ test('replication: bootstrap recovery — same identity, second device, no fork'
   // B writes; A should see it (no fork).
   const { data: row } = await b.db.put('messages', { text: 'after-recovery' })
 
-  const seenOnA = await waitUntil(async () => {
+  const seenOnA = await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1741,11 +1750,11 @@ test('replication: bootstrap recovery — same identity, second device, no fork'
   t.is(seenOnA.text, 'after-recovery')
 
   // Both sides converge on both messages.
-  const onA = await waitUntil(async () => {
+  const onA = await waitFor(async () => {
     const { data } = await a.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
-  const onB = await waitUntil(async () => {
+  const onB = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length >= 2 ? data : null
   })
@@ -1756,30 +1765,20 @@ test('replication: bootstrap recovery — same identity, second device, no fork'
 
 test('replication: claim() — same identity, second device, admitted by A’s member entry', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  // Publish member entry so claim() can verify identity membership.
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
-
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
   // Wait until B sees the member entry.
-  const member = await waitUntil(async () => {
+  const member = await waitFor(async () => {
     const { data } = await b.db.get('members', identity.id)
     return data || null
   })
@@ -1788,12 +1787,12 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   await b.db.claim()
 
   // A admits the new writer; b becomes writable.
-  await waitUntil(() => b.db.writable)
+  await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b writable after claim()')
 
   // And b's writes flow to a.
   const { data: row } = await b.db.put('messages', { text: 'claimed' })
-  const seen = await waitUntil(async () => {
+  const seen = await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1803,14 +1802,14 @@ test('replication: claim() — same identity, second device, admitted by A’s m
 test('replication: after("put") on A fires for B-originated writes', async (t) => {
   // hooks run at apply, so every peer runs them on every op, whoever wrote it
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  const bIdentity = await Identity.generate()
-  const b = await makeNetworked(t, testnet, {
+  const bIdentity = await Identity.create()
+  const b = await makePeer(t, testnet, {
     identity: bIdentity,
     topic,
     key: a.db.key,
@@ -1819,9 +1818,8 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
-  await enroll(a.db, bIdentity, 'member', b.db.writerKey)
-  await waitUntil(() => b.db.writable)
+  await admit(a.db, b.db, 'member')
+  await waitFor(() => b.db.writable)
 
   const seen = []
   a.db.after('put', (ctx) => {
@@ -1829,7 +1827,7 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   })
 
   const { data: row } = await b.db.put('messages', { text: 'from-b' })
-  await waitUntil(async () => {
+  await waitFor(async () => {
     const { data } = await a.db.get('messages', row.id)
     return data || null
   })
@@ -1837,16 +1835,59 @@ test('replication: after("put") on A fires for B-originated writes', async (t) =
   t.alike(seen, ['from-b'], "a ran its hook when b's op applied")
 })
 
+test('replication: a join fires put on members, its after hook writes as the joiner', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const after = {
+    put: (ctx) => {
+      if (ctx.name === 'members') return ctx.put('messages', { text: `joined ${ctx.row.id}` })
+    }
+  }
+  const a = await makePeer(t, testnet, { topic, after })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey,
+    after
+  })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+
+  await admit(a.db, b.db, 'member')
+  const { data } = await a.db.get('messages', { text: `joined ${b.identity.id}` })
+  t.is(data.length, 1, 'the join ran the hook')
+  t.is(data[0]?.memberId, b.identity.id, 'written as the joiner, a member once its join landed')
+})
+
+test('replication: a reader leaves on its own, without a writer seat', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+
+  await admit(a.db, b.db, 'reader')
+  await waitFor(async () => (await b.db.get('members', b.identity.id)).data)
+  t.absent(b.db.writable, 'a reader holds no seat')
+
+  await b.db.del('members', b.identity.id)
+  await waitFor(async () => !(await a.db.get('members', b.identity.id)).data)
+  t.pass('its removal reached the owner')
+})
+
 test('replication: a before hook refuses replicated writes on the peer that has it', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  const bIdentity = await Identity.generate()
-  const b = await makeNetworked(t, testnet, {
+  const bIdentity = await Identity.create()
+  const b = await makePeer(t, testnet, {
     identity: bIdentity,
     topic,
     key: a.db.key,
@@ -1855,9 +1896,8 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
-  await enroll(a.db, bIdentity, 'member', b.db.writerKey)
-  await waitUntil(() => b.db.writable)
+  await admit(a.db, b.db, 'member')
+  await waitFor(() => b.db.writable)
 
   // only b has the rule
   b.db.before('put', (ctx) => ctx.row.text !== 'blocked')
@@ -1875,12 +1915,12 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   })
 
   const { data: kept } = await a.db.put('messages', { text: 'kept' })
-  await waitUntil(async () => (await b.db.get('messages', kept.id)).data || null)
+  await waitFor(async () => (await b.db.get('messages', kept.id)).data || null)
 
   const { data: blocked } = await a.db.put('messages', { text: 'blocked' })
   t.ok((await a.db.get('messages', blocked.id)).data, 'a applied its own write, it has no rule')
 
-  await waitUntil(() => applied.includes('blocked') || null)
+  await waitFor(() => applied.includes('blocked') || null)
   t.absent((await b.db.get('messages', blocked.id)).data, 'b refused what its rule rejects')
   t.absent(rows.includes('blocked'), 'and never handed it to a subscriber')
 
@@ -1892,22 +1932,22 @@ test('replication: a before hook refuses replicated writes on the peer that has 
 
 test('replication: eventually-consistent — B sees all 5 rows put by A before joining', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
   for (let i = 0; i < 5; i++) {
     await a.db.put('messages', { id: `m-${i}`, text: `t${i}` })
   }
 
-  const b = await makeNetworked(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const rows = await waitUntil(async () => {
+  const rows = await waitFor(async () => {
     const { data } = await b.db.get('messages', {})
     return data.length >= 5 ? data : null
   })
@@ -1917,22 +1957,22 @@ test('replication: eventually-consistent — B sees all 5 rows put by A before j
 
 test('replication: three-peer — A puts, both B and C receive', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  const bIdentity = await Identity.generate()
-  const cIdentity = await Identity.generate()
+  const bIdentity = await Identity.create()
+  const cIdentity = await Identity.create()
 
-  const b = await makeNetworked(t, testnet, {
+  const b = await makePeer(t, testnet, {
     identity: bIdentity,
     topic,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey
   })
-  const c = await makeNetworked(t, testnet, {
+  const c = await makePeer(t, testnet, {
     identity: cIdentity,
     topic,
     key: a.db.key,
@@ -1945,16 +1985,16 @@ test('replication: three-peer — A puts, both B and C receive', async (t) => {
 
   await a.db.addWriter(b.db.keyPair.publicKey)
   await a.db.addWriter(c.db.keyPair.publicKey)
-  await waitUntil(() => b.db.writable)
-  await waitUntil(() => c.db.writable)
+  await waitFor(() => b.db.writable)
+  await waitFor(() => c.db.writable)
 
   const { data: row } = await a.db.put('messages', { text: 'broadcast' })
 
-  const onB = await waitUntil(async () => {
+  const onB = await waitFor(async () => {
     const { data } = await b.db.get('messages', row.id)
     return data || null
   })
-  const onC = await waitUntil(async () => {
+  const onC = await waitFor(async () => {
     const { data } = await c.db.get('messages', row.id)
     return data || null
   })
@@ -1964,6 +2004,186 @@ test('replication: three-peer — A puts, both B and C receive', async (t) => {
   t.is(onC.text, 'broadcast')
 })
 
+// b is away while c writes a little and a writes a long room: b fast-forwards over both and
+// reads only what it needs. c is gone by then, only a holds c's core
+async function skipped(t, testnet, { mirrors } = {}) {
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic, mirrors })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, mirrors, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db)
+  await b.network.suspend()
+
+  const c = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, c.db)
+  await waitFor(() => c.db.writable)
+  await c.db.tx(async (tx) => {
+    for (let j = 0; j < 30; j++) await tx.put('messages', { text: `c.${j}` })
+  })
+  const early = { key: c.db.writerKey, length: c.db.length }
+  await waitFor(async () => (await a.db.get('messages')).data.length === 30)
+  await offline(c)
+
+  for (let i = 0; i < 100; i++) {
+    await a.db.tx(async (tx) => {
+      for (let j = 0; j < 30; j++) await tx.put('messages', { text: `${i}.${j}` })
+    })
+  }
+  const { data: last } = await a.db.put('messages', { text: 'last from a' })
+  await b.network.resume()
+  await waitFor(async () => (await b.db.get('messages', last.id)).data, { timeout: 30000 })
+  await b.db.put('messages', { text: 'last from b' })
+  t.ok(b.db.bee.stats.fastForwards > 0, 'b fast-forwarded over the history')
+  return { a, b, early, room, total: 3032 }
+}
+
+async function offline({ db, network }) {
+  await db.close()
+  await network.close()
+}
+
+function within(promise, ms) {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))])
+}
+
+async function current(db, total) {
+  const done = async () => (await within(db.get('messages'), 1000))?.data.length === total
+  return waitFor(done, { timeout: 15000, interval: 100 }).then(
+    () => true,
+    () => false
+  )
+}
+
+// whether db comes to store every block of these cores
+async function stores(db, cores, timeout = 15000) {
+  const copies = cores.map(({ key }) => db.store.get({ key, active: false }))
+  await Promise.all(copies.map((core) => core.ready()))
+  const whole = () => copies.every((core, i) => core.contiguousLength >= cores[i].length)
+  try {
+    return await waitFor(whole, { timeout }).then(
+      () => true,
+      () => false
+    )
+  } finally {
+    await Promise.all(copies.map((core) => core.close()))
+  }
+}
+
+// the peer's database closed and opened again from its store, on a new network
+async function reopen(t, testnet, { db, store, identity, discovery, network }, room) {
+  const keyPair = db.keyPair
+  await discovery.destroy()
+  await offline({ db, network })
+  const { topic, mirrors, key, encryptionKey } = room
+  const net = new Network({ bootstrap: testnet.bootstrap, store: mirrors && store, mirrors })
+  await net.ready()
+  const joined = net.join(topic)
+  const reopened = new Database({
+    store,
+    identity,
+    network: net,
+    spec,
+    key,
+    encryptionKey,
+    keyPair
+  })
+  await reopened.ready()
+  t.teardown(
+    async () => {
+      await reopened.close().catch(() => {})
+      await joined.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 5 }
+  )
+  return reopened
+}
+
+// a database's writer core and its views
+function written(db) {
+  return [db.bee.local, ...db.bee.views()].map(({ key, length }) => ({ key, length }))
+}
+
+test('replication: with no mirror a member holds the room', { timeout: 120000 }, async (t) => {
+  const testnet = await makeTestnet(t)
+  const { a, b, early, room } = await skipped(t, testnet)
+  // b is back and applies these itself, while a's view grows on
+  for (let i = 0; i < 20; i++) {
+    await a.db.tx(async (tx) => {
+      for (let j = 0; j < 5; j++) await tx.put('messages', { text: `more.${i}.${j}` })
+    })
+  }
+  const { data: last } = await a.db.put('messages', { text: 'more from a' })
+  const total = 3133
+  await waitFor(async () => (await b.db.get('messages', last.id)).data)
+
+  t.ok(await stores(b.db, written(a.db)), 'b holds every block a wrote')
+  t.ok(await stores(b.db, [early]), 'b holds every block of a writer it skipped entirely')
+  await offline(a)
+
+  const listed = await within(b.db.get('messages'), 10000)
+  t.is(listed?.data.length, total, 'b lists the whole history with a offline')
+
+  const joiner = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  t.ok(await current(joiner.db, total), 'a joiner catches up from b with a offline')
+})
+
+test('replication: with mirrors a member stays sparse', { timeout: 120000 }, async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeBlindPeer(t, testnet)
+  const { a, b, room, total } = await skipped(t, testnet, { mirrors: [mirror.publicKey] })
+  await waitForMirrored(a.db)
+  await waitForMirrored(b.db)
+  const writer = { key: a.db.writerKey, length: a.db.length }
+  await offline(a)
+
+  const listed = await within(b.db.get('messages'), 10000)
+  t.is(listed?.data.length, total, 'b lists the whole history through the mirror')
+
+  const joiner = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  t.ok(await current(joiner.db, total), 'a joiner catches up through the mirror')
+
+  const core = b.store.get({ key: writer.key, active: false })
+  await core.ready()
+  t.ok(core.contiguousLength < writer.length, 'b never downloaded what it skipped')
+  await core.close()
+})
+
+// a member's raw blocks past its last node are no op the room applied: nobody holds them for it
+test('replication: a member holds a writer only as far as the room applied it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const s = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, s.db)
+  const applied = { key: s.db.writerKey, length: s.db.length }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await waitFor(async () => (await b.db.get('members', s.identity.id)).data)
+  const db = await reopen(t, testnet, b, room)
+
+  // active, so s offers this core on every connection, the reopened b's included
+  const raw = s.store.get({ key: applied.key })
+  await raw.ready()
+  t.teardown(() => raw.close(), { order: 4 })
+  for (let i = 0; i < 50; i++) await raw.append(b4a.from('not an op'))
+
+  t.ok(await stores(db, [applied]), 'b holds what the room applied')
+  const tail = { key: applied.key, length: applied.length + 50 }
+  t.absent(await stores(db, [tail], 5000), 'b leaves the rest where it is')
+})
+
+// b fast-forwarded while a mirror held the room; reopened without one, it holds the room itself
+test('replication: a member reopened without mirrors holds what it skipped before', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeBlindPeer(t, testnet)
+  const { a, b, room } = await skipped(t, testnet, { mirrors: [mirror.publicKey] })
+  const db = await reopen(t, testnet, b, { ...room, mirrors: undefined })
+  t.ok(await stores(db, written(a.db)), 'b holds every block a wrote')
+})
+
 // ─── whenWritable / whenReadable ──────────────────────────────────────────
 
 // Two networked databases on the same testnet+key, with DIFFERENT identities.
@@ -1971,12 +2191,12 @@ test('replication: three-peer — A puts, both B and C receive', async (t) => {
 // yet, so b.writable === false — the precondition for whenWritable timeout
 // and add-writer tests.
 async function pairOnTestnet(t, testnet) {
-  const idA = await Identity.generate()
-  const idB = await Identity.generate()
+  const idA = await Identity.create()
+  const idB = await Identity.create()
   const topic = randomTopic()
-  const a = await makeNetworked(t, testnet, { identity: idA, topic })
+  const a = await makePeer(t, testnet, { identity: idA, topic })
   await a.db.bootstrap({ name: 'a' })
-  const b = await makeNetworked(t, testnet, {
+  const b = await makePeer(t, testnet, {
     identity: idB,
     topic,
     key: a.db.key,
@@ -2040,7 +2260,7 @@ test('a throwing after hook refuses the op', async (t) => {
 test('presence: an update ranks a database, opening it does not', async (t) => {
   const testnet = await makeTestnet(t)
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const open = async (opts) => {
     const db = new Database({ store, identity, spec, ...opts })
     await db.ready()
@@ -2051,7 +2271,6 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
   for (const name of ['a', 'b']) {
     const db = await open({ namespace: name })
     await db.bootstrap({ name })
-    await enroll(db, identity)
     keys.push({ key: db.key, keyPair: db.keyPair, namespace: name })
     await db.close()
   }
@@ -2085,13 +2304,12 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
 
 test('presence: a replicated update ranks the database it lands in', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
   // x hosts two databases; y opens both but only shared searches
-  const x = await makeNetworked(t, testnet, { identity, topic, namespace: 'shared' })
+  const x = await makePeer(t, testnet, { identity, topic, namespace: 'shared' })
   await x.db.bootstrap({ name: 'x' })
-  await enroll(x.db, identity)
   const quiet = new Database({
     store: x.store,
     identity,
@@ -2102,9 +2320,8 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   await quiet.ready()
   t.teardown(() => quiet.close().catch(() => {}), { order: 5 })
   await quiet.bootstrap({ name: 'x' })
-  await enroll(quiet, identity)
 
-  const y = await makeNetworked(t, testnet, {
+  const y = await makePeer(t, testnet, {
     identity,
     topic,
     key: x.db.key,
@@ -2129,7 +2346,7 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   await waitForConnection(x.network)
   await waitForConnection(y.network)
   await quiet.put('messages', { text: 'over the shared connection' })
-  await waitUntil(async () => (await yQuiet.get('messages')).data.length > 0)
+  await waitFor(async () => (await yQuiet.get('messages')).data.length > 0)
   t.is(mode(yQuiet, y.network), 'active', 'the replicated update ranked quiet')
   await waitFor(() => mode(y.db, y.network) === null)
   t.pass('shared slid out')
@@ -2141,15 +2358,15 @@ test('apply: builtin timestamps are deterministic across peers', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { topic })
+  const a = await makePeer(t, testnet, { topic })
   await a.db.bootstrap({ name: 'a' })
   const { data: onA } = await a.db.get('devices')
   t.ok(onA.length > 0, 'bootstrap created a devices row')
 
   // joins after a clock-skew window — its apply of A's history runs later
   await new Promise((r) => setTimeout(r, 150))
-  const b = await makeNetworked(t, testnet, {
-    identity: await Identity.generate(),
+  const b = await makePeer(t, testnet, {
+    identity: await Identity.create(),
     topic,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey
@@ -2170,7 +2387,7 @@ test('apply: builtin timestamps are deterministic across peers', async (t) => {
   }
 })
 
-test('write: a throwing route rejects the call and appends nothing (dry-run)', async (t) => {
+test('write: a throwing action hook rejects the call and appends nothing (dry-run)', async (t) => {
   const db = await teamDb(t, {
     promote: async ({ row }) => {
       if (row.role === 'boom') throw new Error('role rejected by app')
@@ -2199,21 +2416,13 @@ test('write: dry-run state is discarded — only the real apply mutates the view
 
 test('apply: claim-path device timestamps are deterministic across peers', async (t) => {
   const testnet = await makeTestnet(t)
-  const identity = await Identity.generate()
+  const identity = await Identity.create()
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { identity, topic })
+  const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-  await a.db.call('add-member', {
-    id: identity.id,
-    key: a.db.writerKey,
-    role: 'owner',
-    name: 'me',
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  })
 
-  const b = await makeNetworked(t, testnet, {
+  const b = await makePeer(t, testnet, {
     identity,
     topic,
     key: a.db.key,
@@ -2221,9 +2430,9 @@ test('apply: claim-path device timestamps are deterministic across peers', async
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
-  t.absent(b.db.writable, 'a fresh device core starts unadmitted')
-  await b.db.claim({ name: 'laptop', isMobile: true })
-  t.ok(b.db.writable, 'b admitted')
+  // another device of the identity claims its seat once it sees the member record
+  await waitFor(async () => (await b.db.get('members', identity.id)).data)
+  await b.db.claim()
 
   const id = z32.encode(b.db.writerKey)
   const onB = await waitFor(async () => (await b.db.get('devices', id)).data)
@@ -2275,13 +2484,13 @@ test('apply: set-device timestamps replicate identically', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
 
-  const a = await makeNetworked(t, testnet, { topic })
+  const a = await makePeer(t, testnet, { topic })
   await a.db.bootstrap({ name: 'a' })
   const { data: devices } = await a.db.get('devices')
   const id = devices[0].id
 
-  const b = await makeNetworked(t, testnet, {
-    identity: await Identity.generate(),
+  const b = await makePeer(t, testnet, {
+    identity: await Identity.create(),
     topic,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey
@@ -2369,12 +2578,12 @@ test('gate: legacy un-enveloped ops apply as version 0', async (t) => {
 test('gate: enveloped ops replicate and apply across peers', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const a = await makeNetworked(t, testnet, { topic })
+  const a = await makePeer(t, testnet, { topic })
   await a.db.bootstrap({ name: 'a' })
   const { data: row } = await a.db.put('messages', { text: 'wire' })
 
-  const b = await makeNetworked(t, testnet, {
-    identity: await Identity.generate(),
+  const b = await makePeer(t, testnet, {
+    identity: await Identity.create(),
     topic,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey
@@ -2432,6 +2641,33 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
     (await again.get('messages', present.id)).data,
     'previously-applied rows survived the rebuild'
   )
+})
+
+test('gate: a database rebuilt past skipped ops still leaves its topic on close', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { db, store, identity, network } = await makePeer(t, testnet)
+  await db.bootstrap({ name: 'a' })
+  const { wrap } = await import('../../src/database/envelope.js')
+
+  const future = db.version + 1
+  const encoded = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'future' })
+  await db.bee.append(wrap(future, encoded))
+  await db.bee.update()
+  t.is(db.behind, future, 'future op skipped')
+
+  const { key, keyPair, discoveryKey } = db
+  await db.close()
+
+  const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
+  const again = new Database({ store, identity, network, spec: upgraded, key, keyPair })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(again.behind, null, 'rebuilt')
+  t.is(network.presence.mode(discoveryKey), 'active', 'on its topic while open')
+
+  await again.close()
+  t.is(network.presence.mode(discoveryKey), null, 'off its topic once closed')
+  t.is(network._replicateables.size, 0, 'and no closed bee left attached')
 })
 
 // ─── diff watchers: Database.changes ──────────────────────────────────────
@@ -2545,11 +2781,11 @@ test('changes: writes to another collection do not wake the stream', async (t) =
 test('changes: replicated writes surface on the peer', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const a = await makeNetworked(t, testnet, { topic })
+  const a = await makePeer(t, testnet, { topic })
   await a.db.bootstrap({ name: 'a' })
 
-  const b = await makeNetworked(t, testnet, {
-    identity: await Identity.generate(),
+  const b = await makePeer(t, testnet, {
+    identity: await Identity.create(),
     topic,
     key: a.db.key,
     encryptionKey: a.db.encryptionKey

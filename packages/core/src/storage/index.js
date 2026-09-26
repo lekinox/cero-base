@@ -7,22 +7,21 @@ import ReadyResource from 'ready-resource'
 
 import { ROCKS, BEE, SINGLE, COLLECTION, QUERY_RESERVED } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
-import { subscribe, filter } from '../lib/utils.js'
+import { subscribe, filter, checkFields, checkRequired, stamp } from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
 
 /**
  * @typedef {object} StorageOpts
- * @property {{ database: any, meta?: { ns?: string, refs?: Record<string, { kind?: string }> } }} spec
+ * @property {{ database: object, meta?: { ns?: string, refs?: Record<string, { kind?: string }> } }} spec
  * @property {'rocks' | 'bee'} backend
- * @property {any} [root]   Pre-existing HypercoreStorage to reuse.
- * @property {any} [store]  Pre-existing Corestore to reuse.
+ * @property {import('hypercore-storage')} [root]  Pre-existing HypercoreStorage to reuse.
+ * @property {import('corestore')} [store]         Pre-existing Corestore to reuse.
  * @property {Uint8Array} [storageKey]  32-byte key encrypting the backing core at rest (bee backend only).
  *
  * @typedef {{ name: string, kind: string }} Ref
- * @typedef {{ id?: string, createdAt: number, updatedAt: number, [k: string]: any }} StoredRow
- * @typedef {{ data: any }} SingleResult
- * @typedef {{ data: any[], total: number, size: number }} ListResult
- * @typedef {{ data: any | null }} GetByIdResult
+ * @typedef {import('../database/index.js').Row} Row
+ * @typedef {import('../database/index.js').SingleResult} SingleResult
+ * @typedef {import('../database/index.js').ListResult} ListResult
  */
 
 /**
@@ -57,14 +56,23 @@ export class Storage extends ReadyResource {
     this.ns = spec.meta?.ns || 'cero'
     this.refs = spec.meta?.refs || {}
 
+    /** @private */
     this._cf = `${this.ns}/local`
+    /** @private */
     this._ownsRoot = !root && !store
+    /** @private */
     this._ownsStore = !store
+    /** @type {import('hypercore-storage') | null} */
     this.root = root || null
+    /** @type {import('corestore') | null} */
     this.store = store || null
+    /** @type {import('hyperdb') | null} */
     this.db = null
+    /** @private */
+    this._writing = null
   }
 
+  /** @private */
   async _open() {
     if (this._ownsRoot) {
       this.root = new HypercoreStorage(this.dir, { columnFamilies: [this._cf] })
@@ -91,9 +99,11 @@ export class Storage extends ReadyResource {
     await this.db.ready()
   }
 
+  /** @private */
   async _close() {
     if (this.db) {
-      if (this.db.flush) await this.db.flush()
+      // after the writes already queued
+      if (this.db.flush) await this._serial(() => this.db.flush())
       await this.db.close()
       this.db = null
     }
@@ -111,15 +121,16 @@ export class Storage extends ReadyResource {
    * Insert (or overwrite by id) a row, stamping `id`/`createdAt`/`updatedAt`.
    *
    * @param {string} name
-   * @param {Record<string, any>} row
+   * @param {Record<string, unknown>} row
    * @returns {Promise<SingleResult>}
    */
   async put(name, row) {
     this._guard()
     const ref = this._ref(name)
-    const id = row.id ?? genId()
-    const ts = Date.now()
-    const stored = { id, createdAt: ts, updatedAt: ts, ...row }
+    checkFields(name, this.refs[name], row)
+    const was = row.id == null ? null : await this._read(ref, row.id)
+    const stored = stamp({ ...row, id: row.id ?? genId() }, was?.createdAt)
+    checkRequired(name, this.refs[name], stored)
     await this._write(ref, stored)
     return { data: stored }
   }
@@ -128,23 +139,19 @@ export class Storage extends ReadyResource {
    * Upsert by merging with the existing row, preserving `createdAt`.
    *
    * @param {string} name
-   * @param {Record<string, any>} row
+   * @param {Record<string, unknown>} row
    * @param {{ upsert?: boolean }} [opts]
    * @returns {Promise<SingleResult | null>}
    */
   async set(name, row, { upsert = true } = {}) {
     this._guard()
     const ref = this._ref(name)
-    const ts = Date.now()
+    checkFields(name, this.refs[name], row)
     const existing = await this._read(ref, row?.id)
     if (!upsert && !existing) return null
-    /** @type {StoredRow} */
-    const stored = {
-      ...existing,
-      ...row,
-      createdAt: existing?.createdAt ?? ts,
-      updatedAt: ts
-    }
+    /** @type {Row} */
+    const stored = stamp({ ...existing, ...row }, existing?.createdAt)
+    checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     await this._write(ref, stored)
     return { data: stored }
@@ -161,8 +168,10 @@ export class Storage extends ReadyResource {
     this._guard()
     const ref = this._ref(name)
     const col = this._col(ref)
-    await this.db.delete(col, id != null ? { id } : {})
-    await this.db.flush()
+    await this._serial(async () => {
+      await this.db.delete(col, id != null ? { id } : {})
+      await this.db.flush()
+    })
   }
 
   /**
@@ -170,8 +179,8 @@ export class Storage extends ReadyResource {
    * record (single). With a string id: fetch that specific row.
    *
    * @param {string} name
-   * @param {string | Record<string, any>} [query]
-   * @returns {Promise<SingleResult | ListResult | GetByIdResult>}
+   * @param {string | Record<string, unknown>} [query]
+   * @returns {Promise<SingleResult | ListResult>}
    */
   async get(name, query) {
     this._guard()
@@ -194,12 +203,13 @@ export class Storage extends ReadyResource {
     }
 
     const data = await this.db.find(col, range(query)).toArray()
-    // a limit caps data, so total needs the unlimited range
-    const total =
-      query?.limit != null
-        ? (await this.db.find(col, range({ ...query, limit: undefined })).toArray()).length
-        : data.length
-    return { data, total, size: data.length }
+    // a full page leaves the count unknown unless asked, so a limited read stops at the page
+    const full = query?.limit != null && data.length >= query.limit
+    if (!full) return { data, total: data.length, size: data.length }
+    const all = query.total
+      ? await this.db.find(col, range({ ...query, limit: undefined })).toArray()
+      : null
+    return { data, total: all?.length ?? null, size: data.length }
   }
 
   /**
@@ -207,7 +217,7 @@ export class Storage extends ReadyResource {
    * underlying mutation. Destroy the stream to stop watching.
    *
    * @param {string} name
-   * @param {Record<string, any>} [query]
+   * @param {Record<string, unknown>} [query]
    * @returns {import('streamx').Readable}
    */
   watch(name, query) {
@@ -222,12 +232,16 @@ export class Storage extends ReadyResource {
     })
   }
 
+  /** @private */
   _guard() {
     if (this.closing || this.closed) throw CeroError.CLOSED('Storage')
     if (!this.db) throw CeroError.NOT_READY('Storage', 'storage')
   }
 
-  /** @param {string} name @returns {Ref} */
+  /**
+   * @param {string} name @returns {Ref}
+   * @private
+   */
   _ref(name) {
     if (typeof name !== 'string' || !name) {
       throw CeroError.INVALID('name must be a non-empty string')
@@ -237,22 +251,47 @@ export class Storage extends ReadyResource {
     return { name, kind: ref.kind || COLLECTION }
   }
 
-  /** @param {Ref} ref @returns {string} */
+  /**
+   * @param {Ref} ref @returns {string}
+   * @private
+   */
   _col(ref) {
     return `@${this.ns}/${ref.name}`
   }
 
-  /** @param {Ref} ref @param {string} [id] @returns {Promise<any | null>} */
+  /**
+   * @param {Ref} ref @param {string} [id] @returns {Promise<Row | null>}
+   * @private
+   */
   async _read(ref, id) {
     if (ref.kind === SINGLE) return this.db.findOne(this._col(ref), {})
     if (id == null) return null
     return (await this.db.get(this._col(ref), { id })) ?? null
   }
 
-  /** @param {Ref} ref @param {Record<string, any>} row @returns {Promise<void>} */
+  /**
+   * @param {Ref} ref @param {Row} row @returns {Promise<void>}
+   * @private
+   */
   async _write(ref, row) {
-    await this.db.insert(this._col(ref), row)
-    await this.db.flush()
+    await this._serial(async () => {
+      await this.db.insert(this._col(ref), row)
+      await this.db.flush()
+    })
+  }
+
+  // one write at a time: hyperdb refuses a flush while another write is in progress
+  /** @private */
+  async _serial(write) {
+    const previous = this._writing
+    const current = (async () => {
+      try {
+        await previous
+      } catch {}
+      await write()
+    })()
+    this._writing = current
+    await current
   }
 
   /**

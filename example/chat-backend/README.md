@@ -35,7 +35,7 @@ import { serve } from 'chat-backend/server'
 const me = await serve(ipc, { storage: './data', name: 'alice' })
 ```
 
-`serve` boots cero with the chat schema and wires the HRPC server to the given duplex stream (`ipc`). Returns the HRPC server instance (`cero/server`'s `Server`), not a handle — the root cero is created lazily inside it on the client's first `init` and stays server-side.
+`serve` boots cero with the chat schema as soon as it is called and serves it over the given duplex stream (`ipc`). It returns the server; the root lives in the worker.
 
 ### Seed lifecycle
 
@@ -43,20 +43,21 @@ const me = await serve(ipc, { storage: './data', name: 'alice' })
 
 - First launch: cero generates a fresh identity and stores its seed in the local `master` row.
 - Subsequent launches: re-opening the same `${storage}` dir loads that stored identity back — no phrase needed.
-- Override / recovery: pass `phrase: '<words>'` (or `seed: <bytes>`) through `serve(...)`; cero seeds the identity from it and persists it to the local store. There is no `${storage}/seed` file.
+- Recovery: the UI's `connect(ipc, { phrase })` restores from a phrase; the worker turns it into the seed. In process, `cero(dir, spec, { seed: cero.toSeed(phrase) })`.
 
 ## Connect a client
 
 ```js
+import { cero } from '@cero-base/cero/client'
 import { connect } from 'chat-backend/client'
 
-const me = await connect(ipc) // returns a client-side root handle
-const room = await open(me.room, { name: 'general' })
-await put(room.messages, { text: 'hello' })
-const inv = await room.invite()
+const me = await connect(ipc) // the UI's root, the same shape as the worker's
+const room = await cero.open(me.room, { name: 'general' })
+await cero.put(room.messages, { text: 'hello' })
+const inv = await cero.invite(room)
 ```
 
-The client handle exposes the same operator surface (`put`, `set`, `get`, `watch`, `del`, `count`, `call`, `open`) plus handle methods (`invite`, `revoke`, `close`, `leave`). `tx` is core-only — it takes a function, so it has no RPC route and is not available on a client handle.
+Every verb works on the client as it does in the worker. `before`, `after` and `tx` take functions, so they stay in the worker.
 
 ## Tests
 

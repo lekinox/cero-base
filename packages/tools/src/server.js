@@ -5,15 +5,17 @@ import { Framed } from './protocol.js'
 /**
  * A decoded request frame. Carries the correlation `id` and `method`, plus the
  * per-method fields a handler reads: `ref`, `handleId`, `query`, `cancelId`.
- * @typedef {{ id?: string, method?: string, ref?: string, handleId?: string, query?: object, cancelId?: string }} ReqFrame
+ * @typedef {{ id?: number, method?: string, ref?: string, handleId?: string, query?: object, cancelId?: number }} ReqFrame
+ *
+ * @typedef {{ events?: { snapshot(): unknown, subscribe(fn: (e: object) => void): () => void }, stats?: { snapshot(): unknown, subscribe(fn: (s: object) => void): () => void }, redact?: (ref: string, row: Record<string, unknown>) => Record<string, unknown>, token?: string | null }} ServeOpts
  */
 
 /**
  * Read-only inspection server over a local Duplex `stream`.
  *
- * @param {object} stream  A streamx Duplex carrying length-prefixed JSON frames.
- * @param {object} me  The live root cero handle.
- * @param {{ events?: { snapshot(): unknown, subscribe(fn: (e: object) => void): () => void }, stats?: { snapshot(): unknown, subscribe(fn: (s: object) => void): () => void }, redact?: (ref: string, row: Record<string, unknown>) => Record<string, unknown> }} [opts]
+ * @param {import('streamx').Duplex} stream  A streamx Duplex carrying length-prefixed JSON frames.
+ * @param {import('@cero-base/cero').Context} me  The live root cero handle.
+ * @param {ServeOpts} [opts]
  * @returns {{ close(): void }}
  */
 export function serve(stream, me, opts) {
@@ -21,14 +23,24 @@ export function serve(stream, me, opts) {
 }
 
 export class TapServer {
+  /**
+   * @param {import('streamx').Duplex} stream
+   * @param {import('@cero-base/cero').Context} me
+   * @param {ServeOpts} [opts]
+   */
   constructor(stream, me, opts = {}) {
     this.stream = stream
+    /** @type {import('@cero-base/cero').Context} */
     this.me = me
+    /** @type {(ref: string, row: Record<string, unknown>) => Record<string, unknown>} */
     this.redact = opts.redact || ((ref, row) => row)
     this.opts = opts
+    /** @type {Map<number, () => void>} */
     this.tracked = new Map()
+    /** @private */
     this._authed = !opts.token
     this.wire = new Framed(stream, (req) => this.onRequest(req))
+    /** @private */
     this._cleanup = () => this._teardown()
     stream.on('close', this._cleanup)
     // a socket reset must not crash the host
@@ -150,6 +162,7 @@ export class TapServer {
     this.stream.destroy()
   }
 
+  /** @private */
   _resolveRef(req) {
     const me = this.me
     const handle =
@@ -161,6 +174,7 @@ export class TapServer {
     return handle[req.ref]
   }
 
+  /** @private */
   _source(req, src) {
     if (!src) {
       this._send({ id: req.id, end: true })
@@ -173,10 +187,12 @@ export class TapServer {
     this._track(req.id, off)
   }
 
+  /** @private */
   _track(id, off) {
     this.tracked.set(id, off)
   }
 
+  /** @private */
   _drop(id) {
     const off = this.tracked.get(id)
     if (off) {
@@ -185,10 +201,12 @@ export class TapServer {
     }
   }
 
+  /** @private */
   _send(obj) {
     this.wire.send(obj)
   }
 
+  /** @private */
   _teardown() {
     for (const off of this.tracked.values()) off()
     this.tracked.clear()

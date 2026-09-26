@@ -28,13 +28,20 @@ export type Identity = {
      * Per-device id (empty when no `local` spec).
      */
     deviceId: string;
+    /**
+     * This device's name, empty when it has none.
+     */
+    deviceName: string;
 };
 export type RefAndCodec = {
-    ref: any;
-    codec: any;
+    ref: import('../lib/refs.js').Ref;
+    codec: import('@cero-base/core/rpc').Codec;
+    info?: import('../lib/spec.js').RefInfo;
 };
+export type Spec = import('../lib/spec.js').Spec;
+export type Context = import('../handle/index.js').Context;
 export type GetResult = {
-    data: any;
+    data: import('../lib/spec.js').Row | import('../lib/spec.js').Row[] | null;
     total?: number;
     size?: number;
 };
@@ -51,74 +58,103 @@ export type GetResult = {
  * @typedef {object} Identity
  * @property {string} id        Long-lived cero identity id.
  * @property {string} deviceId  Per-device id (empty when no `local` spec).
+ * @property {string} deviceName  This device's name, empty when it has none.
  *
- * @typedef {{ ref: any, codec: any }} RefAndCodec
+ * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
  *
- * @typedef {{ data: any, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
+ * @typedef {import('../lib/spec.js').Spec} Spec
+ * @typedef {import('../handle/index.js').Context} Context
+ *
+ * @typedef {{ data: import('../lib/spec.js').Row | import('../lib/spec.js').Row[] | null, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
  */
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree:
- * lazy-initializes the root via `cero()` on the first `init` call, then exposes data ops,
- * pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
+ * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
+ * exposes data ops, pairing, and handle lifecycle.
  */
 export declare class Server extends RPCServer {
     storage: string;
-    _report: (err: Error) => void;
-    opts: {
-        name?: string;
-        bootstrap?: Array<{
-            host: string;
-            port: number;
-        }>;
-        isMobile?: boolean;
-        onerror: (err: any) => void;
+    /** @private */
+    _report;
+    /** @type {Omit<Partial<ServerOpts>, 'storage'> & { onerror: (err: Error) => void }} */
+    opts: Omit<Partial<ServerOpts>, 'storage'> & {
+        onerror: (err: Error) => void;
     };
     /** @type {Set<object>} open error streams, one per connected client */
     _errors: Set<object>;
-    me: import("../handle/index.js").CeroHandle;
-    handles: Map<any, any>;
+    /** @type {Context | null} */
+    me: Context | null;
+    /** @type {Map<string, Context>} */
+    handles: Map<string, Context>;
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     _watchStreams: Map<string, Set<object>>;
+    /** @private */
+    _booting;
     /**
-     * @param {any} ipc                Framed IPC stream (must be writable).
-     * @param {object} spec
+     * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
+     * @param {Spec} spec
      * @param {Partial<ServerOpts>} [opts]
      */
-    constructor(ipc: any, spec: object, { storage, ...opts }?: Partial<ServerOpts>);
+    constructor(ipc: import('streamx').Duplex, spec: Spec, { storage, ...opts }?: Partial<ServerOpts>);
     /**
-     * Root cero id (null until `init` has run).
+     * Root cero id (undefined until booted).
      *
      * @returns {string|undefined}
      */
     get id(): string | undefined;
     /**
-     * Root identity object (null until `init` has run).
+     * Root identity object (undefined until booted).
      *
-     * @returns {any}
+     * @returns {import('@cero-base/core/identity').Identity | undefined}
      */
-    get identity(): any;
-    _close(): Promise<void>;
-    /** End every watch stream bound to a handle (e.g. when it closes or leaves). */
-    _endWatches(handle: any): void;
-    /** Wire the `init` handler that lazily constructs the root cero handle. */
-    _onerror(err: any): void;
-    _wireInit(): void;
-    /** Wire the `restore` handler that rebuilds the local store from a phrase. */
-    _wireRestore(): void;
-    /** Register the row-level RPC handlers (put/set/get/del/watch/call). */
-    _wireData(): void;
-    /** Register invite/revoke/join RPC handlers. */
-    _wirePairing(): void;
-    /** Register add/open/close/leave RPC handlers for child handles. */
-    _wireHandles(): void;
+    get identity(): import('@cero-base/core/identity').Identity | undefined;
+    /** @private */
+    private _open;
+    /** @private */
+    private _boot;
+    /** @private */
+    private _close;
+    /**
+     * End every watch stream bound to a handle (e.g. when it closes or leaves).
+     * @private
+     */
+    private _endWatches;
+    /** @private */
+    private _onerror;
+    /**
+     * Wire the `errors` and `init` handlers: init waits for the boot and attaches the client.
+     * @private
+     */
+    private _wireInit;
+    /**
+     * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.
+     * @private
+     */
+    private _wireRestore;
+    /**
+     * Register the row-level RPC handlers (put/set/get/del/watch/call).
+     * @private
+     */
+    private _wireData;
+    /**
+     * Register invite/revoke/join RPC handlers.
+     * @private
+     */
+    private _wirePairing;
+    /**
+     * Register add/open/close/leave RPC handlers for child handles.
+     * @private
+     */
+    private _wireHandles;
     /**
      * Look up a live handle by id, throwing if unknown. Binds the handle's
      * codec on first use.
      *
      * @param {string} id
-     * @returns {any}
+     * @returns {Context}
+     * @private
      */
-    _resolve(id: string): any;
+    private _resolve;
     /**
      * Resolve a `{ handle, ref }` pair to its `Ref` and codec.
      *
@@ -126,23 +162,28 @@ export declare class Server extends RPCServer {
      * @param {string} name
      * @param {boolean} [local]
      * @returns {RefAndCodec}
+     * @private
      */
-    _refOf(id: string, name: string, local?: boolean): RefAndCodec;
+    private _refOf;
     /**
      * Snapshot the current identity for return to the client.
      *
      * @returns {Identity}
+     * @private
      */
-    _identity(): Identity;
-    /** Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked. */
-    _wireSeed(): void;
+    private _identity;
+    /**
+     * Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked.
+     * @private
+     */
+    private _wireSeed;
 }
 /**
  * Construct a `Server`, wait for it to be ready, and return it.
  *
- * @param {any} ipc
- * @param {object} spec
+ * @param {import('streamx').Duplex} ipc
+ * @param {Spec} spec
  * @param {ServerOpts} opts
  * @returns {Promise<Server>}
  */
-export declare function serve(ipc: any, spec: object, opts: ServerOpts): Promise<Server>;
+export declare function serve(ipc: import('streamx').Duplex, spec: Spec, opts: ServerOpts): Promise<Server>;

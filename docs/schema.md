@@ -2,20 +2,7 @@
 
 [Docs](README.md) · Previous: [Quickstart](quickstart.md) · Next: [Data](data.md)
 
-## On this page
-
-- [Field types](#field-types)
-- [Top-level shapes](#top-level-shapes)
-- [Collections](#collections)
-- [Indexes and ordering](#indexes-and-ordering)
-- [Actions](#actions)
-- [Child handles](#child-handles)
-- [The local scope](#the-local-scope)
-- [Builtins and t.extend](#builtins-and-textend)
-- [Add, never reorder](#add-never-reorder)
-- [build(specDir, schema, opts)](#buildspecdir-schema-opts)
-
-Describe. Build once. Done.
+Describe your app's data once, build it, and every device opens the same shape.
 
 ```js
 // schema.js
@@ -23,182 +10,184 @@ import { cero, t } from '@cero-base/cero'
 
 export const schema = cero.schema({
   profile: t.single({ name: t.string }),
-  todos: t.collection({ text: t.string, done: t.bool }),
-  room: { messages: t.collection({ text: t.string }) }
+  todos: t.collection({ text: t.required(t.string), done: t.bool }),
+  room: {
+    profile: t.single({ name: t.string }),
+    messages: t.collection({ text: t.string }, { own: true })
+  },
+  local: { drafts: t.collection({ text: t.string }) }
 })
 ```
 
-One row: `t.single`. Many rows: `t.collection`. A place to share: a nested object. `cero.schema(defs)` only wraps the object so the builder recognises it, so mistakes surface at build time.
+One record is a `t.single`, many rows a `t.collection`, and a plain object such as `room` is a
+place you share with other people. `local` never leaves this device.
 
-## Field types
+## Pick a field type
 
-`t` carries one marker per primitive. A marker is a plain value you can reuse across fields.
+| Marker                   | Holds                                             | Unset reads |
+| ------------------------ | ------------------------------------------------- | ----------- |
+| `t.string`               | text                                              | `null`      |
+| `t.uint`, `t.int`        | a whole number, unsigned or signed                | `0`         |
+| `t.bool`                 | `true` or `false`                                 | `false`     |
+| `t.bytes`                | a buffer                                          | `null`      |
+| `t.json`                 | any JSON value                                    | `null`      |
+| `t.fixed32`, `t.fixed64` | a buffer of exactly 32 or 64 bytes                | `null`      |
+| `t.file`                 | a file id, read back as `{ id, type, size, url }` | `null`      |
 
-| Marker      | Column type in the built spec          |
-| ----------- | -------------------------------------- |
-| `t.string`  | `string`                               |
-| `t.uint`    | `uint`                                 |
-| `t.int`     | `int`                                  |
-| `t.bool`    | `bool`                                 |
-| `t.bytes`   | `buffer`                               |
-| `t.json`    | `json`, any JSON round-trippable value |
-| `t.fixed32` | `fixed32`                              |
-| `t.fixed64` | `fixed64`                              |
-| `t.file`    | `string`, holding a durable file id    |
+Every field is optional, and falsy values are not stored: a string written as `''` reads back
+`null`. `t.required(t.string)` makes a field required: a write that leaves it unset throws
+`INVALID`, naming the field. A `t.file`
+field holds the id of an upload, see [Files](data.md#files).
 
-A `t.file` field stores the id you get from uploading through the `files` builtin, and reads resolve it back to `{ id, name?, type, size, url }`. See [Files](files.md).
-
-Fields are optional. `t.required(marker)` returns a copy with `required: true`, it does not mutate the shared marker.
+## Keep one record
 
 ```js
-t.collection({ title: t.required(t.string), body: t.string })
+const schema = cero.schema({ settings: t.single({ theme: t.string, compact: t.bool }) })
 ```
 
-## Top-level shapes
+A single has no id, timestamps, `memberId` or `index`. Write it with `cero.set`, which merges;
+`cero.put` on a single throws. `cero.get` returns the record or `null`, `cero.del` wipes it.
+
+## Keep many rows
 
 ```js
-export const schema = cero.schema({
-  profile: t.single({ name: t.string }), // one record
-  todos: t.collection({ text: t.string }), // many rows
-  archive: t.action({ before: t.int }), // an op, no row
-  members: t.extend({ alias: t.string }), // more fields on a builtin
-  room: { messages: t.collection({ text: t.string }) }, // a child handle type
-  local: { drafts: t.collection({ text: t.string }) } // device only
+const schema = cero.schema({ todos: t.collection({ text: t.string, done: t.bool }) })
+```
+
+Every row also carries fields Cero writes. You can't declare them yourself.
+
+| Field       | Is                                                                   |
+| ----------- | -------------------------------------------------------------------- |
+| `id`        | a string, generated unless you pass one                              |
+| `memberId`  | the member who last wrote the row                                    |
+| `index`     | a number per collection, rising as rows are added; kept on overwrite |
+| `createdAt` | milliseconds, the first write of the row                             |
+| `updatedAt` | milliseconds, its latest write                                       |
+
+## Let only the author change a row
+
+```js
+const schema = cero.schema({ notes: t.collection({ text: t.string }, { own: true }) })
+```
+
+With `own`, anyone who may write adds rows, but only the author, or a member with the remove
+permission (admins and owners), changes or deletes one. Without it, everyone who may write edits
+every row. [Sharing](handles.md) explains roles.
+
+## Look rows up by a field
+
+```js
+const schema = cero.schema({
+  todos: t.collection({ text: t.string, done: t.bool }, { indexes: { 'by-done': ['done'] } })
 })
 ```
 
-Each key of a schema is one of five things.
+A query whose equality fields are exactly an index's fields reads through it, here
+`cero.get(me.todos, { done: false })`. Through an index, rows come back ordered by the index
+fields, then id, and `reverse` and `limit` follow that order. Every collection outside `local`
+also has an index on `index`, so `{ reverse: true, limit: 20 }` reads only the newest 20 rows.
 
-| Declaration                   | Result                                                                         |
-| ----------------------------- | ------------------------------------------------------------------------------ |
-| `t.single(fields)`            | One record, no id. `get`, `set` and `del` act on the whole record.             |
-| `t.collection(fields, opts?)` | Many rows keyed by `id`.                                                       |
-| `t.action(fields)`            | An op that travels through the log but persists no row.                        |
-| `t.extend(fields)`            | Extra fields merged onto a builtin type.                                       |
-| a plain object                | A child handle type: its own scope, opened with `cero.open`, shared by invite. |
-
-The key `local` is reserved for device-only data.
-
-## Collections
+## Share a space with other people
 
 ```js
-todos: t.collection(
-  { text: t.string, done: t.bool },
-  { indexes: { 'by-done': ['done'] }, own: true }
-)
-```
-
-Every row carries these fields ahead of the ones you declare.
-
-| Field       | Type     | Written by                                         |
-| ----------- | -------- | -------------------------------------------------- |
-| `id`        | `string` | `put`, from your row or a generated 16-byte z32 id |
-| `memberId`  | `string` | apply time, from the signing device's member       |
-| `index`     | `uint`   | apply time, a monotonic counter per collection     |
-| `createdAt` | `int`    | the write path, in milliseconds                    |
-| `updatedAt` | `int`    | the write path, in milliseconds                    |
-
-`t.collection(fields, opts)` takes two options.
-
-| Option    | Type                       | Default | Meaning                                                                                 |
-| --------- | -------------------------- | ------- | --------------------------------------------------------------------------------------- |
-| `indexes` | `Record<string, string[]>` | none    | Secondary indexes, name to field list.                                                  |
-| `own`     | `boolean`                  | `false` | A row belongs to whoever wrote it. Only they may change or delete it, moderators aside. |
-
-Without `own`, any writer may edit any row in the collection.
-
-## Indexes and ordering
-
-```js
-t.collection({ name: t.string }, { indexes: { 'by-name': ['name'] } })
-```
-
-The index is used when a query's equality keys match its fields exactly, so `cero.get(ref, { name: 'jb' })` reads through it. Ranges, `reverse`, `limit` and `search` apply afterwards, so an index is an optimisation and never changes results. Every main-scope collection also gets an implicit index on `index`, which lets `reverse` and `limit` push down instead of scanning. Local collections do not get it.
-
-## Actions
-
-`t.action(fields)` declares an op with no row behind it. `cero.call` appends it, and the route you registered runs on every peer as the op applies.
-
-```js
-const team = await cero.open(me.team, {
-  routes: {
-    promote: async (op, ctx) => {
-      await ctx.view.insert('@cero/members', { id: op.memberId, role: op.role })
-    }
+const schema = cero.schema({
+  room: {
+    profile: t.single({ name: t.string }),
+    messages: t.collection({ text: t.string })
   }
 })
-
-await cero.call(team.promote, { memberId, role: 'admin' })
 ```
 
-The route takes `(op, ctx)`, where `ctx` is `{ view, host, key, dbKey, dryRun }`. It also runs against a throwaway transaction before the op is appended, so keep its effects inside `ctx.view`. Calling a declared action with no route throws `INVALID`.
+A plain object declares a handle type: a space you open, share by invite and remove people from.
+The examples call theirs `room`. Each room also has its own builtins, `room.members` and the rest.
+Handle types nest one level: a plain object inside one is dropped without an error.
+[Sharing](handles.md) opens and shares them.
 
-## Child handles
-
-A plain nested object declares a child handle type. It compiles like a main scope of its own, and the parent gets a ref you open. A child handle carries the same builtins as the root, so it has its own members, devices, invites and files. The examples name theirs `room`.
+## Keep data on this device
 
 ```js
-const team = await cero.open(me.team, { name: 'engineering' })
-await cero.put(team.messages, { text: 'hi team' })
+// me from cero('./data', spec), see the quickstart
+await cero.put(me.local.drafts, { text: 'half a thought' })
 ```
 
-See [Handles](handles.md).
+`local` holds collections and singles that stay on this device, at `me.local.<name>`. They have no
+hooks, batches, actions or `t.file`, and lists come back in id order. Cero keeps its own device data there, so these names are taken: `master`,
+`keypair`, `handle-keypairs`, `joins`, `inbox`, `outbox`, `environment`, `serving`.
 
-## The local scope
-
-Everything under `local` stays on this device and never replicates. Declare it as `local: { drafts: t.collection({ text: t.string }) }` and reach it through `me.local`:
+## Add fields to a builtin
 
 ```js
-await cero.put(me.local.drafts, { text: 'draft' })
+const schema = cero.schema({ members: t.extend({ bio: t.string }) })
 ```
 
-cero keeps its own device rows in the same scope, so a schema without a `local` block still gets one.
+Every scope, the root and each room, has the builtins `members`, `devices`, `invites`,
+`requests`, `handles` and `files`. `t.extend` adds fields to one. Put it at the top level: it
+extends that builtin in every scope, and inside a handle type it is ignored. Redeclaring a
+builtin's own field fails the build.
 
-## Builtins and `t.extend`
+The bundled extensions add fields too. A `profile` you declare replaces the extension's, and each
+of its fields is copied onto your row in `members`, so each must exist there with the same type.
+A `t.file` field is copied with its file, so it resolves in every room. See
+[the two that ship](extensions.md#the-two-that-ship).
 
-Every scope includes `members`, `devices`, `invites`, `handles` and `files` whether the schema mentions them or not. `t.extend(fields)` adds fields to one of those five, keyed by ref name:
+## Reserved names
+
+- `status` at the root or in a handle type, and `joins` or `nearby` at the root: Cero computes
+  these on the device, and the build throws.
+- A builtin's name, such as `members` or `files`, for a ref of your own.
+- A name the root or a room already carries, such as `id`, `type`, `store`, `parent`,
+  `children`, `device`, `identity`, `network`, `spec`, `signal` or `root`. It builds, then throws
+  `INVALID` when the root or the room opens.
+
+## Declare an action
 
 ```js
-members: t.extend({ alias: t.string })
+const schema = cero.schema({ archive: t.action({ until: t.int }) })
 ```
 
-Extending anything else throws `'<name>' is not an extendable builtin`, and redeclaring a base field throws `'<field>' is a base field of '<type>' and cannot be redeclared`.
-
-The bundled extensions contribute schema too: `profileSync` declares a `profile` single and extends `members`, `handleSync` extends `handles`. Your schema wins on a conflict. See [Extensions](extensions.md).
-
-## Add, never reorder
-
 ```js
-// v1
-todos: t.collection({ text: t.string, done: t.bool })
-// v2, fine: a new field at the end
-todos: t.collection({ text: t.string, done: t.bool, due: t.int })
-// never: inserting, removing or reordering breaks every row on disk
+await cero.call(me.archive, { until: Date.now() }) // throws INVALID until it has a handler
 ```
 
-Fields are numbered in declaration order, and that numbering is on the wire and on disk. New fields go at the end of a type. Never remove or reorder existing ones, or old rows decode as the wrong fields. Rebuild over the existing `spec/` rather than deleting it first, because route ids are numbered positionally and persisted.
+An action is a named write with a payload and no row, and `cero.call` resolves `undefined`. What
+it does is its handler, an `after` hook registered in an extension:
+[Give an action its handler](extensions.md#give-an-action-its-handler). An action in a handle type
+is called on a room, `cero.call(room.archive, data)`.
 
-## `build(specDir, schema, opts)`
+## Build the spec
 
 ```js
+// build.js
 import { build } from '@cero-base/cero/build'
 import { schema } from './schema.js'
 
 await build('./spec', schema)
 ```
 
-| Option       | Type                | Default         | Meaning                                                                                                                         |
-| ------------ | ------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `ns`         | `string`            | `'cero'`        | Namespace prefix for the emitted ids, as in `@cero/messages`.                                                                   |
-| `extensions` | `string` or `array` | the bundled two | A module, relative to the spec dir, whose `extensions` export is folded in and imported by the spec. Or a list, folded in only. |
-| `operators`  | `string`            | -               | A module, relative to the spec dir, whose `operators` export the spec imports.                                                  |
+`spec/index.js` exports `spec`, which you pass to `cero()`. The build fails on an unknown field
+type, a bad `t.extend`, a computed name, or a change that would break stored rows.
 
-`build` writes `spec/index.js` plus `main/`, `local/` and one `handles/<name>/` per room type, each holding `schema/` and `db/`, and `dispatch/` for the replicated scopes. Only `main/` gets `rpc/`. `spec/index.js` exports `spec`, which you hand to `cero()`, and `meta`, which describes the shape: `ns`, `version`, `refs`, `local`, `handles`.
+| Option       | Default         | Does                                                                                                                                                                |
+| ------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `extensions` | the bundled two | A module path, resolved from the spec directory, whose `extensions` list the spec imports; or a list, folded into the schema only. See [Extensions](extensions.md). |
+| `ns`         | `'cero'`        | The namespace of the emitted ids.                                                                                                                                   |
 
-`meta.version` is the contract version, the highest of the auto-bumped schema, db and dispatch versions. Every op is stamped with it, and a peer on an older build skips newer ops and emits `behind` rather than failing on them.
+## Change a schema that shipped
+
+```js
+const v1 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool }) })
+// a new field goes at the end
+const v2 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool, due: t.int }) })
+```
+
+Fields are stored by position, so add new ones at the end. Removing a field, or changing its type
+or `required`, fails the build. Reordering two fields of the same type builds, and swaps their
+data on every row. Keep `spec/` in git and rebuild over it after every change: it records what
+shipped. A device on an older build skips writes from a newer one until it updates, and
+`me.status` says so in `behind`.
 
 ## Next
 
-- [Data](data.md) to read and write what you just described.
-- [Handles](handles.md) for invites, roles and members.
-- [Files](files.md) for the `t.file` column.
+- [Data](data.md) to write, query and watch what you described.
+- [Sharing](handles.md) to open a room and invite people.
+- [Extensions](extensions.md) to give actions their handlers and reuse schema.

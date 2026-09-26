@@ -21,6 +21,10 @@ export type BlobsOpts = {
      * Explicit encryption key, overrides `identity.encryptionKey`.
      */
     encryptionKey?: Uint8Array;
+    /**
+     * Core name in the store when no `key` is given; `blobs` by default.
+     */
+    name?: string;
 };
 export type RawBlobId = import('./codec.js').RawBlobId;
 /**
@@ -30,6 +34,7 @@ export type RawBlobId = import('./codec.js').RawBlobId;
  * @property {import('../network/index.js').Network} [network]        Optional network used to announce + replicate the core.
  * @property {Uint8Array} [key]                                       Pre-existing blob core key — joins an existing blob feed.
  * @property {Uint8Array} [encryptionKey]                             Explicit encryption key, overrides `identity.encryptionKey`.
+ * @property {string} [name]                                          Core name in the store when no `key` is given; `blobs` by default.
  *
  * @typedef {import('./codec.js').RawBlobId} RawBlobId
  */
@@ -39,11 +44,15 @@ export declare class Blobs extends ReadyResource {
     identity: import("../index.js").Identity;
     network: import("../index.js").Network;
     encryptionKey: Uint8Array<ArrayBufferLike>;
-    name: any;
-    _coreKey: Uint8Array<ArrayBufferLike>;
-    core: any;
-    hyperblobs: any;
-    _discovery: import("../network/discovery.js").Discovery;
+    name: string;
+    /** @private */
+    _coreKey;
+    /** @type {import('hypercore') | null} */
+    core: import('hypercore') | null;
+    /** @type {import('hyperblobs') | null} */
+    hyperblobs: import('hyperblobs') | null;
+    /** @private */
+    _discovery;
     /** @param {BlobsOpts} [opts] */
     constructor({ store, identity, network, key, encryptionKey, name }?: BlobsOpts);
     /**
@@ -64,8 +73,10 @@ export declare class Blobs extends ReadyResource {
      * @returns {Uint8Array | null}
      */
     get discoveryKey(): Uint8Array | null;
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
     /**
      * Store a buffer or readable stream, returning its raw hyperblobs blobId.
      *
@@ -99,8 +110,10 @@ export declare class Blobs extends ReadyResource {
     /**
      * @param {import('streamx').Readable} input
      * @returns {Promise<RawBlobId>}
+     * @private
      */
-    _putStream(input: import('streamx').Readable): Promise<RawBlobId>;
-    _guard(): void;
+    private _putStream;
+    /** @private */
+    private _guard;
 }
 export { encodeId, decodeId };

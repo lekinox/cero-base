@@ -1,10 +1,19 @@
 import createTestnet from '@hyperswarm/testnet'
+import Hyperswarm from 'hyperswarm'
+import BlindPeer from 'blind-peer'
 import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import { Duplex, Readable } from 'streamx'
+import crypto from 'hypercore-crypto'
 
 import { Network } from '../../src/network/index.js'
+import { Database } from '../../src/database/index.js'
+import { wrap } from '../../src/database/envelope.js'
+import { Identity } from '../../src/identity/index.js'
+import { Invite } from '../../src/pairing/invite.js'
+import { sealJoin } from '../../src/pairing/index.js'
+import { spec } from '../fixtures/spec/index.js'
 
 // ─── generic ──────────────────────────────────────────────────────────────
 
@@ -140,7 +149,7 @@ export async function connectPair(t, a, b, topic = randomTopic()) {
   const da = a.join(topic)
   const db = b.join(topic)
   await Promise.all([da.flush(), db.flush()])
-  // testnet quirk: re-activate after both flushed to force a fresh lookup
+  // both announced: look up now instead of waiting out discovery's 1-3 s re-lookup
   await da.activate()
   await db.activate()
   await Promise.all([waitForConnection(a), waitForConnection(b)])
@@ -148,22 +157,12 @@ export async function connectPair(t, a, b, topic = randomTopic()) {
   return { da, db, topic }
 }
 
-// When both peers dial at once and one leg fails to holepunch, hyperswarm
-// drops the working connection in favour of the half-open one (its duplicate
-// guard prefers the new connection once bytes have flowed), then gives up on
-// the peer after a few retries and only looks again ten minutes later — look
-// again ourselves
 export async function waitForConnection(net, timeout = 30000) {
   const deadline = Date.now() + timeout
-  let lookupAt = Date.now() + 2000
   while (Date.now() < deadline) {
     if (net.connections.size > 0) {
       await new Promise((r) => setTimeout(r, 200))
       if (net.connections.size > 0) return
-    }
-    if (Date.now() >= lookupAt) {
-      lookupAt = Date.now() + 2000
-      for (const d of net._discoveries) d.session.refresh().catch(() => {})
     }
     await new Promise((resolve) => {
       const onConn = () => {
@@ -227,8 +226,10 @@ export function replay(batches) {
 // ─── blind-peer mirror (real, in-process) ─────────────────────────────────
 
 export async function makeMirror(t, testnet) {
-  const { default: Hyperswarm } = await import('hyperswarm')
-  const { default: BlindPeer } = await import('blind-peer')
+  return (await makeBlindPeer(t, testnet)).publicKey
+}
+
+export async function makeBlindPeer(t, testnet) {
   const swarm = new Hyperswarm({ bootstrap: testnet.bootstrap })
   const dir = await t.tmp()
   const mirror = new BlindPeer(dir, { swarm })
@@ -244,7 +245,7 @@ export async function makeMirror(t, testnet) {
     },
     { order: 80 }
   )
-  return mirror.publicKey
+  return mirror
 }
 
 // the mirror holds every block of what joiners need: the writer core, the bootstrap core and each view
@@ -265,4 +266,79 @@ export async function waitForMirrored(db) {
 export async function fetch(...args) {
   const f = globalThis.fetch || (await import('bare-fetch')).default
   return f(...args)
+}
+
+// a database on its own network, joined to its topic
+export async function makePeer(t, testnet, { topic, presence, mirrors, after = {}, ...opts } = {}) {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = opts.identity || (await Identity.create())
+  // only mirrors need the store on the network
+  const network = new Network({
+    bootstrap: testnet.bootstrap,
+    store: mirrors && store,
+    presence,
+    mirrors
+  })
+  await network.ready()
+  topic ??= identity.topic
+  const discovery = network.join(topic)
+  await discovery.flush()
+  const errors = []
+  const db = new Database({
+    store,
+    identity,
+    network,
+    spec,
+    onerror: (err) => errors.push(err),
+    ...opts
+  })
+  for (const [name, fn] of Object.entries(after)) db.after(name, fn)
+  await db.ready()
+  t.teardown(
+    async () => {
+      await db.close().catch(() => {})
+      await discovery.destroy().catch(() => {})
+      await network.close().catch(() => {})
+    },
+    { order: 5 }
+  )
+  return { db, store, identity, network, discovery, topic, errors }
+}
+
+// genesis names the first member at any rank, and `members` beside it: the only batch that may
+export async function withRole(t, role, { members = [], after = {}, ...opts } = {}) {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const db = new Database({ store, identity, spec, ...opts })
+  for (const [name, fn] of Object.entries(after)) db.after(name, fn)
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 5 })
+  const ts = Date.now()
+  const member = {
+    id: identity.id,
+    key: db.writerKey,
+    role,
+    name: 'me',
+    createdAt: ts,
+    updatedAt: ts
+  }
+  await db.write([
+    ['add-writer', db._admission(db.writerKey, ts)],
+    ['add-member', member],
+    ...members.map((m) => ['add-member', { createdAt: ts, updatedAt: ts, ...m }])
+  ])
+  return { db, identity }
+}
+
+// b joins a's database as Pairing.join does, from its own core, once it holds the invite;
+// resolves once a admitted it
+export async function admit(a, b, role = 'member') {
+  const invite = Invite.create({ key: a.key, address: a.address })
+  const id = b4a.toHex(invite.id)
+  await a.call('add-invite', { id, role, createdAt: Date.now() })
+  await waitFor(async () => (await b.get('invites', id)).data)
+  const payload = sealJoin(invite, b.identity, b.writerKey, crypto.randomBytes(32))
+  const op = b.spec.dispatch.encode(`@${b.ns}/join`, payload)
+  await b.bee.append(wrap(b.version, op), { optimistic: true })
+  await waitFor(async () => (await a.get('members', b.identity.id)).data)
 }

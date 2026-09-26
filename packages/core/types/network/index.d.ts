@@ -1,7 +1,8 @@
 import ReadyResource from 'ready-resource';
 import { Discovery } from './discovery.js';
 import { Presence } from './presence.js';
-export declare function channelTopic(topic: any, channel: any): any;
+/** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
+export declare function channelTopic(topic: Uint8Array<ArrayBufferLike>, channel: string): Uint8Array<ArrayBufferLike>;
 export type NetworkOpts = {
     /**
      * Long-lived keypair used as the swarm identity.
@@ -17,7 +18,7 @@ export type NetworkOpts = {
     /**
      * Incoming-connection filter.
      */
-    firewall?: (remotePublicKey: Uint8Array, payload: any) => boolean;
+    firewall?: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     /**
      * Relay public keys to tunnel through.
      */
@@ -33,7 +34,7 @@ export type NetworkOpts = {
     /**
      * Corestore; required for mirrors (blind peers replicate its cores).
      */
-    store?: any;
+    store?: import('corestore');
     /**
      * Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
      */
@@ -41,7 +42,7 @@ export type NetworkOpts = {
     /**
      * Background-task error handler.
      */
-    onerror?: (err: any) => void;
+    onerror?: (err: Error) => void;
     /**
      * Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
      */
@@ -52,22 +53,22 @@ export type NetworkOpts = {
     };
 };
 export type Replicable = {
-    replicate: (stream: any) => any;
+    replicate: (stream: import('@hyperswarm/secret-stream')) => unknown;
 };
 /**
  * @typedef {object} NetworkOpts
  * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the swarm identity.
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
- * @property {(remotePublicKey: Uint8Array, payload: any) => boolean} [firewall]  Incoming-connection filter.
+ * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
- * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
+ * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
- * @property {(err: any) => void} [onerror]                        Background-task error handler.
+ * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
- * @typedef {{ replicate: (stream: any) => any }} Replicable
+ * @typedef {{ replicate: (stream: import('@hyperswarm/secret-stream')) => unknown }} Replicable
  */
 /**
  * Hyperswarm peer-discovery + replication multiplexer. Wraps a swarm and a
@@ -79,63 +80,72 @@ export declare class Network extends ReadyResource {
         host: string;
         port: number;
     }[];
-    firewall: (remotePublicKey: Uint8Array, payload: any) => boolean;
+    firewall: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     relayThrough: Uint8Array<ArrayBufferLike>[];
     backoffs: number[];
     channel: string;
-    store: any;
-    mirrors: any[];
-    _swarm: any;
-    wakeup: any;
+    /** @type {import('corestore') | null} */
+    store: import('corestore') | null;
+    /** @type {Uint8Array[]} */
+    mirrors: Uint8Array[];
+    /** @private */
+    _swarm;
+    /** @type {import('protomux-wakeup')} */
+    wakeup: import('protomux-wakeup');
     presence: Presence;
     info: object;
-    _peerInfo: Map<any, any>;
-    _infoSenders: Set<any>;
-    _replicateables: Set<any>;
-    _discoveries: Set<any>;
-    _injected: Set<any>;
-    _blind: any;
-    _blindPeering: any;
-    _onerror: (err: any) => void;
+    /** @private */
+    _peerInfo;
+    /** @private */
+    _infoSenders;
+    /** @private */
+    _replicateables;
+    /** @private */
+    _discoveries;
+    /** @private */
+    _injected;
+    /** @private */
+    _blindPeering;
+    /** @private */
+    _lost;
+    /** @private */
+    _relookup;
+    /** @private */
+    _onerror;
     /** @param {NetworkOpts} [opts] */
     constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
-    /** @returns {any} The underlying hyperswarm, or null before ready / after close. */
-    get swarm(): any;
-    /** @returns {Map<string, any>} Known peers keyed by public-key string. */
-    get peers(): Map<string, any>;
-    /** @returns {Set<any>} Live connection streams — swarm and injected. */
-    get connections(): Set<any>;
+    /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
+    get swarm(): import('hyperswarm') | null;
+    /** @returns {Map<string, object>} Known peers keyed by public-key string. */
+    get peers(): Map<string, object>;
+    /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — swarm and injected. */
+    get connections(): Set<import('@hyperswarm/secret-stream')>;
     /** @returns {boolean} */
     get suspended(): boolean;
-    _open(): Promise<void>;
-    _close(): Promise<void>;
+    /** @private */
+    private _open;
+    /** @private */
+    private _close;
     /**
      * Feed an externally-established connection — a Bluetooth L2CAP channel, a serial link, an
      * in-process pair, any duplex — into the network.
      *
-     * @param {any} stream  Duplex transport, or a ready NoiseSecretStream.
+     * @param {import('streamx').Duplex} stream  Duplex transport, or a ready NoiseSecretStream.
      * @param {{ isInitiator?: boolean }} [opts]  Which side initiates the noise handshake (raw duplexes only).
-     * @returns {any} The encrypted connection stream.
+     * @returns {import('@hyperswarm/secret-stream')} The encrypted connection stream.
      */
-    inject(stream: any, { isInitiator }?: {
+    inject(stream: import('streamx').Duplex, { isInitiator }?: {
         isInitiator?: boolean;
-    }): any;
+    }): import('@hyperswarm/secret-stream');
     /**
-     * Lazily create the network-shared BlindPairing.
+     * The blind-peering client, built on first use: a mailbox post names mirrors this network
+     * may not have been given.
      *
-     * @returns {Promise<any>}
+     * @returns {import('blind-peering')}
      */
-    blind(): Promise<any>;
+    peering(): import('blind-peering');
     /**
-     * Re-attach pairing channels on injected connections. blind-pairing only auto-attaches
-     * refs that existed when a connection arrived — swarm peers meet again over topic joins,
-     * injected links (Bluetooth,.
-     *
-     * @returns {Promise<void>}
-     */
-    refreshInjected(): Promise<void>;
-    /**
-     * Declare this peer's self-reported info ({ name, ... }).
+     * Declare this peer's self-reported info ({ name, ... }) to the peers of injected streams.
      *
      * @param {object | null} info
      */
@@ -186,7 +196,8 @@ export declare class Network extends ReadyResource {
      * @returns {void}
      */
     attach(core: Replicable): void;
-    _mirror(bee: any): void;
+    /** @private */
+    private _mirror;
     /**
      * Unregister a previously attached resource. New connections will no
      * longer replicate it (existing replication streams continue).
@@ -203,5 +214,10 @@ export declare class Network extends ReadyResource {
      * @returns {void}
      */
     replicate(target: Replicable): void;
-    _attachInfo(conn: any): void;
+    /** @private */
+    private _lose;
+    /** @private */
+    private _relook;
+    /** @private */
+    private _attachInfo;
 }

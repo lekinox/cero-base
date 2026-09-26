@@ -1,40 +1,14 @@
 import { RPCClient } from '@cero-base/core/rpc';
-import { put, set, get, del, watch, changes, call, open, rotate } from '../lib/operators.js';
+import * as verbs from '../lib/operators.js';
 import { t, schema } from '../lib/spec.js';
-export { put, set, get, del, watch, changes, call, open, rotate, t, schema };
+export declare const put: typeof verbs.put, set: typeof verbs.set, get: typeof verbs.get, del: typeof verbs.del, watch: typeof verbs.watch, call: typeof verbs.call, open: typeof verbs.open, invite: typeof verbs.invite, revoke: typeof verbs.revoke, rotate: typeof verbs.rotate, accept: typeof verbs.accept, deny: typeof verbs.deny, leave: typeof verbs.leave, close: typeof verbs.close, cancel: typeof verbs.cancel, suspend: typeof verbs.suspend, resume: typeof verbs.resume, activate: typeof verbs.activate, deactivate: typeof verbs.deactivate, phrase: typeof verbs.phrase, nearby: typeof verbs.nearby;
+export { t, schema };
 export type BaseRPCClient = import('@cero-base/core/rpc').RPCClient;
-export type RefInfo = {
-    kind?: 'single' | 'collection' | 'action' | 'handle';
-    schema?: string;
-    type?: string;
-    internal?: boolean;
-};
-export type Spec = import('@cero-base/core/rpc').Spec & {
-    meta: {
-        ns?: string;
-        refs: Record<string, RefInfo>;
-        local?: {
-            refs: Record<string, RefInfo>;
-        };
-        handles?: Record<string, Spec>;
-    };
-    handles: Record<string, Spec>;
-};
-export type SingleResult = {
-    data: any;
-};
-export type ListResult = {
-    data: any[];
-    total: number;
-    size: number;
-};
-export type GetByIdResult = {
-    data: any | null;
-};
-export type ClientIdentity = {
-    id: string;
-    toPhrase: () => string | null;
-};
+export type RefInfo = import('../lib/spec.js').RefInfo;
+export type Spec = import('../lib/spec.js').Spec;
+export type Row = import('../lib/spec.js').Row;
+export type SingleResult = import('../lib/operators.js').SingleResult;
+export type ListResult = import('../lib/operators.js').ListResult;
 export type HandleStub = {
     id: string;
     type: string;
@@ -56,13 +30,18 @@ declare class LocalRefs {
     parent: Client;
     spec: import("@cero-base/core").Spec;
     store: this;
-    _local: boolean;
+    /** @private */
+    _local;
     /** @param {Client} client */
     constructor(client: Client);
     /** Underlying RPC channel borrowed from the parent. */
-    get rpc(): any;
-    /** Root handle id (local ops are resolved against the root's local store). */
-    get id(): any;
+    get rpc(): object;
+    /**
+     * The root's id: local ops resolve against the root's local store.
+     *
+     * @returns {string | null}
+     */
+    get id(): string | null;
 }
 /**
  * IPC-side RPC client for cero. Wraps an `hrpc` channel and exposes the same
@@ -70,117 +49,81 @@ declare class LocalRefs {
  * across the wire.
  */
 export declare class Client extends RPCClient {
-    operators: Record<string, any>;
-    id: any;
-    deviceId: any;
+    /** @private */
+    _onerror;
+    /** @type {string | null} */
+    id: string | null;
+    /** @type {{ id: string, name: string | null } | null} */
+    device: {
+        id: string;
+        name: string | null;
+    } | null;
     store: this;
     local: LocalRefs;
-    _fileBase: any;
-    _fileToken: any;
-    identity: {
-        id: any;
-        toPhrase: () => Promise<any>;
-    };
+    /** @private */
+    _fileBase;
+    /** @private */
+    _fileToken;
     /**
-     * @param {any} ipc   Framed IPC stream (must be writable).
+     * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-     * @param {{ operators?: Record<string, any> }} [opts]  The operators to bind, instead of the ones the spec carries.
+     * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
      */
-    constructor(ipc: any, spec: Spec, opts?: {
-        operators?: Record<string, any>;
+    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror }?: {
+        onerror?: (err: Error) => void;
     });
-    _pumpErrors(): void;
-    _open(): Promise<void>;
-    /** Pause networking and storage on the server. Idempotent. */
-    suspend(): Promise<void>;
-    /** Resume a suspended server. Idempotent. */
-    resume(): Promise<void>;
+    /** @private */
+    private _pumpErrors;
+    /** @private */
+    private _open;
     /**
      * Create a new child handle of the given type.
      *
      * @param {string} type
-     * @param {Record<string, any>} [opts]
+     * @param {{ name?: string | null }} [opts]
      * @returns {Promise<Handle>}
+     * @private
      */
-    _create(type: string, opts?: Record<string, any>): Promise<Handle>;
+    private _create;
     /**
      * Load an existing child handle by id.
      *
      * @param {string} type
      * @param {string} id
      * @returns {Promise<Handle>}
+     * @private
      */
-    _load(type: string, id: string): Promise<Handle>;
+    private _load;
     /**
      * Join a child handle via invite.
      *
      * @param {string} invite
      * @param {string} type
      * @returns {Promise<Handle>}
+     * @private
      */
-    _join(invite: string, type: string): Promise<Handle>;
-}
-/**
- * Client-side proxy for a remote handle. Exposes the same row-ops surface as `Client` but
- * scoped to a single child handle id, and routes every call through the parent's RPC
- * channel.
- */
-declare class Handle {
-    parent: Client;
-    id: string;
-    type: string;
-    name: string;
-    spec: Spec;
-    store: this;
-    /**
-     * @param {Client} parent
-     * @param {string} id
-     * @param {string} type
-     * @param {string|null} name
-     */
-    constructor(parent: Client, id: string, type: string, name: string | null);
-    /** Underlying RPC channel borrowed from the parent. */
-    get rpc(): any;
-    /** Tear down the remote handle without leaving the room. */
-    close(): any;
-    /** Tear down the remote handle and drop membership. */
-    leave(): any;
+    private _join;
 }
 /**
  * Construct a `Client`, wait for `init` to complete, and return it.
  *
- * @param {any} ipc
- * @param {object} spec
- * @param {{ operators?: Record<string, any> }} [opts]
+ * @param {import('streamx').Duplex} ipc
+ * @param {Spec} spec
+ * @param {{ onerror?: (err: Error) => void }} [opts]
  * @returns {Promise<Client>}
  */
-export declare function connect(ipc: any, spec: object, opts?: {
-    operators?: Record<string, any>;
+export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?: {
+    onerror?: (err: Error) => void;
 }): Promise<Client>;
 /**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
  * server (via `connect`) instead of opening a local store.
  *
- * @param {any} ipc    Framed IPC duplex stream.
- * @param {any} spec   Built cero spec.
- * @param {{ operators?: Record<string, any> }} [opts]
+ * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
+ * @param {Spec} spec  Built cero spec.
+ * @param {{ onerror?: (err: Error) => void }} [opts]
  * @returns {Promise<Client>}
  */
-export declare function cero(ipc: any, spec: any, opts?: {
-    operators?: Record<string, any>;
+export declare function cero(ipc: import('streamx').Duplex, spec: Spec, opts?: {
+    onerror?: (err: Error) => void;
 }): Promise<Client>;
-export declare namespace cero {
-    export { connect };
-    export { restore };
-    export { t };
-    export { put };
-    export { set };
-    export { get };
-    export { del };
-    export { watch };
-    export { changes };
-    export { call };
-    export { open };
-    export { rotate };
-    export { schema };
-}

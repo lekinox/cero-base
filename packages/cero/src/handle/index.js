@@ -1,7 +1,5 @@
 import AbortController from 'bare-abort-controller'
 import b4a from 'b4a'
-import c from 'compact-encoding'
-import Hypercore from 'hypercore'
 import { discoveryKey } from 'hypercore-crypto'
 import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
@@ -10,10 +8,12 @@ import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
-import { epochEntries, blobEpochKey } from '@cero-base/core/database/encryption'
+import { blobEpochKey } from '@cero-base/core/database/encryption'
 import { Pairing } from '@cero-base/core/pairing'
+import { Invite } from '@cero-base/core/invite'
+import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
-import { grants, can, isRank, admission, REMOVE, onAbort } from '@cero-base/core/utils'
+import { admission, onAbort, filter } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -22,58 +22,53 @@ import { FileServer } from '@cero-base/core/blobs/server'
 import { NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
-import { extensionsOf, operatorsOf, bind } from '../extensions/index.js'
-import { before, after } from '../lib/operators.js'
+import { Join, wait } from './join.js'
+import { box } from '../local/index.js'
+import { extensionsOf } from '../extensions/index.js'
 
 export { Ref } from '../lib/refs.js'
 
 /**
  * @typedef {import('@cero-base/core/network').Network} Network
  * @typedef {import('../local/index.js').Local} Local
+ * @typedef {import('../lib/spec.js').Spec} Spec
  * @typedef {import('@cero-base/core/identity').KeyPair} KeyPair
  *
  * @typedef {object} HandleOpts
  * @property {Handle} [parent]                 Parent handle when this is a child slot.
  * @property {Identity} [identity]             Long-lived user identity. Inherited from `parent` if omitted.
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
- * @property {any} [store]                     Pre-existing Corestore. Falls back to `parent.store.store`.
- * @property {any} [spec]                      Built cero spec.
+ * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
+ * @property {Spec} [spec]                     Built cero spec.
  * @property {Local} [local]                   Local store for per-handle keypairs.
- * @property {any} [storage]                   Owned HypercoreStorage to close on shutdown.
- * @property {any} [discovery]                 Owned identity Discovery to destroy on shutdown.
+ * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
+ * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).
- * @property {any} [opts]                      Pass-through cero(...) options.
- * @property {Record<string, Function>} [routes]
+ * @property {import('../index.js').CeroOpts} [opts]  Pass-through cero(...) options.
  * @property {Uint8Array} [key]                Existing database key.
  * @property {Uint8Array} [encryptionKey]      Existing encryption key.
  * @property {Array<{ epoch: number, entropy: Uint8Array }>} [epochs]  Rotation epochs delivered at join.
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
  * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
+ * @property {import('../lib/bluetooth.js').Bluetooth | null} [bluetooth]  Root only: the radio, up before the root opens.
+ * @property {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number } | null} [bootstrap]  Root only: provision this device as it opens, its genesis or its recovery.
  *
  * @typedef {object} CreateChildOpts
  * @property {string | null} [name]
- * @property {Record<string, Function>} [routes]
- * @property {string} [role]
- * @property {boolean} [accept]
  *
  * @typedef {object} JoinChildOpts
- * @property {Record<string, Function>} [routes]
  * @property {number} [timeout]
  *
  * @typedef {object} StaticJoinOpts
  * @property {Handle} [parent]
  * @property {Network} [network]
  * @property {Identity} [identity]
- * @property {any} [store]
- * @property {any} [spec]
+ * @property {import('corestore')} [store]
+ * @property {Spec} [spec]
  * @property {string} [namespace]
- * @property {Record<string, Function>} [routes]
+ * @property {KeyPair} [writer]                  Writer keypair in the joined handle; a fresh one by default.
  * @property {number} [timeout]
- *
- * @typedef {object} AcceptOpts
- * @property {string} [role]   Role to grant the joining peer. Falls back to the invite's role, then `'member'`.
- * @property {string | null} [name]
  *
  * @typedef {object} HandleExtra
  * @property {string | null} [name]                       Display name; set on child handles by the owner flow.
@@ -82,7 +77,7 @@ export { Ref } from '../lib/refs.js'
  *
  * @typedef {Handle & HandleExtra} Child  A child handle plus its dynamically-attached refs.
  *
- * @typedef {Handle & Record<string, import('../lib/refs.js').Ref>} CeroHandle  A handle with every schema ref reachable as a `Ref` property (e.g. `me.profile`, `room.messages`).
+ * @typedef {Handle & Record<string, import('../lib/refs.js').Ref>} Context  A root or a room: a handle with its refs (`me.profile`, `room.messages`).
  */
 
 /**
@@ -104,31 +99,51 @@ export class Handle extends ReadyResource {
     if (!store) throw CeroError.REQUIRED('store')
     if (!spec) throw CeroError.REQUIRED('spec')
 
+    /** @type {Identity} */
     this.identity = identity
+    /** @type {Network} */
     this.network = network
     this.spec = spec
     this.parent = parent
 
     this.local = opts.local || null
+    // one per device: the root's, its boxes in the local store
+    /** @type {Mailbox} */
+    this.mailbox = parent ? parent.root.mailbox : new Mailbox(network, boxes(this.local))
+    /** @private */
     this._storage = opts.storage || null
+    /** @private */
     this._discovery = opts.discovery || null
+    /** @private */
     this._dir = opts.dir || null
+    /** @private */
     this._opts = opts.opts || {}
+    /** @type {import('../extensions/index.js').Extension[]} */
     this.extensions = parent?.extensions || extensionsOf(spec, this._opts.extensions)
-    this.operators = parent?.operators || operatorsOf(spec, this._opts.operators)
+    /** @private */
     this._onerror = this._opts.onerror || ((err) => console.error(err))
+    /** @type {Set<Handle> | null} */
     this.children = parent ? null : new Set()
+    /** @private */
     this._typeHooks = parent ? null : new Set()
+    /** @private */
     this._loading = parent ? null : new Map()
-    this._joining = parent ? null : new Map()
+    /** @private */
+    this._joining = parent ? null : new Map() // type/discovery key → Join
+    /** @private */
     this._coreKeys = parent ? null : new Map()
+    /** @private */
     this._fileServer = null
+    /** @private */
     this._blobs = null
+    /** @private */
     this._epochBlobs = null
     // root only, serializes suspend/resume and converges rapid bounces
+    /** @private */
     this._sus = parent
       ? null
-      : new Suspendify({ suspend: () => this._suspend(), resume: () => this._resume() })
+      : new Suspendify({ suspend: () => this._sleep(), resume: () => this._wake() })
+    /** @private */
     this._owned = new Set()
 
     this.store = new Database({
@@ -136,7 +151,6 @@ export class Handle extends ReadyResource {
       identity,
       network,
       spec,
-      routes: opts.routes,
       key: opts.key,
       encryptionKey: opts.encryptionKey,
       epochs: opts.epochs,
@@ -145,8 +159,24 @@ export class Handle extends ReadyResource {
       pinned: !parent,
       onerror: this._onerror
     })
-    this.pair = null
+    /** @private */
+    this._pair = null
+    /** @private */
     this._wantsPair = opts.pair !== false
+    /** @private */
+    this._boot = opts.bootstrap || null
+    /** @private */
+    this._bluetooth = opts.bluetooth || null
+    // refs before the open, so a hook can attach before any op applies
+    Ref.attach(this, this.store.refs, this.spec.handles)
+    /** @private */
+    this._live = {
+      status: { get: () => this._status(), watch: (fn) => this._onStatus(fn) },
+      ...(!this.parent && {
+        joins: { get: (q) => this._joins(q), watch: (fn) => this._onJoins(fn) },
+        nearby: { get: () => this._peers(), watch: (fn) => this._onPeers(fn) }
+      })
+    }
   }
 
   /**
@@ -156,6 +186,7 @@ export class Handle extends ReadyResource {
    */
   get signal() {
     if (!this._ac) {
+      /** @private */
       this._ac = new AbortController()
       if (this.closed) this._ac.abort()
       else this.once('close', () => this._ac.abort())
@@ -209,68 +240,68 @@ export class Handle extends ReadyResource {
     return this.spec.meta.type || null
   }
 
-  /** Canonical id — identity id for the root handle, store key for children. */
+  /**
+   * Canonical id: the identity id on the root, the database key on a room.
+   *
+   * @returns {string | null}
+   */
   get id() {
     if (!this.parent) return this.identity.id
     return this.store?.key ? hid.encode(this.store.key) : null
   }
 
-  /** This device's id + name. `null` on child handles. */
+  /**
+   * This device's id and name. `null` on a room.
+   *
+   * @returns {{ id: string, name: string | null } | null}
+   */
   get device() {
     if (this.parent) return null
     const k = this.store?.writerKey
     return k ? { id: hid.encode(k), name: this._opts.name || null } : null
   }
 
-  get suspended() {
-    return this._sus?.suspended === true
-  }
-
+  /** @private */
   async _open() {
     await this.store.ready()
+    // a fresh device takes writes only once provisioned, and an operator waits for the open
+    if (this._boot) await this.store.bootstrap(this._boot)
     if (this._wantsPair) {
-      this.pair = new Pairing({
-        network: this.network,
-        identity: this.identity,
-        topic: this.store.key,
-        onerror: this._onerror,
-        onconsume: (id) => {
-          this.store.call('del-invite', { id }).catch(safetyCatch)
-        }
-      })
-      await this.pair.ready()
-      // serve invites persisted by any member, in step with the rows
-      await this._syncInvites().catch(safetyCatch)
-      this._invitesSync = (touched) => {
-        if (touched.has('*') || touched.has('invites')) this._syncInvites().catch(safetyCatch)
-      }
-      this.store.on('update', this._invitesSync)
+      this._pair = new Pairing({ mailbox: this.mailbox, db: this.store })
+      await this._pair.ready()
     }
-    Ref.attach(this, this.store.refs, this.spec.handles)
-    this.root._coreKeys.set(b4a.toString(this.store.key, 'hex'), this.store.encryptionKey)
-    if (!this.parent) await this.fileServer.listen()
+    this.root._coreKeys.set(b4a.toHex(this.store.key), this.store.encryptionKey)
+    if (!this.parent) {
+      await this.fileServer.listen()
+      await this.mailbox.ready()
+      if (this._bluetooth) {
+        const off = this.store.onUpdate('profile', () => this._tell().catch(this._onerror))
+        this.once('close', off)
+        await this._tell()
+      }
+      await this._carryOn().catch(this._onerror)
+      this._reserve().catch(this._onerror)
+    }
   }
 
+  /** @private */
   async _close() {
-    this.root._coreKeys.delete(b4a.toString(this.store.key, 'hex'))
-    if (this._blobs?.key) this.root._coreKeys.delete(b4a.toString(this._blobs.key, 'hex'))
+    this.root._coreKeys.delete(b4a.toHex(this.store.key))
+    if (this._blobs?.key) this.root._coreKeys.delete(b4a.toHex(this._blobs.key))
     for (const b of this._epochBlobs?.values() || []) {
-      if (b.key) this.root._coreKeys.delete(b4a.toString(b.key, 'hex'))
+      if (b.key) this.root._coreKeys.delete(b4a.toHex(b.key))
     }
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
     for (const r of [...this._owned]) r.destroy?.()
     this._owned.clear()
-    if (this._invitesSync) {
-      this.store.off('update', this._invitesSync)
-      this._invitesSync = null
-    }
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
     const steps = [
+      ...[...(this._joining?.values() || [])].map((join) => () => join.close()),
       () => this._blobs?.close(),
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
       ...[...(this.children || [])].map((c) => () => c.close()),
-      () => this.pair?.close()
+      () => this._pair?.close()
     ]
     this._epochBlobs = null
     this.children?.clear()
@@ -281,7 +312,8 @@ export class Handle extends ReadyResource {
     } else {
       const store = this.store.store
       steps.push(
-        () => this.bluetooth?.close(),
+        () => this.mailbox.close(),
+        () => this._bluetooth?.close(),
         () => this.local?.close(),
         async () => {
           await this._fileServer?.close()
@@ -315,41 +347,10 @@ export class Handle extends ReadyResource {
     return resource
   }
 
-  /**
-   * `EventEmitter.on` plus an optional `{ signal }` that removes the listener
-   * when the signal aborts — e.g. `me.on('handle', fn, { signal: me.signal })`.
-   *
-   * @param {string} event
-   * @param {(...args: any[]) => void} fn
-   * @param {{ signal?: AbortSignal }} [opts]
-   * @returns {this}
-   */
-  on(event, fn, opts) {
-    super.on(event, fn)
-    onAbort(opts?.signal, () => super.off(event, fn))
-    return this
-  }
-
-  /**
-   * Resolve a durable file id to an ephemeral download url via this identity's
-   * file server.
-   *
-   * @param {string} id
-   * @returns {string}
-   */
-  getLink(id) {
+  // a file's url on this device's file server, for the rows that name it
+  /** @private */
+  _link(id) {
     return this.root.fileServer.getLink(id)
-  }
-
-  /**
-   * Initialise a fresh database: write the genesis claim, derive the writer.
-   * Forwards to `Database.bootstrap`.
-   *
-   * @param {any} [opts]
-   * @returns {Promise<any>}
-   */
-  bootstrap(opts) {
-    return this.store.bootstrap(opts)
   }
 
   /**
@@ -362,189 +363,231 @@ export class Handle extends ReadyResource {
     return this.store.claim()
   }
 
-  /**
-   * `true` ranks this handle as just touched, `false` takes it out of the swarm until the
-   * next update lands in it.
-   *
-   * @param {boolean} active
-   */
-  setActive(active) {
-    this.store.setActive(active)
+  // the verbs in lib/operators.js land here
+
+  /** @private */
+  async _invite(opts) {
+    return this._pairing().invite(opts)
   }
 
-  /**
-   * Mint a pairing invite for this handle.
-   *
-   * @param {{ role?: string, expiresIn?: number, data?: any }} [opts]
-   * @returns {Promise<string>}  Z32-encoded invite string.
-   */
-  async invite(opts) {
-    if (!this.pair) {
-      throw CeroError.INVALID(
-        'invite() is not available on the root handle — open a child handle first'
-      )
-    }
-    // an invite is a capability, cap the rank or apply drops the mismatch silently
-    if (opts?.role !== undefined && opts.role !== '') await this._checkGrant(opts.role)
-    const str = await this.pair.createInvite(opts)
-    const record = this.pair.recordOf(str)
-    if (record) {
-      // persist so every member replica serves it across restarts
-      await this.store
-        .call('add-invite', {
-          id: b4a.toString(record.id, 'hex'),
-          invite: b4a.from(str),
-          publicKey: record.publicKey,
-          seed: record.seed,
-          role: record.invite.role || '',
-          expires: record.invite.expires || 0,
-          createdAt: Date.now(),
-          reuse: !!record.reuse
-        })
-        .catch(safetyCatch)
-    }
-    return str
+  /** @private */
+  async _revoke(invite) {
+    return this._pairing().revoke(invite)
   }
 
-  /**
-   * Revoke a previously-minted invite by its string form.
-   *
-   * @param {string} invite
-   * @returns {Promise<boolean>}  `true` if the invite was found and removed.
-   */
-  async revoke(invite) {
-    if (!this.pair) throw CeroError.INVALID('revoke() is not available on the root handle')
-    // apply refuses revoke below REMOVE, and other members would keep serving it
-    const { data: me } = await this.store.get('members', this.identity.id)
-    if (me && !can(me.role, REMOVE)) {
-      throw CeroError.DENIED(null, 'revoking an invite needs the remove permission')
-    }
-    const record = this.pair.recordOf(invite)
-    const revoked = this.pair.revoke(invite)
-    if (revoked && record) {
-      // drop the persisted row so every other member stops serving it too
-      await this.store.call('del-invite', { id: b4a.toString(record.id, 'hex') })
-    }
-    return revoked
+  /** @private */
+  async _answer(id, { accept, role, reason }) {
+    const request = await this._pairing().request(id)
+    return accept ? request.accept({ role }) : request.deny(reason)
   }
 
-  /**
-   * Accept a paired candidate — adds them as a writer (or read-only member)
-   * and confirms the pairing so they receive this handle's keys.
-   *
-   * @param {any} candidate
-   * @param {AcceptOpts} [opts]
-   * @returns {Promise<void>}
-   */
-  async accept(candidate, { role, name } = {}) {
-    const data = candidate.userData
-    if (!b4a.isBuffer(data) || data.length !== 64) {
-      throw CeroError.INVALID(
-        'candidate userData must be a 64-byte buffer (identity + writer pubkey)'
-      )
-    }
-    if (candidate.invite.expired) throw CeroError.EXPIRED()
-    role = role || candidate.invite.role || 'member'
-    if (candidate.invite.role && !grants(candidate.invite.role, role)) {
-      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${candidate.invite.role}'`)
-    }
-    // synchronous on purpose, the cap against our own rank is enforced at apply
-    if (!isRank(role)) {
-      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
-    }
+  /** @private */
+  _rotate() {
+    return this.store.rotate()
+  }
 
-    // confirm must answer within the request's lifetime, so the key goes out before the membership
-    // writes land; epoch secrets ride along so a post-rotation joiner reads full history
-    const epochs = this.store.keyring.all()
-    await candidate.confirm({
-      key: this.store.key,
-      encryptionKey: this.store.encryptionKey,
-      additional: epochs.length ? c.encode(epochEntries, epochs) : null
-    })
-
-    const ts = Date.now()
-    const writerKey = Hypercore.key({ version: 2, signers: [{ publicKey: data.subarray(32, 64) }] })
-    const member = {
-      id: hid.encode(data.subarray(0, 32)),
-      key: writerKey,
-      role,
-      name: name || null,
-      createdAt: ts,
-      updatedAt: ts
+  // the same context, its refs writing into one batch; a fn that ignores it would write outside
+  /** @private */
+  async _tx(fn) {
+    if (typeof fn !== 'function' || fn.length < 1) {
+      throw CeroError.INVALID('tx(ctx, fn): fn takes the batch, (tx) => ...')
     }
-
-    if (role === 'reader') {
-      await this.store.call('add-member', member)
-      return
-    }
-
-    const sig = this.identity.sign(admission(this.store.key, writerKey, this.store.writerKey))
-    // one batch: the member row, then the writer that belongs to it; a refusal discards both
-    await this.store.tx(async (tx) => {
-      await tx.call('add-member', member)
-      await tx.call('add-writer', {
-        sig,
-        master: this.identity.publicKey,
-        writer: writerKey,
-        memberId: member.id,
-        ts: member.updatedAt || Date.now()
-      })
+    return this.store.tx((batch) => {
+      const tx = Object.create(this)
+      tx.store = batch
+      for (const name of Object.keys(this.store.refs)) {
+        tx[name] = new Ref(tx, name, this[name].kind, this[name].schema)
+      }
+      return fn(tx)
     })
   }
 
-  /**
-   * Leave a child handle — removes it from the parent's `handles` collection
-   * and closes the session. No-op on root handles.
-   *
-   * @returns {Promise<void>}
-   */
-  async leave() {
-    if (!this.parent) return
+  /** @private */
+  _pairing() {
+    if (!this._pair) throw CeroError.INVALID('the root has no invites, open a room first')
+    return this._pair
+  }
+
+  /** @private */
+  async _leave() {
+    if (!this.parent) throw CeroError.INVALID('the root cannot be left')
+    await this.store.del('members', this.identity.id)
     await this.parent.store.call('del-handle', { id: hid.encode(this.store.key) })
     await this.close()
   }
 
-  /**
-   * Pause networking + storage. Idempotent; no-op on child handles.
-   *
-   * @returns {Promise<void>}
-   */
-  async suspend() {
-    if (this._sus) await this._sus.suspend()
+  // the app going to the background and back: networking, storage and the radio together
+  /** @private */
+  async _suspend() {
+    await this._lifecycle().suspend()
+    this.emit('status')
   }
 
-  /**
-   * Resume a suspended root handle. Idempotent; no-op on child handles.
-   *
-   * @returns {Promise<void>}
-   */
-  async resume() {
-    if (this._sus) await this._sus.resume()
+  /** @private */
+  async _resume() {
+    await this._lifecycle().resume()
+    this.emit('status')
+  }
+
+  /** @private */
+  _lifecycle() {
+    if (!this._sus) {
+      throw CeroError.INVALID("suspend and resume are the app's, on me: a room uses cero.activate")
+    }
+    return this._sus
+  }
+
+  // true ranks a room as just used, false takes it off the swarm until something lands in it
+  /** @private */
+  _active(on) {
+    this.store.setActive(on)
+  }
+
+  /** @private */
+  async _status() {
+    const { data: member } = await this.store.get('members', this.identity.id)
+    const { current, seqs } = this.store.keyring
+    const data = {
+      role: member?.role ?? null,
+      writable: this.store.writable,
+      epoch: (current && seqs.get(current)) || 0,
+      suspended: this.root._sus.suspended,
+      behind: this.store.behind || 0,
+      nearby: this.root._bluetooth?.state ?? null
+    }
+    return { data }
+  }
+
+  /** @private */
+  _onStatus(fn) {
+    const sources = [
+      [this, 'status'],
+      [this.store, 'update'],
+      [this.store, 'writable'],
+      [this.store, 'unwritable'],
+      [this.store, 'behind']
+    ]
+    if (this.parent) sources.push([this.root, 'status'])
+    for (const [emitter, event] of sources) emitter.on(event, fn)
+    const off = this._onRadio(fn)
+    return () => {
+      for (const [emitter, event] of sources) emitter.off(event, fn)
+      off()
+    }
+  }
+
+  // the radio is the device's: the mesh (true), off (false), or one invite's rendezvous (a code)
+  // until the next call or the invite expires
+  /** @private */
+  async _nearby(mode) {
+    const bt = this.root._bluetooth
+    if (!bt) throw CeroError.INVALID('nearby needs cero() to open with the bluetooth option')
+    this.root._rendezvous?.()
+    this.root._rendezvous = null
+    if (mode === false) return bt.stop()
+    await bt.start()
+    if (typeof mode === 'string') this.root._rendezvous = bt.announce(mode)
+  }
+
+  // what a Bluetooth peer hears: the profile's name and whether this device is a phone
+  /** @private */
+  async _tell() {
+    const profile = this.store.refs.profile ? (await this.store.get('profile')).data : null
+    const { data: device } = await this.store.get('devices', this.device.id)
+    this._bluetooth.tell({ name: profile?.name ?? null, isMobile: device?.isMobile === true })
+  }
+
+  // one row a person: two of their devices in range link twice
+  /** @private */
+  async _peers() {
+    const peers = this._bluetooth ? [...this._bluetooth.peers.keys()] : []
+    const data = []
+    for (const hex of peers) {
+      const peer = this._bluetooth.told(hex)
+      if (peer) data.push({ ...peer, name: peer.name ?? (await this._nameOf(peer.id)) })
+    }
+    return { data, total: data.length, size: data.length }
+  }
+
+  // a peer's name as its member row shows it in a room open here; a stranger has none
+  /** @private */
+  async _nameOf(id) {
+    for (const room of this.children) {
+      const { data } = await room.store.get('members', id)
+      if (data?.name) return data.name
+    }
+    return null
+  }
+
+  // a link opening, closing, or a peer telling a new name
+  /** @private */
+  _onPeers(fn) {
+    const off = this._onRadio(fn)
+    this.network.on('peer-info', fn)
+    return () => {
+      off()
+      this.network.off('peer-info', fn)
+    }
+  }
+
+  /** @private */
+  _onRadio(fn) {
+    const bt = this.root._bluetooth
+    if (!bt) return () => {}
+    bt.on('update', fn)
+    return () => bt.off('update', fn)
+  }
+
+  // the joins this device waits on, without the keys the local store keeps for them
+  /** @private */
+  async _joins(query = {}) {
+    const rows = this.local ? (await this.local.store.get('joins')).data : []
+    const data = filter(
+      rows.map(({ id, type, invite }) => ({ id, type, invite })),
+      query
+    )
+    return { data, total: data.length, size: data.length }
+  }
+
+  /** @private */
+  _onJoins(fn) {
+    if (!this.local) return () => {}
+    this.local.store.db.watch(fn)
+    return () => this.local.store.db.unwatch(fn)
+  }
+
+  /** @private */
+  async _phrase() {
+    return this.identity.toPhrase()
   }
 
   /**
    * @param {Uint8Array} coreKey
    * @param {object} info
    * @returns {{ key: Uint8Array, encryptionKey: Uint8Array } | null}
+   * @private
    */
   _resolveCore(coreKey, info) {
-    const hex = b4a.toString(coreKey, 'hex')
+    const hex = b4a.toHex(coreKey)
     const encryptionKey = this.root._coreKeys.get(hex)
     if (encryptionKey !== undefined) return { key: coreKey, encryptionKey }
     return null
   }
 
+  /** @private */
   _baseBlobs() {
     if (!this._blobs) this._blobs = this._makeBlobs('blobs', this.store.encryptionKey, 0)
     return this._blobs
   }
 
+  /** @private */
   _makeBlobs(name, encryptionKey, stamp) {
     const blobs = new Blobs({
       store: this.store.store,
       network: this.network,
       encryptionKey,
-      name
+      // every handle shares the device's corestore: one core per handle, or its key serves the others
+      name: this.parent ? `${name}/${this.id}` : name
     })
     blobs.stamp = stamp
     blobs
@@ -552,7 +595,7 @@ export class Handle extends ReadyResource {
       .then(() => {
         // close prunes _coreKeys first, a late ready() must not re-insert the entry
         if (this.closing || this.closed || !blobs.key) return
-        this.root._coreKeys.set(b4a.toString(blobs.key, 'hex'), encryptionKey)
+        this.root._coreKeys.set(b4a.toHex(blobs.key), encryptionKey)
       })
       .catch(this._onerror)
     return blobs
@@ -563,12 +606,13 @@ export class Handle extends ReadyResource {
    *
    * @param {string} id
    * @param {number} [stamp]
+   * @private
    */
   _registerBlobCore(id, stamp) {
     if (!id || !this.root?._coreKeys) return
     try {
       const { coreKey } = decodeId(id)
-      const hex = b4a.toString(coreKey, 'hex')
+      const hex = b4a.toHex(coreKey)
       if (!this.root._coreKeys.has(hex)) {
         // no stamp on a file-field value, look it up (fire-and-forget, idempotent)
         if (stamp === undefined) {
@@ -591,30 +635,33 @@ export class Handle extends ReadyResource {
     }
   }
 
+  /**
+   * The bytes of a file this handle holds, fetched from a peer when this device lacks them.
+   *
+   * @param {string} id
+   * @returns {Promise<Uint8Array>}
+   * @private
+   */
+  async _bytes(id) {
+    const { coreKey, blobId } = decodeId(id)
+    const { data } = await this.store.get('files', id)
+    const encryptionKey = data && this._blobCoreKey(data.stamp || 0)
+    if (!encryptionKey) throw CeroError.UNKNOWN('file', id)
+    const blobs = new Blobs({ store: this.store.store, key: coreKey, encryptionKey })
+    try {
+      await blobs.ready()
+      return await blobs.get(blobId)
+    } finally {
+      await blobs.close()
+    }
+  }
+
   // base-era cores use the OWNING handle's key, rooms have their own
+  /** @private */
   _blobCoreKey(stamp) {
     if (!stamp) return this.store.encryptionKey
     const entropy = this.store.keyring.entropy(stamp)
     return entropy ? blobEpochKey(entropy) : null
-  }
-
-  async _syncInvites() {
-    if (!this.pair) return
-    const { data } = await this.store.get('invites')
-    this.pair.syncRows(data || [])
-  }
-
-  // `grants` treats an unknown role as "no", so an app role name must fail loudly
-  async _checkGrant(role) {
-    if (!isRank(role)) {
-      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
-    }
-    const { data: me } = await this.store.get('members', this.identity.id)
-    // no member row yet = genesis, nothing to cap
-    if (!me) return
-    if (!grants(me.role, role)) {
-      throw CeroError.DENIED(null, `role '${role}' exceeds your own role '${me.role}'`)
-    }
   }
 
   /**
@@ -624,15 +671,14 @@ export class Handle extends ReadyResource {
    * @param {string} type
    * @param {CreateChildOpts} [opts]
    * @returns {Promise<Handle>}
+   * @private
    */
-  async _create(type, { name = null, routes, role, accept } = {}) {
+  async _create(type, { name = null } = {}) {
     const writer = Identity.randomKeyPair()
     const child = /** @type {Child} */ (
-      new Handle({
-        parent: this,
+      this._room({
         spec: pickHandle(this.spec, type),
         namespace: `${NS}/handle/${type}/${writer.id}`,
-        routes,
         keyPair: writer,
         // inheriting identity.encryptionKey would let any member decrypt every room
         encryptionKey: Identity.randomBytes(32)
@@ -659,7 +705,7 @@ export class Handle extends ReadyResource {
 
       const ts = Date.now()
       const writerKey = child.store.writerKey
-      // same shape as accept(), so a room's first two ops land together
+      // one batch, so a room's first two ops land together
       await child.store.tx(async (tx) => {
         await tx.call('add-writer', {
           master: this.identity.publicKey,
@@ -686,8 +732,7 @@ export class Handle extends ReadyResource {
         updatedAt: ts
       })
 
-      if (accept !== false) this._wireAccept(child, { role })
-      this._adopt(child, { name, role })
+      this._adopt(child, { name })
       publish(child)
       this._loading?.delete(id)
       return child
@@ -700,74 +745,97 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Join a child handle by invite (joiner-flow).
+   * Join a child handle by invite. The caller waits up to `timeout`; the join itself goes on
+   * until it is admitted, denied or expired, across restarts, and the handle then arrives
+   * with the `handle` event.
    *
    * @param {string} invite
    * @param {string} type
    * @param {JoinChildOpts} [opts]
    * @returns {Promise<Handle>}
+   * @private
    */
-  async _join(invite, type, opts = {}) {
-    // the pairing layer allows one candidate per invite, attach to the in-flight join
-    const target = Pairing.inviteTopic(invite)
-    const key = target && `${type}/${b4a.toString(target, 'hex')}`
-    if (!key) return this._pair(invite, type, opts, target)
-    const pending = this._joining.get(key)
-    if (pending) return pending
-    const joining = this._pair(invite, type, opts, target)
-    this._joining.set(key, joining)
+  async _join(invite, type, { timeout = TIMEOUT } = {}) {
+    const known = await this._joined(type, Invite.parse(invite).discoveryKey)
+    if (known) return known
+
+    const join = this._start(invite, type)
+    join.waiting++
     try {
-      return await joining
+      return await wait(join.done, timeout)
     } finally {
-      this._joining.delete(key)
+      join.waiting--
     }
   }
 
-  /**
-   * @param {string} invite
-   * @param {string} type
-   * @param {JoinChildOpts} [opts]
-   * @param {Uint8Array | null} [target]
-   * @returns {Promise<Handle>}
-   */
-  async _pair(invite, type, { routes, timeout } = {}, target = null) {
-    const deadline = timeout || TIMEOUT
-
-    // a stored writer still admitted reopens without waiting; a removed writer's core is
-    // frozen, so fall through to a real pairing and a fresh keypair
-    if (target) {
-      const { data: joined } = await this.store.get('handles')
-      const existing = joined.find(
-        (h) => h.type === type && b4a.equals(discoveryKey(h.key), target)
-      )
-      if (existing) {
-        const known = await this._load(type, existing.id)
-        const { data: me } = await known.store.get('members', this.identity.id)
-        const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
-        if (me && device) return known
-        await known.close().catch(safetyCatch)
-      }
+  /** @private */
+  _start(invite, type) {
+    const target = Invite.parse(invite).discoveryKey
+    const key = `${type}/${b4a.toHex(target)}`
+    let join = this._joining.get(key)
+    if (!join) {
+      join = new Join(this, {
+        type,
+        spec: pickHandle(this.spec, type),
+        discoveryKey: target,
+        onend: () => this._joining.delete(key)
+      })
+      this._joining.set(key, join)
     }
+    if (join.invite !== invite) join.start(invite)
+    return join
+  }
 
-    // offline join: rendezvous on the invite-derived BLE UUID for the join
-    const stopNearby = this.root.bluetooth ? this.root.bluetooth.announce(invite) : null
+  /** @private */
+  async _cancel(invite) {
+    const id = b4a.toHex(Invite.parse(invite).discoveryKey)
+    const join = [...this.root._joining.values()].find((join) => join.id === id)
+    await join?.cancel()
+    return !!join
+  }
 
+  // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
+  // so that one pairs again with a fresh keypair
+  /** @private */
+  async _joined(type, target) {
+    const { data: joined } = await this.store.get('handles')
+    const existing = joined.find((h) => h.type === type && b4a.equals(discoveryKey(h.key), target))
+    if (!existing) return null
+    const known = await this._load(type, existing.id)
+    const { data: me } = await known.store.get('members', this.identity.id)
+    const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
+    // a reader never had a seat, a removed writer lost it
+    if (me && (device || me.role === 'reader')) return known
+    await known.close().catch(safetyCatch)
+    return null
+  }
+
+  /**
+   * Open a joined handle with the keys its reply delivered, once this writer is admitted.
+   *
+   * @param {string} type
+   * @param {import('@cero-base/core/pairing').JoinResult} reply
+   * @returns {Promise<Handle>}
+   * @private
+   */
+  async _enter(type, reply) {
     const child = /** @type {Child} */ (
-      await Handle.join(invite, {
-        parent: this,
+      this._room({
         spec: pickHandle(this.spec, type),
         namespace: `${NS}/handle/${type}/${randomNs()}`,
-        routes,
-        timeout
-      }).finally(() => stopNearby?.())
+        ...delivered(reply)
+      })
     )
-    // whenWritable timing out (host offline) is normal, don't leak the opened child
     let publish = null
     let abort = null
     let inflightId = null
     try {
       await child.ready()
-      if (!child.store.writable) await child.store.whenWritable({ timeout: deadline })
+      // admitted once our member row lands; the same apply seats a writer, a reader has no seat
+      const member = await admitted(child.store, this.identity.id)
+      if (member.role !== 'reader' && !child.store.writable) {
+        await child.store.whenWritable({ timeout: 0 })
+      }
 
       const id = hid.encode(child.store.key)
       // same create/open race as _create, a concurrent _load must share this child
@@ -790,7 +858,6 @@ export class Handle extends ReadyResource {
         createdAt: ts,
         updatedAt: ts
       })
-      this._wireAccept(child)
       this._adopt(child, {})
       publish(child)
       this._loading?.delete(id)
@@ -803,6 +870,20 @@ export class Handle extends ReadyResource {
     }
   }
 
+  // joins not answered at the last close go on, with nobody waiting; the mailbox sends what its
+  // outbox kept
+  /** @private */
+  async _carryOn() {
+    if (!this.local) return
+    for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
+      if (await this._joined(type, Invite.parse(invite).discoveryKey)) {
+        await this.local.store.del('joins', id)
+        continue
+      }
+      this._start(invite, type)
+    }
+  }
+
   /**
    * Get an open child by id, or re-open it. Concurrent calls for the same id share one
    * in-flight load, so the child is built — and `handle` emitted — exactly once.
@@ -810,12 +891,13 @@ export class Handle extends ReadyResource {
    * @param {string} type
    * @param {string} id
    * @returns {Promise<Handle>}
+   * @private
    */
-  async _load(type, id, opts) {
+  async _load(type, id) {
     for (const c of this.children) if (c.id === id) return c
     const existing = this._loading.get(id)
     if (existing) return existing
-    const loading = this._reopen(type, id, opts)
+    const loading = this._reopen(type, id)
     this._loading.set(id, loading)
     try {
       return await loading
@@ -831,8 +913,9 @@ export class Handle extends ReadyResource {
    * @param {string} type
    * @param {string} id
    * @returns {Promise<Handle>}
+   * @private
    */
-  async _reopen(type, id, opts) {
+  async _reopen(type, id) {
     const { data } = await this.store.get('handles', id)
     if (!data) throw CeroError.UNKNOWN('handle', id)
     if (data.type !== type) {
@@ -843,58 +926,68 @@ export class Handle extends ReadyResource {
     if (firstTime) {
       writer = Identity.randomKeyPair()
     }
-    const child = new Handle({
-      parent: this,
+    const child = this._room({
       spec: pickHandle(this.spec, type),
       namespace: `${NS}/handle/${type}/${id}`,
       key: data.key,
       encryptionKey: data.encryptionKey,
       keyPair: /** @type {KeyPair} */ (writer)
     })
-    await child.ready()
-    if (firstTime && !child.store.writable) {
-      await child.store.claim()
+    try {
+      await child.ready()
+      if (firstTime && !child.store.writable) {
+        await child.store.claim()
+      }
+      if (firstTime) {
+        await this._saveKeyPair(id, writer)
+      }
+    } catch (err) {
+      await child.close().catch(safetyCatch)
+      throw err
     }
-    if (firstTime) {
-      await this._saveKeyPair(id, writer)
-    }
-    // `accept: false` is a host-approval gate, re-arming it silently is worse
-    if (opts?.accept !== false) this._wireAccept(child, { role: opts?.role })
     this._adopt(child, {})
     return child
   }
 
-  async _suspend() {
+  // a room has its type's hooks before it opens, so no op it applies runs without them
+  /** @private */
+  _room(opts) {
+    const child = new Handle({ parent: this, ...opts })
+    for (const hook of this._typeHooks) hook.apply(child)
+    return child
+  }
+
+  /** @private */
+  async _sleep() {
     if (this.closing || this.closed) return
-    await Promise.all([...this.children].map((c) => c.pair?.suspend().catch(this._onerror)))
-    await this.bluetooth?.suspend().catch(this._onerror)
+    await this._bluetooth?.suspend().catch(this._onerror)
     await this.network.suspend().catch(this._onerror)
     await this.store.store.suspend().catch(this._onerror)
   }
 
-  async _resume() {
+  /** @private */
+  async _wake() {
     if (this.closing || this.closed) return
     await this.store.store.resume().catch(this._onerror)
     await this.network.resume().catch(this._onerror)
-    await this.bluetooth?.resume().catch(this._onerror)
-    await Promise.all([...this.children].map((c) => c.pair?.resume().catch(this._onerror)))
+    await this._bluetooth?.resume().catch(this._onerror)
   }
 
-  // a child is a child once it has its operators, the hooks declared for its type, and a slot
+  /** @private */
   _adopt(child, info) {
-    bind(child, child.type, this.operators)
-    for (const hook of this._typeHooks) hook.apply(child)
     this.children.add(child)
+    this._serve(child)
     this.emit('handle', child, info)
   }
 
   // before(me.room.notes, fn): on every room open now and every one opened later
-  _hookType(op, ref, fn, opts) {
+  /** @private */
+  _hookType(ref, attach, opts) {
     const offs = new Map()
     const hook = {
       apply: (child) => {
         if (child.type !== ref.type) return
-        offs.set(child, op(child[ref.name], fn))
+        offs.set(child, attach(child))
         child.once('close', () => offs.delete(child))
       }
     }
@@ -909,21 +1002,38 @@ export class Handle extends ReadyResource {
     return off
   }
 
-  /**
-   * @param {Handle} child
-   * @param {{ role?: string }} [opts]
-   */
-  _wireAccept(child, { role } = {}) {
-    child.pair.on('candidate', (cand) => {
-      if (this.closing || this.closed || child.closing || child.closed) return
-      child.accept(cand, { role }).catch(this._onerror)
-    })
+  // a room with invites is reopened at boot, so its joins are answered whenever we are online,
+  // not only while the app has the room open
+  /** @private */
+  _serve(child) {
+    if (!this.local || !child._pair) return
+    const save = async () => {
+      const { serving } = child._pair
+      if (serving === child._serving) return
+      child._serving = serving
+      if (!serving) return this.local.store.del('serving', child.id)
+      await this.local.store.put('serving', { id: child.id, type: child.type })
+    }
+    child._pair.on('serving', () => save().catch(this._onerror))
+    save().catch(this._onerror)
+  }
+
+  /** @private */
+  async _reserve() {
+    if (!this.local) return
+    for (const { id, type } of (await this.local.store.get('serving')).data) {
+      this._load(type, id).catch((err) => {
+        if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
+        this._onerror(err)
+      })
+    }
   }
 
   /**
    * @param {string} id
    * @param {KeyPair | { publicKey: Uint8Array, secretKey: Uint8Array } | null} keyPair
    * @returns {Promise<void>}
+   * @private
    */
   async _saveKeyPair(id, keyPair) {
     if (!this.local || !keyPair) return
@@ -937,6 +1047,7 @@ export class Handle extends ReadyResource {
   /**
    * @param {string} id
    * @returns {Promise<{ publicKey: Uint8Array, secretKey: Uint8Array } | null>}
+   * @private
    */
   async _loadKeyPair(id) {
     if (!this.local) return null
@@ -949,8 +1060,8 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Pair into an existing handle via an invite, returning a brand-new
-   * `Handle` already configured with the resolved key + encryption key.
+   * Pair into an existing handle via an invite, returning a brand-new `Handle` opened with the
+   * delivered keys. A one-shot join: the root's `_join` is the one that survives restarts.
    *
    * @param {string} invite
    * @param {StaticJoinOpts} [opts]
@@ -958,7 +1069,7 @@ export class Handle extends ReadyResource {
    */
   static async join(
     invite,
-    { parent, network, identity, store, spec, namespace, routes, timeout = TIMEOUT } = {}
+    { parent, network, identity, store, spec, namespace, writer, timeout = TIMEOUT } = {}
   ) {
     const net = network || parent?.network
     const id = identity || parent?.identity
@@ -967,43 +1078,57 @@ export class Handle extends ReadyResource {
     if (!store && !parent) throw CeroError.REQUIRED('store')
     if (!spec) throw CeroError.REQUIRED('spec')
 
-    const writer = Identity.randomKeyPair()
-    // join-only: a member listener here would collide with concurrent joins on the identity topic
-    const pair = new Pairing({ network: net, identity: id, host: false })
-    await pair.ready()
-
-    let key, encryptionKey, additional
+    // standalone, a mailbox of its own for this one join
+    const mailbox = parent ? null : new Mailbox(net)
     try {
-      const userData = b4a.concat([id.publicKey, writer.publicKey])
-      ;({ key, encryptionKey, additional } = await pair.join(invite, { userData, timeout }))
+      const reply = await Pairing.join(mailbox || parent.mailbox, invite, {
+        identity: id,
+        spec,
+        writer,
+        timeout
+      })
+      const opts = { parent, store, identity: id, network: net, spec, namespace }
+      return Handle.fromReply(reply, opts)
     } finally {
-      await pair.close()
+      await mailbox?.close()
     }
-
-    let epochs = null
-    if (additional?.byteLength) {
-      // the epoch set is load-bearing, a malformed delivery must fail the join
-      try {
-        epochs = c.decode(epochEntries, additional)
-      } catch {
-        throw CeroError.INVALID('malformed epoch delivery in pairing confirm')
-      }
-    }
-
-    return new Handle({
-      parent,
-      store,
-      identity: id,
-      network: net,
-      spec,
-      namespace,
-      routes,
-      key,
-      encryptionKey,
-      epochs,
-      keyPair: writer
-    })
   }
+
+  /**
+   * A handle opened with the keys a pairing reply delivered.
+   *
+   * @param {import('@cero-base/core/pairing').JoinResult} reply
+   * @param {Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>} opts
+   * @returns {Handle}
+   */
+  static fromReply(reply, opts) {
+    return new Handle({ ...opts, ...delivered(reply) })
+  }
+}
+
+// the keys a pairing reply delivered, as a handle opens with them
+function delivered({ key, encryptionKey, epochs, writer }) {
+  return { key, encryptionKey, epochs, keyPair: writer }
+}
+
+function admitted(db, id) {
+  return new Promise((resolve, reject) => {
+    const check = async () => {
+      const { data } = await db.get('members', id)
+      if (!data) return
+      db.off('update', onupdate)
+      resolve(data)
+    }
+    const onupdate = () => check().catch(reject)
+    db.on('update', onupdate)
+    onupdate()
+  })
+}
+
+// a device without a local store keeps its mail in memory
+function boxes(local) {
+  if (!local) return {}
+  return { inbox: box(local.store, 'inbox'), outbox: box(local.store, 'outbox') }
 }
 
 function pickHandle(spec, type) {

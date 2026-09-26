@@ -3,8 +3,12 @@ import createTestnet from '@hyperswarm/testnet'
 import b4a from 'b4a'
 import Hypercore from 'hypercore'
 import { hash } from 'hypercore-crypto'
+import process from 'process'
+import { spawn } from 'child_process'
 
 import { Duplex } from 'streamx'
+import Protomux from 'protomux'
+import c from 'compact-encoding'
 
 import { Network, channelTopic } from '../../src/network/index.js'
 import { Database } from '../../src/database/index.js'
@@ -22,6 +26,8 @@ import {
 } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
+
+const PEER = new URL('../fixtures/peer.js', import.meta.url).pathname
 
 const testnet = await createTestnet(3)
 
@@ -95,7 +101,7 @@ test('close() is idempotent', async (t) => {
 // ─── identity opt ─────────────────────────────────────────────────────────
 
 test('identity opt: swarm keyPair matches identity publicKey', async (t) => {
-  const id = await Identity.generate()
+  const id = await Identity.create()
   const net = new Network({ identity: id, bootstrap: testnet.bootstrap })
   await net.ready()
   t.alike(b4a.toBuffer(net.swarm.keyPair.publicKey), b4a.toBuffer(id.publicKey))
@@ -138,6 +144,22 @@ test('join: invalid topic throws', async (t) => {
   t.exception.all(() => net.join(null), /topic/)
   t.exception.all(() => net.join('not a buffer'), /topic/)
   t.exception.all(() => net.join(b4a.alloc(16)), /topic/)
+})
+
+test('join: two peers joining a topic in the same tick meet within seconds', async (t) => {
+  for (let round = 0; round < 5; round++) {
+    const a = await makeNet(t)
+    const b = await makeNet(t)
+    const start = Date.now()
+    const topic = randomTopic()
+    a.join(topic)
+    b.join(topic)
+    const met = await waitFor(() => a.connections.size > 0 && b.connections.size > 0, {
+      timeout: 8000
+    }).catch(() => false)
+    t.ok(met, `round ${round}: met in ${Date.now() - start} ms`)
+    await Promise.all([a.close(), b.close()])
+  }
 })
 
 // ─── discovery: activate / deactivate / flush / destroy ───────────────────
@@ -252,10 +274,14 @@ test('channel: leaving a topic removes its swarm discovery — no announce leak'
   t.is(a.swarm._discovery.size, 0, 'left — the discovery entry is gone, topic unannounced')
 })
 
-test('blind(): refuses on a closed network', async (t) => {
-  const a = await makeNet(t)
+test('peering(): needs a store, built once, refused on a closed network', async (t) => {
+  const bare = await makeNet(t)
+  t.exception(() => bare.peering(), /store/)
+  const { store } = await makeStore(t)
+  const a = await makeNet(t, { store })
+  t.is(a.peering(), a.peering(), 'one client per network')
   await a.close()
-  await t.exception(a.blind(), /closed/i, 'no BlindPairing is built on a dead swarm')
+  t.exception(() => a.peering(), /closed/i, 'no client on a dead swarm')
 })
 
 test('attach/detach: no errors and idempotent', async (t) => {
@@ -730,30 +756,159 @@ test('suspend() drops live connections; resume() reconnects', async (t) => {
   await db.destroy()
 })
 
-// ─── info: self-declared peer info over connections ──────────────────────
+// ─── dead connections, silent nodes, lost peers ───────────────────────────
 
-test('info: peers exchange self-declared info over connections', async (t) => {
+test('a connection the remote never answers on is dropped within seconds', async (t) => {
+  const topic = randomTopic()
+  const args = [PEER, JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
+  const peer = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] })
+  t.teardown(() => process.kill(peer.pid, 'SIGKILL'))
+  await new Promise((resolve) => {
+    peer.stdout.on('data', (data) => b4a.toString(data).includes('ready') && resolve())
+  })
+
+  const net = await makeNet(t)
+  // frozen the moment we connect: our header goes out, nothing ever comes back
+  const opened = new Promise((resolve) => {
+    net.once('connection', (conn) => {
+      process.kill(peer.pid, 'SIGSTOP')
+      resolve(conn)
+    })
+  })
+  net.join(topic)
+  const conn = await opened
+  const start = Date.now()
+  const dropped = await waitFor(() => conn.destroyed, { timeout: 9000 }).catch(() => false)
+  t.ok(dropped, `dropped in ${Date.now() - start} ms`)
+})
+
+test('a DHT node that stops answering costs a lookup about a second', async (t) => {
+  const own = await createTestnet(3, t)
+  const net = await makeNetBase(t, own)
+  await net.join(randomTopic()).flush()
+  await own.nodes[1].destroy()
+  const start = Date.now()
+  await net.join(randomTopic()).flush()
+  t.ok(Date.now() - start < 2000, `looked up in ${Date.now() - start} ms`)
+})
+
+test('back online after an outage, a device is reachable by its key within seconds', async (t) => {
+  const outage = await createTestnet(3, t)
+  const port = outage.bootstrap[0].port
+  const a = await makeNetBase(t, outage)
+  await a.join(randomTopic()).flush()
+  await outage.destroy()
+  // the dht calls itself offline only from timeouts it counts: keep using the network while it is down
+  const joins = setInterval(() => a.join(randomTopic()), 1000)
+  t.teardown(() => clearInterval(joins))
+  const offline = await waitFor(() => !a.swarm.dht.online, { timeout: 40000 }).catch(() => false)
+  t.ok(offline, 'offline')
+
+  // the router is back: fresh nodes at the same bootstrap address, holding nothing about a
+  const back = await createTestnet(3, { port, teardown: (fn, opts) => t.teardown(fn, opts) })
+  const online = await waitFor(() => a.swarm.dht.online, { timeout: 15000 }).catch(() => false)
+  t.ok(online, 'online again')
+  clearInterval(joins)
+
+  const b = await makeNetBase(t, back)
+  const start = Date.now()
+  b.swarm.joinPeer(a.swarm.keyPair.publicKey)
+  const reached = await waitFor(() => b.connections.size > 0, { timeout: 15000 }).catch(() => false)
+  t.ok(reached, `reached in ${Date.now() - start} ms`)
+})
+
+test('peers that stopped redialing each other are found again within seconds', async (t) => {
+  const { a, b } = await makePair(t)
+  await connectPair(t, a, b)
+  // every short-lived connection that drops is a failed attempt: after a few, hyperswarm stops redialing
+  for (;;) {
+    const [conn] = a.connections
+    conn.destroy()
+    const back = await waitFor(() => a.connections.size > 0 && !a.connections.has(conn), {
+      timeout: 3000
+    }).catch(() => false)
+    if (!back) break
+  }
+  const start = Date.now()
+  const found = await waitFor(() => a.connections.size > 0 && b.connections.size > 0, {
+    timeout: 15000
+  }).catch(() => false)
+  t.ok(found, `found again in ${Date.now() - start} ms`)
+})
+
+test('a lookup that failed at resume is retried within seconds', async (t) => {
+  const own = await createTestnet(3, t)
+  const a = await makeNetBase(t, own)
+  const b = await makeNetBase(t, own)
+  const topic = randomTopic()
+  // joined passive first, like a room joined long ago: no first re-lookup is still pending
+  const da = a.join(topic, { mode: 'passive' })
+  const db = b.join(topic)
+  await Promise.all([da.flush(), db.flush()])
+  await da.activate()
+  await Promise.all([waitForConnection(a), waitForConnection(b)])
+  await a.suspend()
+  // the device resumes before the network is back: its first lookup and announce fail
+  await Promise.all(own.nodes.map((node) => node.suspend()))
+  await a.resume()
+  await a.flush({ timeout: 10000 })
+  await Promise.all(own.nodes.map((node) => node.resume()))
+  const start = Date.now()
+  const found = await waitFor(() => a.connections.size > 0 && b.connections.size > 0, {
+    timeout: 15000
+  }).catch(() => false)
+  t.ok(found, `found again in ${Date.now() - start} ms`)
+})
+
+// ─── info: self-declared peer info over injected streams ──────────────────
+
+test('info: the peers of an injected stream exchange self-declared info', async (t) => {
+  const a = await makeNet(t)
+  const b = await makeNet(t)
+  a.setInfo({ name: 'Ada' })
+  b.setInfo({ name: 'Bo' })
+  const [s1, s2] = duplexPair()
+  a.inject(s1, { isInitiator: true })
+  b.inject(s2, { isInitiator: false })
+  const aKey = a.swarm.keyPair.publicKey
+  const bKey = b.swarm.keyPair.publicKey
+  await waitFor(() => a.getInfo(bKey) && b.getInfo(aKey))
+  t.is(a.getInfo(bKey).name, 'Bo', "a sees b's declared name")
+  t.is(b.getInfo(aKey).name, 'Ada', "b sees a's declared name")
+})
+
+test('info: setInfo after an injected stream opened reaches its peer', async (t) => {
+  const a = await makeNet(t)
+  const b = await makeNet(t)
+  const [s1, s2] = duplexPair()
+  a.inject(s1, { isInitiator: true })
+  b.inject(s2, { isInitiator: false })
+  a.setInfo({ name: 'Late' })
+  const aKey = a.swarm.keyPair.publicKey
+  await waitFor(() => b.getInfo(aKey))
+  t.is(b.getInfo(aKey).name, 'Late', 'late info still delivered')
+})
+
+test('info: a swarm connection carries none', async (t) => {
   const a = await makeNet(t, { channel: 'dev' })
   const b = await makeNet(t, { channel: 'dev' })
   a.setInfo({ name: 'Ada' })
-  b.setInfo({ name: 'Bo' })
+  // a later message on the same connection: info sent at open would be read before it
+  let pinged
+  const ping = new Promise((resolve) => (pinged = resolve))
+  a.attach({ replicate: (stream) => channel(stream).messages[0].send('ping') })
+  b.attach({ replicate: (stream) => channel(stream, pinged) })
   await connectPair(t, a, b)
-  const aHex = b4a.toString(a.swarm.keyPair.publicKey, 'hex')
-  const bHex = b4a.toString(b.swarm.keyPair.publicKey, 'hex')
-  await waitFor(() => a.getInfo(bHex) && b.getInfo(aHex))
-  t.is(a.getInfo(bHex).name, 'Bo', "a sees b's declared name")
-  t.is(b.getInfo(aHex).name, 'Ada', "b sees a's declared name")
+  await ping
+  t.is(b.getInfo(a.swarm.keyPair.publicKey), null, 'nothing declared over the swarm')
 })
 
-test('info: setInfo after connect reaches live peers', async (t) => {
-  const a = await makeNet(t, { channel: 'dev' })
-  const b = await makeNet(t, { channel: 'dev' })
-  await connectPair(t, a, b)
-  a.setInfo({ name: 'Late' })
-  const aHex = b4a.toString(a.swarm.keyPair.publicKey, 'hex')
-  await waitFor(() => b.getInfo(aHex))
-  t.is(b.getInfo(aHex).name, 'Late', 'late info still delivered')
-})
+function channel(stream, onmessage) {
+  const ch = Protomux.from(stream).createChannel({ protocol: 'test/ping' })
+  ch.addMessage({ encoding: c.string, onmessage })
+  ch.open()
+  return ch
+}
 
 // ─── teardown shared testnet ──────────────────────────────────────────────
 
@@ -789,8 +944,8 @@ test('inject: replication + writer admission over an injected duplex, no shared 
   await netB.ready()
   t.teardown(() => Promise.all([netA.close(), netB.close()]).catch(() => {}), { order: 9 })
 
-  const idA = await Identity.generate()
-  const idB = await Identity.generate()
+  const idA = await Identity.create()
+  const idB = await Identity.create()
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
@@ -813,17 +968,17 @@ test('inject: replication + writer admission over an injected duplex, no shared 
   netB.inject(s2, { isInitiator: false })
 
   const { data: row } = await a.put('messages', { text: 'over-the-pipe' })
-  const onB = await waitUntil(async () => (await b.get('messages', row.id)).data)
+  const onB = await waitFor(async () => (await b.get('messages', row.id)).data)
   t.is(onB.text, 'over-the-pipe', 'A row replicated to B over the injected stream')
 
   t.is(b.writable, false, 'B is not a writer yet — guards intact')
 
   await a.addWriter(b.keyPair.publicKey)
-  await waitUntil(() => b.writable)
+  await waitFor(() => b.writable)
   t.ok(b.writable, 'admission replicated over the injected stream (wakeup working)')
 
   const { data: back } = await b.put('messages', { text: 'reply' })
-  const onA = await waitUntil(async () => (await a.get('messages', back.id)).data)
+  const onA = await waitFor(async () => (await a.get('messages', back.id)).data)
   t.is(onA.text, 'reply', 'B writes converge back on A')
 })
 
@@ -839,8 +994,8 @@ test('inject: a core attached AFTER the injected connection still replicates', a
   netB.inject(s2, { isInitiator: false })
   t.is(netA.connections.size, 1, 'injected link counted as a connection')
 
-  const idA = await Identity.generate()
-  const idB = await Identity.generate()
+  const idA = await Identity.create()
+  const idB = await Identity.create()
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
@@ -859,16 +1014,6 @@ test('inject: a core attached AFTER the injected connection still replicates', a
   t.teardown(() => Promise.all([a.close(), b.close()]).catch(() => {}), { order: 5 })
 
   const { data: row } = await a.put('messages', { text: 'late-attach' })
-  const onB = await waitUntil(async () => (await b.get('messages', row.id)).data)
+  const onB = await waitFor(async () => (await b.get('messages', row.id)).data)
   t.is(onB.text, 'late-attach', 'attach() reached the pre-existing injected link')
 })
-
-async function waitUntil(fn, { timeout = 15000, interval = 50 } = {}) {
-  const started = Date.now()
-  while (Date.now() - started < timeout) {
-    const v = await fn()
-    if (v) return v
-    await new Promise((r) => setTimeout(r, interval))
-  }
-  throw new Error('waitUntil: condition not met before timeout')
-}

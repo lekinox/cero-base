@@ -5,7 +5,7 @@
  * @param {import('./index.js').Database} db
  * @param {string} name    Ref name (scopes the update ticks).
  * @param {string} col     Collection path (`@ns/name`).
- * @param {(row: any) => boolean} matches
+ * @param {(row: Record<string, unknown>) => boolean} matches
  * @returns {import('streamx').Readable}
  */
-export declare function makeChanges(db: import('./index.js').Database, name: string, col: string, matches: (row: any) => boolean): import('streamx').Readable;
+export declare function makeChanges(db: import('./index.js').Database, name: string, col: string, matches: (row: Record<string, unknown>) => boolean): import('streamx').Readable;

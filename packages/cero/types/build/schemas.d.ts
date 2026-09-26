@@ -22,7 +22,6 @@ export declare const main: {
         name: import("@cero-base/core").Prim;
         createdAt: import("@cero-base/core").Prim;
         updatedAt: import("@cero-base/core").Prim;
-        sig: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
     };
     device: {
@@ -36,16 +35,12 @@ export declare const main: {
     };
     invite: {
         id: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
-        publicKey: import("@cero-base/core").Prim;
-        data: import("@cero-base/core").Prim;
-        sig: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        reuse: import("@cero-base/core").Prim;
         createdAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
-        seed: import("@cero-base/core").Prim;
-        reuse: import("@cero-base/core").Prim;
+        confirm: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;
@@ -65,6 +60,7 @@ export declare const main: {
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+        from: import("@cero-base/core").Prim;
     };
     claim: {
         identity: import("@cero-base/core").Prim;
@@ -79,6 +75,47 @@ export declare const main: {
         commit: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
     };
+    join: {
+        box: import("@cero-base/core").Prim;
+    };
+    accept: {
+        id: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
+    };
+    request: {
+        id: import("@cero-base/core").Prim;
+        identity: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        reply: import("@cero-base/core").Prim;
+        createdAt: import("@cero-base/core").Prim;
+        index: import("@cero-base/core").Prim;
+        admitted: import("@cero-base/core").Prim;
+        expires: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
+    };
+    removal: {
+        id: import("@cero-base/core").Prim;
+        index: import("@cero-base/core").Prim;
+    };
+    status: {
+        role: import("@cero-base/core").Prim;
+        writable: import("@cero-base/core").Prim;
+        epoch: import("@cero-base/core").Prim;
+        suspended: import("@cero-base/core").Prim;
+        behind: import("@cero-base/core").Prim;
+        nearby: import("@cero-base/core").Prim;
+    };
+    joining: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+    };
+    peer: {
+        id: import("@cero-base/core").Prim;
+        name: import("@cero-base/core").Prim;
+        isMobile: import("@cero-base/core").Prim;
+        device: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {
@@ -87,12 +124,33 @@ export declare const local: {
     keypair: {
         publicKey: import("@cero-base/core").Prim;
         secretKey: import("@cero-base/core").Prim;
+        setup: import("@cero-base/core").Prim;
     };
     'handle-keypair': {
         id: import("@cero-base/core").Prim;
         publicKey: import("@cero-base/core").Prim;
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
+    };
+    serving: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+    };
+    join: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        publicKey: import("@cero-base/core").Prim;
+        secretKey: import("@cero-base/core").Prim;
+        key: import("@cero-base/core").Prim;
+        encryptionKey: import("@cero-base/core").Prim;
+        epochs: import("@cero-base/core").Prim;
+    };
+    mail: {
+        id: import("@cero-base/core").Prim;
+        address: import("@cero-base/core").Prim;
+        message: import("@cero-base/core").Prim;
+        mirrors: import("@cero-base/core").Prim;
     };
     environment: {
         channel: import("@cero-base/core").Prim;
@@ -111,6 +169,11 @@ export declare const rpc: {
         data: import("@cero-base/core").Prim;
         local: import("@cero-base/core").Prim;
         noUpsert: import("@cero-base/core").Prim;
+        fields: {
+            prim: string;
+            required?: boolean;
+            array: boolean;
+        };
     };
     'req-id': {
         handle: import("@cero-base/core").Prim;
@@ -132,8 +195,10 @@ export declare const rpc: {
     'req-invite': {
         handle: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
-        expiresIn: import("@cero-base/core").Prim;
+        ttl: import("@cero-base/core").Prim;
         reuse: import("@cero-base/core").Prim;
+        data: import("@cero-base/core").Prim;
+        confirm: import("@cero-base/core").Prim;
     };
     'req-revoke': {
         handle: import("@cero-base/core").Prim;
@@ -142,6 +207,9 @@ export declare const rpc: {
     'req-join': {
         parent: import("@cero-base/core").Prim;
         ref: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+    };
+    'req-cancel': {
         invite: import("@cero-base/core").Prim;
     };
     'req-open': {
@@ -163,10 +231,6 @@ export declare const rpc: {
         total: import("@cero-base/core").Prim;
         size: import("@cero-base/core").Prim;
     };
-    'res-changes': {
-        changes: import("@cero-base/core").Prim;
-        reset: import("@cero-base/core").Prim;
-    };
     'res-invite': {
         invite: import("@cero-base/core").Prim;
     };
@@ -174,6 +238,8 @@ export declare const rpc: {
         id: import("@cero-base/core").Prim;
         type: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
+        denied: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
     };
     'req-add-file': {
         handle: import("@cero-base/core").Prim;
@@ -186,6 +252,7 @@ export declare const rpc: {
         deviceId: import("@cero-base/core").Prim;
         fileBase: import("@cero-base/core").Prim;
         fileToken: import("@cero-base/core").Prim;
+        deviceName: import("@cero-base/core").Prim;
     };
     'res-seed': {
         phrase: import("@cero-base/core").Prim;
@@ -200,5 +267,17 @@ export declare const rpc: {
         message: import("@cero-base/core").Prim;
         code: import("@cero-base/core").Prim;
         stack: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+    };
+    'req-answer': {
+        handle: import("@cero-base/core").Prim;
+        id: import("@cero-base/core").Prim;
+        accept: import("@cero-base/core").Prim;
+        role: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+    };
+    'req-nearby': {
+        on: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
 };

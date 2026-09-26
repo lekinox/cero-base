@@ -1,6 +1,5 @@
 import NoiseSecretStream from '@hyperswarm/secret-stream'
 import Autobee from 'autobee'
-import BlindPairing from 'blind-pairing'
 import BlindPeering from 'blind-peering'
 import Protomux from 'protomux'
 import ProtomuxWakeup from 'protomux-wakeup'
@@ -8,6 +7,7 @@ import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
 import { decode as decodeKey } from 'hypercore-id-encoding'
 import { hash } from 'hypercore-crypto'
+import HyperDHT from 'hyperdht'
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
 import c from 'compact-encoding'
@@ -17,6 +17,11 @@ import { CeroError } from '../lib/errors.js'
 import { Discovery } from './discovery.js'
 import { Presence } from './presence.js'
 
+// a live remote answers our header in milliseconds; udx gives up on a silent one only after ~13 s
+const SILENT_TIMEOUT = 3000
+const RELOOKUPS = [5000, 20000, 60000]
+
+/** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
 export function channelTopic(topic, channel) {
   return channel ? hash([topic, b4a.from(channel)]) : topic
 }
@@ -25,16 +30,16 @@ export function channelTopic(topic, channel) {
  * @typedef {object} NetworkOpts
  * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the swarm identity.
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
- * @property {(remotePublicKey: Uint8Array, payload: any) => boolean} [firewall]  Incoming-connection filter.
+ * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
- * @property {any} [store]                                          Corestore; required for mirrors (blind peers replicate its cores).
+ * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
- * @property {(err: any) => void} [onerror]                        Background-task error handler.
+ * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
- * @typedef {{ replicate: (stream: any) => any }} Replicable
+ * @typedef {{ replicate: (stream: import('@hyperswarm/secret-stream')) => unknown }} Replicable
  */
 
 /**
@@ -62,36 +67,50 @@ export class Network extends ReadyResource {
     this.relayThrough = relayThrough || null
     this.backoffs = backoffs || null
     this.channel = channel || null
+    /** @type {import('corestore') | null} */
     this.store = store || null
+    /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map((k) => (typeof k === 'string' ? decodeKey(k) : k))
 
+    /** @private */
     this._swarm = null
+    /** @type {import('protomux-wakeup')} */
     this.wakeup = new ProtomuxWakeup()
     this.presence = new Presence(this, presence)
 
     this.info = null
+    /** @private */
     this._peerInfo = new Map()
+    /** @private */
     this._infoSenders = new Set()
 
+    /** @private */
     this._replicateables = new Set()
+    /** @private */
     this._discoveries = new Set()
+    /** @private */
     this._injected = new Set()
-    this._blind = null
+    /** @private */
     this._blindPeering = null
+    /** @private */
+    this._lost = new Set()
+    /** @private */
+    this._relookup = null
+    /** @private */
     this._onerror = onerror
   }
 
-  /** @returns {any} The underlying hyperswarm, or null before ready / after close. */
+  /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
   get swarm() {
     return this._swarm
   }
 
-  /** @returns {Map<string, any>} Known peers keyed by public-key string. */
+  /** @returns {Map<string, object>} Known peers keyed by public-key string. */
   get peers() {
     return this.swarm ? this.swarm.peers : new Map()
   }
 
-  /** @returns {Set<any>} Live connection streams — swarm and injected. */
+  /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — swarm and injected. */
   get connections() {
     if (!this._injected.size) return this.swarm ? this.swarm.connections : new Set()
     return new Set([...(this.swarm ? this.swarm.connections : []), ...this._injected])
@@ -102,38 +121,51 @@ export class Network extends ReadyResource {
     return this.swarm?.suspended === true
   }
 
+  /** @private */
   async _open() {
-    const opts = {}
+    // timeouts follow each node's measured round trip, not a flat second a try; the swarm destroys it
+    const dht = new HyperDHT({
+      bootstrap: this.bootstrap,
+      adaptiveTimeout: { min: 150, max: 1000 }
+    })
+    const opts = { dht }
     if (this.identity) {
       opts.keyPair = { publicKey: this.identity.publicKey, secretKey: this.identity.secretKey }
     }
-    if (this.bootstrap) opts.bootstrap = this.bootstrap
     if (this.firewall) opts.firewall = this.firewall
     if (this.relayThrough) opts.relayThrough = this.relayThrough
     if (this.backoffs) opts.backoffs = this.backoffs
 
     const swarm = (this._swarm = new Hyperswarm(opts))
+    // back online after a NAT rebind or a router restart, peers may hold a stale address for us
+    dht.on('network-update', () => {
+      // a tick later: the dht's own wake-up in this event would clear a refresh made now
+      if (dht.online) setTimeout(() => this.closing || swarm.server.refresh(), 0)
+    })
     swarm.on('connection', (stream, info) => {
       if (this.closing || this.closed) {
         stream.destroy()
         return
       }
+      dropIfSilent(stream)
+      stream.on('close', () => this._lose(stream.remotePublicKey))
       this.wakeup.addStream(stream)
-      this._attachInfo(stream)
       for (const r of this._replicateables) replicateInto(r, stream)
       this.emit('connection', stream, info)
     })
 
-    if (this.store && this.mirrors.length) {
-      this._blindPeering = new BlindPeering(swarm.dht, this.store, {
-        blindPeers: this.mirrors.map((key) => ({ key })),
-        wakeup: this.wakeup,
-        pick: 2
-      })
+    if (this.store) {
+      // mailbox cores live in the store: every connection replicates it, so a listener can fetch them
+      const store = this.store
+      this._replicateables.add({ store, replicate: (stream) => store.replicate(stream) })
+      if (this.mirrors.length) this.peering()
     }
   }
 
+  /** @private */
   async _close() {
+    clearTimeout(this._relookup)
+    this._lost.clear()
     for (const conn of [...this._injected]) {
       try {
         conn.destroy()
@@ -168,15 +200,6 @@ export class Network extends ReadyResource {
       this._blindPeering = null
     }
 
-    if (this._blind) {
-      try {
-        await (await this._blind).close()
-      } catch (err) {
-        safetyCatch(err)
-      }
-      this._blind = null
-    }
-
     if (this.wakeup) {
       try {
         await this.wakeup.destroy()
@@ -190,14 +213,14 @@ export class Network extends ReadyResource {
    * Feed an externally-established connection — a Bluetooth L2CAP channel, a serial link, an
    * in-process pair, any duplex — into the network.
    *
-   * @param {any} stream  Duplex transport, or a ready NoiseSecretStream.
+   * @param {import('streamx').Duplex} stream  Duplex transport, or a ready NoiseSecretStream.
    * @param {{ isInitiator?: boolean }} [opts]  Which side initiates the noise handshake (raw duplexes only).
-   * @returns {any} The encrypted connection stream.
+   * @returns {import('@hyperswarm/secret-stream')} The encrypted connection stream.
    */
   inject(stream, { isInitiator } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
     if (!stream) throw CeroError.REQUIRED('stream')
-    // the swarm identity, so two radios between one pair dedupe to one peer
+    // a raw duplex handshakes as this identity
     const keyPair = this.identity
       ? { publicKey: this.identity.publicKey, secretKey: this.identity.secretKey }
       : (this.swarm?.keyPair ?? undefined)
@@ -205,9 +228,6 @@ export class Network extends ReadyResource {
       stream.noiseStream === stream
         ? stream
         : new NoiseSecretStream(isInitiator === true, stream, keyPair ? { keyPair } : undefined)
-
-    // blind-pairing sends on the lowest-rtt channel; an injected duplex has no rtt, so give it one
-    if (conn.rawStream && conn.rawStream.rtt === undefined) conn.rawStream.rtt = 0
 
     this._injected.add(conn)
     conn.on('close', () => this._injected.delete(conn))
@@ -221,41 +241,26 @@ export class Network extends ReadyResource {
   }
 
   /**
-   * Lazily create the network-shared BlindPairing.
+   * The blind-peering client, built on first use: a mailbox post names mirrors this network
+   * may not have been given.
    *
-   * @returns {Promise<any>}
+   * @returns {import('blind-peering')}
    */
-  async blind() {
+  peering() {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
-    if (!this._blind) {
-      const blind = new BlindPairing(this.swarm)
-      this._blind = blind.ready().then(() => {
-        // blind-pairing only watches the swarm; injected connections must reach it too
-        this.on('connection', (conn, info) => {
-          if (info?.injected) blind._onconnection(conn)
-        })
-        for (const conn of this._injected) blind._onconnection(conn)
-        return blind
+    if (!this.store) throw CeroError.REQUIRED('store')
+    if (!this._blindPeering) {
+      this._blindPeering = new BlindPeering(this.swarm.dht, this.store, {
+        blindPeers: this.mirrors.map((key) => ({ key })),
+        wakeup: this.wakeup,
+        pick: 2
       })
     }
-    return this._blind
+    return this._blindPeering
   }
 
   /**
-   * Re-attach pairing channels on injected connections. blind-pairing only auto-attaches
-   * refs that existed when a connection arrived — swarm peers meet again over topic joins,
-   * injected links (Bluetooth,.
-   *
-   * @returns {Promise<void>}
-   */
-  async refreshInjected() {
-    if (!this._blind || !this._injected.size) return
-    const blind = await this._blind
-    for (const conn of this._injected) blind._onconnection(conn)
-  }
-
-  /**
-   * Declare this peer's self-reported info ({ name, ... }).
+   * Declare this peer's self-reported info ({ name, ... }) to the peers of injected streams.
    *
    * @param {object | null} info
    */
@@ -272,7 +277,7 @@ export class Network extends ReadyResource {
    * @returns {object | null}
    */
   getInfo(key) {
-    const hex = typeof key === 'string' ? key : b4a.toString(key, 'hex')
+    const hex = typeof key === 'string' ? key : b4a.toHex(key)
     return this._peerInfo.get(hex) ?? null
   }
 
@@ -296,6 +301,7 @@ export class Network extends ReadyResource {
     if (this.closing || this.closed) return
     await this._blindPeering?.suspend()
     await this._swarm?.suspend()
+    clearTimeout(this._relookup)
   }
 
   /**
@@ -304,9 +310,11 @@ export class Network extends ReadyResource {
    * @returns {Promise<void>}
    */
   async resume() {
-    if (this.closing || this.closed) return
+    if (this.closing || this.closed || !this.suspended) return
     await this._swarm?.resume()
     await this._blindPeering?.resume()
+    // the lookups hyperswarm runs at resume can go out before the network is back
+    this._relook(0)
   }
 
   /**
@@ -352,6 +360,7 @@ export class Network extends ReadyResource {
     }
   }
 
+  /** @private */
   _mirror(bee) {
     const peering = this._blindPeering
     if (!peering || bee.closing) return
@@ -392,7 +401,31 @@ export class Network extends ReadyResource {
     for (const stream of this.connections) replicateInto(target, stream)
   }
 
-  // silent until a side has info: bytes on a fresh connection trip hyperswarm's duplicate guard
+  // hyperswarm stops redialing a peer after a few failed tries and looks it up again only every 10 min
+  /** @private */
+  _lose(key) {
+    if (this.closing || this.closed) return
+    this._lost.add(b4a.toHex(key))
+    this._relook(0)
+  }
+
+  /** @private */
+  _relook(i) {
+    clearTimeout(this._relookup)
+    this._relookup = setTimeout(() => {
+      for (const conn of this.swarm.connections) this._lost.delete(b4a.toHex(conn.remotePublicKey))
+      if (!this._lost.size && this.swarm.connections.size) return
+      for (const d of this._discoveries) {
+        if (d.mode === ACTIVE) d.session.refresh().catch(safetyCatch)
+      }
+      if (i + 1 < RELOOKUPS.length) this._relook(i + 1)
+      else this._lost.clear()
+    }, RELOOKUPS[i])
+    this._relookup.unref()
+  }
+
+  // injected streams only: bytes on a fresh swarm connection trip hyperswarm's duplicate guard
+  /** @private */
   _attachInfo(conn) {
     const mux = Protomux.from(conn)
     let message = null
@@ -404,7 +437,7 @@ export class Network extends ReadyResource {
           encoding: c.json,
           onmessage: (info) => {
             if (!info || typeof info !== 'object') return
-            const hex = b4a.toString(conn.remotePublicKey, 'hex')
+            const hex = b4a.toHex(conn.remotePublicKey)
             this._peerInfo.set(hex, info)
             this.emit('peer-info', hex, info)
           }
@@ -418,6 +451,14 @@ export class Network extends ReadyResource {
     conn.on('close', () => this._infoSenders.delete(send))
     if (this.info) send()
   }
+}
+
+function dropIfSilent(conn) {
+  const timer = setTimeout(() => {
+    if (conn.rawStream.packetsReceived === 0) conn.destroy()
+  }, SILENT_TIMEOUT)
+  timer.unref()
+  conn.once('close', () => clearTimeout(timer))
 }
 
 // corestore replication is store-wide: replicate each root once per connection

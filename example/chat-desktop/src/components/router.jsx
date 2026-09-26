@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import * as cero from '@cero-base/cero/client'
+import { cero } from '@cero-base/cero/client'
 import { useCero } from '../hooks/use-cero'
 import { RoomContext } from '../context'
 import { Page, Header } from './ui'

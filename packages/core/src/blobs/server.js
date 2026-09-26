@@ -16,11 +16,13 @@ export class FileServer {
    */
   constructor({ store, resolve }) {
     this.resolve = resolve
+    /** @type {import('hypercore-blob-server')} */
     this.server = new BlobServer(store.session(), {
       resolve: (key, info) => this.resolve(key, info)
     })
   }
 
+  /** @returns {number} */
   get port() {
     return this.server.port
   }

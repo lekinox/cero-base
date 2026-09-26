@@ -1,133 +1,93 @@
 export declare const STATUS_ACCEPTED = 0;
 export declare const STATUS_DENIED = 1;
-export declare const Response: {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        status: any;
-        reason: any;
-        key: any;
-        encryptionKey: any;
-        extra: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        data: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        id: any;
-        name: any;
-        role: any;
-        noAccept: boolean;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        coreKey: any;
-        blockOffset: any;
-        blockLength: any;
-        byteOffset: any;
-        byteLength: any;
-        type: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        prev: any;
-        next: any;
-    };
-};
-export type ConfirmOpts = {
-    /**
-     * 32-byte resource key delivered to the joiner; required at runtime.
-     */
-    key?: Uint8Array;
-    /**
-     * Optional 32-byte symmetric key.
-     */
+/** @type {import('compact-encoding').Encoder<{ status: number, reason?: string, key?: Uint8Array | null, encryptionKey?: Uint8Array | null, epochs?: Array<{ epoch: number, stamp: number, entropy: Uint8Array }> | null }>} */
+export declare const Response: import('compact-encoding').Encoder<{
+    status: number;
+    reason?: string;
+    key?: Uint8Array | null;
     encryptionKey?: Uint8Array | null;
-    /**
-     * Extra opaque bytes piggybacked on the response.
-     */
-    additional?: Uint8Array | null;
-};
+    epochs?: Array<{
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }> | null;
+}>;
 export type RequestOpts = {
     /**
      * Owning Pairing instance.
      */
     pairing: import('./index.js').Pairing;
     /**
-     * blind-pairing candidate request being answered.
+     * The record of the invite the joiner used.
      */
-    req: any;
+    invite: {
+        id: string;
+        role: string;
+        expires?: number;
+    };
     /**
-     * Invite the candidate paired against.
+     * The waiting join, as the database keeps it.
      */
-    invite: import('./invite.js').Invite;
+    row: {
+        id: string;
+        identity: Uint8Array;
+        reply: Uint8Array;
+    };
+};
+export type AcceptOpts = {
     /**
-     * Per-invite seed used to sign the response.
+     * Role granted: the invite's by default, at most the invite's.
      */
-    seed: Uint8Array;
-    /**
-     * Decoded joiner payload (raw bytes when no encoding).
-     */
-    userData: any;
-    /**
-     * Called once when the candidate is confirmed or denied.
-     */
-    onsettle: () => void;
+    role?: string;
 };
 /**
- * @typedef {object} ConfirmOpts
- * @property {Uint8Array} [key]                                      32-byte resource key delivered to the joiner; required at runtime.
- * @property {Uint8Array | null} [encryptionKey]                     Optional 32-byte symmetric key.
- * @property {Uint8Array | null} [additional]                        Extra opaque bytes piggybacked on the response.
- *
  * @typedef {object} RequestOpts
  * @property {import('./index.js').Pairing} pairing                  Owning Pairing instance.
- * @property {any} req                                               blind-pairing candidate request being answered.
- * @property {import('./invite.js').Invite} invite                   Invite the candidate paired against.
- * @property {Uint8Array} seed                                       Per-invite seed used to sign the response.
- * @property {any} userData                                          Decoded joiner payload (raw bytes when no encoding).
- * @property {() => void} onsettle                                   Called once when the candidate is confirmed or denied.
+ * @property {{ id: string, role: string, expires?: number }} invite  The record of the invite the joiner used.
+ * @property {{ id: string, identity: Uint8Array, reply: Uint8Array }} row  The waiting join, as the database keeps it.
+ *
+ * @typedef {object} AcceptOpts
+ * @property {string} [role]                                         Role granted: the invite's by default, at most the invite's.
  */
 /**
- * Internal — a pairing request from an incoming candidate, awaiting the host's
- * accept/deny.
- *
- * @property {boolean} _settled                       Whether confirm/deny has already run.
+ * A join on a `confirm` invite, waiting in the database for a member to accept or deny it.
  */
 export declare class Request {
     pairing: import("./index.js").Pairing;
-    _req: any;
-    _seed: Uint8Array<ArrayBufferLike>;
-    _settled: boolean;
-    _onsettle: () => void;
-    invite: import("./invite.js").Invite;
-    userData: any;
-    publicKey: any;
+    invite: {
+        id: string;
+        role: string;
+        expires?: number;
+    };
+    id: string;
+    identity: Uint8Array<ArrayBufferLike>;
+    /** The role the join asks for: its invite's. */
+    role: string;
+    /** @type {Uint8Array} */
+    writer: Uint8Array;
+    /** @private */
+    _reply;
+    /** @private */
+    _answer;
     /** @param {RequestOpts} opts */
-    constructor(opts: RequestOpts);
+    constructor({ pairing, invite, row }: RequestOpts);
     /**
-     * Accept the candidate and reveal the resource key. Idempotent.
+     * Admit the joiner. Every device of an inviter then replies with the keys. Idempotent.
      *
-     * @param {ConfirmOpts} opts
+     * @param {AcceptOpts} [opts]
      * @returns {Promise<void>}
      */
-    confirm({ key, encryptionKey, additional }?: ConfirmOpts): Promise<void>;
+    accept({ role }?: AcceptOpts): Promise<void>;
     /**
-     * Reject the candidate with an optional reason. Idempotent.
+     * Refuse the joiner, with an optional reason. Idempotent.
      *
      * @param {string} [reason]
      * @returns {Promise<void>}
      */
     deny(reason?: string): Promise<void>;
-    _respond(envelope: any): void;
+    /**
+     * @private
+     * @param {Promise<void>} answer
+     */
+    private _answering;
 }

@@ -1,96 +1,94 @@
-import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import c from 'compact-encoding'
-import { keyPair, sign } from 'hypercore-crypto'
 
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
+import { grants, isRank } from '../lib/utils.js'
 
 export const STATUS_ACCEPTED = 0
 export const STATUS_DENIED = 1
 
-// success and deny both ride the confirm response
+// an accept and a deny both ride this response
+/** @type {import('compact-encoding').Encoder<{ status: number, reason?: string, key?: Uint8Array | null, encryptionKey?: Uint8Array | null, epochs?: Array<{ epoch: number, stamp: number, entropy: Uint8Array }> | null }>} */
 export const Response = getEncoding('@cero/confirm')
 
 /**
- * @typedef {object} ConfirmOpts
- * @property {Uint8Array} [key]                                      32-byte resource key delivered to the joiner; required at runtime.
- * @property {Uint8Array | null} [encryptionKey]                     Optional 32-byte symmetric key.
- * @property {Uint8Array | null} [additional]                        Extra opaque bytes piggybacked on the response.
- *
  * @typedef {object} RequestOpts
  * @property {import('./index.js').Pairing} pairing                  Owning Pairing instance.
- * @property {any} req                                               blind-pairing candidate request being answered.
- * @property {import('./invite.js').Invite} invite                   Invite the candidate paired against.
- * @property {Uint8Array} seed                                       Per-invite seed used to sign the response.
- * @property {any} userData                                          Decoded joiner payload (raw bytes when no encoding).
- * @property {() => void} onsettle                                   Called once when the candidate is confirmed or denied.
+ * @property {{ id: string, role: string, expires?: number }} invite  The record of the invite the joiner used.
+ * @property {{ id: string, identity: Uint8Array, reply: Uint8Array }} row  The waiting join, as the database keeps it.
+ *
+ * @typedef {object} AcceptOpts
+ * @property {string} [role]                                         Role granted: the invite's by default, at most the invite's.
  */
 
 /**
- * Internal — a pairing request from an incoming candidate, awaiting the host's
- * accept/deny.
- *
- * @property {boolean} _settled                       Whether confirm/deny has already run.
+ * A join on a `confirm` invite, waiting in the database for a member to accept or deny it.
  */
 export class Request {
   /** @param {RequestOpts} opts */
-  constructor(opts) {
-    this.pairing = opts.pairing
-    this._req = opts.req
-    this._seed = opts.seed
-    this._settled = false
-    this._onsettle = opts.onsettle
-
-    this.invite = opts.invite
-    this.userData = opts.userData
-    this.publicKey = opts.req.publicKey
+  constructor({ pairing, invite, row }) {
+    this.pairing = pairing
+    this.invite = invite
+    this.id = row.id
+    this.identity = row.identity
+    /** The role the join asks for: its invite's. */
+    this.role = invite.role
+    /** @type {Uint8Array} */
+    this.writer = hid.decode(row.id)
+    /** @private */
+    this._reply = row.reply
+    /** @private */
+    this._answer = null
   }
 
   /**
-   * Accept the candidate and reveal the resource key. Idempotent.
+   * Admit the joiner. Every device of an inviter then replies with the keys. Idempotent.
    *
-   * @param {ConfirmOpts} opts
+   * @param {AcceptOpts} [opts]
    * @returns {Promise<void>}
    */
-  async confirm({ key, encryptionKey = null, additional = null } = {}) {
-    if (this._settled) return
-    if (!key || key.length !== 32) throw CeroError.INVALID('key must be a 32-byte buffer')
-    if (encryptionKey && encryptionKey.length !== 32) {
-      throw CeroError.INVALID('encryptionKey must be a 32-byte buffer')
+  async accept({ role } = {}) {
+    if (this._answer) return this._answer
+    const { invite } = this
+    if (invite.expires > 0 && Date.now() > invite.expires) throw CeroError.EXPIRED()
+    role = role || invite.role
+    if (!isRank(role)) {
+      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
     }
-    if (additional && !b4a.isBuffer(additional)) {
-      throw CeroError.INVALID('additional must be a buffer')
+    if (!grants(invite.role, role)) {
+      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
     }
-    this._respond({ status: STATUS_ACCEPTED, reason: '', key, encryptionKey, extra: additional })
+    return this._answering(this.pairing.db.call('accept', { id: this.id, role }))
   }
 
   /**
-   * Reject the candidate with an optional reason. Idempotent.
+   * Refuse the joiner, with an optional reason. Idempotent.
    *
    * @param {string} [reason]
    * @returns {Promise<void>}
    */
   async deny(reason = '') {
-    if (this._settled) return
-    this._respond({
-      status: STATUS_DENIED,
-      reason,
-      key: null,
-      encryptionKey: null,
-      extra: null
-    })
+    if (this._answer) return this._answer
+    const { db, mailbox } = this.pairing
+    const denied = { status: STATUS_DENIED, reason, key: null, encryptionKey: null, epochs: null }
+    const denying = async () => {
+      await db.call('del-request', { id: this.id })
+      await mailbox.send(this._reply, c.encode(Response, denied))
+    }
+    return this._answering(denying())
   }
 
-  // signed with the per-invite seed
-  _respond(envelope) {
-    this._settled = true
-    this._onsettle()
-    const data = c.encode(Response, envelope)
-    const signature = sign(data, keyPair(this._seed).secretKey)
-    this._req.confirm({
-      key: this.pairing.topic,
-      encryptionKey: undefined,
-      additional: { data, signature }
+  // the first answer holds while it is written; refused, the request is answerable again
+  /**
+   * @private
+   * @param {Promise<void>} answer
+   */
+  _answering(answer) {
+    this._answer = answer
+    answer.catch(() => {
+      this._answer = null
     })
+    return answer
   }
 }

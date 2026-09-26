@@ -7,11 +7,37 @@ declare function getEncoding(name: any): {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
+        key: any;
+        length: any;
+    };
+} | {
+    preencode(state: any, m: any): void;
+    encode(state: any, m: any): void;
+    decode(state: any): {
+        invite: any;
+        reply: any;
+        proof: any;
+        identity: any;
+        signature: any;
+        ts: any;
+    };
+} | {
+    preencode(state: any, m: any): void;
+    encode(state: any, m: any): void;
+    decode(state: any): {
+        epoch: any;
+        stamp: any;
+        entropy: any;
+    };
+} | {
+    preencode(state: any, m: any): void;
+    encode(state: any, m: any): void;
+    decode(state: any): {
         status: any;
         reason: any;
         key: any;
         encryptionKey: any;
-        extra: any;
+        epochs: any;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -23,10 +49,15 @@ declare function getEncoding(name: any): {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
+        prev: any;
+        next: any;
+    };
+} | {
+    preencode(state: any, m: any): void;
+    encode(state: any, m: any): void;
+    decode(state: any): {
         id: any;
         name: any;
-        role: any;
-        noAccept: boolean;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -38,31 +69,39 @@ declare function getEncoding(name: any): {
         byteOffset: any;
         byteLength: any;
         type: any;
-    };
-} | {
-    preencode(state: any, m: any): void;
-    encode(state: any, m: any): void;
-    decode(state: any): {
-        prev: any;
-        next: any;
     };
 };
 declare function getStruct(name: any, v?: number): {
     preencode(state: any, m: any): void;
     encode(state: any, m: any): void;
     decode(state: any): {
+        key: any;
+        length: any;
+    } | {
+        invite: any;
+        reply: any;
+        proof: any;
+        identity: any;
+        signature: any;
+        ts: any;
+    } | {
+        epoch: any;
+        stamp: any;
+        entropy: any;
+    } | {
         status: any;
         reason: any;
         key: any;
         encryptionKey: any;
-        extra: any;
+        epochs: any;
     } | {
         data: any;
     } | {
+        prev: any;
+        next: any;
+    } | {
         id: any;
         name: any;
-        role: any;
-        noAccept: boolean;
     } | {
         coreKey: any;
         blockOffset: any;
@@ -70,9 +109,6 @@ declare function getStruct(name: any, v?: number): {
         byteOffset: any;
         byteLength: any;
         type: any;
-    } | {
-        prev: any;
-        next: any;
     };
 };
 declare const resolveStruct: typeof getStruct;

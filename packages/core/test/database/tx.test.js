@@ -1,29 +1,9 @@
 import test from 'brittle'
 
-import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
-import { makeStore } from '../helpers/index.js'
-import { spec } from '../fixtures/spec/index.js'
+import { withRole } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
-
-async function open(t, role = 'owner') {
-  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const identity = await Identity.generate()
-  const db = new Database({ store, identity, spec })
-  await db.ready()
-  await db.bootstrap({ name: 'tx', isMobile: false })
-  await db.call('add-member', {
-    id: identity.id,
-    key: db.writerKey,
-    role,
-    name: 'me',
-    createdAt: 1,
-    updatedAt: 1
-  })
-  t.teardown(() => db.close().catch(() => {}), { order: 5 })
-  return { db, identity }
-}
 
 // the local log grows one block per op; a transaction appends them together,
 // so the tell is the count — N for the batch, or 0 when any of it is refused
@@ -34,7 +14,7 @@ const texts = async (db) =>
 // ─── atomic at the append ─────────────────────────────────────────────────
 
 test('tx: every op lands, in one append, and the callback result comes back', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
   const before = len(db)
 
   const result = await db.tx(async (tx) => {
@@ -50,7 +30,7 @@ test('tx: every op lands, in one append, and the callback result comes back', as
 })
 
 test('tx: a nested tx joins the outer batch', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
   const before = len(db)
 
   await db.tx(async (outer) => {
@@ -65,7 +45,7 @@ test('tx: a nested tx joins the outer batch', async (t) => {
 })
 
 test('tx: fn must take the transaction handle', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
   // a callback that ignores the handle would write to the db and lose atomicity
   await t.exception(
     db.tx(() => {}),
@@ -76,7 +56,7 @@ test('tx: fn must take the transaction handle', async (t) => {
 // ─── all or nothing ───────────────────────────────────────────────────────
 
 test('tx: a refused op rejects the whole transaction and appends nothing', async (t) => {
-  const { db } = await open(t, 'reader')
+  const { db } = await withRole(t, 'reader')
   const before = len(db)
 
   await t.exception(
@@ -92,18 +72,10 @@ test('tx: a refused op rejects the whole transaction and appends nothing', async
 })
 
 test('tx: one refused op takes its allowed siblings with it', async (t) => {
-  const { db } = await open(t, 'member')
-
-  // a member may add a reader, and may write messages — but may not evict
-  const reader = await Identity.generate()
-  await db.call('add-member', {
-    id: reader.id,
-    key: Identity.randomKeyPair().publicKey,
-    role: 'reader',
-    name: 'r',
-    createdAt: 1,
-    updatedAt: 1
-  })
+  // a member may write messages, but may not evict
+  const reader = await Identity.create()
+  const members = [{ id: reader.id, key: Identity.randomKeyPair().publicKey, role: 'reader' }]
+  const { db } = await withRole(t, 'member', { members })
   const before = len(db)
 
   await t.exception(
@@ -120,7 +92,7 @@ test('tx: one refused op takes its allowed siblings with it', async (t) => {
 })
 
 test('tx: a throwing callback appends nothing and the error propagates', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
   const before = len(db)
 
   await t.exception(
@@ -138,7 +110,7 @@ test('tx: a throwing callback appends nothing and the error propagates', async (
 // ─── no-ops never reach the log ───────────────────────────────────────────
 
 test('tx: a transaction that changes nothing appends nothing', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
   const before = len(db)
 
   // set() itself short-circuits on a missing id before ever writing, so go
@@ -153,7 +125,7 @@ test('tx: a transaction that changes nothing appends nothing', async (t) => {
 })
 
 test('tx: a no-op beside a real change still appends', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
   const before = len(db)
 
   await db.tx(async (tx) => {
@@ -170,7 +142,7 @@ test('tx: a no-op beside a real change still appends', async (t) => {
 // ─── ordering and lifecycle ───────────────────────────────────────────────
 
 test('tx: concurrent transactions land in call order', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
 
   await Promise.all([
     db.tx((tx) => tx.put('messages', { text: 'first' })),
@@ -181,8 +153,28 @@ test('tx: concurrent transactions land in call order', async (t) => {
   t.alike(await texts(db), ['first', 'second', 'third'], 'serialized in the order they were called')
 })
 
+test(
+  'tx: a write outside the batch during the callback goes through on its own',
+  { timeout: 10000 },
+  async (t) => {
+    const { db } = await withRole(t, 'owner')
+    db.before('put', (ctx) => ctx.name !== 'messages' || ctx.row.text !== 'no')
+
+    await t.exception(
+      db.tx(async (tx) => {
+        await tx.put('messages', { text: 'no' })
+        await db.set('profile', { name: 'outside' })
+      }),
+      /REFUSED/
+    )
+
+    t.is((await db.get('profile')).data?.name, 'outside', 'landed on its own, not with the batch')
+    t.alike(await texts(db), [], 'the batch itself was refused')
+  }
+)
+
 test('tx: racing close settles as CLOSED, not a raw error', async (t) => {
-  const { db } = await open(t)
+  const { db } = await withRole(t, 'owner')
 
   const closing = db.close()
   const err = await db
