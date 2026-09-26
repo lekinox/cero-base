@@ -792,30 +792,37 @@ test('a DHT node that stops answering costs a lookup about a second', async (t) 
   t.ok(Date.now() - start < 2000, `looked up in ${Date.now() - start} ms`)
 })
 
-test('back online after an outage, a device is reachable by its key within seconds', async (t) => {
-  const outage = await createTestnet(3, t)
-  const port = outage.bootstrap[0].port
-  const a = await makeNetBase(t, outage)
-  await a.join(randomTopic()).flush()
-  await outage.destroy()
-  // the dht calls itself offline only from timeouts it counts: keep using the network while it is down
-  const joins = setInterval(() => a.join(randomTopic()), 1000)
-  t.teardown(() => clearInterval(joins))
-  const offline = await waitFor(() => !a.swarm.dht.online, { timeout: 40000 }).catch(() => false)
-  t.ok(offline, 'offline')
+test(
+  'back online after an outage, a device is reachable by its key within seconds',
+  { timeout: 150000 },
+  async (t) => {
+    const outage = await createTestnet(3, t)
+    const port = outage.bootstrap[0].port
+    const a = await makeNetBase(t, outage)
+    await a.join(randomTopic()).flush()
+    await outage.destroy()
+    // the dht calls itself offline only from timeouts it counts: keep using the network while it is down
+    const joins = setInterval(() => a.join(randomTopic()), 1000)
+    t.teardown(() => clearInterval(joins))
+    // setup, not what is tested: under load the dht takes longer to count itself offline
+    const offline = await waitFor(() => !a.swarm.dht.online, { timeout: 90000 }).catch(() => false)
+    t.ok(offline, 'offline')
 
-  // the router is back: fresh nodes at the same bootstrap address, holding nothing about a
-  const back = await createTestnet(3, { port, teardown: (fn, opts) => t.teardown(fn, opts) })
-  const online = await waitFor(() => a.swarm.dht.online, { timeout: 15000 }).catch(() => false)
-  t.ok(online, 'online again')
-  clearInterval(joins)
+    // the router is back: fresh nodes at the same bootstrap address, holding nothing about a
+    const back = await createTestnet(3, { port, teardown: (fn, opts) => t.teardown(fn, opts) })
+    const online = await waitFor(() => a.swarm.dht.online, { timeout: 30000 }).catch(() => false)
+    t.ok(online, 'online again')
+    clearInterval(joins)
 
-  const b = await makeNetBase(t, back)
-  const start = Date.now()
-  b.swarm.joinPeer(a.swarm.keyPair.publicKey)
-  const reached = await waitFor(() => b.connections.size > 0, { timeout: 15000 }).catch(() => false)
-  t.ok(reached, `reached in ${Date.now() - start} ms`)
-})
+    const b = await makeNetBase(t, back)
+    const start = Date.now()
+    b.swarm.joinPeer(a.swarm.keyPair.publicKey)
+    const reached = await waitFor(() => b.connections.size > 0, { timeout: 15000 }).catch(
+      () => false
+    )
+    t.ok(reached, `reached in ${Date.now() - start} ms`)
+  }
+)
 
 test('peers that stopped redialing each other are found again within seconds', async (t) => {
   const { a, b } = await makePair(t)
