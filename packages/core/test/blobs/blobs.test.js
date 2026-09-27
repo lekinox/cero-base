@@ -1,12 +1,12 @@
 import test from 'brittle'
-import createTestnet from '@hyperswarm/testnet'
 import b4a from 'b4a'
 import z32 from 'z32'
 
 import { Blobs, encodeId, decodeId } from '../../src/blobs/index.js'
 import { Identity } from '../../src/identity/index.js'
 import {
-  makeNet as makeNetBase,
+  makeNet,
+  makeTestnet,
   makeStore,
   connectPair,
   streamFromChunks,
@@ -14,10 +14,6 @@ import {
 } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
-
-const testnet = await createTestnet(3)
-
-const makeNet = (t, opts = {}) => makeNetBase(t, testnet, opts)
 
 async function makeBlobs(t, opts = {}) {
   const { store } = opts.store ? { store: opts.store } : await makeStore(t)
@@ -296,8 +292,9 @@ test('decodeId rejects a truncated payload', (t) => {
 
 // Build A (writer) + B (replica of A) connected over the testnet.
 async function makeReplicationPair(t) {
-  const netA = await makeNet(t)
-  const netB = await makeNet(t)
+  const testnet = await makeTestnet(t)
+  const netA = await makeNet(t, testnet)
+  const netB = await makeNet(t, testnet)
   const { store: storeA } = await makeStore(t)
   const { store: storeB } = await makeStore(t)
   const idA = await Identity.create()
@@ -344,11 +341,4 @@ test('replication: stream blob read from peer', async (t) => {
   const blobId = await blobsA.put(streamFromChunks(chunks))
   const out = await streamToBuffer(blobsB.createReadStream(blobId))
   t.alike(out, b4a.concat(chunks))
-})
-
-// ─── teardown shared testnet ────────────────────────────────────────────
-
-test('teardown shared testnet', async (t) => {
-  await testnet.destroy()
-  t.pass('testnet destroyed')
 })

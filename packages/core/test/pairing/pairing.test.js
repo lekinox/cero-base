@@ -1,5 +1,4 @@
 import test from 'brittle'
-import createTestnet from '@hyperswarm/testnet'
 import AbortController from 'bare-abort-controller'
 import b4a from 'b4a'
 import z32 from 'z32'
@@ -20,13 +19,11 @@ import { getEncoding } from '../../src/lib/spec/index.js'
 import { CeroError } from '../../src/lib/errors.js'
 import { spec } from '../fixtures/spec/index.js'
 
-import { makeStore, makeBlindPeer, waitFor } from '../helpers/index.js'
+import { makeStore, makeTestnet, makeBlindPeer, waitFor } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
 
-const testnet = await createTestnet(3)
-
-async function makeMailbox(t, opts = {}) {
+async function makeMailbox(t, testnet, opts = {}) {
   const identity = await Identity.create()
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const net = new Network({ identity, bootstrap: testnet.bootstrap, store, ...opts })
@@ -38,8 +35,8 @@ async function makeMailbox(t, opts = {}) {
 }
 
 // a member: the owner of a fresh database, answering its joins
-async function makeHost(t, { mirrors } = {}) {
-  const { mailbox, net, identity } = await makeMailbox(t, { mirrors })
+async function makeHost(t, testnet, { mirrors } = {}) {
+  const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
   const db = new Database({ store: net.store, identity, network: net, spec })
   await db.ready()
   await db.bootstrap({ name: 'host' })
@@ -50,19 +47,19 @@ async function makeHost(t, { mirrors } = {}) {
   return { pairing, mailbox, net, db, identity }
 }
 
-async function makeJoiner(t, { mirrors } = {}) {
-  const { mailbox, net, identity } = await makeMailbox(t, { mirrors })
+async function makeJoiner(t, testnet, { mirrors } = {}) {
+  const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
   const join = (invite, opts = {}) => Pairing.join(mailbox, invite, { identity, spec, ...opts })
   return { mailbox, net, identity, join }
 }
 
-async function makeHostJoiner(t, opts = {}) {
-  return { host: await makeHost(t, opts), joiner: await makeJoiner(t) }
+async function makeHostJoiner(t, testnet, opts = {}) {
+  return { host: await makeHost(t, testnet, opts), joiner: await makeJoiner(t, testnet) }
 }
 
 // another member of the host's database, on its own device, answering its joins too
-async function makeMember(t, host, role) {
-  const { mailbox, net, identity, join } = await makeJoiner(t)
+async function makeMember(t, testnet, host, role) {
+  const { mailbox, net, identity, join } = await makeJoiner(t, testnet)
   const { key, encryptionKey, epochs, writer } = await join(await host.pairing.invite({ role }))
   const opts = { key, encryptionKey, epochs, keyPair: writer }
   const db = new Database({ store: net.store, identity, network: net, spec, ...opts })
@@ -99,13 +96,15 @@ const applied = (db, op, name) =>
 // ─── construction / lifecycle ──────────────────────────────────────────────
 
 test('construction: a mailbox and a database', async (t) => {
-  const { mailbox } = await makeMailbox(t)
+  const testnet = await makeTestnet(t)
+  const { mailbox } = await makeMailbox(t, testnet)
   t.exception.all(() => new Pairing({ db: {} }), /mailbox/)
   t.exception.all(() => new Pairing({ mailbox }), /db/)
 })
 
 test('ready() + close() lifecycle, both idempotent', async (t) => {
-  const { pairing } = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const { pairing } = await makeHost(t, testnet)
   await pairing.ready()
   t.ok(pairing.opened)
   await pairing.close()
@@ -116,7 +115,8 @@ test('ready() + close() lifecycle, both idempotent', async (t) => {
 // ─── invites ───────────────────────────────────────────────────────────────
 
 test('invite: a z32 string, kept in the database', async (t) => {
-  const { pairing, db } = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
   const invite = await pairing.invite({ role: 'reader', ttl: '1h', reuse: true })
   t.ok(/^[ybndrfg8ejkmcpqxot1uwisza345h769]+$/.test(invite))
 
@@ -130,7 +130,8 @@ test('invite: a z32 string, kept in the database', async (t) => {
 })
 
 test('invite: the role is a rank, member by default', async (t) => {
-  const { pairing, db } = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
   await t.exception(pairing.invite({ role: 'volunteer' }), /not a rank/)
   await pairing.invite()
   const [record] = await invites(db)
@@ -138,7 +139,8 @@ test('invite: the role is a rank, member by default', async (t) => {
 })
 
 test('invite: ttl is ms or a duration', async (t) => {
-  const { pairing } = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const { pairing } = await makeHost(t, testnet)
   const inMs = Invite.parse(await pairing.invite({ ttl: 60_000 }))
   t.ok(Math.abs(inMs.expires - Date.now() - 60_000) < 5000)
   t.is(Invite.parse(await pairing.invite()).expires, 0, 'no ttl, no expiry')
@@ -146,14 +148,16 @@ test('invite: ttl is ms or a duration', async (t) => {
 })
 
 test('invite: a rank above member is single-use', async (t) => {
-  const { pairing } = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const { pairing } = await makeHost(t, testnet)
   await t.exception(pairing.invite({ role: 'admin', reuse: true }), /at most member/)
   t.ok(await pairing.invite({ role: 'member', reuse: true }))
   t.ok(await pairing.invite({ role: 'admin' }))
 })
 
 test('Invite.parse round-trips: key, address, id', async (t) => {
-  const { pairing, db } = await makeHost(t, { mirrors: [crypto.randomBytes(32)] })
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet, { mirrors: [crypto.randomBytes(32)] })
   const invite = await pairing.invite()
   const parsed = Invite.parse(invite)
   t.alike(parsed.key, db.key)
@@ -166,7 +170,8 @@ test('Invite.parse round-trips: key, address, id', async (t) => {
 })
 
 test('invite: data rides in the invite, readable before joining', async (t) => {
-  const { pairing } = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const { pairing } = await makeHost(t, testnet)
   const data = b4a.from('clinic')
   t.alike(Invite.parse(await pairing.invite({ data })).data, data)
 })
@@ -201,7 +206,8 @@ test('Invite proof: only the invite holder proves a writer', async (t) => {
 // ─── joins: apply admits ───────────────────────────────────────────────────
 
 test('join: apply admits the joiner, and the reply carries the keys and epochs', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   await host.db.rotate()
   const invite = await host.pairing.invite({ role: 'member' })
   host.pairing.on('request', () => t.fail('no request: nobody has to accept'))
@@ -225,7 +231,8 @@ test('join: apply admits the joiner, and the reply carries the keys and epochs',
 })
 
 test('join: links the node that added its invite, so no member applies it first', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   const { link } = Invite.parse(invite)
   t.alike(link, { key: host.db.writerKey, length: host.db.length }, 'the record, on the minter')
@@ -242,8 +249,9 @@ test('join: links the node that added its invite, so no member applies it first'
 })
 
 test('join: a reusable invite admits every joiner, each at its role', async (t) => {
-  const { host, joiner: one } = await makeHostJoiner(t)
-  const two = await makeJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner: one } = await makeHostJoiner(t, testnet)
+  const two = await makeJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'reader', reuse: true })
 
   t.alike((await one.join(invite)).key, host.db.key)
@@ -254,8 +262,9 @@ test('join: a reusable invite admits every joiner, each at its role', async (t) 
 })
 
 test('join: a single-use invite admits once; a second joiner hears it is spent', async (t) => {
-  const { host, joiner: one } = await makeHostJoiner(t)
-  const two = await makeJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner: one } = await makeHostJoiner(t, testnet)
+  const two = await makeJoiner(t, testnet)
   const invite = await host.pairing.invite()
 
   await one.join(invite)
@@ -266,14 +275,15 @@ test('join: a single-use invite admits once; a second joiner hears it is spent',
 })
 
 test('join: a member joining again from another device keeps its record', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'member', reuse: true })
   await joiner.join(invite)
   const before = await member(host.db, joiner.identity)
   await host.db.call('set-member', { ...before, role: 'admin', updatedAt: Date.now() })
 
   // the same identity on a second device, with a writer of its own
-  const device = await makeMailbox(t)
+  const device = await makeMailbox(t, testnet)
   const result = await Pairing.join(device.mailbox, invite, { identity: joiner.identity, spec })
   const after = await member(host.db, joiner.identity)
   t.is(after.role, 'admin', 'the role it was given since')
@@ -283,7 +293,8 @@ test('join: a member joining again from another device keeps its record', async 
 })
 
 test('join: a fresh invite takes over from one that admits nobody', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const revoked = await host.pairing.invite()
   await host.pairing.revoke(revoked)
   const writer = crypto.keyPair()
@@ -297,7 +308,8 @@ test('join: a fresh invite takes over from one that admits nobody', async (t) =>
 })
 
 test('join: a reply for another database is ignored', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   await host.pairing.close()
   const writer = crypto.keyPair()
@@ -309,7 +321,8 @@ test('join: a reply for another database is ignored', async (t) => {
 })
 
 test('expiry: a joiner admitted past its invite is removed, not answered', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ ttl: 2000 })
   // nobody answers while the join lands, so it is admitted and never gets its keys
   await host.pairing.close()
@@ -325,7 +338,8 @@ test('expiry: a joiner admitted past its invite is removed, not answered', async
 })
 
 test('expiry: a joiner admitted but gone is removed at expiry, even while offered its keys', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ ttl: 4000 })
   await host.pairing.close()
   const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
@@ -346,7 +360,8 @@ test('expiry: a joiner admitted but gone is removed at expiry, even while offere
 // ─── confirm invites: a member accepts ─────────────────────────────────────
 
 test('confirm: a join waits as a request until a member accepts it', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'member', confirm: true })
   const asked = new Promise((resolve) => host.pairing.once('request', resolve))
   const joining = joiner.join(invite)
@@ -369,7 +384,8 @@ test('confirm: a join waits as a request until a member accepts it', async (t) =
 })
 
 test('confirm: accept checks the role and the expiry first', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'member', confirm: true, ttl: 2000 })
   const asked = new Promise((resolve) => host.pairing.once('request', resolve))
   const joining = joiner.join(invite).catch((e) => e)
@@ -383,8 +399,9 @@ test('confirm: accept checks the role and the expiry first', async (t) => {
 })
 
 test('confirm: an accept refused at apply leaves the request answerable', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
-  const peer = await makeMember(t, host, 'member')
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const peer = await makeMember(t, testnet, host, 'member')
   const invite = await host.pairing.invite({ role: 'admin', confirm: true })
   const asked = new Promise((resolve) => peer.pairing.once('request', resolve))
   const joining = joiner.join(invite, { timeout: 10000 }).catch((e) => e)
@@ -399,7 +416,8 @@ test('confirm: an accept refused at apply leaves the request answerable', async 
 })
 
 test('confirm: a member can deny with a reason', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ confirm: true })
   host.pairing.on('request', (request) => request.deny('not-today'))
 
@@ -411,8 +429,9 @@ test('confirm: a member can deny with a reason', async (t) => {
 })
 
 test('confirm: accepting one join spends a single-use invite, the others hear it is spent', async (t) => {
-  const { host, joiner: one } = await makeHostJoiner(t)
-  const two = await makeJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner: one } = await makeHostJoiner(t, testnet)
+  const two = await makeJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'admin', confirm: true })
   const requests = []
   host.pairing.on('request', (request) => requests.push(request))
@@ -439,7 +458,8 @@ test('confirm: accepting one join spends a single-use invite, the others hear it
 // ─── joiner errors ─────────────────────────────────────────────────────────
 
 test('join: needs a mailbox, an identity and a spec; a writer, if given, is a keypair', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   const { identity, mailbox } = joiner
   await t.exception(Pairing.join(null, invite, { identity, spec }), /mailbox/)
@@ -450,21 +470,24 @@ test('join: needs a mailbox, an identity and a spec; a writer, if given, is a ke
 })
 
 test('join: invalid invite → INVALID_INVITE, expired → EXPIRED', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   t.is((await joiner.join('not-an-invite').catch((e) => e)).code, 'INVALID_INVITE')
   const invite = await host.pairing.invite({ ttl: -1000 })
   t.is((await joiner.join(invite).catch((e) => e)).code, 'EXPIRED')
 })
 
 test('join: times out when no member answers', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   await host.pairing.close()
   t.is((await joiner.join(invite, { timeout: 1500 }).catch((e) => e)).code, 'TIMEOUT')
 })
 
 test('join: waiting for good still ends when the invite expires', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const soon = await host.pairing.invite({ ttl: 1500 })
   const later = await host.pairing.invite({ ttl: '30d' })
   await host.pairing.close()
@@ -474,7 +497,8 @@ test('join: waiting for good still ends when the invite expires', async (t) => {
 })
 
 test('join: closing the mailbox stops it with CLOSED', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   await host.pairing.close()
   const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
@@ -484,7 +508,8 @@ test('join: closing the mailbox stops it with CLOSED', async (t) => {
 })
 
 test('join: an abort signal stops it', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   const controller = new AbortController()
   const joining = joiner.join(invite, { timeout: 0, signal: controller.signal }).catch((e) => e)
@@ -495,7 +520,8 @@ test('join: an abort signal stops it', async (t) => {
 // ─── invite lifecycle ──────────────────────────────────────────────────────
 
 test('revoke: dropped from the database, a join with it is turned away', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   t.is(await host.pairing.revoke(invite), true)
   t.is(await host.pairing.revoke(invite), false, 'revoking again finds nothing')
@@ -510,7 +536,8 @@ test('revoke: dropped from the database, a join with it is turned away', async (
 })
 
 test('refused: a member removed after the invite was minted hears it', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ reuse: true })
   await joiner.join(invite)
   await host.db.call('del-member', { id: joiner.identity.id })
@@ -524,7 +551,8 @@ test('refused: a member removed after the invite was minted hears it', async (t)
 })
 
 test('refused: a join with an invite the room never held is not answered, nor kept', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const link = { key: host.db.writerKey, length: host.db.length }
   const stranger = Invite.create({ key: host.db.key, address: host.db.address, link })
   const landed = applied(host.db, 'join', 'join')
@@ -535,8 +563,9 @@ test('refused: a join with an invite the room never held is not answered, nor ke
 })
 
 test('refused: with two member devices online, the joiner is answered and both forget it', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
-  const peer = await makeMember(t, host, 'member')
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const peer = await makeMember(t, testnet, host, 'member')
   const invite = await host.pairing.invite({ reuse: true })
   await host.pairing.revoke(invite)
   await waitFor(async () => (await spent(peer.db)).length === 1)
@@ -552,7 +581,8 @@ test('refused: with two member devices online, the joiner is answered and both f
 })
 
 test('expiry: a member who can remove drops the invite once it runs out', async (t) => {
-  const host = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
   await host.pairing.invite({ ttl: 1000 })
   t.is((await invites(host.db)).length, 1)
   await waitFor(async () => (await invites(host.db)).length === 0, { timeout: 10000 })
@@ -562,7 +592,8 @@ test('expiry: a member who can remove drops the invite once it runs out', async 
 })
 
 test('expiry: a revoked invite is kept to answer its joins until it runs out', async (t) => {
-  const host = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
   await host.pairing.revoke(await host.pairing.invite({ ttl: 1500 }))
   t.is((await spent(host.db)).length, 1)
   await waitFor(async () => (await spent(host.db)).length === 0, { timeout: 10000 })
@@ -570,7 +601,8 @@ test('expiry: a revoked invite is kept to answer its joins until it runs out', a
 })
 
 test('expiry: a refused joiner gone is forgotten at expiry, unanswered', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ ttl: 4000, reuse: true })
   await host.pairing.revoke(invite)
   await host.pairing.close()
@@ -591,7 +623,8 @@ test('expiry: a refused joiner gone is forgotten at expiry, unanswered', async (
 })
 
 test('expiry: an invite reaching its expiry this very millisecond is still watched', async (t) => {
-  const host = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
   await host.pairing.invite({ ttl: 60_000 })
   const [record] = await invites(host.db)
   const before = host.pairing._expiry
@@ -607,7 +640,8 @@ test('expiry: an invite reaching its expiry this very millisecond is still watch
 })
 
 test('serving: true while this member may answer a live invite', async (t) => {
-  const host = await makeHost(t)
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
   t.is(host.pairing.serving, false)
   const invite = await host.pairing.invite()
   t.is(host.pairing.serving, true)
@@ -618,7 +652,8 @@ test('serving: true while this member may answer a live invite', async (t) => {
 // ─── resilience ────────────────────────────────────────────────────────────
 
 test('a resumed join hears the reply to its earlier join', async (t) => {
-  const { host, joiner } = await makeHostJoiner(t)
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite()
   await host.pairing.close()
   const writer = crypto.keyPair()
@@ -637,19 +672,20 @@ test('a resumed join hears the reply to its earlier join', async (t) => {
   t.teardown(() => pairing.close())
   await pairing.ready()
   // the invite is spent, so only the reply to the earlier join can land
-  const again = await makeJoiner(t)
+  const again = await makeJoiner(t, testnet)
   const opts = { identity: joiner.identity, spec, writer }
   t.alike((await Pairing.join(again.mailbox, invite, opts)).key, host.db.key)
 })
 
 test('offline: member and joiner are never online together, the mirror carries both ways', async (t) => {
+  const testnet = await makeTestnet(t)
   const mirror = await makeBlindPeer(t, testnet)
   // both run the app's mirror; the member's database is mirrored, which keeps it connected
-  const host = await makeHost(t, { mirrors: [mirror.publicKey] })
+  const host = await makeHost(t, testnet, { mirrors: [mirror.publicKey] })
   const invite = await host.pairing.invite()
   await host.net.suspend()
 
-  const joiner = await makeJoiner(t, { mirrors: [mirror.publicKey] })
+  const joiner = await makeJoiner(t, testnet, { mirrors: [mirror.publicKey] })
   const joined = holds(mirror, Invite.parse(invite).key)
   const joining = joiner.join(invite, { timeout: 60000 })
   await joined
@@ -666,13 +702,14 @@ test('offline: member and joiner are never online together, the mirror carries b
 })
 
 test('offline: a refused joiner hears it through the mirror, never online with a member', async (t) => {
+  const testnet = await makeTestnet(t)
   const mirror = await makeBlindPeer(t, testnet)
-  const host = await makeHost(t, { mirrors: [mirror.publicKey] })
+  const host = await makeHost(t, testnet, { mirrors: [mirror.publicKey] })
   const invite = await host.pairing.invite()
   await host.pairing.revoke(invite)
   await host.net.suspend()
 
-  const joiner = await makeJoiner(t, { mirrors: [mirror.publicKey] })
+  const joiner = await makeJoiner(t, testnet, { mirrors: [mirror.publicKey] })
   const joined = holds(mirror, Invite.parse(invite).key)
   const joining = joiner.join(invite, { timeout: 60000 }).catch((e) => e)
   await joined
@@ -718,9 +755,4 @@ test('CeroError pairing factories have stable codes and inherit from Error', (t)
   const d = CeroError.DENIED('foo')
   t.is(d.code, 'DENIED')
   t.is(d.reason, 'foo')
-})
-
-test('teardown shared testnet', async (t) => {
-  await testnet.destroy()
-  t.pass()
 })
