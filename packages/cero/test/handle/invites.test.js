@@ -163,8 +163,10 @@ test('invites: a removed member comes back only through an invite minted after i
   await del(room.members, b.identity.id)
   await memberCount(room, 1)
   await waitUntil(async () => ((await get(b.room.members, b.identity.id)).data ? null : true))
-  const err = await b.me._join(before, 'team', { timeout: 3000 }).catch((e) => e)
-  t.is(err.code, 'TIMEOUT', 'the old invite admits nobody')
+  const err = await open(b.me.team, before).catch((e) => e)
+  t.is(err.code, 'DENIED', 'the old invite admits nobody')
+  t.is(err.reason, 'removed', 'and says why')
+  t.alike((await get(b.me.joins)).data, [], 'the join is over')
   t.absent((await get(room.members, b.identity.id)).data)
 
   const back = await open(b.me.team, await cero.invite(room))

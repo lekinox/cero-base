@@ -116,6 +116,17 @@ export declare const main: {
         isMobile: import("@cero-base/core").Prim;
         device: import("@cero-base/core").Prim;
     };
+    refusal: {
+        id: import("@cero-base/core").Prim;
+        reply: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+        expires: import("@cero-base/core").Prim;
+    };
+    spent: {
+        id: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+        expires: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {

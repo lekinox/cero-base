@@ -9,7 +9,7 @@ import HRPCBuilder from 'hrpc'
 
 import { CeroError } from '@cero-base/core/errors'
 
-import { NS } from '../lib/constants.js'
+import { NS, REFUSALS, SPENT } from '../lib/constants.js'
 import { extensionsOf } from '../extensions/index.js'
 import * as internal from './internal.js'
 
@@ -263,6 +263,9 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
   for (const desc of internal.collections(ns, 'main')) dns.collections.register(desc)
   for (const desc of collections) dns.collections.register(desc)
   for (const desc of indexes) dns.indexes.register(desc)
+  // after the app's: hyperdb numbers collections positionally and persists them
+  dns.collections.register({ name: REFUSALS, schema: `@${ns}/refusal`, key: ['id'] })
+  dns.collections.register({ name: SPENT, schema: `@${ns}/spent`, key: ['id'] })
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)
@@ -271,6 +274,7 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
   for (const desc of dispatches) xns.register(desc)
   // after the app's dispatches: hyperdispatch numbers routes positionally and persists them
   xns.register({ name: 'rotate-key', requestType: `@${ns}/epoch` })
+  xns.register({ name: 'del-refusal', requestType: `@${ns}/del-by-id` })
   Hyperdispatch.toDisk(d, dispatchDir, { esm: true })
 
   if (rpc) {

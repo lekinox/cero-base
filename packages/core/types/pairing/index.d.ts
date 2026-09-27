@@ -112,9 +112,10 @@ export type JoinResult = {
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A
- * `confirm` invite's joins wait as requests until a member accepts or denies them; `'request'`
- * fires for each new one.
+ * that may invite offers them while online, and the first one read settles it for all. A join
+ * turned away with an invite the database knows, spent, revoked or older than the joiner's
+ * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
+ * as requests until a member accepts or denies them; `'request'` fires for each new one.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export declare class Pairing extends ReadyResource {
@@ -122,12 +123,14 @@ export declare class Pairing extends ReadyResource {
     db: import("../index.js").Database;
     /** @type {Set<Request>} requests not answered yet: whoever attaches after one fired goes through these first */
     pending: Set<Request>;
-    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed their keys exist. */
+    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed an answer exist. */
     serving: boolean;
     /** @private */
     _requests;
     /** @private */
     _replies;
+    /** @private */
+    _denials;
     /** @private */
     _expiry;
     /** @private */
@@ -168,7 +171,11 @@ export declare class Pairing extends ReadyResource {
     /** @private */
     private _answer;
     /** @private */
-    private _reply;
+    private _offer;
+    /** @private */
+    private _post;
+    /** @private */
+    private _list;
     /** @private */
     private _me;
     /** @private */

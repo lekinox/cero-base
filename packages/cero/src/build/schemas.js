@@ -134,6 +134,19 @@ export const main = {
     name: string,
     isMobile: bool,
     device: string
+  },
+  // a join the room turned away, until the joiner read why. `id` is the joiner's writer
+  refusal: {
+    id: required(string),
+    reply: required(bytes),
+    reason: required(string),
+    expires: int
+  },
+  // an invite spent or revoked, kept until it expires so a join with it hears why
+  spent: {
+    id: required(string),
+    reason: required(string),
+    expires: int
   }
 }
 

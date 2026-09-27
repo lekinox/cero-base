@@ -69,9 +69,9 @@ await cero.revoke(room, code) // true the first time, false afterwards
 ```
 
 Keep the invite string: `cero.revoke` takes it, and the rows in `room.invites` keep only a hex id.
-Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and drops the joins still
-waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired or
-spent.
+Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and turns away the joins
+still waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired
+or spent.
 
 ## Join a room
 
@@ -94,10 +94,11 @@ const { data: joins } = await cero.get(me.joins) // [{ id, type, invite }], stil
 await cero.cancel(me, invite) // give up for good: true when it cancelled one
 ```
 
-A join on a revoked or spent invite gets no answer: it waits until the invite's ttl, or for good
-without one, so cancel it. A second joiner on a single-use invite is ignored. An invite to a room you
-already have returns that room; a newer invite to the same room takes over. Once nobody waits on a
-join, a denial or expiry reaches `onerror`.
+A join the room turns away rejects `DENIED` once a member who can invite is online, with
+`err.reason` saying why: `'revoked'`, `'spent'` for a single-use invite someone already used, or
+`'removed'` for an invite minted before your removal. An invite to a room you already have returns
+that room; a newer invite to the same room takes over. Once nobody waits on a join, a denial or
+expiry reaches `onerror`.
 
 ## Confirm joins
 
@@ -170,7 +171,8 @@ await cero.del(room.devices, deviceId) // one device, the member stays: an id fr
 Removing needs the remove permission and a higher rank: removing an equal or higher rank rejects
 `REFUSED`. Anyone may remove themselves, a reader too, except the last owner of a room others are
 in: `INVALID`. The removed member's `room.status` shows `role: null`, and
-they come back only through an invite minted after the removal.
+they come back only through an invite minted after the removal: an older one rejects `DENIED` with
+`err.reason` `'removed'`.
 
 ## Remove and re-key
 

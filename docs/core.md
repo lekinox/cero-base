@@ -273,7 +273,8 @@ pairing.on('request', async (request) => {
 - `request.accept()` admits the joiner at the invite's role. `request.accept({ role })` can grant a lower one, never above the invite's or your own rank. It throws `EXPIRED` once the invite has expired.
 - `request.deny(reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
 - `pairing.pending` holds the requests not answered yet, and `pairing.request(id)` finds one by the id of its row. They live in the room, rows of `requests` with the `role` they ask for, so they survive a restart and the first member to answer settles it for all.
-- `pairing.revoke(invite)` needs the remove permission and drops the invite's waiting requests too.
+- `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
+- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
 
 ## Storage

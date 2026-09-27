@@ -14,7 +14,7 @@ import { wrap } from '../database/envelope.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE, MEMBER } from '../lib/constants.js'
+import { NAMESPACE, MEMBER, REFUSALS, SPENT } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
 const MAX_DELAY = 2 ** 31 - 1
@@ -51,9 +51,10 @@ const MAX_DELAY = 2 ** 31 - 1
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A
- * `confirm` invite's joins wait as requests until a member accepts or denies them; `'request'`
- * fires for each new one.
+ * that may invite offers them while online, and the first one read settles it for all. A join
+ * turned away with an invite the database knows, spent, revoked or older than the joiner's
+ * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
+ * as requests until a member accepts or denies them; `'request'` fires for each new one.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -67,13 +68,15 @@ export class Pairing extends ReadyResource {
     this.db = db
     /** @type {Set<Request>} requests not answered yet: whoever attaches after one fired goes through these first */
     this.pending = new Set()
-    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed their keys exist. */
+    /** Whether this device answers the database's joins: it may invite, and invites or joiners owed an answer exist. */
     this.serving = false
 
     /** @private */
     this._requests = new Map() // writer id → Request
     /** @private */
     this._replies = new Map() // writer id → the Post offering its keys
+    /** @private */
+    this._denials = new Map() // writer id → the Post telling why its join was turned away
     /** @private */
     this._expiry = null
     /** @private */
@@ -96,8 +99,9 @@ export class Pairing extends ReadyResource {
   async _close() {
     this.db.off('update', this._onupdate)
     clearTimeout(this._expiry)
-    const posts = [...this._replies.values()]
+    const posts = [...this._replies.values(), ...this._denials.values()]
     this._replies.clear()
+    this._denials.clear()
     await Promise.allSettled(posts.map((post) => post.close()))
   }
 
@@ -166,26 +170,31 @@ export class Pairing extends ReadyResource {
     return request
   }
 
-  // follow the log: the invites that ran out, the joins waiting for a member, the keys owed
+  // follow the log: the invites that ran out, the joins waiting for a member, the answers owed
   /** @private */
   async _sync() {
     const me = await this._me()
     const { data: invites } = await this.db.get('invites')
     const { data: requests } = await this.db.get('requests')
+    const refusals = await this._list(REFUSALS)
+    const spent = await this._list(SPENT)
     if (this.closing || this.closed) return
     const role = me?.role
-    // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting
+    // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting,
+    // and a spent one forgotten, since no joiner uses it past then
     if (can(role, REMOVE)) {
-      for (const row of invites.filter(expired)) {
+      for (const row of [...invites, ...spent].filter(expired)) {
         await this.db.call('del-invite', { id: row.id }).catch(safetyCatch)
       }
     }
-    this._arm([...invites, ...requests])
+    this._arm([...invites, ...requests, ...spent])
     const inviter = can(role, INVITE)
     const owed = inviter ? requests.filter((row) => row.admitted) : []
+    const refused = inviter ? refusals : []
     this._pending(inviter ? requests.filter((row) => !row.admitted) : [], invites)
-    await this._answer(owed, role)
-    this.serving = inviter && (invites.some((row) => !expired(row)) || owed.length > 0)
+    await this._answer(owed, refused, role)
+    const live = invites.some((row) => !expired(row))
+    this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
   }
 
@@ -221,49 +230,74 @@ export class Pairing extends ReadyResource {
     }
   }
 
-  // an admitted joiner is offered its keys by every inviter device online, until one is read.
-  // Past the invite's expiry the joiner has given up: a member who can remove drops it instead
+  // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
+  // online, until one is read. Past the invite's expiry the joiner has given up: a member who can
+  // remove drops an admitted one instead, and a refused one is forgotten
   /** @private */
-  async _answer(rows, role) {
-    const owed = new Set(rows.map((row) => row.id))
-    for (const [id, post] of this._replies) {
-      if (owed.has(id)) continue
-      this._replies.delete(id)
-      post.close().catch(safetyCatch)
-    }
-    for (const row of rows) {
-      if (!expired(row)) {
-        if (!this._replies.has(row.id)) this._reply(row)
-        continue
-      }
-      // a device already offering the keys stops: nobody waits for them any more
-      this._replies.get(row.id)?.close().catch(safetyCatch)
-      this._replies.delete(row.id)
-      if (can(role, REMOVE)) {
-        await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
-      }
-    }
-  }
-
-  // kept in memory, not in the outbox: the admission in the log is what outlives a restart
-  /** @private */
-  _reply({ id, reply }) {
-    const { network } = this.mailbox
-    const keys = {
+  async _answer(owed, refused, role) {
+    const keys = () => ({
       status: STATUS_ACCEPTED,
       reason: '',
       key: this.db.key,
       encryptionKey: this.db.encryptionKey,
       epochs: this.db.keyring.all()
+    })
+    const denied = ({ reason }) => ({
+      status: STATUS_DENIED,
+      reason,
+      key: null,
+      encryptionKey: null,
+      epochs: null
+    })
+    for (const row of this._offer(this._replies, owed, keys, 'del-request')) {
+      if (!can(role, REMOVE)) continue
+      await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
     }
-    const post = new Post(network, reply, c.encode(Response, keys), { mirrors: network.mirrors })
-    this._replies.set(id, post)
+    for (const row of this._offer(this._denials, refused, denied, 'del-refusal')) {
+      await this.db.call('del-refusal', { id: row.id }).catch(safetyCatch)
+    }
+  }
+
+  // posts each live row its answer once, closes those settled elsewhere, returns those past expiry
+  /** @private */
+  _offer(posts, rows, answer, settled) {
+    const live = new Set(rows.map((row) => row.id))
+    for (const [id, post] of posts) {
+      if (live.has(id)) continue
+      posts.delete(id)
+      post.close().catch(safetyCatch)
+    }
+    const gone = []
+    for (const row of rows) {
+      if (!expired(row)) {
+        if (!posts.has(row.id)) this._post(posts, row, answer(row), settled)
+        continue
+      }
+      // a device already offering it stops: nobody waits for it any more
+      posts.get(row.id)?.close().catch(safetyCatch)
+      posts.delete(row.id)
+      gone.push(row)
+    }
+    return gone
+  }
+
+  // kept in memory, not in the outbox: the row in the log is what outlives a restart
+  /** @private */
+  _post(posts, { id, reply }, answer, settled) {
+    const { network } = this.mailbox
+    const post = new Post(network, reply, c.encode(Response, answer), { mirrors: network.mirrors })
+    posts.set(id, post)
     const settle = async () => {
       await post.ready()
       await post.delivered
-      await this.db.call('del-request', { id })
+      await this.db.call(settled, { id })
     }
     settle().catch(safetyCatch)
+  }
+
+  /** @private */
+  _list(name) {
+    return this.db.view.find(`@${this.db.ns}/${name}`, {}).toArray()
   }
 
   /** @private */

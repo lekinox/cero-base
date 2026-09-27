@@ -11,6 +11,8 @@ import {
   COUNTERS,
   EPOCHS,
   REMOVALS,
+  REFUSALS,
+  SPENT,
   OWNER,
   INVITE,
   REMOVE,
@@ -64,6 +66,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   const col = (name) => `@${ns}/${name}`
   const countersCol = `@${ns}/${COUNTERS}`
   const removals = `@${ns}/${REMOVALS}`
+  const refusals = `@${ns}/${REFUSALS}`
+  const spent = `@${ns}/${SPENT}`
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
   const getDevice = (view, id) => view.get(`@${ns}/devices`, { id })
 
@@ -483,19 +487,36 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!can(r, REMOVE) || !capped(r, next)) throw CeroError.REFUSED('invite')
     await save(ctx, 'set', 'invites', next)
   })
+  // a live invite is revoked; a spent one, deleted again, is forgotten
   add('del-invite', async (op, ctx) => {
-    const existing = await ctx.view.get(invites, { id: op.id })
-    if (!existing) return
     const r = await getSignerRole(ctx.view, ctx.key)
-    if (!can(r, REMOVE) || !capped(r, existing)) throw CeroError.REFUSED('invite')
-    await spend(ctx, existing)
-  })
-  // its joins still waiting for a member go with it; admitted ones are still owed their keys
-  async function spend(ctx, invite) {
-    await drop(ctx, 'invites', invite.id)
-    for (const request of await ctx.view.find(requests, {}).toArray()) {
-      if (request.invite === invite.id && !request.admitted) await drop(ctx, 'requests', request.id)
+    const existing = await ctx.view.get(invites, { id: op.id })
+    if (existing) {
+      if (!can(r, REMOVE) || !capped(r, existing)) throw CeroError.REFUSED('invite')
+      return spend(ctx, existing, 'revoked')
     }
+    if (!(await ctx.view.get(spent, { id: op.id }))) return
+    if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
+    await ctx.view.delete(spent, { id: op.id })
+  })
+  // its joins still waiting for a member are turned away with it; admitted ones are still owed
+  // their keys. Its id stays, so a later join with it hears why
+  async function spend(ctx, invite, reason) {
+    const expires = invite.expires || 0
+    await drop(ctx, 'invites', invite.id)
+    await ctx.view.insert(spent, { id: invite.id, reason, expires })
+    for (const request of await ctx.view.find(requests, {}).toArray()) {
+      if (request.invite !== invite.id || request.admitted) continue
+      await drop(ctx, 'requests', request.id)
+      await refuse(ctx, request, reason)
+    }
+  }
+
+  // a join turned away is answered at its reply address. A writer with a request hears through
+  // that: one of the two per writer, or a denial could race its keys
+  async function refuse(ctx, { id, reply, expires }, reason) {
+    if (await ctx.view.get(requests, { id })) return
+    await ctx.view.insert(refusals, { id, reply, reason, expires })
   }
 
   // the member, when new, and its device, seated when the member writes; its request stays until
@@ -519,7 +540,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       role,
       admitted: true
     })
-    if (!invite.reuse) await spend(ctx, invite)
+    if (!invite.reuse) await spend(ctx, invite, 'spent')
   }
 
   function request(invite, identity, writer, reply, ts) {
@@ -547,13 +568,22 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!Invite.proven(join.invite, ctx.key, join.proof)) return
     const signed = joining(ctx.dbKey, join.invite, ctx.key, join.reply)
     if (!Identity.verify(join.identity, signed, join.signature)) return
+    const id = hid.encode(ctx.key)
     const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
-    if (!invite) return
+    if (!invite) {
+      // an invite the room never held could be anyone's: nobody answers it
+      const record = await ctx.view.get(spent, { id: b4a.toHex(join.invite) })
+      if (!record) return
+      return refuse(ctx, { id, reply: join.reply, expires: record.expires }, record.reason)
+    }
     const ts = join.ts || 0
     const memberId = hid.encode(join.identity)
     const known = await getMember(ctx.view, memberId)
     const removal = known ? null : await ctx.view.get(removals, { id: memberId })
-    if (removal && (invite.index ?? 0) <= removal.index) return
+    if (removal && (invite.index ?? 0) <= removal.index) {
+      return refuse(ctx, { id, reply: join.reply, expires: invite.expires || 0 }, 'removed')
+    }
+    await ctx.view.delete(refusals, { id })
     if (invite.confirm && !known) {
       const waiting = request(invite, join.identity, ctx.key, join.reply, ts)
       return save(ctx, 'put', 'requests', waiting)
@@ -590,6 +620,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   add('del-request', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
     await drop(ctx, 'requests', op.id)
+  })
+  // read by the joiner, or past its expiry with nobody waiting
+  add('del-refusal', async (op, ctx) => {
+    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    await ctx.view.delete(refusals, { id: op.id })
   })
 
   add('add-file', async (op, ctx) => {

@@ -51,3 +51,7 @@ export const COUNTERS = 'counters'
 export const EPOCHS = 'epochs'
 // removed members, with the last invite minted before their removal
 export const REMOVALS = 'removals'
+// joins turned away, until the joiner read why
+export const REFUSALS = 'refusals'
+// invites spent or revoked, until they expire
+export const SPENT = 'spent'

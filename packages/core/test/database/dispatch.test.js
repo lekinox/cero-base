@@ -825,8 +825,11 @@ async function minted(db, record = {}) {
 }
 
 // the join a joiner's writer appends: proven by the invite, signed by the identity, sealed to the room
-function joinOp(db, invite, { identity, writer, proof, signature, address = db.address }) {
-  const reply = crypto.randomBytes(32)
+function joinOp(
+  db,
+  invite,
+  { identity, writer, proof, signature, address = db.address, reply = crypto.randomBytes(32) }
+) {
   const join = {
     invite: invite.id,
     reply,
@@ -837,6 +840,11 @@ function joinOp(db, invite, { identity, writer, proof, signature, address = db.a
   }
   return { box: crypto.encrypt(c.encode(Join, join), address) }
 }
+
+// a join the room turned away, until a member answered it
+const refusal = (db, id) => db.view.get(`@${db.ns}/refusals`, { id })
+// an invite spent or revoked, kept so its joins are told why
+const spent = (db, id) => db.view.get(`@${db.ns}/spent`, { id })
 
 function seating() {
   const seated = []
@@ -929,8 +937,12 @@ test('join: a removed member comes back only through an invite minted after its 
   t.is(await apply(db, db.writerKey, 'del-member', { id: identity.id }), null)
 
   const again = Identity.randomKeyPair().publicKey
-  await apply(db, again, 'join', joinOp(db, before, { identity, writer: again }))
+  const reply = crypto.randomBytes(32)
+  await apply(db, again, 'join', joinOp(db, before, { identity, writer: again, reply }))
   t.absent((await db.get('members', identity.id)).data, 'an invite from before admits nobody')
+  const refused = await refusal(db, hid.encode(again))
+  t.is(refused?.reason, 'removed', 'and the joiner is told why')
+  t.alike(refused?.reply, reply, 'at the address its join named')
 
   // minted after the removal, straight into the view like the joins above
   const after = Invite.create({ key: db.key, address: db.address })
@@ -1047,14 +1059,91 @@ test('join: a reader writes nothing, not through an optimistic op either', async
   t.is((await apply(db, writer, 'add-messages', { id: 'm', text: 'x' }))?.code, 'REFUSED')
 })
 
-test('confirm: revoking the invite drops its requests', async (t) => {
+test('confirm: revoking the invite turns its waiting joins away', async (t) => {
   const { db } = await withRole(t, 'owner')
-  const invite = await minted(db, { confirm: true, reuse: true })
+  const invite = await minted(db, { confirm: true, reuse: true, expires: 99 })
   const identity = await Identity.create()
   const writer = Identity.randomKeyPair().publicKey
   await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
   t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(invite.id) }), null)
   t.alike((await db.get('requests')).data, [])
+  const refused = await refusal(db, hid.encode(writer))
+  t.is(refused?.reason, 'revoked', 'told why')
+  t.is(refused?.expires, 99, 'until the invite would have run out')
+})
+
+test('join: a spent or revoked invite turns its joins away; one the room never held is ignored', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const once = await minted(db)
+  const revoked = await minted(db, { reuse: true })
+  const stranger = Invite.create({ key: db.key, address: db.address })
+  const join = async (invite) => {
+    const identity = await Identity.create()
+    const writer = Identity.randomKeyPair().publicKey
+    t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity, writer })), null)
+    return hid.encode(writer)
+  }
+  t.absent(await refusal(db, await join(once)), 'the first joiner is admitted')
+  t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(revoked.id) }), null)
+  t.is((await spent(db, b4a.toHex(once.id)))?.reason, 'spent', 'the room keeps what it spent')
+
+  t.is((await refusal(db, await join(once)))?.reason, 'spent')
+  t.is((await refusal(db, await join(revoked)))?.reason, 'revoked')
+  const unknown = await join(stranger)
+  t.absent(await refusal(db, unknown), 'a stranger makes no member answer')
+})
+
+test('join: a writer has a request or a refusal, never both', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const gated = await minted(db, { confirm: true, reuse: true })
+  const open = await minted(db, { reuse: true })
+  const revoked = await minted(db, { reuse: true })
+  await db.call('del-invite', { id: b4a.toHex(revoked.id) })
+  const identity = await Identity.create()
+  const joiner = (writer) => (invite) =>
+    apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+
+  const waiting = Identity.randomKeyPair().publicKey
+  const id = hid.encode(waiting)
+  await joiner(waiting)(revoked)
+  t.ok(await refusal(db, id), 'refused')
+  await joiner(waiting)(gated)
+  t.absent(await refusal(db, id), 'a join waiting for a member takes over from its refusal')
+  await joiner(waiting)(revoked)
+  t.absent(await refusal(db, id), 'and is answered through its request')
+  t.ok((await db.get('requests', id)).data)
+
+  const admitted = Identity.randomKeyPair().publicKey
+  await joiner(admitted)(revoked)
+  await joiner(admitted)(open)
+  t.absent(await refusal(db, hid.encode(admitted)), 'an admission takes over too')
+  t.is((await db.get('requests', hid.encode(admitted))).data?.admitted, true)
+})
+
+test('del-refusal: answering a refused join needs INVITE', async (t) => {
+  const { db, as } = await withMember(t, 'reader')
+  const invite = await minted(db)
+  await db.call('del-invite', { id: b4a.toHex(invite.id) })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+  t.is((await as('del-refusal', { id }))?.code, 'REFUSED')
+  t.ok(await refusal(db, id), 'still owed')
+  t.is(await apply(db, db.writerKey, 'del-refusal', { id }), null)
+  t.absent(await refusal(db, id), 'answered by the owner')
+})
+
+test('del-invite: a spent invite is forgotten by a member who can remove', async (t) => {
+  const { db, as } = await withMember(t)
+  const invite = await minted(db, { reuse: true })
+  const id = b4a.toHex(invite.id)
+  t.is(await apply(db, db.writerKey, 'del-invite', { id }), null)
+  t.is((await spent(db, id))?.reason, 'revoked')
+  t.is((await as('del-invite', { id }))?.code, 'REFUSED', 'a member cannot forget it')
+  t.ok(await spent(db, id))
+  t.is(await apply(db, db.writerKey, 'del-invite', { id }), null)
+  t.absent(await spent(db, id), 'the owner does')
 })
 
 // ─── admission is one decision: no grant, no writer ───────────────────────

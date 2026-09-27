@@ -69,6 +69,38 @@ test('rejoin: re-admission after removal while the room is still open', async (t
   t.ok(back.id, 're-admitted without a pairing conflict')
 })
 
+test('rejoin: a member let back in after a re-key reopens the room and reads its history', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { a, clinic } = await room(t, testnet)
+  const b = await openHandle(t, { local: true, testnet })
+  await b.me.store.bootstrap({ name: 'peer-root' })
+  const joined = await open(b.me.team, await cero.invite(clinic))
+  await waitForConnection(a.net)
+  await put(joined.messages, { text: 'first' })
+
+  await del(clinic.members, b.identity.id)
+  await cero.rotate(clinic)
+  await put(clinic.messages, { text: 'while out' })
+  await waitUntil(async () => ((await get(joined.members, b.identity.id)).data ? null : true))
+  await joined.close()
+
+  const back = await open(b.me.team, await cero.invite(clinic))
+  await put(back.messages, { text: 'back' })
+  await put(clinic.messages, { text: 'after' })
+  const texts = async (room) => (await get(room.messages)).data.map((m) => m.text).sort()
+  const all = ['after', 'back', 'first', 'while out']
+  await waitUntil(async () => ((await texts(back)).length === 4 ? true : null))
+  t.alike(await texts(back), all, 'let back in, it reads the whole history')
+  await back.close()
+
+  const reopened = await open(b.me.team, { id: back.id })
+  t.teardown(() => reopened.close().catch(() => {}))
+  t.alike(await texts(reopened), all, 'and reads it again once reopened')
+  await put(reopened.messages, { text: 'again' })
+  await waitUntil(async () => ((await texts(clinic)).includes('again') ? true : null))
+  t.pass('and writes')
+})
+
 test('rejoin: a revoked device re-joins with a fresh writer', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)

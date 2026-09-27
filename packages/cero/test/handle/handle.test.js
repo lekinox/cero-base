@@ -945,9 +945,9 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
       store: joinerStore,
       spec: teamSpec,
       namespace: 'cero/team-revoke-joiner',
-      timeout: 2000
+      timeout: 10000
     }),
-    /TIMEOUT|timed out/i
+    /DENIED/
   )
 })
 

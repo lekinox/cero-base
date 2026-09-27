@@ -83,6 +83,18 @@ const sample = () => ({
 const invites = async (db) => (await db.get('invites')).data
 const member = async (db, identity) =>
   (await db.get('members', hid.encode(identity.publicKey))).data
+const refusals = (db) => db.view.find(`@${db.ns}/refusals`, {}).toArray()
+const spent = (db) => db.view.find(`@${db.ns}/spent`, {}).toArray()
+// resolves once the database applied an op of `name`, local or replicated, and its view shows it
+const applied = (db, op, name) =>
+  new Promise((resolve) => {
+    const onapply = (row) => {
+      if (row.op !== op || row.name !== name) return
+      db.off('apply', onapply)
+      db.once('update', () => resolve(row))
+    }
+    db.on('apply', onapply)
+  })
 
 // ─── construction / lifecycle ──────────────────────────────────────────────
 
@@ -241,13 +253,15 @@ test('join: a reusable invite admits every joiner, each at its role', async (t) 
   t.is((await invites(host.db)).length, 1, 'the invite stays')
 })
 
-test('join: a single-use invite admits once; a second joiner times out', async (t) => {
+test('join: a single-use invite admits once; a second joiner hears it is spent', async (t) => {
   const { host, joiner: one } = await makeHostJoiner(t)
   const two = await makeJoiner(t)
   const invite = await host.pairing.invite()
 
   await one.join(invite)
-  t.is((await two.join(invite, { timeout: 3000 }).catch((e) => e)).code, 'TIMEOUT')
+  const err = await two.join(invite, { timeout: 10000 }).catch((e) => e)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'spent')
   t.absent(await member(host.db, two.identity), 'and was not admitted')
 })
 
@@ -273,8 +287,8 @@ test('join: a fresh invite takes over from one that admits nobody', async (t) =>
   const revoked = await host.pairing.invite()
   await host.pairing.revoke(revoked)
   const writer = crypto.keyPair()
-  const err = await joiner.join(revoked, { writer, timeout: 2000 }).catch((e) => e)
-  t.is(err.code, 'TIMEOUT', 'the revoked invite admits nobody')
+  const err = await joiner.join(revoked, { writer, timeout: 10000 }).catch((e) => e)
+  t.is(err.code, 'DENIED', 'the revoked invite admits nobody')
 
   // the same writer, as a join resumed with a new invite keeps it
   const result = await joiner.join(await host.pairing.invite(), { writer })
@@ -396,13 +410,13 @@ test('confirm: a member can deny with a reason', async (t) => {
   t.absent(await member(host.db, joiner.identity))
 })
 
-test('confirm: accepting one join spends a single-use invite, the others are dropped', async (t) => {
+test('confirm: accepting one join spends a single-use invite, the others hear it is spent', async (t) => {
   const { host, joiner: one } = await makeHostJoiner(t)
   const two = await makeJoiner(t)
   const invite = await host.pairing.invite({ role: 'admin', confirm: true })
   const requests = []
   host.pairing.on('request', (request) => requests.push(request))
-  const joining = [one, two].map((j) => j.join(invite, { timeout: 5000 }).catch((e) => e))
+  const joining = [one, two].map((j) => j.join(invite, { timeout: 10000 }).catch((e) => e))
   await waitFor(() => requests.length === 2)
 
   await requests[0].accept()
@@ -415,7 +429,11 @@ test('confirm: accepting one join spends a single-use invite, the others are dro
   await requests[1].accept()
   const results = await Promise.all(joining)
   t.is(results.filter((r) => r.key).length, 1, 'one joiner admitted')
-  t.is(results.filter((r) => r.code === 'TIMEOUT').length, 1, 'accepting the other does nothing')
+  t.alike(
+    results.filter((r) => !r.key).map((r) => [r.code, r.reason]),
+    [['DENIED', 'spent']],
+    'the other is told, and accepting it does nothing'
+  )
 })
 
 // ─── joiner errors ─────────────────────────────────────────────────────────
@@ -476,15 +494,61 @@ test('join: an abort signal stops it', async (t) => {
 
 // ─── invite lifecycle ──────────────────────────────────────────────────────
 
-test('revoke: dropped from the database, it admits nobody', async (t) => {
+test('revoke: dropped from the database, a join with it is turned away', async (t) => {
   const { host, joiner } = await makeHostJoiner(t)
   const invite = await host.pairing.invite()
   t.is(await host.pairing.revoke(invite), true)
   t.is(await host.pairing.revoke(invite), false, 'revoking again finds nothing')
   t.alike(await invites(host.db), [])
 
-  t.is((await joiner.join(invite, { timeout: 2000 }).catch((e) => e)).code, 'TIMEOUT')
+  const err = await joiner.join(invite, { timeout: 10000 }).catch((e) => e)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'revoked')
   t.absent(await member(host.db, joiner.identity))
+  await waitFor(async () => (await refusals(host.db)).length === 0)
+  t.pass('the refusal goes once read')
+})
+
+test('refused: a member removed after the invite was minted hears it', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite({ reuse: true })
+  await joiner.join(invite)
+  await host.db.call('del-member', { id: joiner.identity.id })
+
+  const err = await joiner.join(invite, { timeout: 10000 }).catch((e) => e)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'removed')
+  t.absent(await member(host.db, joiner.identity), 'and is not let back in')
+  await waitFor(async () => (await refusals(host.db)).length === 0)
+  t.pass('the refusal goes once read')
+})
+
+test('refused: a join with an invite the room never held is not answered, nor kept', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const link = { key: host.db.writerKey, length: host.db.length }
+  const stranger = Invite.create({ key: host.db.key, address: host.db.address, link })
+  const landed = applied(host.db, 'join', 'join')
+  const joining = joiner.join(stranger.toString(), { timeout: 5000 }).catch((e) => e)
+  await landed
+  t.alike(await refusals(host.db), [], 'no member owes it an answer')
+  t.is((await joining).code, 'TIMEOUT')
+})
+
+test('refused: with two member devices online, the joiner is answered and both forget it', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const peer = await makeMember(t, host, 'member')
+  const invite = await host.pairing.invite({ reuse: true })
+  await host.pairing.revoke(invite)
+  await waitFor(async () => (await spent(peer.db)).length === 1)
+
+  const err = await joiner.join(invite, { timeout: 10000 }).catch((e) => e)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'revoked')
+  for (const { db, pairing } of [host, peer]) {
+    await waitFor(async () => (await refusals(db)).length === 0)
+    await waitFor(() => !pairing.serving)
+  }
+  t.pass('neither keeps answering')
 })
 
 test('expiry: a member who can remove drops the invite once it runs out', async (t) => {
@@ -493,6 +557,37 @@ test('expiry: a member who can remove drops the invite once it runs out', async 
   t.is((await invites(host.db)).length, 1)
   await waitFor(async () => (await invites(host.db)).length === 0, { timeout: 10000 })
   t.pass('the log stops admitting it')
+  await waitFor(async () => (await spent(host.db)).length === 0, { timeout: 10000 })
+  t.pass('and forgets it: past its expiry no joiner uses it')
+})
+
+test('expiry: a revoked invite is kept to answer its joins until it runs out', async (t) => {
+  const host = await makeHost(t)
+  await host.pairing.revoke(await host.pairing.invite({ ttl: 1500 }))
+  t.is((await spent(host.db)).length, 1)
+  await waitFor(async () => (await spent(host.db)).length === 0, { timeout: 10000 })
+  t.pass('then forgotten')
+})
+
+test('expiry: a refused joiner gone is forgotten at expiry, unanswered', async (t) => {
+  const { host, joiner } = await makeHostJoiner(t)
+  const invite = await host.pairing.invite({ ttl: 4000, reuse: true })
+  await host.pairing.revoke(invite)
+  await host.pairing.close()
+  const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
+  await waitFor(async () => (await refusals(host.db)).length === 1)
+  // it leaves before reading the answer
+  await joiner.mailbox.close()
+  await joining
+
+  // a device of the host back online before the expiry offers the answer to nobody
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  t.ok(Date.now() < Invite.parse(invite).expires, 'offered before the invite ran out')
+  t.ok(pairing.serving, 'while it owes the answer')
+  const gone = async () => (await refusals(host.db)).length === 0
+  t.ok(await waitFor(gone, { timeout: 8000 }).catch(() => false), 'forgotten once it ran out')
 })
 
 test('expiry: an invite reaching its expiry this very millisecond is still watched', async (t) => {
@@ -568,6 +663,31 @@ test('offline: member and joiner are never online together, the mirror carries b
 
   await joiner.net.resume()
   t.alike((await joining).key, host.db.key)
+})
+
+test('offline: a refused joiner hears it through the mirror, never online with a member', async (t) => {
+  const mirror = await makeBlindPeer(t, testnet)
+  const host = await makeHost(t, { mirrors: [mirror.publicKey] })
+  const invite = await host.pairing.invite()
+  await host.pairing.revoke(invite)
+  await host.net.suspend()
+
+  const joiner = await makeJoiner(t, { mirrors: [mirror.publicKey] })
+  const joined = holds(mirror, Invite.parse(invite).key)
+  const joining = joiner.join(invite, { timeout: 60000 }).catch((e) => e)
+  await joined
+  await joiner.net.suspend()
+
+  // the answer read by the mirror settles the refusal
+  const answered = applied(host.db, 'del', 'refusal')
+  await host.net.resume()
+  await answered
+  await host.net.suspend()
+
+  await joiner.net.resume()
+  const err = await joining
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'revoked')
 })
 
 // resolves once the mirror stores the whole core sent to `referrer`
