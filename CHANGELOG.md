@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.3.3 (2026-09-27)
+
+### Bug Fixes
+
+- a local write caught by a close lands or rejects CLOSED
+- epochs delivered at a join are kept, so a readmitted member reopens its room
+- a join the room turns away is answered DENIED with why: removed, revoked or spent
+- closing ends every watch cleanly, and an open in flight rejects CLOSED; an interrupted join resumes
+
+### Other
+
+- 🚀 test: the outage test waits longer for its setup under load
+
 ## 2.3.2 (2026-09-26)
 
 ### Chores
