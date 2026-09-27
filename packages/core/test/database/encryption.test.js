@@ -398,6 +398,22 @@ test('rotate: a post-rotation joiner reads full history from delivered epochs', 
   })
   await waitFor(async () => (await texts(joiner.db)).length === 2)
   t.alike(await texts(joiner.db), ['current', 'history'], 'joiner reads both eras')
+
+  // reopened as an app reopens a room: the delivered epochs are not handed over again
+  const { store, identity, db } = joiner
+  await db.close()
+  const again = new Database({
+    store,
+    identity,
+    spec,
+    key: db.key,
+    keyPair: db.keyPair,
+    encryptionKey
+  })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.alike(again.keyring.all(), a.db.keyring.all(), 'the delivered epochs were kept')
+  t.alike(await texts(again), ['current', 'history'], 'both eras still readable')
 })
 
 // ─── production scenarios: recovery, devices, roles, mirrors, stress ───────

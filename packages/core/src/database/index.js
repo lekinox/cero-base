@@ -102,6 +102,8 @@ export class Database extends ReadyResource {
     this.encryptionKey = opts.encryptionKey || opts.identity.encryptionKey || null
     this.keyring = new Keyring()
     if (opts.epochs) for (const e of opts.epochs) this.keyring.add(e.stamp, e.entropy, e.epoch)
+    /** @private */
+    this._delivered = !!opts.epochs?.length
     this.rotation = new Rotation(this)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
@@ -196,6 +198,8 @@ export class Database extends ReadyResource {
 
     // before replication can deliver blocks at epochs we haven't learned yet
     await this.rotation.hydrate()
+    // epochs handed over at join are sealed to nobody this device can read later: keep them
+    if (this._delivered) await this.rotation._save()
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())

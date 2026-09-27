@@ -226,6 +226,8 @@ export declare class Database extends ReadyResource {
     namespace: string;
     encryptionKey: Uint8Array<ArrayBufferLike>;
     keyring: Keyring;
+    /** @private */
+    _delivered;
     rotation: Rotation;
     key: Uint8Array<ArrayBufferLike>;
     pinned: boolean;
