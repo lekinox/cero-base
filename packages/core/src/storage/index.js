@@ -266,9 +266,15 @@ export class Storage extends ReadyResource {
    * @private
    */
   async _read(ref, id) {
-    if (ref.kind === SINGLE) return this.db.findOne(this._col(ref), {})
-    if (id == null) return null
-    return (await this.db.get(this._col(ref), { id })) ?? null
+    try {
+      if (ref.kind === SINGLE) return await this.db.findOne(this._col(ref), {})
+      if (id == null) return null
+      return (await this.db.get(this._col(ref), { id })) ?? null
+    } catch (err) {
+      // a close that began under the read answers for it
+      this._guard()
+      throw err
+    }
   }
 
   /**
@@ -277,8 +283,14 @@ export class Storage extends ReadyResource {
    */
   async _write(ref, row) {
     await this._serial(async () => {
-      await this.db.insert(this._col(ref), row)
-      await this.db.flush()
+      try {
+        await this.db.insert(this._col(ref), row)
+        await this.db.flush()
+      } catch (err) {
+        // queued behind a close, the write finds the db closing or gone: the close answers
+        this._guard()
+        throw err
+      }
     })
   }
 

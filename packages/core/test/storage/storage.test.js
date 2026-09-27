@@ -498,3 +498,30 @@ for (const backend of backends) {
     t.is((await storage.set('tasks', { id: 't' })).data.title, 'a', 'a set may leave it out')
   })
 }
+
+for (const backend of backends) {
+  test(`[${backend}] writes caught by a close land or reject CLOSED, never throw`, async (t) => {
+    const { storage } = await make(t, backend)
+    await storage.put('drafts', { id: 'd', text: 'a' })
+    const writes = []
+    for (let i = 0; i < 20; i++) {
+      // a put over an id reads before it writes, so the close lands between the two
+      const write =
+        i % 2
+          ? storage.put('drafts', { id: 'd', text: `t${i}` })
+          : storage.set('drafts', { id: 'd', text: `s${i}` })
+      writes.push(
+        write.then(
+          () => 'ok',
+          (err) => err.code || err.message
+        )
+      )
+    }
+    await storage.close()
+    const outcomes = await Promise.all(writes)
+    t.ok(
+      outcomes.every((o) => o === 'ok' || o === 'CLOSED'),
+      outcomes.join(', ')
+    )
+  })
+}
