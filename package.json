@@ -34,7 +34,7 @@
   "license": "Apache-2.0",
   "packageManager": "npm@12.1.0",
   "devDependencies": {
-    "bare": "^1.33.5",
+    "bare": "^1.34.0",
     "lunte": "^1.8.4",
     "prettier-config-holepunch": "^2.0.0",
     "turbo": "^2"

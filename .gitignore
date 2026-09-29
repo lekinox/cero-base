@@ -9,6 +9,9 @@ node_modules/
 example/*/dist/
 example/*/spec/
 example/chat-mobile/worklets/app.bundle.mjs
+example/chat-mobile/ios/
+example/chat-mobile/android/
+example/chat-mobile/.expo/
 packages/*/test/fixtures/spec/
 packages/cero/test/fixtures/.build-*/
 
