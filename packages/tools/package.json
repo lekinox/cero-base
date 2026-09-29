@@ -78,7 +78,7 @@
   "dependencies": {
     "@cero-base/cero": "^2.3.3",
     "b4a": "^1.9.0",
-    "bare-crypto": "^1.15.3",
+    "bare-crypto": "^1.15.4",
     "bare-net": "^2.3.3",
     "bare-process": "^4.5.1",
     "streamx": "^2.28.1"
