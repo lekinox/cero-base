@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.4 (2026-09-29)
+
+### Other
+
+- 🚀 deps: bare 1.34 and the latest Bare modules; chat-mobile builds on React Native 0.86.3
+- 🚀 deps: autobee 2.12.1, ble-swarm 2.3.4 with bare-bluetooth 0.5, corestore 7.13
+- 🚀 test: one testnet per test in Core's pairing, network and blobs tests
+
 ## 2.3.3 (2026-09-27)
 
 ### Bug Fixes
