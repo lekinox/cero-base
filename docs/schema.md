@@ -19,8 +19,60 @@ export const schema = cero.schema({
 })
 ```
 
-One record is a `t.single`, many rows a `t.collection`, and a plain object such as `room` is a
-place you share with other people. `local` never leaves this device.
+`profile` is a single and `todos` a collection, the two kinds of data you declare, explained
+[below](#singles-and-collections). A plain object such as `room` is a handle type, shared with
+other people. `local` never leaves this device.
+
+## Singles and collections
+
+Everything you store is one of two kinds:
+
+- A **single** is one record, such as a profile or the app's settings. There is exactly one per
+  context: `me.settings` is yours, on every device you link, and `room.profile` belongs to each
+  handle, the same for all its members.
+- A **collection** holds many rows, such as todos or messages. Every row has an `id`, and you add,
+  change, find and delete rows one at a time.
+
+```js
+const schema = cero.schema({
+  settings: t.single({ theme: t.string, compact: t.bool }),
+  todos: t.collection({ text: t.string, done: t.bool })
+})
+```
+
+```js
+// me from cero('./data', spec), see the quickstart
+await cero.set(me.settings, { theme: 'dark' }) // merges into the one record
+const { data: settings } = await cero.get(me.settings) // the record, or null
+
+const { data: todo } = await cero.put(me.todos, { text: 'buy milk' }) // adds a row
+await cero.set(me.todos, { id: todo.id, done: true }) // changes that row
+const { data: open } = await cero.get(me.todos, { done: false }) // a list of rows
+await cero.del(me.todos, todo.id) // deletes it
+```
+
+|        | Single                                            | Collection                                                                                          |
+| ------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Holds  | one record                                        | many rows, each with an `id`                                                                        |
+| Add    | nothing to add: `set` writes it                   | `cero.put(ref, row)`: a new row, or replaces the whole row with that `id`                           |
+| Change | `cero.set(ref, fields)`: merges into the record   | `cero.set(ref, { id, ...fields })`: merges into that row                                            |
+| Read   | `cero.get(ref)`: `{ data }`, the record or `null` | `cero.get(ref, id)`: `{ data }`, the row or `null`. `cero.get(ref, query)`: `{ data, total, size }` |
+| Delete | `cero.del(ref)` wipes the record                  | `cero.del(ref, id)` deletes that row                                                                |
+| Follow | `cero.watch(ref)`                                 | `cero.watch(ref, query)`                                                                            |
+
+`put` is for collections only: a single is written with `set`. A single has no `id` and no fields
+of Cero's. Every row of a collection also carries fields Cero writes, which you can't declare
+yourself:
+
+| Field       | Is                                                                   |
+| ----------- | -------------------------------------------------------------------- |
+| `id`        | a string, generated unless you pass one                              |
+| `memberId`  | the member who last wrote the row                                    |
+| `index`     | a number per collection, rising as rows are added; kept on overwrite |
+| `createdAt` | milliseconds, the first write of the row                             |
+| `updatedAt` | milliseconds, its latest write                                       |
+
+[Data](data.md) covers every call in full: queries, paging, search and watching.
 
 ## Pick a field type
 
@@ -38,31 +90,6 @@ Every field is optional, and falsy values are not stored: a string written as `'
 `null`. `t.required(t.string)` makes a field required: a write that leaves it unset throws
 `INVALID`, naming the field. A `t.file`
 field holds the id of an upload, see [Files](data.md#files).
-
-## Keep one record
-
-```js
-const schema = cero.schema({ settings: t.single({ theme: t.string, compact: t.bool }) })
-```
-
-A single has no id, timestamps, `memberId` or `index`. Write it with `cero.set`, which merges;
-`cero.put` on a single throws. `cero.get` returns the record or `null`, `cero.del` wipes it.
-
-## Keep many rows
-
-```js
-const schema = cero.schema({ todos: t.collection({ text: t.string, done: t.bool }) })
-```
-
-Every row also carries fields Cero writes. You can't declare them yourself.
-
-| Field       | Is                                                                   |
-| ----------- | -------------------------------------------------------------------- |
-| `id`        | a string, generated unless you pass one                              |
-| `memberId`  | the member who last wrote the row                                    |
-| `index`     | a number per collection, rising as rows are added; kept on overwrite |
-| `createdAt` | milliseconds, the first write of the row                             |
-| `updatedAt` | milliseconds, its latest write                                       |
 
 ## Let only the author change a row
 

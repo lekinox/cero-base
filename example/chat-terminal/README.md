@@ -42,10 +42,12 @@ The first run prints your phrase:
 On another machine, with the first one still running, that phrase makes it your device too. It gets its own writer, pulls your rooms and messages, and reopens your room:
 
 ```
-node index.js --phrase "word word word ..." --storage ./me --name laptop-2
+node index.js --phrase "word word word ..." --storage ./me --name alice
 ```
 
-Nothing is created twice. If none of your machines is reachable the open fails with `TIMED_OUT` rather than start a second history.
+Keep the same `--name`: it is your name in the chat, on every device, not the machine's.
+
+Nothing is created twice. If none of your machines is reachable the open fails with `TIMEOUT` rather than start a second history.
 
 ## Tests
 
