@@ -255,7 +255,7 @@ test('del-member: the last owner of a room others are in cannot leave it', async
   const { db, identity } = await withRole(t, 'owner', { members: [inviteOp('admin')] })
   const err = await db.del('members', identity.id).catch((e) => e)
   t.is(err?.code, 'INVALID', 'refused at the writer')
-  t.ok(/another owner/.test(err?.message), 'names the way out')
+  t.ok(/make another member an owner/.test(err?.message), 'names the way out')
   const forged = await apply(db, db.writerKey, 'del-member', { id: identity.id })
   t.is(forged?.code, 'INVALID', 'and at apply')
   t.is((await db.get('members', identity.id)).data?.role, 'owner', 'still the owner')

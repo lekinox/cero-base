@@ -9,7 +9,7 @@ import { Identity, Network, Database, Mailbox, Pairing, Storage, Blobs } from '@
 import { RPCServer, RPCClient } from '@cero-base/core/rpc'
 ```
 
-Stay on Cero for an app. Drop to Core for a tool that speaks the same protocol without schemas and rooms, a test of one primitive, or a mirror or relay that needs the network alone. Each primitive but `Identity` is a `ReadyResource`: construct it, `await x.ready()`, `await x.close()`. Each has its subpath too: `@cero-base/core/identity`, `/network`, `/database`, `/mailbox`, `/pairing`, `/invite`, `/storage`, `/blobs`, `/rpc`.
+Stay on Cero for an app. Drop to Core for a tool that speaks the same protocol without schemas and handles, a test of one primitive, or a mirror or relay that needs the network alone. Each primitive but `Identity` is a `ReadyResource`: construct it, `await x.ready()`, `await x.close()`. Each has its subpath too: `@cero-base/core/identity`, `/network`, `/database`, `/mailbox`, `/pairing`, `/invite`, `/storage`, `/blobs`, `/rpc`.
 
 ## Identity
 
@@ -111,7 +111,7 @@ await db.put('messages', { text: 'hi' })
 const { data } = await db.get('messages', { limit: 10, reverse: true })
 ```
 
-`spec` is one built scope, with `database`, `dispatch` and `meta`: the root database opens on the built `spec` itself, a room on `spec.handles.<type>`.
+`spec` is one built scope, with `database`, `dispatch` and `meta`: the root database opens on the built `spec` itself, a handle on `spec.handles.<type>`.
 
 | Option          | Meaning                                                                                 |
 | --------------- | --------------------------------------------------------------------------------------- |
@@ -161,7 +161,7 @@ Who writes:
 - **A member's new device** opening a database it has the key of runs `db.claim()`.
 - Only the genesis batch names a member directly. Everyone after comes in through a join, and nobody seats a writer for another identity.
 
-Keys: `db.rotate()` opens a new key, and rotations on one device run one after another. A device that may remove also re-keys by itself when the members change, a room's first removal included. See [How it works](how-it-works.md).
+Keys: `db.rotate()` opens a new key, and rotations on one device run one after another. A device that may remove also re-keys by itself when the members change, a database's first removal included. See [How it works](how-it-works.md).
 
 ## Mailbox
 
@@ -194,9 +194,9 @@ await inbox.close() // stop receiving
 
 ## Pairing
 
-In Core, a room is a `Database`: its log holds the room's rows, members and invites. Pairing is how someone new gets into it: a member mints an invite, the joiner uses it and gets back the keys that open the room. In Cero, a room does all of this for you: `cero.invite(room)` on one side, `cero.open(me.room, invite)` on the other.
+A Cero handle is a Core `Database`: its log holds the rows, members and invites. Pairing is how someone new gets into it: a member mints an invite, the joiner uses it and gets back the keys that open the database. In Cero, a handle does all of this for you: `cero.invite(room)` on one side, `cero.open(me.room, invite)` on the other.
 
-A device sets up once, then pairs per room:
+A device sets up once, then pairs per database:
 
 ```js
 import { Identity, Network, Mailbox } from '@cero-base/core'
@@ -272,7 +272,7 @@ pairing.on('request', async (request) => {
 
 - `request.accept()` admits the joiner at the invite's role. `request.accept({ role })` can grant a lower one, never above the invite's or your own rank. It throws `EXPIRED` once the invite has expired.
 - `request.deny(reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
-- `pairing.pending` holds the requests not answered yet, and `pairing.request(id)` finds one by the id of its row. They live in the room, rows of `requests` with the `role` they ask for, so they survive a restart and the first member to answer settles it for all.
+- `pairing.pending` holds the requests not answered yet, and `pairing.request(id)` finds one by the id of its row. They live in the database, rows of `requests` with the `role` they ask for, so they survive a restart and the first member to answer settles it for all.
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
 - A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
@@ -299,7 +299,7 @@ const { data } = await local.get('drafts', { limit: 10 })
 | `Storage.rocks(dir, { spec, root })`                  | A RocksDB column family in `dir`'s storage. No `storageKey`.                                              |
 | `put`, `set`, `get`, `del`, `watch`                   | As on a `Database`, with the same queries; `total` is always counted. No hooks, actions, `tx` or indexes. |
 
-From a Cero build, its `spec` is `{ database: spec.local.database, meta: spec.meta.local }`. In Cero, the device's local `Storage` is a bee in the same Corestore under `dir/main`, holding the seed, the room writer keypairs, pending joins, mail, the channel and the `local` scope.
+From a Cero build, its `spec` is `{ database: spec.local.database, meta: spec.meta.local }`. In Cero, the device's local `Storage` is a bee in the same Corestore under `dir/main`, holding the seed, the handle writer keypairs, pending joins, mail, the channel and the `local` scope.
 
 ## Blobs
 
@@ -350,8 +350,8 @@ Both take `(ipc, spec)`: `spec.rpc` is the hrpc class, `spec.schema` its hypersc
 ## How Cero puts them together
 
 - `cero(dir, spec)` opens one Corestore under `dir/main`, and in it the local `Storage` above.
-- It resolves the `Identity`, starts one `Network` and one `Mailbox`, and opens the root `Database` on the built `spec`: your list of rooms and your devices.
-- Every room is another `Database` on `spec.handles.<type>`, with its own `Blobs` and a `Pairing`, sharing the root's network, identity and mailbox.
+- It resolves the `Identity`, starts one `Network` and one `Mailbox`, and opens the root `Database` on the built `spec`: your list of handles and your devices.
+- Every handle is another `Database` on `spec.handles.<type>`, with its own `Blobs` and a `Pairing`, sharing the root's network, identity and mailbox.
 - The operators (`cero.put`, `cero.invite` and the rest) are thin wrappers over these, plus refs, file urls from a `FileServer`, and joins kept across restarts.
 - In a split app, `serve` puts all of it behind an `RPCServer`, and the client reaches it through an `RPCClient`.
 

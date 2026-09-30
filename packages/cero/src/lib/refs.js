@@ -12,7 +12,7 @@ import { CeroError } from '@cero-base/core/errors'
  */
 export class Ref {
   /**
-   * @param {Owner} handle  The root, a room or the local store the ref lives on.
+   * @param {Owner} handle  The root, a handle or the local store the ref lives on.
    * @param {string} name  Ref name as declared in the schema.
    * @param {string} kind  Ref kind: `'collection'`, `'single'`, `'action'`, or `'handle'`.
    * @param {string | null} [schema]  Fully-qualified schema id, if any.
@@ -32,7 +32,7 @@ export class Ref {
    *
    * @param {Owner} target
    * @param {Record<string, RefInfo>} refs
-   * @param {Record<string, Spec>} [handles]  The handle types, so `target.room.notes` names every room's notes.
+   * @param {Record<string, Spec>} [handles]  The handle types, so `target.room.notes` names every handle's notes.
    */
   static attach(target, refs, handles) {
     for (const [name, info] of Object.entries(refs || {})) {

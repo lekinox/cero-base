@@ -23,7 +23,7 @@ import { schema } from './schema.js'
 await build('./spec', schema)
 ```
 
-Open a room, write to it and invite a friend:
+Open a handle, write to it and invite a friend:
 
 ```js
 // app.js
@@ -61,7 +61,7 @@ Cero Base is the repository: Cero (`@cero-base/cero`), the SDK these pages teach
 
 ## How it fits together
 
-`me` is the user on this device, and a room is a space they open from it and share by invite, with its own members, roles and encryption key. Each holds the tables your schema declares, plus a few Cero keeps for you such as `room.members`, and every act is a verb on `cero` that takes one: `cero.put(room.messages, row)`, `cero.invite(room)`. Writes land on the device first and sync whenever another device is in reach, over the internet, through a mirror (an always-on peer that stores only ciphertext) or over Bluetooth. [How it works](how-it-works.md) explains what happens offline, on conflict and when someone is removed.
+`me` is the user on this device, and a handle is a space they open from it and share by invite, with its own members, roles and encryption key. Each holds the tables your schema declares, plus a few Cero keeps for you such as `room.members`, and every act is a verb on `cero` that takes one: `cero.put(room.messages, row)`, `cero.invite(room)`. Writes land on the device first and sync whenever another device is in reach, over the internet, through a mirror (an always-on peer that stores only ciphertext) or over Bluetooth. [How it works](how-it-works.md) explains what happens offline, on conflict and when someone is removed.
 
 ## Where to start
 
@@ -73,20 +73,20 @@ Working with an AI agent? Point it at [skills/cero/SKILL.md](../skills/cero/SKIL
 
 ## All pages
 
-| Page                            | After it you can                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------ |
-| [Quickstart](quickstart.md)     | run a shared, encrypted app in two terminals                                   |
-| [Schema](schema.md)             | model any app's data                                                           |
-| [Data](data.md)                 | write, query, watch, react to writes, batch, attach files                      |
-| [Sharing](handles.md)           | open rooms, invite people, confirm joins, set roles, remove members            |
-| [Your devices](identity.md)     | be the same user on every device, recover, remove a device                     |
-| [Network](network.md)           | sync offline through mirrors, go nearby over Bluetooth, background, many rooms |
-| [Apps](apps.md)                 | run Cero in a worker behind an Electron or Expo UI, run the three example apps |
-| [Extensions](extensions.md)     | write behaviour once and reuse it: your own functions, extensions, actions     |
-| [How it works](how-it-works.md) | predict what happens offline, on conflict, on removal, on join                 |
-| [API reference](api.md)         | look up any verb, option, collection, status field                             |
-| [Errors](errors.md)             | handle every error code                                                        |
-| [Core primitives](core.md)      | build a tool on one primitive without the SDK                                  |
+| Page                            | After it you can                                                                 |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| [Quickstart](quickstart.md)     | run a shared, encrypted app in two terminals                                     |
+| [Schema](schema.md)             | model any app's data                                                             |
+| [Data](data.md)                 | write, query, watch, react to writes, batch, attach files                        |
+| [Sharing](handles.md)           | open handles, invite people, confirm joins, set roles, remove members            |
+| [Your devices](identity.md)     | be the same user on every device, recover, remove a device                       |
+| [Network](network.md)           | sync offline through mirrors, go nearby over Bluetooth, background, many handles |
+| [Apps](apps.md)                 | run Cero in a worker behind an Electron or Expo UI, run the three example apps   |
+| [Extensions](extensions.md)     | write behaviour once and reuse it: your own functions, extensions, actions       |
+| [How it works](how-it-works.md) | predict what happens offline, on conflict, on removal, on join                   |
+| [API reference](api.md)         | look up any verb, option, collection, status field                               |
+| [Errors](errors.md)             | handle every error code                                                          |
+| [Core primitives](core.md)      | build a tool on one primitive without the SDK                                    |
 
 ## Next
 

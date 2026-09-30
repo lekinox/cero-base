@@ -17,8 +17,8 @@ phone.device.id === laptop.device.id // false: each device has its own id
 ```
 
 You are your phrase: 12 words, or 24, that every device of yours opens with. Each device, one
-install of your app, has the same `me.id` and the same data, and is the same member in every room.
-Invites are for rooms and other people; your own devices join by phrase.
+install of your app, has the same `me.id` and the same data, and is the same member in every handle.
+Invites are for handles and other people; your own devices join by phrase.
 
 ## First run
 
@@ -55,7 +55,7 @@ The seed is stored before that wait, so a retry is plain `cero(dir, spec)` with 
 mirrors, and `cero.peek` reports the directory as used. It rejects `TIMEOUT` again until one of your
 devices is reachable. [How it works](how-it-works.md) has the steps.
 
-## Open your rooms on it
+## Open your handles on it
 
 ```js
 // me from the device you just added
@@ -63,8 +63,8 @@ const { data: rooms } = await cero.get(me.room)
 for (const { id } of rooms) await cero.open(me.room, { id })
 ```
 
-Rooms do not open by themselves on a new device. The list arrives with the rest of your data, and
-you open each room by id. The first open by id waits for a device already in that room, and rejects
+Handles do not open by themselves on a new device. The list arrives with the rest of your data, and
+you open each handle by id. The first open by id waits for a device already in that handle, and rejects
 `TIMEOUT` after 30 s.
 
 ## Switch to another identity

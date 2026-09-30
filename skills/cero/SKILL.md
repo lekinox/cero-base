@@ -3,7 +3,7 @@ name: cero
 description: >-
   How to build local-first, peer-to-peer apps with Cero (@cero-base/cero), the
   SDK of Cero Base. Use for any task on a project that depends on @cero-base/*:
-  designing a schema, reading and writing data, rooms and invites, roles,
+  designing a schema, reading and writing data, handles and invites, roles,
   confirming joins, multi-device identity and phrase recovery, apps with a UI
   over a Bare worker or worklet, extensions and hooks, mirrors and Bluetooth,
   or "build a p2p app with cero".
@@ -23,10 +23,10 @@ file for each task.
 
 ## Mental model
 
-- `me = await cero(dir, spec)` is the root: the user, their devices, their rooms.
-- A room is a space shared with other people: `cero.open(me.room, { name })` creates one,
+- `me = await cero(dir, spec)` is the root: the user, their devices, their handles.
+- A handle is a space shared with other people: `cero.open(me.room, { name })` creates one,
   `cero.open(me.room, invite)` joins one, `cero.open(me.room, { id })` reopens one.
-- `me` and every room are contexts: plain state, no methods. Refs hang off them: `me.notes`,
+- `me` and every handle are contexts: plain state, no methods. Refs hang off them: `me.notes`,
   `room.messages`, and the builtins `members`, `devices`, `invites`, `requests`, `handles`,
   `files`, `status` on every context, `joins` and `nearby` on `me`.
 - Every act is a verb on the `cero` facade. Data verbs take a ref first
@@ -82,7 +82,7 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `spec.extensions` is the list `cero()` runs. A list of objects passed to `build` cannot be
    written into the spec: pass the same list to `cero(dir, spec, { extensions })`, or it throws
    `INVALID`. `setup(me)` runs before the root opens and may write, so hooks registered there see
-   every op; a hook on a type ref (`me.room.notes`) reaches every room of the type.
+   every op; a hook on a type ref (`me.room.notes`) reaches every handle of the type.
 3. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
    fields of the same type swaps their data.
 4. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
@@ -92,10 +92,10 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `cero.put`, `cero.get`, `cero.open`. Never alias named imports. Contexts have no methods.
 6. **Cleanup follows the context.** `watch` streams end with their context, or pass
    `cero.watch(ref, query, { signal })`; `await cero.close(me)` on shutdown.
-7. **Invites come from rooms.** `cero.invite(room, { role })` admits a member at that rank
+7. **Invites come from handles.** `cero.invite(room, { role })` admits a member at that rank
    (`owner`, `admin`, `member`, `reader`; `member` by default). A `confirm` invite holds each join in
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
-   `cero.del(room.members, id)` removes a member and re-keys the room shortly after;
+   `cero.del(room.members, id)` removes a member and re-keys the handle shortly after;
    `await cero.rotate(room)` re-keys at once.
 8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no seed makes a new identity;
    show `await cero.phrase(me)` to the user once. With a seed, Cero finds one of the user's devices
@@ -123,7 +123,7 @@ const { data: status } = await cero.get(room.status) // { role, writable, epoch,
   that changed since the item before, and `reset` on the first.
 - `status` is this device's view of a context: `writable` and `role` turn `false` / `null` when you
   are removed, `suspended` follows `cero.suspend(me)` / `cero.resume(me)` (the app's background and
-  foreground), `behind` asks for an app update. `cero.activate(room)` ranks the room on screen first
+  foreground), `behind` asks for an app update. `cero.activate(room)` ranks the handle on screen first
   on the swarm.
 
 ## Apps with a UI
@@ -146,19 +146,19 @@ Bare worker, Expo a Bare worklet, tests a duplex pair.
 
 ## Where to read
 
-| Task                                                           | Page                                       |
-| -------------------------------------------------------------- | ------------------------------------------ |
-| A first app running in two terminals                           | [quickstart](references/quickstart.md)     |
-| Field types, singles, collections, rooms, local, indexes       | [schema](references/schema.md)             |
-| Writes, queries, watch, hooks, batches, files                  | [data](references/data.md)                 |
-| Rooms, invites, confirming joins, roles, removing, leaving     | [sharing](references/handles.md)           |
-| The phrase, a second device, recovery, restore                 | [your devices](references/identity.md)     |
-| Mirrors, channels, background, many rooms, Bluetooth, versions | [network](references/network.md)           |
-| A worker behind an Electron or Expo UI, the examples           | [apps](references/apps.md)                 |
-| Your own functions, extensions, actions                        | [extensions](references/extensions.md)     |
-| What happens offline, on a join, on a removal, on recovery     | [how it works](references/how-it-works.md) |
-| Every export and option                                        | [api reference](references/api.md)         |
-| Every error code                                               | [errors](references/errors.md)             |
-| Testing an app                                                 | [testing](references/testing.md)           |
+| Task                                                             | Page                                       |
+| ---------------------------------------------------------------- | ------------------------------------------ |
+| A first app running in two terminals                             | [quickstart](references/quickstart.md)     |
+| Field types, singles, collections, handles, local, indexes       | [schema](references/schema.md)             |
+| Writes, queries, watch, hooks, batches, files                    | [data](references/data.md)                 |
+| Handles, invites, confirming joins, roles, removing, leaving     | [sharing](references/handles.md)           |
+| The phrase, a second device, recovery, restore                   | [your devices](references/identity.md)     |
+| Mirrors, channels, background, many handles, Bluetooth, versions | [network](references/network.md)           |
+| A worker behind an Electron or Expo UI, the examples             | [apps](references/apps.md)                 |
+| Your own functions, extensions, actions                          | [extensions](references/extensions.md)     |
+| What happens offline, on a join, on a removal, on recovery       | [how it works](references/how-it-works.md) |
+| Every export and option                                          | [api reference](references/api.md)         |
+| Every error code                                                 | [errors](references/errors.md)             |
+| Testing an app                                                   | [testing](references/testing.md)           |
 
 Copy the whole `skills/cero` folder; nothing points outside it.

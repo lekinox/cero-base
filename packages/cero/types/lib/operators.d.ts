@@ -44,9 +44,9 @@ export declare function call(ref: Ref, d?: Row): Promise<void>;
  * peer, inside the op's transaction. Return `false` to refuse it: the writer's own call rejects
  * with `REFUSED`. `ctx` is `{ op, name, row, existing, id, memberId, role, get, put, set, del }`;
  * mutate `ctx.row` to rewrite what is stored. `op` is the op as it applies, so an upsert on a
- * collection is a `put`. The four operators on `ctx` read and write the room as it stands at this
+ * collection is a `put`. The four operators on `ctx` read and write the handle as it stands at this
  * op, inside the transaction. Must be deterministic: read only `ctx`, never a clock or local
- * state. On a type ref (`me.room.notes`) it reaches every room of the type before the room
+ * state. On a type ref (`me.room.notes`) it reaches every handle of the type before the handle
  * opens; register in an extension's `setup` to see every op the root applies too. The imported
  * operators throw inside a hook; use the ones on `ctx`. Not available over RPC.
  *
@@ -110,7 +110,7 @@ export declare function open(ref: Ref, arg?: string | {
     name?: string;
 } | undefined): Promise<Context>;
 /**
- * Mint an invite code into a room.
+ * Mint an invite code into a handle.
  *
  * @param {Context} ctx
  * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
@@ -126,7 +126,7 @@ export declare function invite(ctx: Context, opts?: import('@cero-base/core/pair
  */
 export declare function revoke(ctx: Context, code: string): Promise<boolean>;
 /**
- * Re-key a room now: a new epoch sealed to its members, so one removed before it reads nothing
+ * Re-key a handle now: a new epoch sealed to its members, so one removed before it reads nothing
  * written after. Needs the remove permission. A removal also re-keys on its own shortly after it
  * lands; this is the one to await.
  *
@@ -138,7 +138,7 @@ export declare function rotate(ctx: Context): Promise<{
 }>;
 /**
  * Write atomically: every write `fn` makes through `tx`, the context it is handed, lands as one
- * batch, or none does. Reads through `tx` see the room as it was before the batch. Not available
+ * batch, or none does. Reads through `tx` see the handle as it was before the batch. Not available
  * over RPC.
  *
  * @template T
@@ -172,7 +172,7 @@ export declare function deny(ctx: Context, request: {
     id: string;
 }, reason?: string): Promise<void>;
 /**
- * Quit a room for good: it leaves your list and closes on this device.
+ * Quit a handle for good: it leaves your list and closes on this device.
  *
  * @param {Context} ctx
  * @returns {Promise<void>}
@@ -209,20 +209,20 @@ export declare function suspend(me: Context): Promise<void>;
  */
 export declare function resume(me: Context): Promise<void>;
 /**
- * Mark a room as the one in use: it ranks first on the swarm, searching and announcing. Rooms are
+ * Mark a handle as the one in use: it ranks first on the swarm, searching and announcing. Handles are
  * otherwise ranked by their last update.
  *
- * @param {Context} room
+ * @param {Context} ctx
  * @returns {Promise<void>}
  */
-export declare function activate(room: Context): Promise<void>;
+export declare function activate(ctx: Context): Promise<void>;
 /**
- * Take a room off the swarm until something lands in it.
+ * Take a handle off the swarm until something lands in it.
  *
- * @param {Context} room
+ * @param {Context} ctx
  * @returns {Promise<void>}
  */
-export declare function deactivate(room: Context): Promise<void>;
+export declare function deactivate(ctx: Context): Promise<void>;
 /**
  * Reveal the recovery phrase.
  *

@@ -15,8 +15,8 @@ Cero Base is the repository: [Cero](packages/cero), the SDK your app uses, and [
 
 - **Nothing to host.** Data lives on the device and syncs peer to peer. No backend, no accounts.
 - **Schema in, API out.** Declare collections and fields; Cero gives you `put`, `get`, `watch` and the rest.
-- **Sharing built in.** Rooms with invites and roles (owner, admin, member, reader), enforced by every peer.
-- **Encryption built in.** Every room has its own key, re-keyed when someone is removed.
+- **Sharing built in.** Every handle has its own members: invite people and give them roles (owner, admin, member, reader), enforced by every peer.
+- **Encryption built in.** Every handle has its own key, re-keyed when someone is removed.
 - **Recovery built in.** A twelve-word phrase brings the account to a new device.
 - **Mirrors and Bluetooth.** Optional always-on peers so devices sync without being online together, and nearby sync with no internet.
 - **Ready for real apps.** Run the data in a worker and use the same calls from an Electron or Expo UI.
@@ -59,6 +59,8 @@ const room = await cero.open(me.room, { name: 'general' })
 await cero.put(room.messages, { text: 'hi' })
 console.log(await cero.invite(room)) // give this to a friend
 ```
+
+`me` is your context: your own data, on every device you link. `room` is a handle type in the schema, and `cero.open(me.room, …)` opens a handle of it: a context of its own, with its own members and key, that you share with an invite. Every `cero.*` call takes a context or one of its refs, like `room.messages`.
 
 Your friend, on their own machine, with the same `spec/`:
 

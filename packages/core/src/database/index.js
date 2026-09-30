@@ -209,7 +209,7 @@ export class Database extends ReadyResource {
     // without a listener autobee escalates apply/view errors to a process crash
     this.bee.on('error', this._onerror)
 
-    // with no mirror to hold the room, every member holds it: any member serves a joiner, offline
+    // with no mirror to hold the database, every member holds it: any member serves a joiner, offline
     if (this.network && !this.network.mirrors.length) {
       this.bee.on('move-to', () => this._holdRoom().catch(safetyCatch))
       this._holdRoom().catch(safetyCatch)
@@ -525,7 +525,7 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Claim writership on an existing room by signing our writer key with the member identity;
+   * Claim writership on an existing database by signing our writer key with the member identity;
    * the claim rides in the device core as an optimistic node.
    *
    * @returns {Promise<void>}
@@ -733,7 +733,7 @@ export class Database extends ReadyResource {
     this._presence ??= this.network.presence.add(discoveryKey, { pinned: this.pinned })
   }
 
-  // every writer the room ever had and every core its views read; only the system bee, an autobee
+  // every writer the database ever had and every core its views read; only the system bee, an autobee
   // internal, lists all the writers
   /** @private */
   async _holdRoom() {
@@ -743,7 +743,7 @@ export class Database extends ReadyResource {
     for await (const writer of bee.system.list()) this._hold(writer.key, writer.length)
   }
 
-  // a view live, a writer only as far as the room applied it: past that a stranger could grow a
+  // a view live, a writer only as far as the database applied it: past that a stranger could grow a
   // core every member pulls. Inactive, so a new connection stays silent: the range only asks peers
   // already replicating the core
   /** @private */

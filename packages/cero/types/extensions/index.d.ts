@@ -47,8 +47,8 @@ export declare const cero: {
     cancel(me: operators.Context, code: string): Promise<boolean>;
     suspend(me: operators.Context): Promise<void>;
     resume(me: operators.Context): Promise<void>;
-    activate(room: operators.Context): Promise<void>;
-    deactivate(room: operators.Context): Promise<void>;
+    activate(ctx: operators.Context): Promise<void>;
+    deactivate(ctx: operators.Context): Promise<void>;
     phrase(me: operators.Context): Promise<string>;
     nearby(ctx: operators.Context, mode: boolean | string): Promise<void>;
     t: {

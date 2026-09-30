@@ -53,7 +53,7 @@ export { t, schema }
  * @property {string} type
  * @property {string|null} name
  *
- * @typedef {(Client | Handle) & Record<string, Ref>} Context  A UI's root or room: the verbs take it like an in-process one.
+ * @typedef {(Client | Handle) & Record<string, Ref>} Context  A UI's root or handle: the verbs take it like an in-process one.
  */
 
 const blobIdEnc = {

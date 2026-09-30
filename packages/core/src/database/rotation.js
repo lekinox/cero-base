@@ -207,7 +207,7 @@ export class Rotation {
     if (!can(me?.role, REMOVE)) return
 
     const rows = await this._epochs()
-    // a room still on its creation key re-keys at its first removal
+    // a database still on its creation key re-keys at its first removal
     if (!rows.length) {
       if (await db.view.findOne(`@${db.ns}/removals`, {})) await this._heal('first removal')
       return

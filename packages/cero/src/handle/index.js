@@ -77,7 +77,7 @@ export { Ref } from '../lib/refs.js'
  *
  * @typedef {Handle & HandleExtra} Child  A child handle plus its dynamically-attached refs.
  *
- * @typedef {Handle & Record<string, import('../lib/refs.js').Ref>} Context  A root or a room: a handle with its refs (`me.profile`, `room.messages`).
+ * @typedef {Handle & Record<string, import('../lib/refs.js').Ref>} Context  The root or an opened handle, with its refs (`me.profile`, `room.messages`).
  */
 
 /**
@@ -244,7 +244,7 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Canonical id: the identity id on the root, the database key on a room.
+   * Canonical id: the identity id on the root, the database key on a handle.
    *
    * @returns {string | null}
    */
@@ -254,7 +254,7 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * This device's id and name. `null` on a room.
+   * This device's id and name. `null` on a handle.
    *
    * @returns {{ id: string, name: string | null } | null}
    */
@@ -408,7 +408,7 @@ export class Handle extends ReadyResource {
 
   /** @private */
   _pairing() {
-    if (!this._pair) throw CeroError.INVALID('the root has no invites, open a room first')
+    if (!this._pair) throw CeroError.INVALID('the root has no invites, open a handle first')
     return this._pair
   }
 
@@ -436,12 +436,14 @@ export class Handle extends ReadyResource {
   /** @private */
   _lifecycle() {
     if (!this._sus) {
-      throw CeroError.INVALID("suspend and resume are the app's, on me: a room uses cero.activate")
+      throw CeroError.INVALID(
+        "suspend and resume are the app's, on me: a handle uses cero.activate"
+      )
     }
     return this._sus
   }
 
-  // true ranks a room as just used, false takes it off the swarm until something lands in it
+  // true ranks a handle as just used, false takes it off the swarm until something lands in it
   /** @private */
   _active(on) {
     this.store.setActive(on)
@@ -513,7 +515,7 @@ export class Handle extends ReadyResource {
     return { data, total: data.length, size: data.length }
   }
 
-  // a peer's name as its member row shows it in a room open here; a stranger has none
+  // a peer's name as its member row shows it in a handle open here; a stranger has none
   /** @private */
   async _nameOf(id) {
     for (const room of this.children) {
@@ -660,7 +662,7 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // base-era cores use the OWNING handle's key, rooms have their own
+  // base-era cores use the OWNING handle's key, handles have their own
   /** @private */
   _blobCoreKey(stamp) {
     if (!stamp) return this.store.encryptionKey
@@ -684,7 +686,7 @@ export class Handle extends ReadyResource {
         spec: pickHandle(this.spec, type),
         namespace: `${NS}/handle/${type}/${writer.id}`,
         keyPair: writer,
-        // inheriting identity.encryptionKey would let any member decrypt every room
+        // inheriting identity.encryptionKey would let any member decrypt every handle
         encryptionKey: Identity.randomBytes(32)
       })
     )
@@ -709,7 +711,7 @@ export class Handle extends ReadyResource {
 
       const ts = Date.now()
       const writerKey = child.store.writerKey
-      // one batch, so a room's first two ops land together
+      // one batch, so a handle's first two ops land together
       await child.store.tx(async (tx) => {
         await tx.call('add-writer', {
           master: this.identity.publicKey,
@@ -955,7 +957,7 @@ export class Handle extends ReadyResource {
     return child
   }
 
-  // a room has its type's hooks before it opens, so no op it applies runs without them
+  // a handle has its type's hooks before it opens, so no op it applies runs without them
   /** @private */
   _room(opts) {
     const child = new Handle({ parent: this, ...opts })
@@ -991,7 +993,7 @@ export class Handle extends ReadyResource {
     this.emit('handle', child, info)
   }
 
-  // before(me.room.notes, fn): on every room open now and every one opened later
+  // before(me.room.notes, fn): on every handle open now and every one opened later
   /** @private */
   _hookType(ref, attach, opts) {
     const offs = new Map()
@@ -1013,8 +1015,8 @@ export class Handle extends ReadyResource {
     return off
   }
 
-  // a room with invites is reopened at boot, so its joins are answered whenever we are online,
-  // not only while the app has the room open
+  // a handle with invites is reopened at boot, so its joins are answered whenever we are online,
+  // not only while the app has the handle open
   /** @private */
   _serve(child) {
     if (!this.local || !child._pair) return

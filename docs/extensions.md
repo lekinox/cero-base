@@ -25,7 +25,7 @@ await todo.finish(me, row.id)
 
 ## Your own functions
 
-A feature is a file of plain functions, each taking the context first, `me` or a room, and calling
+A feature is a file of plain functions, each taking the context first, `me` or a handle, and calling
 the `cero.` operators. Nothing registers them: import the file and call `todo.add(me, 'buy milk')`.
 
 ```js
@@ -60,7 +60,7 @@ export const seen = {
 ```
 
 The schema nests by handle type like the app's, so `room.seen` joins the app's own refs on `room`.
-A hook on the type ref `me.room.messages` reaches every room of the type, created, joined or
+A hook on the type ref `me.room.messages` reaches every handle of the type, created, joined or
 reopened, before it opens. The rules every hook follows are in
 [React to writes](data.md#react-to-writes).
 
@@ -100,10 +100,10 @@ it is `null`.
 
 ## The two that ship
 
-| Extension       | Does                                                                                                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every room you are in, on open and on every change. |
-| `handleSync()`  | Copies a room's own `profile` onto its row in your `handles` list, so a room list shows names without opening the rooms.                       |
+| Extension       | Does                                                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every handle you are in, on open and on every change. |
+| `handleSync()`  | Copies a handle's own `profile` onto its row in your `handles` list, so a handle list shows names without opening the handles.                   |
 
 Both run when the build names no extensions, and neither writes when the row already matches.
 Drop one by naming a list without it, or both with `[]`.
@@ -121,13 +121,13 @@ export const extensions = [
 `fields` replaces the default `{ avatar: t.string }` and lands on both `profile` and `members`. A
 `profile` you declare yourself replaces the extension's; each of its fields must then exist on
 `members` with the same type and hold a plain value or a file. A `t.file` avatar,
-`profileSync({ fields: { avatar: t.file } })`, is copied with its file into each room, where every
+`profileSync({ fields: { avatar: t.file } })`, is copied with its file into each handle, where every
 member reads it.
 
-`handleSync` needs the room type to declare `profile: t.single({ name: t.string })`, and any other
+`handleSync` needs the handle type to declare `profile: t.single({ name: t.string })`, and any other
 field of it must exist on `handles`, as `avatar` does by default. A `t.file` avatar,
 `handleSync({ fields: { avatar: t.file } })`, is copied with its file into your list, and reads
-with the room closed. `cero.open(me.room, { name })` writes the name into that profile.
+with the handle closed. `cero.open(me.room, { name })` writes the name into that profile.
 
 ## Give an action its handler
 
@@ -155,7 +155,7 @@ every hook rule: read and write through ctx only, and a throw, or a `before` tha
 refuses the call. Its writes through ctx are the caller's own: an action cannot do what its caller
 may not, such as raise a role. Calling an action with no `after` hook throws `INVALID`, and a
 device without the hook reports the action to `onerror`. In a handle type, register on the type
-ref, `cero.after(me.room.archive, fn)`, and call it on a room, `cero.call(room.archive, data)`.
+ref, `cero.after(me.room.archive, fn)`, and call it on a handle, `cero.call(room.archive, data)`.
 
 ## Add to an app that shipped
 

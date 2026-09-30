@@ -97,7 +97,7 @@ const schema = cero.schema({
 ```
 
 A plain object declares a handle type: a space you open, share by invite and remove people from.
-The examples call theirs `room`. Each room also has its own builtins, `room.members` and the rest.
+The examples call theirs `room`. Each handle also has its own builtins, `room.members` and the rest.
 Handle types nest one level: a plain object inside one is dropped without an error.
 [Sharing](handles.md) opens and shares them.
 
@@ -118,14 +118,14 @@ hooks, batches, actions or `t.file`, and lists come back in id order. Cero keeps
 const schema = cero.schema({ members: t.extend({ bio: t.string }) })
 ```
 
-Every scope, the root and each room, has the builtins `members`, `devices`, `invites`,
+Every scope, the root and each handle, has the builtins `members`, `devices`, `invites`,
 `requests`, `handles` and `files`. `t.extend` adds fields to one. Put it at the top level: it
 extends that builtin in every scope, and inside a handle type it is ignored. Redeclaring a
 builtin's own field fails the build.
 
 The bundled extensions add fields too. A `profile` you declare replaces the extension's, and each
 of its fields is copied onto your row in `members`, so each must exist there with the same type.
-A `t.file` field is copied with its file, so it resolves in every room. See
+A `t.file` field is copied with its file, so it resolves in every handle. See
 [the two that ship](extensions.md#the-two-that-ship).
 
 ## Reserved names
@@ -133,9 +133,9 @@ A `t.file` field is copied with its file, so it resolves in every room. See
 - `status` at the root or in a handle type, and `joins` or `nearby` at the root: Cero computes
   these on the device, and the build throws.
 - A builtin's name, such as `members` or `files`, for a ref of your own.
-- A name the root or a room already carries, such as `id`, `type`, `store`, `parent`,
+- A name the root or a handle already carries, such as `id`, `type`, `store`, `parent`,
   `children`, `device`, `identity`, `network`, `spec`, `signal` or `root`. It builds, then throws
-  `INVALID` when the root or the room opens.
+  `INVALID` when the root or the handle opens.
 
 ## Declare an action
 
@@ -150,7 +150,7 @@ await cero.call(me.archive, { until: Date.now() }) // throws INVALID until it ha
 An action is a named write with a payload and no row, and `cero.call` resolves `undefined`. What
 it does is its handler, an `after` hook registered in an extension:
 [Give an action its handler](extensions.md#give-an-action-its-handler). An action in a handle type
-is called on a room, `cero.call(room.archive, data)`.
+is called on a handle, `cero.call(room.archive, data)`.
 
 ## Build the spec
 
@@ -187,5 +187,5 @@ shipped. A device on an older build skips writes from a newer one until it updat
 ## Next
 
 - [Data](data.md) to write, query and watch what you described.
-- [Sharing](handles.md) to open a room and invite people.
+- [Sharing](handles.md) to open a handle and invite people.
 - [Extensions](extensions.md) to give actions their handlers and reuse schema.

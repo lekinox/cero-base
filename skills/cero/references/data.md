@@ -12,7 +12,7 @@ const { data: open } = await cero.get(me.todos, { done: false })
 await cero.del(me.todos, todo.id)
 ```
 
-The data operators take a ref first: `me.todos` on the root, `room.messages` in a room. The same
+The data operators take a ref first: `me.todos` on the root, `room.messages` in a handle. The same
 calls work in the worker and over RPC.
 
 ## Add a row
@@ -140,7 +140,7 @@ export const rules = (me) => {
 
 When `before` returns `false` or either hook throws, no device stores the write and the writer's
 call rejects with `REFUSED`. Register hooks in an extension's `setup`, on type refs like
-`me.room.messages`: every room of the type has them before it opens, so every device runs the same
+`me.room.messages`: every handle of the type has them before it opens, so every device runs the same
 rules on every write ([Extensions](extensions.md)). Both return a function that removes the hook
 and take `{ signal }` as a third argument. Hooks fire on the builtins too, such as
 `me.room.members`, where a join is a `put`.
@@ -188,7 +188,7 @@ const { data: file } = await cero.put(me.files, {
 // file: { id, name, type, size, url }
 ```
 
-The root and every room have a `files` builtin. `data` is bytes, or a Readable in the worker
+The root and every handle have a `files` builtin. `data` is bytes, or a Readable in the worker
 process; `type` is required, `name` optional. To put a file on a row, store its id in a `t.file`
 field, which reads back as `{ id, type, size, url }`:
 
@@ -202,13 +202,13 @@ const { data: messages } = await cero.get(room.messages) // messages[0].photo.ur
 
 - A `url` works on this device, for this run: it changes on every start. Store the id and read
   the row again for a fresh url.
-- A `t.file` field resolves only for a file in the same room's `files`, or the root's for a root
-  row: to use a file in another room, put its bytes there. profileSync and handleSync do that for
+- A `t.file` field resolves only for a file in the same handle's `files`, or the root's for a root
+  row: to use a file in another handle, put its bytes there. profileSync and handleSync do that for
   a `t.file` avatar. A string that is not a file id makes every read of that row throw `INVALID`.
 - Files have no timestamps, they read `0`: order them by `index`.
 - `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
   admin or an owner deletes one.
-- A member removed from a room can't read files added after the room re-keys. See
+- A member removed from a handle can't read files added after the handle re-keys. See
   [How it works](how-it-works.md).
 
 ## Handle errors
@@ -224,7 +224,7 @@ try {
 
 | Code           | When                                                                    | Do                                                                                   |
 | -------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the room read-only; `room.status` has `writable`.                               |
+| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the handle read-only; `room.status` has `writable`.                             |
 | `REFUSED`      | Your role, `own`, or a `before` hook said no.                           | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
 | `INVALID`      | An unknown field, a missing required one, or a bad value.               | Fix the call.                                                                        |
 | `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                   | Read the list again.                                                                 |
@@ -233,6 +233,6 @@ try {
 
 ## Next
 
-- [Sharing](handles.md) to put these rows in a room other people see.
+- [Sharing](handles.md) to put these rows in a handle other people see.
 - [Extensions](extensions.md) to register hooks and reuse your own functions.
 - [API reference](api.md) for every signature and option.

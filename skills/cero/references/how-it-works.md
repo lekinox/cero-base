@@ -11,7 +11,7 @@ for await (const { data } of cero.watch(room.status)) {
 
 ## The model
 
-A room is a database with its own rows, members and key, synced among its members' devices. `me`, the root, is a database only your devices share. Both are contexts: a context holds refs, a ref holds rows, and every act on them is a `cero.` verb.
+A handle is a database with its own rows, members and key, synced among its members' devices. `me`, the root, is a database only your devices share. Both are contexts: a context holds refs, a ref holds rows, and every act on them is a `cero.` verb.
 
 ```mermaid
 flowchart TD
@@ -46,37 +46,37 @@ flowchart TB
   apply --> watch
 ```
 
-1. **Check.** `cero.put(room.messages, { text: 'hi' })` checks your role in the room before anything is written.
-2. **Write.** The message is appended to your device's own log for the room, encrypted with the room's key. Every device writes only its own log.
+1. **Check.** `cero.put(room.messages, { text: 'hi' })` checks your role in the handle before anything is written.
+2. **Write.** The message is appended to your device's own log for the handle, encrypted with the handle's key. Every device writes only its own log.
 3. **Sync.** Ana's phone copies your log: straight from you over the internet, from a mirror when you are offline, or over Bluetooth with no internet at all.
 4. **Apply.** Every device applies every log in the same order and checks roles again from the log itself, so all of them end with the same rows, with no server in between. Ana's `watch` fires with the new row.
 
-## Joining a room
+## Joining a handle
 
-1. **Ask.** The joiner's device starts its own log for the room and writes the join as its first entry, sealed to the room and signed twice: by the invite, and by the joiner for that log and the address its keys go to.
-2. **Reach.** The room's peers and mirrors get that log, and any member's device with the room open pulls it in.
+1. **Ask.** The joiner's device starts its own log for the handle and writes the join as its first entry, sealed to the handle and signed twice: by the invite, and by the joiner for that log and the address its keys go to.
+2. **Reach.** The handle's peers and mirrors get that log, and any member's device with the handle open pulls it in.
 3. **Admit.** Every device checks both signatures and the invite's row, and turns away a member whose removal came after the invite. Then, in one step, it adds the member and the device, lets the log write if the role writes, and spends a single-use invite.
-4. **Keys.** Every online device of a member who can invite sends the joiner the room's keys, directly and through mirrors, until one is read. A join turned away with an invite the room knows, revoked, spent or older than the joiner's removal, gets `DENIED` and the reason the same way; the room keeps a revoked or spent invite until it would have expired. A join with an invite the room never held gets no answer.
+4. **Keys.** Every online device of a member who can invite sends the joiner the handle's keys, directly and through mirrors, until one is read. A join turned away with an invite the handle knows, revoked, spent or older than the joiner's removal, gets `DENIED` and the reason the same way; the handle keeps a revoked or spent invite until it would have expired. A join with an invite the handle never held gets no answer.
 5. **Expiry.** Past an invite's expiry, a device of a member who can remove drops the invite and removes any joiner still without keys.
 
 An invite made with `confirm: true` pauses at step 3: the join waits in `room.requests` until a member who can invite accepts it, at the invite's role or lower, or denies it and the joiner gets `DENIED`. The first answer settles it everywhere.
 
 ## Your devices and recovery
 
-A phrase is the user, and every device of yours holds it. Each device writes only its own log, in the root and in every room, so no two devices write over each other.
+A phrase is the user, and every device of yours holds it. Each device writes only its own log, in the root and in every handle, so no two devices write over each other.
 
-The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with the phrase's signature. Each room is a row in the root with its keys, so the device takes a seat in a room the same way when it opens it.
+The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with the phrase's signature. Each handle is a row in the root with its keys, so the device takes a seat in a handle the same way when it opens it.
 
 Removing a device takes its log out, but the device still holds the seed and can admit a fresh log like any new device. Removing retires a device; it does not lock out whoever holds it. `storageKey` keeps the seed encrypted on disk.
 
 ## Encryption and re-keying
 
-Each room has its own key, made at creation, kept in your root and handed to joiners at step 4; the root's key comes from the phrase. Mirrors, and peers without the key, see only ciphertext.
+Each handle has its own key, made at creation, kept in your root and handed to joiners at step 4; the root's key comes from the phrase. Mirrors, and peers without the key, see only ciphertext.
 
-A removal takes the member's logs out at once, but their key would still read what comes next. So the room re-keys: a new secret, sealed to each remaining member and announced in its log, for every row and file written after.
+A removal takes the member's logs out at once, but their key would still read what comes next. So the handle re-keys: a new secret, sealed to each remaining member and announced in its log, for every row and file written after.
 
-- Half a second after a removal lands, a device of an admin or the owner with the room open re-keys it, or the next one to come online. `cero.rotate(room)` re-keys at once and resolves when the key is in place: await it before writing what the removed member must not read.
-- Once a room has re-keyed, any change of members re-keys it again, joins included.
+- Half a second after a removal lands, a device of an admin or the owner with the handle open re-keys it, or the next one to come online. `cero.rotate(room)` re-keys at once and resolves when the key is in place: await it before writing what the removed member must not read.
+- Once a handle has re-keyed, any change of members re-keys it again, joins included.
 - Each re-key starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
 - A removed member never learns a new epoch. The removal lands first, so they see it: `status.role` turns `null` and what they read stops there.
 

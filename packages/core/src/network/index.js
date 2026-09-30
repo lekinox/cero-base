@@ -35,7 +35,7 @@ export function channelTopic(topic, channel) {
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
- * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+ * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *
@@ -367,7 +367,7 @@ export class Network extends ReadyResource {
     peering.addAutobaseBackground(bee)
     // the bootstrap core leaves the writer set after the local swap, but joiners boot from it
     peering.addCoreBackground(bee.bootstrap, { referrer: bee.key })
-    // autobee links views only through a trusted head, which a fresh room's first nodes lack
+    // autobee links views only through a trusted head, which a fresh database's first nodes lack
     const views = bee.views().map((v) => this.store.get({ key: v.key }))
     for (const view of views) peering.addCoreBackground(view, { referrer: bee.key })
     bee.once('close', () => {

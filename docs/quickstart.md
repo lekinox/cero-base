@@ -2,7 +2,7 @@
 
 [Docs](README.md) · Previous: [Cero Base](README.md) · Next: [Schema](schema.md)
 
-Build a chat that runs in two terminals: one creates a room and prints an invite, the other joins with it, and every line typed in either shows up in both.
+Build a chat that runs in two terminals: one creates a handle and prints an invite, the other joins with it, and every line typed in either shows up in both.
 
 ```sh
 mkdir chat && cd chat
@@ -26,7 +26,7 @@ export const schema = cero.schema({
 })
 ```
 
-`room` declares a kind of room: a space you open and share by invite, encrypted with its own key. `messages` is a collection, a table of rows. Cero adds `id`, `memberId`, `index`, `createdAt` and `updatedAt` to every row.
+`room` declares a kind of handle: a space you open and share by invite, encrypted with its own key. `messages` is a collection, a table of rows. Cero adds `id`, `memberId`, `index`, `createdAt` and `updatedAt` to every row.
 
 ## Build it
 
@@ -42,7 +42,7 @@ await build('./spec', schema)
 node build.js
 ```
 
-This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Every device in a room needs the same `spec/`: one on an older build skips the newer writes and shows `behind` in its `room.status`.
+This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Every device in a handle needs the same `spec/`: one on an older build skips the newer writes and shows `behind` in its `room.status`.
 
 ## Write the chat
 
@@ -98,15 +98,15 @@ bob: hi alice
 alice: welcome, bob
 ```
 
-Lines without a name are what you typed, the others come from the room. Bob sees alice's first line as he joins: the first item of a watch holds every row already there.
+Lines without a name are what you typed, the others come from the handle. Bob sees alice's first line as he joins: the first item of a watch holds every row already there.
 
 The first connection over the internet can take a few seconds. If the join takes longer than 30 seconds, `cero.open` rejects with `TIMEOUT`: run the same command again and the join picks up where it stopped. Ctrl+C stops a side, and its data stays in its directory.
 
 Cero prints errors that happen in the background, away from any call, and keeps going; pass `onerror` to `cero()` to handle them yourself.
 
-## Open the same room next time
+## Open the same handle next time
 
-As it stands, every run of `node chat.js alice` creates another room with a new invite, because every `cero.open(me.room, { name })` does. Your rooms are the rows of `me.room`, so before the next run, change chat.js to open the first one by id when there is one.
+As it stands, every run of `node chat.js alice` creates another handle with a new invite, because every `cero.open(me.room, { name })` does. Your handles are the rows of `me.room`, so before the next run, change chat.js to open the first one by id when there is one.
 
 ```js
 // chat.js, in place of the lines that open the room; me and invite from above
@@ -131,7 +131,7 @@ bob: hi alice
 alice: welcome, bob
 ```
 
-The history prints first, as it did for bob when he joined. `node chat.js bob`, with no invite, reopens the room bob joined.
+The history prints first, as it did for bob when he joined. `node chat.js bob`, with no invite, reopens the handle bob joined.
 
 ## Be alice on another device
 
@@ -160,18 +160,18 @@ $ node device.js alice-laptop "<alice's twelve words>"
 [ 'chat' ]
 ```
 
-Her rooms arrive as they sync, which is why this watches `me.room` instead of reading it once. Stop it, and `node chat.js alice-laptop` opens the same room as alice, from her second device.
+Her handles arrive as they sync, which is why this watches `me.room` instead of reading it once. Stop it, and `node chat.js alice-laptop` opens the same handle as alice, from her second device.
 
 A phrase recovers only in a fresh directory, with the same `channel` and `mirrors` options as your other devices, while one of them is online. Otherwise `cero()` rejects with `TIMEOUT` after 30 seconds and creates nothing. The seed sits unencrypted in the data directory unless you pass `storageKey`. [Your devices](identity.md) has the full story.
 
 ## What you built
 
-| File        | Idea                                                                                  |
-| ----------- | ------------------------------------------------------------------------------------- |
-| `schema.js` | Your data, described once: a kind of room and the messages in it.                     |
-| `build.js`  | The compiled `spec/` every device runs, rebuilt after each schema change.             |
-| `chat.js`   | `me` is you, a room is shared by invite, `put` writes and `watch` shows every change. |
-| `device.js` | The phrase makes another device the same user, with the same rooms.                   |
+| File        | Idea                                                                                    |
+| ----------- | --------------------------------------------------------------------------------------- |
+| `schema.js` | Your data, described once: a kind of handle and the messages in it.                     |
+| `build.js`  | The compiled `spec/` every device runs, rebuilt after each schema change.               |
+| `chat.js`   | `me` is you, a handle is shared by invite, `put` writes and `watch` shows every change. |
+| `device.js` | The phrase makes another device the same user, with the same handles.                   |
 
 [example/chat-terminal](../example/chat-terminal) is the full version, with display names, more invites and a flag for the phrase.
 

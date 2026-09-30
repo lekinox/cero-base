@@ -135,7 +135,7 @@ export const main = {
     isMobile: bool,
     device: string
   },
-  // a join the room turned away, until the joiner read why. `id` is the joiner's writer
+  // a join the handle turned away, until the joiner read why. `id` is the joiner's writer
   refusal: {
     id: required(string),
     reply: required(bytes),
@@ -166,7 +166,7 @@ export const local = {
     secretKey: required(bytes),
     encryptionKey: bytes
   },
-  // a room with invites, reopened at boot so its joins are answered
+  // a handle with invites, reopened at boot so its joins are answered
   serving: {
     id: required(string),
     type: required(string)
@@ -179,7 +179,7 @@ export const local = {
     invite: required(string),
     publicKey: required(bytes),
     secretKey: required(bytes),
-    // the reply, once it landed: the join then opens the room without joining again
+    // the reply, once it landed: the join then opens the handle without joining again
     key: bytes,
     encryptionKey: bytes,
     epochs: bytes

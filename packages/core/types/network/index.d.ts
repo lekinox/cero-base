@@ -36,7 +36,7 @@ export type NetworkOpts = {
      */
     store?: import('corestore');
     /**
-     * Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+     * Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
      */
     mirrors?: Array<string | Uint8Array>;
     /**
@@ -64,7 +64,7 @@ export type Replicable = {
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
- * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached room/blob core is mirrored through them for offline sync.
+ * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  *

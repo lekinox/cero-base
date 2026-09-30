@@ -36,8 +36,8 @@ export { t, schema } from './lib/spec.js'
  * @property {Array<{ host: string, port: number }>} [bootstrap]  Custom DHT bootstrap nodes.
  * @property {number[]} [backoffs]                     Swarm reconnect backoff tiers in ms (testing/tuning).
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
- * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Rooms and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
- * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many rooms search, how many only announce, and the idle ms before the rest leave the swarm.
+ * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
+ * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
  * @property {Uint8Array} [key]                        Existing database key to recover into, skipping the pointer lookup.
  * @property {Uint8Array} [encryptionKey]              Pre-existing encryption key.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.

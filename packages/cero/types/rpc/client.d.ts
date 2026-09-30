@@ -39,8 +39,8 @@ declare const remote: {
     cancel(me: verbs.Context, code: string): Promise<boolean>;
     suspend(me: verbs.Context): Promise<void>;
     resume(me: verbs.Context): Promise<void>;
-    activate(room: verbs.Context): Promise<void>;
-    deactivate(room: verbs.Context): Promise<void>;
+    activate(ctx: verbs.Context): Promise<void>;
+    deactivate(ctx: verbs.Context): Promise<void>;
     phrase(me: verbs.Context): Promise<string>;
     nearby(ctx: verbs.Context, mode: boolean | string): Promise<void>;
 };

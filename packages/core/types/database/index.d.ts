@@ -417,7 +417,7 @@ export declare class Database extends ReadyResource {
         writer: import('../identity/index.js').KeyPair;
     }>;
     /**
-     * Claim writership on an existing room by signing our writer key with the member identity;
+     * Claim writership on an existing database by signing our writer key with the member identity;
      * the claim rides in the device core as an optimistic node.
      *
      * @returns {Promise<void>}

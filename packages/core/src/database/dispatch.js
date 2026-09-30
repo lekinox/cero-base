@@ -380,7 +380,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       const r = await getSignerRole(ctx.view, ctx.key)
       if (!can(r, REMOVE) || !outranks(r, existing.role)) throw CeroError.REFUSED('remove')
     } else if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
-      throw CeroError.INVALID('the last owner cannot leave: hand the room to another owner first')
+      throw CeroError.INVALID('the last owner cannot leave: make another member an owner first')
     }
     if (existing.key) await ctx.host.removeWriter(existing.key)
     // every device of the member goes with them, and any keys they were still owed
@@ -398,7 +398,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
 
   add('rotate-key', async (op, ctx) => {
     if (!op.wrapped?.byteLength) return
-    // the commitment lets every member verify the sealed secret, so a rotator cannot split the room
+    // the commitment lets every member verify the sealed secret, so a rotator cannot split the database
     if (op.commit?.byteLength !== 32) return
     // the stamp is picked before any block is written, so epochs reorder freely; uniqueness is enforced here
     if (!Number.isInteger(op.stamp) || op.stamp <= 0 || op.stamp > 0xffffffff) return
@@ -440,7 +440,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   })
 
   // a device row is the writer→role mapping, so memberId never comes off the wire; a core no
-  // member owns writes none, or any stranger's optimistic node would plant a device in the room
+  // member owns writes none, or any stranger's optimistic node would plant a device in the database
   const bind = async (ctx) => {
     const { memberId } = await author(ctx)
     if (!memberId) throw CeroError.REFUSED('member')
@@ -571,7 +571,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const id = hid.encode(ctx.key)
     const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
     if (!invite) {
-      // an invite the room never held could be anyone's: nobody answers it
+      // an invite the database never held could be anyone's: nobody answers it
       const record = await ctx.view.get(spent, { id: b4a.toHex(join.invite) })
       if (!record) return
       return refuse(ctx, { id, reply: join.reply, expires: record.expires }, record.reason)

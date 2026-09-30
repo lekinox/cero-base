@@ -102,7 +102,7 @@ export class Presence {
     this.entries.clear()
   }
 
-  // up at once, down after idle: a room at the edge of the budget must not churn the DHT
+  // up at once, down after idle: a database at the edge of the budget must not churn the DHT
   /** @private */
   _want(e, mode) {
     const current = e.discovery ? e.discovery.mode : null

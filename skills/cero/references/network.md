@@ -1,7 +1,7 @@
 # Network
 
 Sync while devices are offline through a mirror, sync nearby over Bluetooth, background the app and
-keep many rooms cheap.
+keep many handles cheap.
 
 ```js
 // spec from the quickstart, mirrorKey from your mirror below
@@ -27,12 +27,12 @@ opening it with a different channel, or none, then throws `CHANNEL_MISMATCH`.
 
 ## Sync offline through a mirror
 
-Two devices sync only while both are online. A mirror is an always-on peer that holds your rooms'
+Two devices sync only while both are online. A mirror is an always-on peer that holds your handles'
 and files' encrypted blocks, so a device catches up on the writes it missed while offline. It is
 blind: it stores ciphertext and reads nothing.
 
-Without mirrors, every member's device holds a room's full history once caught up, so any member
-online serves it, to a joiner too. With mirrors, a device may hold only part of a room; the mirror
+Without mirrors, every member's device holds a handle's full history once caught up, so any member
+online serves it, to a joiner too. With mirrors, a device may hold only part of a handle; the mirror
 holds it all.
 
 ```js
@@ -63,8 +63,8 @@ await cero.suspend(me) // to the background: network, storage and Bluetooth paus
 await cero.resume(me) // back in front
 ```
 
-They are the app's lifecycle, so they take `me`: on a room they throw `INVALID`. Between the two,
-`status.suspended` is `true` on `me` and on every room. Both are cheap and safe to repeat.
+They are the app's lifecycle, so they take `me`: on a handle they throw `INVALID`. Between the two,
+`status.suspended` is `true` on `me` and on every handle. Both are cheap and safe to repeat.
 
 ```js
 // React Native; me from cero(ipc, spec)
@@ -87,7 +87,7 @@ powerMonitor.on('resume', () => win.webContents.send('lifecycle', 'resume'))
 window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : cero.resume(me)))
 ```
 
-## Many rooms
+## Many handles
 
 ```js
 // room: any room you have open
@@ -95,21 +95,21 @@ await cero.activate(room) // the room on screen: ranked first
 await cero.deactivate(room) // off the swarm after about 30 s idle, until something lands in it
 ```
 
-Rooms are ranked by their last update, from anyone: the latest 8 search and announce, the next 8
-only announce, the rest leave the swarm. A room moves up the moment something lands in it and down
-only after 30 s idle, so rooms at the edge do not churn the DHT. Your own data, on `me`, always
+Handles are ranked by their last update, from anyone: the latest 8 search and announce, the next 8
+only announce, the rest leave the swarm. A handle moves up the moment something lands in it and down
+only after 30 s idle, so handles at the edge do not churn the DHT. Your own data, on `me`, always
 searches.
 
-A room off the swarm still reads, writes and watches. It still syncs over the connections other
-rooms bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
+A handle off the swarm still reads, writes and watches. It still syncs over the connections other
+handles bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
 suspended app keeps its ranks.
 
 ```js
 const me = await cero('./data', spec, { presence: { active: 8, announced: 8, idle: 30000 } })
 ```
 
-Those are the defaults. `active` rooms search and announce, `announced` rooms only announce, and
-`idle` is the ms before a room drops a tier.
+Those are the defaults. `active` handles search and announce, `announced` handles only announce, and
+`idle` is the ms before a handle drops a tier.
 
 ## Sync nearby over Bluetooth
 
@@ -126,7 +126,7 @@ internet, between your own devices too, and a phrase recovers over it. `me.nearb
 linked, one row each: `id` is the person (`me.id` on your other devices), `device` tells two devices
 of one person apart, strangers on the same channel included; a stranger syncs nothing it has no key for. macOS 13+, iOS and Android are supported.
 
-`name` comes from the peer's `me.profile`, else their member row in a room you share and have open, else
+`name` comes from the peer's `me.profile`, else their member row in a handle you share and have open, else
 `null`; `isMobile` is their device's option. Only Bluetooth carries them, with proof of whose device
 it is. `cero.watch` follows both refs, renames included.
 
@@ -167,7 +167,7 @@ for await (const { data } of cero.watch(room.status)) if (data.behind) showUpdat
 Every write carries your app's contract version, stamped by `build`. Peers on different versions keep
 working together: writes from a newer version are skipped, not errors, and `status.behind` holds the
 highest version seen. Once the app upgrades, the next open catches up on them. `status.behind` is per
-context, so watch `room.status` for each open room as well as `me.status`.
+context, so watch `room.status` for each open handle as well as `me.status`.
 
 ## Next
 

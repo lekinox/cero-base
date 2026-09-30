@@ -7,7 +7,7 @@ import { CeroError } from './errors.js'
 // can() callers need the capability names, and constants.js is not public
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 
-// binding the db key makes an admission unreplayable across rooms
+// binding the db key makes an admission unreplayable across databases
 const ADD_WRITER_TAG = b4a.from('cero/add-writer')
 const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer')
 const JOIN_TAG = b4a.from('cero/join')
@@ -25,7 +25,7 @@ export function ownership(dbKey, writer) {
   return b4a.concat([CLAIM_WRITER_TAG, dbKey, writer])
 }
 
-// what a joiner's identity signs: this room, this invite, this writer, where the keys go
+// what a joiner's identity signs: this database, this invite, this writer, where the keys go
 /** @type {(dbKey: Uint8Array, invite: Uint8Array, writer: Uint8Array, reply: Uint8Array) => Uint8Array} */
 export function joining(dbKey, invite, writer, reply) {
   return b4a.concat([JOIN_TAG, dbKey, invite, writer, reply])

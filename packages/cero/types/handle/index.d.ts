@@ -177,7 +177,7 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  *
  * @typedef {Handle & HandleExtra} Child  A child handle plus its dynamically-attached refs.
  *
- * @typedef {Handle & Record<string, import('../lib/refs.js').Ref>} Context  A root or a room: a handle with its refs (`me.profile`, `room.messages`).
+ * @typedef {Handle & Record<string, import('../lib/refs.js').Ref>} Context  The root or an opened handle, with its refs (`me.profile`, `room.messages`).
  */
 /**
  * A cero handle — a single writable database session attached to a swarm.
@@ -265,13 +265,13 @@ export declare class Handle extends ReadyResource {
     /** The handle type of a child, null on the root. */
     get type(): string;
     /**
-     * Canonical id: the identity id on the root, the database key on a room.
+     * Canonical id: the identity id on the root, the database key on a handle.
      *
      * @returns {string | null}
      */
     get id(): string | null;
     /**
-     * This device's id and name. `null` on a room.
+     * This device's id and name. `null` on a handle.
      *
      * @returns {{ id: string, name: string | null } | null}
      */
