@@ -125,6 +125,9 @@ const { data: status } = await cero.get(room.status) // { role, writable, epoch,
   are removed, `suspended` follows `cero.suspend(me)` / `cero.resume(me)` (the app's background and
   foreground), `behind` asks for an app update. `cero.activate(room)` ranks the handle on screen first
   on the swarm.
+- Bluetooth is only a transport, always there with the radio off: `cero.nearby(me, true)` turns it on
+  from the app's own setting at every start, `cero.nearby(me, true, { topic })` narrows it to a
+  topic within the channel. Joins, sync and recovery run over it unchanged.
 
 ## Apps with a UI
 

@@ -809,20 +809,33 @@ test('rpc: server rejects local ops on builtin refs', async (t) => {
 })
 
 test('rpc: the UI turns the radio off and on, and reads it', async (t) => {
-  const { client } = await openPair(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const { client } = await openPair(t, { bluetooth: { on: true, backend: makeMockBluetooth() } })
   const radio = async () => (await get(client.status)).data.nearby
   t.is(await radio(), 'on')
   await cero.nearby(client, false)
   t.is(await radio(), 'off')
   await cero.nearby(client, true)
   t.is(await radio(), 'on')
+  await cero.nearby(client, false)
+  await t.exception(cero.nearby(client, 'yryinvite'), /INVALID/, 'an invite is not a mode')
+  await t.exception(cero.nearby(client, { on: true }), /INVALID/, 'nor an object')
+  await t.exception(cero.nearby(client, true, { topic: null }), /INVALID/, 'nor a null topic')
+  t.is(await radio(), 'off', 'and none turned the radio on')
+  await cero.nearby(client, false, { topic: 'hall-1' })
+  t.is(await radio(), 'off', 'false with a topic stays off')
+  await cero.nearby(client, true, { topic: 'hall-1' })
+  t.is(await radio(), 'on', 'true with a topic comes on')
 })
 
 test('rpc: the UI reads who is nearby, with their name and device type', async (t) => {
   const radio = makeMockBluetooth()
-  const { me, client } = await openPair(t, { bluetooth: { backend: radio } })
+  const { me, client } = await openPair(t, { bluetooth: { on: true, backend: radio } })
   const testnet = await makeTestnet(t)
-  const opts = { bootstrap: testnet.bootstrap, isMobile: true, bluetooth: { backend: radio } }
+  const opts = {
+    bootstrap: testnet.bootstrap,
+    isMobile: true,
+    bluetooth: { on: true, backend: radio }
+  }
   const other = await cero(await t.tmp(), spec, opts)
   t.teardown(() => other.close().catch(() => {}), { order: 5 })
   await set(other.profile, { name: 'bee' })

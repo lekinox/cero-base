@@ -12,6 +12,7 @@ import { Invite } from '@cero-base/core/invite'
 import { Pairing } from '@cero-base/core/pairing'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { epochEntries } from '@cero-base/core/database/encryption'
+import { makeMockBluetooth } from 'ble-swarm/mock.js'
 
 import {
   cero,
@@ -1215,7 +1216,8 @@ test('cero(): suspend()/resume() flips swarm + corestore state', async (t) => {
 })
 
 test('status: a room reports its role, writability, epoch and suspension, live', async (t) => {
-  const { me } = await ceroOpen(t)
+  // the radio's state is the platform's: a mock makes it the same everywhere
+  const { me } = await ceroOpen(t, { bluetooth: { backend: makeMockBluetooth() } })
   const room = await open(me.team, { name: 'clinic' })
   const status = async () => (await get(room.status)).data
   const expected = {
@@ -1224,7 +1226,7 @@ test('status: a room reports its role, writability, epoch and suspension, live',
     epoch: 0,
     suspended: false,
     behind: 0,
-    nearby: null
+    nearby: 'off'
   }
   t.alike(await status(), expected)
 

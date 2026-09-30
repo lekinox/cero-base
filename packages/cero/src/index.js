@@ -44,7 +44,7 @@ export { t, schema } from './lib/spec.js'
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
  * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
- * @property {boolean | { autoStart?: boolean, backend?: object, maxOutbound?: number, maxInbound?: number, pipe?: 'l2cap' | 'gatt' }} [bluetooth]  `true` enables nearby (Bluetooth) sync, the radio on. `{ autoStart: false }` leaves it off until `cero.nearby(me, true)`. `backend` injects a bare-bluetooth-shaped backend (tests). `maxOutbound`/`maxInbound` cap concurrent outbound links and inbound sessions. `pipe` picks the data pipe, `'l2cap'` (default, faster) or `'gatt'`; both peers must match. Without a backend on the host, `me.status` reports `nearby: 'unsupported'`.
+ * @property {{ on?: boolean, topic?: string, backend?: object | null, maxOutbound?: number, maxInbound?: number, pipe?: 'l2cap' | 'gatt' }} [bluetooth]  Bluetooth at start: `on` (off by default) and `topic` (the default one, else the channel's own); the app turns the radio on and off with `cero.nearby`, and nothing is stored. `maxOutbound`/`maxInbound` cap concurrent outbound links and inbound sessions. `pipe` picks the data pipe, `'l2cap'` (default, faster) or `'gatt'`; both peers must match. `backend` injects a bare-bluetooth-shaped backend (tests); with none on the host, `status.nearby` reads `'unsupported'`.
  */
 
 /**
@@ -58,6 +58,10 @@ export { t, schema } from './lib/spec.js'
 async function start(dir, spec, opts = {}) {
   if (typeof dir !== 'string' || !dir) throw CeroError.INVALID('dir must be a non-empty string')
   if (!spec) throw CeroError.REQUIRED('spec')
+  const bt = opts.bluetooth ?? {}
+  if (typeof bt !== 'object') {
+    throw CeroError.INVALID('bluetooth takes { on, topic, pipe, maxOutbound, maxInbound }')
+  }
 
   const storage = new HypercoreStorage(`${dir}/main`)
   let store = null
@@ -126,20 +130,8 @@ async function start(dir, spec, opts = {}) {
     })
     await network.ready()
     // the radio before the pointer read: a phrase recovers from a device in range, no internet
-    if (opts.bluetooth) {
-      const bt = opts.bluetooth === true ? {} : opts.bluetooth
-      bluetooth = new Bluetooth(network, {
-        identity,
-        keyPair,
-        // an omitted backend lazy-loads bare-bluetooth, null disables it
-        backend: bt.backend,
-        autoStart: bt.autoStart !== false,
-        maxOutbound: bt.maxOutbound,
-        maxInbound: bt.maxInbound,
-        pipe: bt.pipe
-      })
-      await bluetooth.ready()
-    }
+    bluetooth = new Bluetooth(network, { ...bt, identity, keyPair })
+    await bluetooth.ready()
     discovery = network.join(identity.topic)
     // a fresh identity has no peers yet, flushing the announce would only delay onboarding
     if (!fresh) await Promise.race([discovery.flush(), new Promise((r) => setTimeout(r, FLUSH))])

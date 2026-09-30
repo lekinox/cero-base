@@ -1,7 +1,7 @@
 // field order is the wire format: append only, never reorder
 import { t } from '../lib/spec.js'
 
-const { string, bytes, int, uint, bool, required } = t
+const { string, bytes, int, uint, bool, json, required } = t
 
 export const main = {
   'del-by-id': {
@@ -317,9 +317,10 @@ export const rpc = {
     role: string,
     reason: string
   },
-  // the mesh when `on`, one invite's rendezvous when `invite` is set
+  // a built spec never drops a field: `on` and `invite` stay in the encoding, unused
   'req-nearby': {
     on: bool,
-    invite: string
+    invite: string,
+    args: json
   }
 }

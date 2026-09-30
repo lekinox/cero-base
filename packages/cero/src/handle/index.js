@@ -482,17 +482,9 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // the radio is the device's: the mesh (true), off (false), or one invite's rendezvous (a code)
-  // until the next call or the invite expires
   /** @private */
-  async _nearby(mode) {
-    const bt = this.root._bluetooth
-    if (!bt) throw CeroError.INVALID('nearby needs cero() to open with the bluetooth option')
-    this.root._rendezvous?.()
-    this.root._rendezvous = null
-    if (mode === false) return bt.stop()
-    await bt.start()
-    if (typeof mode === 'string') this.root._rendezvous = bt.announce(mode)
+  async _nearby(on, opts) {
+    return this.root._bluetooth.set(on, opts)
   }
 
   // what a Bluetooth peer hears: the profile's name and whether this device is a phone

@@ -49,8 +49,9 @@ try {
 }
 ```
 
-Use a fresh directory, and have a device of yours online, or in range with `bluetooth` on both: the
-new one finds it and is let in by it, with the phrase as proof. It waits in three steps, each up to
+Use a fresh directory, and have a device of yours online, or in range with the radio on at both
+ends: `bluetooth: { on: true }` on the new one, since the recovery runs inside `cero()`. The new one
+finds it and is let in by it, with the phrase as proof. It waits in three steps, each up to
 `recoveryTimeout` (30 s by default), and rejects `TIMEOUT` when no device of yours answers.
 
 The seed is stored before that wait, so a retry is plain `cero(dir, spec)` with the same channel and

@@ -400,9 +400,8 @@ const operators = {
   },
 
   /** @private */
-  async _nearby(mode) {
-    const invite = typeof mode === 'string' ? mode : ''
-    await this.rpc.nearby({ on: mode !== false, invite })
+  async _nearby(on, opts) {
+    await this.rpc.nearby({ args: [on, opts] })
   }
 }
 

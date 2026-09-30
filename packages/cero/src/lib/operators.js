@@ -490,14 +490,16 @@ export function phrase(me) {
 }
 
 /**
- * Choose what the device's Bluetooth radio does: find the mesh (`true`), nothing (`false`), or
- * hold one invite's rendezvous (its code) so a joiner in range finds this device with no internet,
- * until the next call or the invite expires.
+ * Turn the device's Bluetooth radio on or off, on `opts.topic` or else the default topic: the one
+ * `cero()` opened with, or the channel's own. On, it links with the devices in range on the same
+ * channel and topic, and everything syncs and joins over those links as over the internet.
+ * Nothing is stored: the app sets it at every start.
  *
  * @param {Context} ctx
- * @param {boolean | string} mode
+ * @param {boolean} on
+ * @param {{ topic?: string }} [opts]
  * @returns {Promise<void>}
  */
-export function nearby(ctx, mode) {
-  return ctx._nearby(mode)
+export async function nearby(ctx, on, opts = {}) {
+  return ctx._nearby(on, opts)
 }

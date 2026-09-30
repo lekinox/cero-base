@@ -55,7 +55,6 @@ export class Join {
     this._running?.abort()
     const running = new AbortController()
     this._running = running
-    const nearby = this.root._bluetooth?.announce(invite)
     try {
       const row = await this._save({ invite })
       const writer = { publicKey: row.publicKey, secretKey: row.secretKey }
@@ -72,8 +71,6 @@ export class Join {
       if (err.code !== 'CLOSED' || this.cancelled) await this._forget()
       if (err.code !== 'CLOSED' && !this.waiting) this.root._onerror(err)
       this._end(this._reject, err)
-    } finally {
-      nearby?.()
     }
   }
 

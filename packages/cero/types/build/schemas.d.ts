@@ -290,5 +290,6 @@ export declare const rpc: {
     'req-nearby': {
         on: import("@cero-base/core").Prim;
         invite: import("@cero-base/core").Prim;
+        args: import("@cero-base/core").Prim;
     };
 };

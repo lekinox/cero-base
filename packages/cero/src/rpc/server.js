@@ -320,8 +320,8 @@ export class Server extends RPCServer {
       return {}
     })
 
-    this.rpc.onNearby(async ({ on, invite }) => {
-      await nearby(this.me, invite || on)
+    this.rpc.onNearby(async ({ args }) => {
+      await nearby(this.me, ...args)
       return {}
     })
 
