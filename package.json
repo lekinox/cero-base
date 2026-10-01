@@ -1,6 +1,6 @@
 {
   "name": "cero-base",
-  "version": "2.3.4",
+  "version": "2.4.0",
   "type": "module",
   "private": true,
   "description": "p2p helper",

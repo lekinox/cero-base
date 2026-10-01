@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.4.0 (2026-10-01)
+
+### Features
+
+- Bluetooth is only a transport: always there, the app turns the radio on
+
+### Bug Fixes
+
+- the audit's bugs, phrase recovery, explicit keys, specs back to contract 1
+
+### Refactoring
+
+- one RPC command for every verb
+- one replication path: every connection replicates the network's store
+- join requests are their rows, answered by id
+- one way to seat a device; the root requires its device store
+
+### Documentation
+
+- the testing reference recovers with { phrase }
+- singles and collections explained side by side; quickstarts that run as written
+- the word is handle, not room; me and every handle are contexts
+
+### Other
+
+- 🚀 deps: bare-bluetooth 0.5.1, bare-bluetooth-android 0.9.2, blind-peering 2.10, hyperdb 6.10, brittle 4.3
+
 ## 2.3.4 (2026-09-29)
 
 ### Other
