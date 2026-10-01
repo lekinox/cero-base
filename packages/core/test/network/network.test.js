@@ -912,59 +912,6 @@ test('a lookup that failed at resume is retried within seconds', async (t) => {
   t.ok(found, `found again in ${Date.now() - start} ms`)
 })
 
-// ─── info: self-declared peer info over injected streams ──────────────────
-
-test('info: the peers of an injected stream exchange self-declared info', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await makeNet(t, testnet)
-  const b = await makeNet(t, testnet)
-  a.setInfo({ name: 'Ada' })
-  b.setInfo({ name: 'Bo' })
-  const [s1, s2] = duplexPair()
-  a.inject(s1, { isInitiator: true })
-  b.inject(s2, { isInitiator: false })
-  const aKey = a.swarm.keyPair.publicKey
-  const bKey = b.swarm.keyPair.publicKey
-  await waitFor(() => a.getInfo(bKey) && b.getInfo(aKey))
-  t.is(a.getInfo(bKey).name, 'Bo', "a sees b's declared name")
-  t.is(b.getInfo(aKey).name, 'Ada', "b sees a's declared name")
-})
-
-test('info: setInfo after an injected stream opened reaches its peer', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await makeNet(t, testnet)
-  const b = await makeNet(t, testnet)
-  const [s1, s2] = duplexPair()
-  a.inject(s1, { isInitiator: true })
-  b.inject(s2, { isInitiator: false })
-  a.setInfo({ name: 'Late' })
-  const aKey = a.swarm.keyPair.publicKey
-  await waitFor(() => b.getInfo(aKey))
-  t.is(b.getInfo(aKey).name, 'Late', 'late info still delivered')
-})
-
-test('info: a swarm connection carries none', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await makeNet(t, testnet, { channel: 'dev' })
-  const b = await makeNet(t, testnet, { channel: 'dev' })
-  a.setInfo({ name: 'Ada' })
-  // a later message on the same connection: info sent at open would be read before it
-  let pinged
-  const ping = new Promise((resolve) => (pinged = resolve))
-  a.attach({ replicate: (stream) => channel(stream).messages[0].send('ping') })
-  b.attach({ replicate: (stream) => channel(stream, pinged) })
-  await connectPair(t, a, b)
-  await ping
-  t.is(b.getInfo(a.swarm.keyPair.publicKey), null, 'nothing declared over the swarm')
-})
-
-function channel(stream, onmessage) {
-  const ch = Protomux.from(stream).createChannel({ protocol: 'test/ping' })
-  ch.addMessage({ encoding: c.string, onmessage })
-  ch.open()
-  return ch
-}
-
 // ─── inject: externally-established connections (design: bluetooth P1) ──────
 
 function duplexPair() {
@@ -997,7 +944,13 @@ test('inject: replication + writer admission over an injected duplex, no shared 
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
-  const a = new Database({ store: storeA, identity: idA, network: netA, spec })
+  const a = new Database({
+    store: storeA,
+    identity: idA,
+    network: netA,
+    spec,
+    encryptionKey: Identity.randomBytes(32)
+  })
   await a.ready()
   await a.bootstrap({ name: 'a' })
   const b = new Database({
@@ -1047,7 +1000,13 @@ test('inject: a core attached AFTER the injected connection still replicates', a
   const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
-  const a = new Database({ store: storeA, identity: idA, network: netA, spec })
+  const a = new Database({
+    store: storeA,
+    identity: idA,
+    network: netA,
+    spec,
+    encryptionKey: Identity.randomBytes(32)
+  })
   await a.ready()
   await a.bootstrap({ name: 'a' })
   const b = new Database({

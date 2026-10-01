@@ -127,7 +127,7 @@ export declare class Server extends RPCServer {
      */
     private _wireInit;
     /**
-     * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.
+     * Wire the `restore` handler.
      * @private
      */
     private _wireRestore;

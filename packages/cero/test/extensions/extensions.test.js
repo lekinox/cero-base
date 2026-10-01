@@ -779,7 +779,7 @@ test('profileSync: a profile set on another device republishes here', async (t) 
   const room = await open(a.room)
 
   let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions: exts })
-  b = await restore(b, a.identity.seed)
+  b = await restore(b, await cero.phrase(a))
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -815,6 +815,40 @@ test('profileSync: a profile edit propagates to every open room', async (t) => {
   const b = await avatarOf(roomB, 'b.png')
   t.is(a.avatar, 'b.png', 'first room re-synced')
   t.is(b.avatar, 'b.png', 'second room re-synced')
+})
+
+test('profileSync: a room closing as it publishes is not an error', async (t) => {
+  const exts = [profileSync()]
+  const errors = []
+  const me = await openCero(t, await buildSpec(t, 'ps-closing', base, exts), {
+    onerror: (err) => errors.push(err)
+  })
+  await set(me.profile, { name: 'jb', avatar: 'a.png' })
+  const room = await open(me.room)
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data?.avatar === 'a.png')
+
+  let entered, release, settled
+  const held = new Promise((resolve) => (entered = resolve))
+  const gate = new Promise((resolve) => (release = resolve))
+  const done = new Promise((resolve) => (settled = resolve))
+  const write = room.store.write.bind(room.store)
+  room.store.write = async (...args) => {
+    entered()
+    await gate
+    try {
+      return await write(...args)
+    } finally {
+      settled()
+    }
+  }
+  await set(me.profile, { name: 'jb', avatar: 'b.png' })
+  await held
+  await room.close()
+  release()
+  await done
+  // the rejection runs out in microtasks: a macrotask later it reached onerror or not
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  t.alike(errors, [], 'nothing reaches onerror')
 })
 
 test('profileSync: a t.file avatar lands in the room and resolves there for every member', async (t) => {

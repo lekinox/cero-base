@@ -147,6 +147,10 @@ export const main = {
     id: required(string),
     reason: required(string),
     expires: int
+  },
+  deny: {
+    id: required(string),
+    reason: string
   }
 }
 
@@ -253,7 +257,8 @@ export const rpc = {
   },
   'req-open': {
     parent: required(string),
-    row: required(string)
+    row: required(string),
+    type: string
   },
   'req-handle': {
     handle: required(string)
@@ -317,10 +322,7 @@ export const rpc = {
     role: string,
     reason: string
   },
-  // a built spec never drops a field: `on` and `invite` stay in the encoding, unused
   'req-nearby': {
-    on: bool,
-    invite: string,
     args: json
   }
 }

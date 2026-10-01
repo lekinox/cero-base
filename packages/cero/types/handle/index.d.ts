@@ -76,10 +76,6 @@ export type HandleOpts = {
      */
     keyPair?: KeyPair;
     /**
-     * When `false`, skips creating a `Pairing` session.
-     */
-    pair?: boolean;
-    /**
      * Root only: the radio, up before the root opens.
      */
     bluetooth?: import('../lib/bluetooth.js').Bluetooth | null;
@@ -97,19 +93,6 @@ export type CreateChildOpts = {
     name?: string | null;
 };
 export type JoinChildOpts = {
-    timeout?: number;
-};
-export type StaticJoinOpts = {
-    parent?: Handle;
-    network?: Network;
-    identity?: Identity;
-    store?: import('corestore');
-    spec?: Spec;
-    namespace?: string;
-    /**
-     * Writer keypair in the joined handle; a fresh one by default.
-     */
-    writer?: KeyPair;
     timeout?: number;
 };
 export type HandleExtra = {
@@ -150,7 +133,6 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {Array<{ epoch: number, entropy: Uint8Array }>} [epochs]  Rotation epochs delivered at join.
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
- * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
  * @property {import('../lib/bluetooth.js').Bluetooth | null} [bluetooth]  Root only: the radio, up before the root opens.
  * @property {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number } | null} [bootstrap]  Root only: provision this device as it opens, its genesis or its recovery.
  *
@@ -158,16 +140,6 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {string | null} [name]
  *
  * @typedef {object} JoinChildOpts
- * @property {number} [timeout]
- *
- * @typedef {object} StaticJoinOpts
- * @property {Handle} [parent]
- * @property {Network} [network]
- * @property {Identity} [identity]
- * @property {import('corestore')} [store]
- * @property {Spec} [spec]
- * @property {string} [namespace]
- * @property {KeyPair} [writer]                  Writer keypair in the joined handle; a fresh one by default.
  * @property {number} [timeout]
  *
  * @typedef {object} HandleExtra
@@ -229,8 +201,6 @@ export declare class Handle extends ReadyResource {
     store: Database;
     /** @private */
     _pair;
-    /** @private */
-    _wantsPair;
     /** @private */
     _boot;
     /** @private */
@@ -298,13 +268,6 @@ export declare class Handle extends ReadyResource {
     }>(resource: T): T;
     /** @private */
     private _link;
-    /**
-     * Claim writer capability on an existing database (paired-device flow).
-     * Forwards to `Database.claim`.
-     *
-     * @returns {Promise<void>}
-     */
-    claim(): Promise<void>;
     /** @private */
     private _invite;
     /** @private */
@@ -339,8 +302,6 @@ export declare class Handle extends ReadyResource {
     private _peers;
     /** @private */
     private _nameOf;
-    /** @private */
-    private _onPeers;
     /** @private */
     private _onRadio;
     /** @private */
@@ -428,8 +389,8 @@ export declare class Handle extends ReadyResource {
      */
     private _load;
     /**
-     * Reconstruct a child handle by id. Reuses the stored writer keypair if
-     * available; otherwise generates a fresh one and claims writer capability.
+     * Reconstruct a child handle by id. Reuses the stored writer keypair if available; otherwise
+     * stores a fresh one, and a device that may write claims its seat with it.
      *
      * @param {string} type
      * @param {string} id
@@ -464,21 +425,4 @@ export declare class Handle extends ReadyResource {
      * @private
      */
     private _loadKeyPair;
-    /**
-     * Pair into an existing handle via an invite, returning a brand-new `Handle` opened with the
-     * delivered keys. A one-shot join: the root's `_join` is the one that survives restarts.
-     *
-     * @param {string} invite
-     * @param {StaticJoinOpts} [opts]
-     * @returns {Promise<Handle>}
-     */
-    static join(invite: string, { parent, network, identity, store, spec, namespace, writer, timeout }?: StaticJoinOpts): Promise<Handle>;
-    /**
-     * A handle opened with the keys a pairing reply delivered.
-     *
-     * @param {import('@cero-base/core/pairing').JoinResult} reply
-     * @param {Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>} opts
-     * @returns {Handle}
-     */
-    static fromReply(reply: import('@cero-base/core/pairing').JoinResult, opts: Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>): Handle;
 }

@@ -14,18 +14,16 @@ export const ADMIN = 'admin'
 export const MEMBER = 'member'
 export const READER = 'reader'
 
-export const READ = 'read'
 export const WRITE = 'write'
-export const DELETE = 'delete'
 export const INVITE = 'invite'
 export const REMOVE = 'remove'
 export const ASSIGN = 'assign'
 
 export const ROLE_PERMS = {
   [OWNER]: ['*'],
-  [ADMIN]: [READ, WRITE, DELETE, INVITE, REMOVE, ASSIGN],
-  [MEMBER]: [READ, WRITE, INVITE],
-  [READER]: [READ]
+  [ADMIN]: [WRITE, INVITE, REMOVE, ASSIGN],
+  [MEMBER]: [WRITE, INVITE],
+  [READER]: []
 }
 
 export const RANK = { [OWNER]: 3, [ADMIN]: 2, [MEMBER]: 1, [READER]: 0 }

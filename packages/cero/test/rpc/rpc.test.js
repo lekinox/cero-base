@@ -1,8 +1,8 @@
 import test from 'brittle'
 import b4a from 'b4a'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { Duplex } from 'streamx'
 import { decodeId } from '@cero-base/core/blobs'
 import { Invite } from '@cero-base/core/invite'
@@ -20,8 +20,9 @@ import {
   accept,
   deny
 } from '../../src/index.js'
+import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect } from '../../src/rpc/client.js'
+import { connect, restore } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -736,6 +737,42 @@ test('rpc: file read resolves a url that serves the bytes over http', async (t) 
   t.alike(b4a.toBuffer(body), b4a.toBuffer(data), 'http body is byte-perfect')
 })
 
+test('rpc: a file field reads back as a file whose url serves the bytes', async (t) => {
+  const { client } = await openPair(t)
+  const data = b4a.from('an-avatar')
+  const { data: file } = await put(client.files, { data, name: 'a.png', type: 'image/png' })
+  await set(client.profile, { name: 'Ada', avatar: file.id })
+
+  const { data: profile } = await get(client.profile)
+  t.is(profile.avatar.id, file.id, 'the field carries the file')
+  t.is(profile.avatar.type, 'image/png')
+  const res = await fetch(profile.avatar.url)
+  t.is(res.status, 200, 'its url serves the bytes')
+  t.alike(b4a.toBuffer(b4a.from(await res.arrayBuffer())), b4a.toBuffer(data))
+
+  const first = await new Promise((resolve) => watch(client.profile).once('data', resolve))
+  t.is(first.data.avatar.id, file.id, 'a watch carries it the same way')
+})
+
+test('rpc: after a phrase restore, a new file url serves its bytes', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+
+  await restore(client, await cero.phrase(other))
+  t.is(client.id, other.id, 'the UI is the restored identity')
+  const data = b4a.from('after-restore')
+  const { data: file } = await put(client.files, { data, name: 'r.txt', type: 'text/plain' })
+  const res = await fetch(file.url)
+  t.is(res.status, 200, 'the new root serves it')
+  t.alike(b4a.toBuffer(b4a.from(await res.arrayBuffer())), b4a.toBuffer(data))
+})
+
+test('rpc: put on a single is INVALID, as in process', async (t) => {
+  const { client } = await openPair(t)
+  await t.exception(put(client.profile, { name: 'Ada' }), /INVALID.*set/)
+})
+
 // ─── local (per-device) refs over RPC ─────────────────────────────────────
 
 test('rpc: client.local exposes app local refs, hides builtins', async (t) => {
@@ -909,4 +946,32 @@ test('rpc: watch carries the same changes over the wire as locally', async (t) =
     replayPairs(localBatches),
     'wire and local replay identically'
   )
+})
+
+test('rpc: open by id refuses a handle of another type, as in process', async (t) => {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', '.build-rpc')
+  t.teardown(() => rmSync(dir, { recursive: true, force: true }), { order: 10 })
+  const notes = { notes: cero.t.collection({ text: cero.t.string }) }
+  await build(dir, cero.schema({ expo: notes, group: notes }), { extensions: [] })
+  const { spec: two } = await import(pathToFileURL(join(dir, 'index.js')).href)
+  const testnet = await makeTestnet(t)
+  const [serverStream, clientStream] = pair()
+  const storage = await t.tmp()
+  const server = await serve(serverStream, two, {
+    storage,
+    bootstrap: testnet.bootstrap,
+    extensions: []
+  })
+  const client = await connect(clientStream, two)
+  t.teardown(
+    async () => {
+      await client.close().catch(() => {})
+      await server.close().catch(() => {})
+    },
+    { order: 5 }
+  )
+
+  const expo = await open(client.expo, { name: 'fair' })
+  await t.exception(open(client.group, { id: expo.id }), /INVALID/, 'another type is refused')
+  t.is((await open(client.expo, { id: expo.id })).type, 'expo', 'its own type opens')
 })

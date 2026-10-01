@@ -7,9 +7,15 @@ import ReadyResource from 'ready-resource';
  */
 export declare class Bluetooth extends ReadyResource {
     /** @private */
-    _network;
-    /** @private */
     _on;
+    /** @private */
+    _info;
+    /** @private */
+    _heard;
+    /** @private */
+    _senders;
+    /** @private */
+    _links;
     /** @private */
     _base;
     /** @private */
@@ -70,6 +76,8 @@ export declare class Bluetooth extends ReadyResource {
         name: string | null;
         isMobile: boolean;
     }): void;
+    /** @private */
+    private _say;
     /**
      * Who a linked device says it is: its person, who signed the key it links with, its name and
      * whether it is a phone. `null` until it said, or when that signature is not its person's.
@@ -106,4 +114,6 @@ export declare class Bluetooth extends ReadyResource {
      * @returns {Promise<void>}
      */
     resume(): Promise<void>;
+    /** @private */
+    private _attach;
 }

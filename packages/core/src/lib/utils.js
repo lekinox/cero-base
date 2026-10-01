@@ -1,11 +1,13 @@
 import b4a from 'b4a'
 import { Readable } from 'streamx'
 
-import { ROLE_PERMS, RANK, QUERY_RESERVED } from './constants.js'
+import { ROLE_PERMS, RANK, QUERY_RESERVED, WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 import { CeroError } from './errors.js'
 
 // can() callers need the capability names, and constants.js is not public
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
+
+const PERMS = new Set([WRITE, INVITE, ASSIGN, REMOVE])
 
 // binding the db key makes an admission unreplayable across databases
 const ADD_WRITER_TAG = b4a.from('cero/add-writer')
@@ -39,6 +41,9 @@ export function joining(dbKey, invite, writer, reply) {
  * @returns {boolean}
  */
 export function can(role, perm) {
+  if (!PERMS.has(perm)) {
+    throw CeroError.INVALID(`'${perm}' is not a permission: write, invite, assign or remove`)
+  }
   const perms = ROLE_PERMS[role]
   return !!perms && (perms.includes('*') || perms.includes(perm))
 }

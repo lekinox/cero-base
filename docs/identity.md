@@ -13,7 +13,7 @@ const laptop = await cero('./laptop-data', spec, { name: 'laptop' })
 const phrase = await cero.phrase(laptop) // show it to the user once
 
 // a second device, from nothing but the phrase, while the laptop is online
-const phone = await cero('./phone-data', spec, { seed: cero.toSeed(phrase), name: 'phone' })
+const phone = await cero('./phone-data', spec, { phrase, name: 'phone' })
 phone.id === laptop.id // true: one identity, the same data and rooms
 phone.device.id === laptop.device.id // false: each device has its own id
 ```
@@ -39,7 +39,7 @@ keeping it the user's job: Cero never sends it anywhere. Pass `{ words: 24 }` fo
 ```js
 try {
   const me = await cero('./data', spec, {
-    seed: cero.toSeed(phrase), // throws INVALID on a mistyped phrase
+    phrase, // throws INVALID on a mistyped phrase
     channel: 'my-app', // the same channel and mirrors as your other devices
     mirrors: [mirrorKey] // mirrorKey from your mirror, see Network
   })
@@ -74,16 +74,15 @@ you open each handle by id. The first open by id waits for a device already in t
 
 ```js
 // me is open on a directory that holds another identity
-const restored = await cero.restore(me, cero.toSeed(phrase))
+const restored = await cero.restore(me, phrase)
 ```
 
-`cero.restore` closes `me`, deletes the directory's data, then opens it with the new seed and every
+`cero.restore` closes `me`, deletes the directory's data, then opens it with the phrase's identity and every
 other option `me` had, the channel and mirrors included. It recovers like a new device, so it can
-reject `TIMEOUT` after the delete; the new seed is stored by then, so retry with `cero(dir, spec)`.
-Never pass a new seed to `cero()` on a used directory: switching goes through `cero.restore`.
+reject `TIMEOUT` after the delete; the new identity is stored by then, so retry with `cero(dir, spec)`.
+Another phrase in `cero()` on a used directory is `INVALID`: switching goes through `cero.restore`.
 
-A seed that is already `me`'s returns `me` unchanged. Over RPC the client's `cero.restore(me, phrase)`
-takes the phrase itself.
+A phrase that is already `me`'s returns `me` unchanged. A client makes the same call.
 
 ## Remove a device
 

@@ -78,10 +78,9 @@ net.attach(core) // replicate it on every connection
 | `net.replicate(target)`                                            | Replicate once on the current connections.                                                                                                                                                                           |
 | `net.suspend()`, `net.resume()`                                    | Drop the sockets and keep the state; come back.                                                                                                                                                                      |
 | `net.inject(stream, { isInitiator })`                              | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                |
-| `net.setInfo(info)`, `net.getInfo(key)`                            | Tell the peers of injected streams `{ name, … }` about this one; read what such a peer told, or `null`. Swarm connections carry none of it.                                                                          |
 | `net.peering()`                                                    | The mirror client, built on first use. Needs `store`.                                                                                                                                                                |
 | `swarm`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live swarm and its state.                                                                                                                                                                                        |
-| `'connection'`, `'peer-info'` events                               | `(stream, info)` per connection; `(key, info)` when an injected stream's peer tells its info.                                                                                                                        |
+| `'connection'` event                                               | `(stream, info)` per connection.                                                                                                                                                                                     |
 
 An `'active'` join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s. After a connection drops, or on `resume()`, active topics look up again, backing off from 5 s to 60 s, until the lost peers are back, and after a network change this peer announces where it is now reached.
 
@@ -100,7 +99,13 @@ import { spec } from './spec/index.js' // from build(), with a room type holding
 const store = new Corestore(new HypercoreStorage('./data'), { manifestVersion: 2 })
 const identity = await Identity.create()
 const network = new Network({ store })
-const db = new Database({ store, identity, network, spec: spec.handles.room })
+const db = new Database({
+  store,
+  identity,
+  network,
+  spec: spec.handles.room,
+  encryptionKey: Identity.randomBytes(32) // the room's own: a join hands it out
+})
 await db.ready()
 await db.bootstrap({ name: 'laptop' }) // this device writes first, as owner
 
@@ -120,7 +125,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                           |
 | `network`       | Replicates it. Without one it stays on the device.                                      |
 | `key`           | Open an existing database. A new one without.                                           |
-| `encryptionKey` | Its encryption key, the identity's by default.                                          |
+| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.           |
 | `epochs`        | The keys it rotated to, as a join delivers them.                                        |
 | `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`). |
 | `namespace`     | The Corestore namespace, `'cero'`.                                                      |
@@ -253,7 +258,7 @@ How a join goes:
 4. **Keys.** Every device of a member that can invite offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed.
 5. **Expiry.** Apply has no clock: past an invite's expiry, a member that can remove drops the invite and any joiner still without keys.
 
-A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too.
+A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.
 
 ### Accepting or rejecting a join
 
@@ -303,26 +308,26 @@ From a Cero build, its `spec` is `{ database: spec.local.database, meta: spec.me
 
 ## Blobs
 
-Bytes in one Hyperblobs core, addressed by position (not by content) and encrypted with the given `encryptionKey`, the identity's by default.
+Bytes in one Hyperblobs core, addressed by position (not by content) and encrypted with its `encryptionKey`.
 
 ```js
 import b4a from 'b4a'
 import { Blobs } from '@cero-base/core'
 
-// store, identity, network from above
-const blobs = new Blobs({ store, identity, network })
+// store, network and db from above
+const blobs = new Blobs({ store, network, encryptionKey: db.encryptionKey })
 await blobs.ready()
 const blobId = await blobs.put(b4a.from('hello'))
 const bytes = await blobs.get(blobId)
 ```
 
-| Member                                                              | Does                                                                                                             |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `new Blobs({ store, identity, encryptionKey, network, key, name })` | `identity` or `encryptionKey` is required. `key` opens an existing blob core; `name` names a new one, `'blobs'`. |
-| `put(bytes)`, `put(readable)`                                       | The blob id: `{ blockOffset, blockLength, byteOffset, byteLength }`.                                             |
-| `get(blobId)`, `createReadStream(blobId)`                           | The bytes, fetched from peers when not on the device; or a stream of them.                                       |
-| `clear(blobId)`                                                     | Drop its blocks from this device.                                                                                |
-| `key`, `id`, `discoveryKey`, `core`                                 | The core's key, its z32 id, its topic, the core.                                                                 |
+| Member                                                    | Does                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new Blobs({ store, encryptionKey, network, key, name })` | `encryptionKey` is required. `key` opens an existing blob core; `name` names a new one, `'blobs'`. `network` replicates the core over the connections it already has and through its mirrors, and joins no topic of its own: a reader reaches the writer through a topic they share, such as a handle's. |
+| `put(bytes)`, `put(readable)`                             | The blob id: `{ blockOffset, blockLength, byteOffset, byteLength }`.                                                                                                                                                                                                                                     |
+| `get(blobId)`, `createReadStream(blobId)`                 | The bytes, fetched from peers when not on the device; or a stream of them.                                                                                                                                                                                                                               |
+| `clear(blobId)`                                           | Drop its blocks from this device.                                                                                                                                                                                                                                                                        |
+| `key`, `id`, `discoveryKey`, `core`                       | The core's key, its z32 id, its topic, the core.                                                                                                                                                                                                                                                         |
 
 `encodeId(coreKey, blobId, type)` and `decodeId(id)`, from `@cero-base/core/blobs/codec`, turn that into the one-string file id Cero stores. `FileServer`, from `@cero-base/core/blobs/server`, serves a file id at a local url: `new FileServer({ store, resolve })`, `listen()`, `getLink(id)`, `close()`. `cero.put(room.files, …)` is these three plus a `files` row.
 

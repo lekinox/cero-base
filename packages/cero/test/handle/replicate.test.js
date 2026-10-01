@@ -22,10 +22,10 @@ test('replicate: del propagates A → B', async (t) => {
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
   const { data: row } = await put(a.me.messages, { text: 'gonna die' })
 
-  const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
+  const b = await ceroOpen(t, { testnet, phrase })
 
   await waitUntil(async () => {
     const { data } = await get(b.me.messages, row.id)
@@ -49,9 +49,9 @@ test('replicate: watch on B fires when A writes', async (t) => {
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
 
-  const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
+  const b = await ceroOpen(t, { testnet, phrase })
   await waitForConnection(a.me.network)
   await waitForConnection(b.me.network)
 
@@ -174,7 +174,7 @@ test('replicate: a member resolves + fetches a file; a non-member core 404s', as
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
 
   await a.me.blobs.ready()
   const data = b4a.from('replicated-bytes')
@@ -182,7 +182,7 @@ test('replicate: a member resolves + fetches a file; a non-member core 404s', as
   const id = encodeId(a.me.blobs.key, blobId, 'text/plain')
   await a.me.store.call('add-file', { id, name: 'r.txt' })
 
-  const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
+  const b = await ceroOpen(t, { testnet, phrase })
 
   await waitUntil(async () => {
     const { data: row } = await get(b.me.files, id)

@@ -34,7 +34,13 @@ test.configure({ timeout: 60000 })
 async function makeDb(t, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = opts.identity || (await Identity.create())
-  const db = new Database({ store, identity, spec, ...opts })
+  const db = new Database({
+    store,
+    identity,
+    spec,
+    encryptionKey: Identity.randomBytes(32),
+    ...opts
+  })
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
   return { db, store, identity }
@@ -72,11 +78,20 @@ test('constructor: rejects spec without dispatch', async (t) => {
   )
 })
 
+test('constructor: rejects a missing encryption key, the identity never stands in', async (t) => {
+  const { store } = await makeStore(t)
+  const identity = await Identity.create()
+  t.exception.all(() => new Database({ store, identity, spec }), /encryptionKey is required/)
+})
+
 test('constructor: refuses the identity keypair as the writer', async (t) => {
   const { store } = await makeStore(t)
   const identity = await Identity.create()
   const keyPair = { publicKey: identity.publicKey, secretKey: identity.secretKey }
-  t.exception.all(() => new Database({ store, identity, spec, keyPair }), /device keypair/)
+  t.exception.all(
+    () => new Database({ store, identity, spec, keyPair, encryptionKey: Identity.randomBytes(32) }),
+    /device keypair/
+  )
 })
 
 test('constructor: mints a device keypair of its own by default', async (t) => {
@@ -89,7 +104,7 @@ test('constructor: mints a device keypair of its own by default', async (t) => {
 test('ready/close: opens and closes cleanly', async (t) => {
   const { store } = await makeStore(t)
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec })
+  const db = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
   await db.ready()
   t.is(db.opened, true)
   t.ok(db.bee)
@@ -111,7 +126,13 @@ test('close: one database does not destroy the network-shared wakeup', async (t)
   const identity = await Identity.create()
   const mk = async () => {
     const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-    const db = new Database({ store, identity, network, spec })
+    const db = new Database({
+      store,
+      identity,
+      network,
+      spec,
+      encryptionKey: Identity.randomBytes(32)
+    })
     await db.ready()
     return db
   }
@@ -144,7 +165,8 @@ test('replicate: N databases on one store replicate it once per connection', asy
       network,
       spec,
       namespace: ns,
-      keyPair: Identity.randomKeyPair()
+      keyPair: Identity.randomKeyPair(),
+      encryptionKey: Identity.randomBytes(32)
     })
     await db.ready()
     t.teardown(() => db.close().catch(() => {}), { order: 5 })
@@ -167,7 +189,7 @@ test('replicate: N databases on one store replicate it once per connection', asy
 test('close is idempotent', async (t) => {
   const { store } = await makeStore(t)
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec })
+  const db = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
   await db.ready()
   await db.close()
   await db.close()
@@ -211,7 +233,7 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
     identity: reader,
     topic,
     key: a.db.key,
-    encryptionKey: identity.encryptionKey
+    encryptionKey: a.db.encryptionKey
   })
   await waitForConnection(a.network)
   await waitForConnection(o.network)
@@ -224,7 +246,12 @@ test('bootstrap recovering: fresh core recovers from a passive reader after ever
   await a.db.close()
   await a.network.close()
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ name: 'b', recovering: true })
   t.ok(b.db.bee.writable, 'recovered device is writable with zero live writers')
   t.absent(
@@ -534,7 +561,12 @@ test('put: accepts declared + system fields', async (t) => {
 async function teamDb(t, after = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec: spec.handles.team })
+  const db = new Database({
+    store,
+    identity,
+    spec: spec.handles.team,
+    encryptionKey: Identity.randomBytes(32)
+  })
   for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
@@ -696,7 +728,12 @@ test('apply event: fires for REMOTE ops with the remote writerKey (two-peer)', a
   const topic = randomTopic()
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -1137,7 +1174,8 @@ test('claim: same identity on second db claims against its member record', async
   const b = await makePeer(t, testnet, {
     identity,
     topic,
-    key: a.db.key
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
   })
 
   // Wait until b sees the bootstrap state from a.
@@ -1528,7 +1566,12 @@ test('replication: two databases converge on testnet', async (t) => {
   await a.db.bootstrap({ name: 'a' })
   await a.db.put('messages', { text: 'from a' })
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
@@ -1551,7 +1594,12 @@ test('replication: put propagates A → B', async (t) => {
   await a.db.bootstrap({ name: 'a' })
   const { data: row } = await a.db.put('messages', { text: 'hello' })
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
@@ -1574,7 +1622,12 @@ test('replication: set on single propagates A → B', async (t) => {
   await a.db.bootstrap({ name: 'a' })
   await a.db.set('profile', { name: 'alice' })
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
@@ -1597,7 +1650,12 @@ test('replication: del propagates A → B (row disappears)', async (t) => {
   await a.db.bootstrap({ name: 'a' })
   const { data: row } = await a.db.put('messages', { text: 'soon-gone' })
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
@@ -1750,7 +1808,12 @@ test('replication: bootstrap recovery — same identity, second device, no fork'
   await a.db.put('messages', { text: 'before-recovery' })
 
   // Second device, same identity, joins later with the existing key.
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
@@ -1790,7 +1853,12 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
@@ -1960,7 +2028,12 @@ test('replication: eventually-consistent — B sees all 5 rows put by A before j
     await a.db.put('messages', { id: `m-${i}`, text: `t${i}` })
   }
 
-  const b = await makePeer(t, testnet, { identity, topic, key: a.db.key })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
   await b.db.bootstrap({ recovering: true })
 
   await waitForConnection(a.network)
@@ -2281,7 +2354,13 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
   const open = async (opts) => {
-    const db = new Database({ store, identity, spec, ...opts })
+    const db = new Database({
+      store,
+      identity,
+      spec,
+      encryptionKey: Identity.randomBytes(32),
+      ...opts
+    })
     await db.ready()
     t.teardown(() => db.close().catch(() => {}), { order: 5 })
     return db
@@ -2290,7 +2369,12 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
   for (const name of ['a', 'b']) {
     const db = await open({ namespace: name })
     await db.bootstrap({ name })
-    keys.push({ key: db.key, keyPair: db.keyPair, namespace: name })
+    keys.push({
+      key: db.key,
+      keyPair: db.keyPair,
+      encryptionKey: db.encryptionKey,
+      namespace: name
+    })
     await db.close()
   }
 
@@ -2334,6 +2418,7 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
     identity,
     network: x.network,
     spec,
+    encryptionKey: Identity.randomBytes(32),
     namespace: 'quiet'
   })
   await quiet.ready()
@@ -2344,6 +2429,7 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
     identity,
     topic,
     key: x.db.key,
+    encryptionKey: x.db.encryptionKey,
     namespace: 'shared',
     presence: { active: 1, announced: 0, idle: 50 }
   })
@@ -2354,6 +2440,7 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
     network: y.network,
     spec,
     key: quiet.key,
+    encryptionKey: quiet.encryptionKey,
     namespace: 'quiet'
   })
   await yQuiet.ready()
@@ -2445,6 +2532,7 @@ test('apply: claim-path device timestamps are deterministic across peers', async
     identity,
     topic,
     key: a.db.key,
+    encryptionKey: a.db.encryptionKey,
     keyPair: Identity.randomKeyPair()
   })
   await waitForConnection(a.network)
@@ -2537,7 +2625,7 @@ test('apply: set-device timestamps replicate identically', async (t) => {
 
 // ─── op-version wire-gate ─────────────────────────────────────────────────
 
-test('envelope: wrap/unwrap round-trips, un-enveloped bytes pass through', async (t) => {
+test('envelope: wrap/unwrap round-trips, bytes with no envelope are no op', async (t) => {
   const { wrap, unwrap } = await import('../../src/database/envelope.js')
   const body = b4a.from([0x01, 0x02, 0x03])
 
@@ -2547,9 +2635,7 @@ test('envelope: wrap/unwrap round-trips, un-enveloped bytes pass through', async
   t.is(out.version, 7)
   t.alike(out.body, body, 'body intact')
 
-  const legacy = unwrap(body)
-  t.is(legacy.version, 0, 'no sentinel → version 0')
-  t.alike(legacy.body, body, 'legacy bytes untouched')
+  t.is(unwrap(body), null, 'no sentinel, no op')
 
   const big = unwrap(wrap(300, body))
   t.is(big.version, 300, 'multi-byte versions round-trip')
@@ -2585,13 +2671,26 @@ test('gate: ops from a future contract version are skipped, surfaced, and surviv
   t.ok((await db.get('messages', row.id)).data, 'current-version ops still apply')
 })
 
-test('gate: legacy un-enveloped ops apply as version 0', async (t) => {
+test('gate: an op with no envelope is skipped, and the ones after it apply', async (t) => {
   const { db } = await bootstrapped(t)
   const id = genId()
-  const encoded = spec.dispatch.encode('@cero/add-messages', { id, text: 'legacy' })
+  const encoded = spec.dispatch.encode('@cero/add-messages', { id, text: 'bare' })
   await db.bee.append(encoded)
   await db.bee.update()
-  t.ok((await db.get('messages', id)).data, 'raw pre-envelope bytes still apply')
+  t.is((await db.get('messages', id)).data, null, 'bare bytes are no op')
+  const { data: row } = await db.put('messages', { text: 'enveloped' })
+  t.ok((await db.get('messages', row.id)).data, 'the next op applies')
+})
+
+test('gate: an envelope cut short is skipped and reported, and the database stays open', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  await db.bee.append(b4a.from([0xff]))
+  await db.bee.update()
+  t.absent(db.bee.closing || db.bee.closed, 'the bee survived the cut envelope')
+  t.ok(errors.length > 0, 'the skip was reported')
+  const { data: row } = await db.put('messages', { text: 'after' })
+  t.ok((await db.get('messages', row.id)).data, 'the next op applies')
 })
 
 test('gate: enveloped ops replicate and apply across peers', async (t) => {
@@ -2623,10 +2722,10 @@ test('gate: behind survives reopen', async (t) => {
   await db.bee.update()
   t.is(db.behind, future)
 
-  const { key, keyPair } = db
+  const { key, keyPair, encryptionKey } = db
   await db.close()
 
-  const again = new Database({ store, identity, spec, key, keyPair })
+  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
   t.is(again.behind, future, 'behind reloaded from the local core')
@@ -2646,11 +2745,11 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
   t.is(db.behind, future, 'future op skipped')
   t.absent((await db.get('messages', futureId)).data, 'not applied pre-upgrade')
 
-  const { key, keyPair } = db
+  const { key, keyPair, encryptionKey } = db
   await db.close()
 
   const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
-  const again = new Database({ store, identity, spec: upgraded, key, keyPair })
+  const again = new Database({ store, identity, spec: upgraded, key, keyPair, encryptionKey })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
 
@@ -2674,11 +2773,19 @@ test('gate: a database rebuilt past skipped ops still leaves its topic on close'
   await db.bee.update()
   t.is(db.behind, future, 'future op skipped')
 
-  const { key, keyPair, discoveryKey } = db
+  const { key, keyPair, encryptionKey, discoveryKey } = db
   await db.close()
 
   const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
-  const again = new Database({ store, identity, network, spec: upgraded, key, keyPair })
+  const again = new Database({
+    store,
+    identity,
+    network,
+    spec: upgraded,
+    key,
+    keyPair,
+    encryptionKey
+  })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
   t.is(again.behind, null, 'rebuilt')
@@ -2852,11 +2959,11 @@ test('changes: an upgrade rebuild mid-stream re-emits a reset batch', async (t) 
   )
   const { data: kept } = await db.put('messages', { text: 'kept' })
   await db.bee.update()
-  const { key, keyPair } = db
+  const { key, keyPair, encryptionKey } = db
   await db.close()
 
   const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
-  const again = new Database({ store, identity, spec: upgraded, key, keyPair })
+  const again = new Database({ store, identity, spec: upgraded, key, keyPair, encryptionKey })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
 

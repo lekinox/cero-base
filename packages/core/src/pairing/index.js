@@ -39,6 +39,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
+ * @property {(answer: JoinResult | Error) => Promise<unknown>} [keep]  Saves the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed with the same writer after a crash gets it again.
  *
  * @typedef {object} JoinResult
  * @property {Uint8Array} key
@@ -330,7 +331,14 @@ export class Pairing extends ReadyResource {
   static async join(
     mailbox,
     invite,
-    { identity, spec, writer = crypto.keyPair(), timeout = 30000, signal = null } = {}
+    {
+      identity,
+      spec,
+      writer = crypto.keyPair(),
+      timeout = 30000,
+      signal = null,
+      keep = async () => {}
+    } = {}
   ) {
     if (!mailbox) throw CeroError.REQUIRED('mailbox')
     if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
@@ -348,12 +356,17 @@ export class Pairing extends ReadyResource {
       resolve = res
       fail = rej
     })
-    const onreply = (message) => {
+    const settle = async (answer, done) => {
+      await keep(answer)
+      done(answer)
+    }
+    const onreply = async (message) => {
       const response = decode(Response, message)
-      if (response?.status === STATUS_DENIED) fail(CeroError.DENIED(response.reason || null))
-      else if (response?.key && b4a.equals(response.key, parsed.key)) {
+      if (response?.status === STATUS_DENIED) {
+        await settle(CeroError.DENIED(response.reason || null), fail)
+      } else if (response?.key && b4a.equals(response.key, parsed.key)) {
         const { key, encryptionKey, epochs } = response
-        resolve({ key, encryptionKey, epochs: epochs || [], writer })
+        await settle({ key, encryptionKey, epochs: epochs || [], writer }, resolve)
       }
     }
 

@@ -66,8 +66,6 @@ export declare class Request {
     /** @type {Uint8Array} */
     writer: Uint8Array;
     /** @private */
-    _reply;
-    /** @private */
     _answer;
     /** @param {RequestOpts} opts */
     constructor({ pairing, invite, row }: RequestOpts);

@@ -4,7 +4,7 @@ import safetyCatch from 'safety-catch'
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
 
-import { cero, restore, toSeed } from '../index.js'
+import { cero, restore } from '../index.js'
 import {
   put,
   set,
@@ -173,13 +173,13 @@ export class Server extends RPCServer {
   }
 
   /**
-   * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.
+   * Wire the `restore` handler.
    * @private
    */
   _wireRestore() {
     this.rpc.onRestore(async ({ phrase }) => {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      this.me = await restore(this.me, toSeed(phrase))
+      this.me = await restore(this.me, phrase)
       this.handles = new Map([[this.me.id, this.me]])
       return this._identity()
     })
@@ -359,11 +359,11 @@ export class Server extends RPCServer {
       return { id, type: ref, name: opts.name || '' }
     })
 
-    this.rpc.onOpenHandle(async ({ parent, row }) => {
+    this.rpc.onOpenHandle(async ({ parent, row, type }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       const { data } = await this.me.store.get('handles', row)
       if (!data) throw CeroError.UNKNOWN('handle', row)
-      const child = await this.me._load(data.type, row)
+      const child = await this.me._load(type, row)
       this.handles.set(row, child)
       return { id: row, type: data.type, name: data.name || '' }
     })
@@ -477,10 +477,24 @@ function fromWire(buf) {
  */
 function encodeGet(r, codec, query, { data, total, size }) {
   const one = typeof query === 'string' || r.kind === 'single'
+  const wire = toIds(r)
   return {
-    data: one ? codec.encodeRow(r.schema, data) : codec.encodeRows(r.schema, data),
+    data: one ? codec.encodeRow(r.schema, wire(data)) : codec.encodeRows(r.schema, data?.map(wire)),
     total: total ?? -1,
     size: size ?? 0
+  }
+}
+
+// a read resolves file fields to { id, type, size, url }, which a typed row cannot carry: the wire
+// takes the id, and the client builds the same file from it
+function toIds(r) {
+  const fields = r.name === 'files' ? null : r.handle.store?.refs?.[r.name]?.files
+  if (!fields?.length) return (row) => row
+  return (row) => {
+    if (!row) return row
+    const out = { ...row }
+    for (const f of fields) if (out[f] && typeof out[f] === 'object') out[f] = out[f].id
+    return out
   }
 }
 

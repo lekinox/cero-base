@@ -127,6 +127,10 @@ export declare const main: {
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
     };
+    deny: {
+        id: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {
@@ -226,6 +230,7 @@ export declare const rpc: {
     'req-open': {
         parent: import("@cero-base/core").Prim;
         row: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
     };
     'req-handle': {
         handle: import("@cero-base/core").Prim;
@@ -288,8 +293,6 @@ export declare const rpc: {
         reason: import("@cero-base/core").Prim;
     };
     'req-nearby': {
-        on: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
         args: import("@cero-base/core").Prim;
     };
 };

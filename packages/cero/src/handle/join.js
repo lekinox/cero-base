@@ -59,10 +59,9 @@ export class Join {
       const row = await this._save({ invite })
       const writer = { publicKey: row.publicKey, secretKey: row.secretKey }
       const { mailbox, identity } = this.root
-      const opts = { identity, spec: this.spec, writer, timeout: 0, signal: running.signal }
-      const reply = row.key
-        ? unpack(row)
-        : await this._keep(await Pairing.join(mailbox, invite, opts))
+      const keep = (answer) => (answer instanceof Error ? this._forget() : this._keep(answer))
+      const opts = { identity, spec: this.spec, writer, keep, timeout: 0, signal: running.signal }
+      const reply = row.key ? unpack(row) : await Pairing.join(mailbox, invite, opts)
       this._end(this._resolve, await this.root._enter(this.type, reply))
       await this._forget()
     } catch (err) {
@@ -100,7 +99,6 @@ export class Join {
   async _keep(reply) {
     const { key, encryptionKey, epochs } = reply
     await this._save({ key, encryptionKey, epochs: c.encode(epochEntries, epochs) })
-    return reply
   }
 
   /** @private */

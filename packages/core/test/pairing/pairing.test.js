@@ -37,7 +37,13 @@ async function makeMailbox(t, testnet, opts = {}) {
 // a member: the owner of a fresh database, answering its joins
 async function makeHost(t, testnet, { mirrors } = {}) {
   const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
-  const db = new Database({ store: net.store, identity, network: net, spec })
+  const db = new Database({
+    store: net.store,
+    identity,
+    network: net,
+    spec,
+    encryptionKey: Identity.randomBytes(32)
+  })
   await db.ready()
   await db.bootstrap({ name: 'host' })
   t.teardown(() => db.close().catch(() => {}), { order: 1 })
@@ -426,6 +432,33 @@ test('confirm: a member can deny with a reason', async (t) => {
   t.is(err.reason, 'not-today')
   t.alike((await host.db.get('requests')).data, [])
   t.absent(await member(host.db, joiner.identity))
+})
+
+test('confirm: a deny after another device accepted changes nothing: the joiner gets its keys', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const peer = await makeMember(t, testnet, host, 'admin')
+  const invite = await host.pairing.invite({ confirm: true })
+  // both devices hold the request before either answers
+  const seen = [host, peer].map((d) => new Promise((resolve) => d.pairing.once('request', resolve)))
+  const joining = joiner.join(invite, { timeout: 30000 }).catch((e) => e)
+  const [a, b] = await Promise.all(seen)
+
+  // the joiner is away while the two answers land, and the device that accepted leaves: only the
+  // one that denied is left to send the keys the accept owes
+  await joiner.net.suspend()
+  await a.accept()
+  await waitFor(async () => !!(await member(peer.db, joiner.identity)))
+  await host.net.suspend()
+  await b.deny('too late').catch(() => {})
+
+  await joiner.net.resume()
+  const res = await joining
+  t.absent(
+    res instanceof Error,
+    `the join resolved${res instanceof Error ? `, not ${res.code}` : ''}`
+  )
+  t.ok(res?.key, 'with the keys')
 })
 
 test('confirm: accepting one join spends a single-use invite, the others hear it is spent', async (t) => {

@@ -1,5 +1,7 @@
 import ReadyResource from 'ready-resource'
 import BluetoothSwarm from 'ble-swarm'
+import Protomux from 'protomux'
+import c from 'compact-encoding'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
@@ -35,9 +37,17 @@ export class Bluetooth extends ReadyResource {
     checkTopic(topic)
     super()
     /** @private */
-    this._network = network
-    /** @private */
     this._on = on
+    // what this device tells its links, signed, and what each link told, by its key
+    /** @private */
+    this._info = null
+    /** @private */
+    this._heard = new Map()
+    /** @private */
+    this._senders = new Set()
+    // the link each peer's info came over: a newer one replaces it, and only the current one forgets
+    /** @private */
+    this._links = new Map()
     // the channel's own topic, or a global one when channelless; strangers still sync nothing
     /** @private */
     this._base = crypto.hash(b4a.from(network.channel || 'cero-ble'))
@@ -60,9 +70,7 @@ export class Bluetooth extends ReadyResource {
       maxInbound
     })
     this.swarm.on('update', () => this.emit('update'))
-    this.swarm.on('connection', (conn) => {
-      network.inject(conn)
-    })
+    this.swarm.on('connection', (conn) => this._attach(network.inject(conn)))
   }
 
   /** @returns {'unsupported'|'unauthorized'|'off'|'waiting'|'starting'|'on'} */
@@ -113,7 +121,13 @@ export class Bluetooth extends ReadyResource {
    * @param {{ name: string | null, isMobile: boolean }} info
    */
   tell({ name, isMobile }) {
-    this._network.setInfo({ id: this._id, proof: this._proof, name, isMobile })
+    this._say({ id: this._id, proof: this._proof, name, isMobile })
+  }
+
+  /** @private */
+  _say(info) {
+    this._info = info
+    for (const send of this._senders) send()
   }
 
   /**
@@ -124,7 +138,7 @@ export class Bluetooth extends ReadyResource {
    * @returns {{ id: string, name: string | null, isMobile: boolean } | null}
    */
   told(hex) {
-    const info = this._network.getInfo(hex)
+    const info = this._heard.get(hex)
     if (!signed(info, b4a.from(hex, 'hex'))) return null
     const name = typeof info.name === 'string' ? info.name : null
     return {
@@ -169,6 +183,40 @@ export class Bluetooth extends ReadyResource {
    */
   async resume() {
     await this.swarm.resume()
+  }
+
+  // silent until needed: bytes on a link at open trip hyperswarm's duplicate guard
+  /** @private */
+  _attach(conn) {
+    const mux = Protomux.from(conn)
+    const hex = b4a.toHex(conn.remotePublicKey)
+    let message = null
+    const send = () => {
+      if (!message) {
+        const channel = mux.createChannel({ protocol: 'cero/info' })
+        if (channel === null) return
+        message = channel.addMessage({
+          encoding: c.json,
+          onmessage: (info) => {
+            if (!info || typeof info !== 'object') return
+            this._heard.set(hex, info)
+            this.emit('update')
+          }
+        })
+        channel.open()
+      }
+      if (this._info) message.send(this._info)
+    }
+    mux.pair({ protocol: 'cero/info' }, send)
+    this._senders.add(send)
+    this._links.set(hex, conn)
+    conn.on('close', () => {
+      this._senders.delete(send)
+      if (this._links.get(hex) !== conn) return
+      this._links.delete(hex)
+      if (this._heard.delete(hex)) this.emit('update')
+    })
+    if (this._info) send()
   }
 }
 

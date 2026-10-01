@@ -58,7 +58,7 @@ await cero.del(me.todos, todo.id) // deletes it
 | Delete | `cero.del(ref)` wipes the record                  | `cero.del(ref, id)` deletes that row                                                                |
 | Follow | `cero.watch(ref)`                                 | `cero.watch(ref, query)`                                                                            |
 
-`put` is for collections only: a single is written with `set`. A single has no `id` and no fields
+`put` is for collections only: on a single it throws `INVALID`, and a single is written with `set`. A single has no `id` and no fields
 of Cero's. Every row of a collection also carries fields Cero writes, which you can't declare
 yourself:
 

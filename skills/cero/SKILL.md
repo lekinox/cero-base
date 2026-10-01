@@ -71,7 +71,7 @@ for await (const { data } of cero.watch(room.messages)) console.log(data)
 ```
 
 A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another device of yours:
-`cero('./data', spec, { seed: cero.toSeed(phrase) })` in a fresh directory.
+`cero('./data', spec, { phrase })` in a fresh directory.
 
 ## Rules
 
@@ -97,8 +97,8 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
    `cero.del(room.members, id)` removes a member and re-keys the handle shortly after;
    `await cero.rotate(room)` re-keys at once.
-8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no seed makes a new identity;
-   show `await cero.phrase(me)` to the user once. With a seed, Cero finds one of the user's devices
+8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
+   show `await cero.phrase(me)` to the user once. With a phrase, Cero finds one of the user's devices
    (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT`.
 9. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no `node:` prefix, and map
    them in your package.json `imports` (`"fs": { "bare": "bare-fs", "default": "fs" }`), as Cero

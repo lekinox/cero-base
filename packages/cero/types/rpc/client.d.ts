@@ -122,6 +122,8 @@ export declare class Client extends RPCClient {
     private _pumpErrors;
     /** @private */
     private _open;
+    /** @private */
+    private _identify;
     /**
      * Create a new child handle of the given type.
      *

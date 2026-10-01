@@ -1,7 +1,6 @@
 import NoiseSecretStream from '@hyperswarm/secret-stream'
 import Autobee from 'autobee'
 import BlindPeering from 'blind-peering'
-import Protomux from 'protomux'
 import ProtomuxWakeup from 'protomux-wakeup'
 import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
@@ -10,7 +9,6 @@ import { hash } from 'hypercore-crypto'
 import HyperDHT from 'hyperdht'
 import Hyperswarm from 'hyperswarm'
 import b4a from 'b4a'
-import c from 'compact-encoding'
 
 import { ACTIVE, PASSIVE } from '../lib/constants.js'
 import { CeroError } from '../lib/errors.js'
@@ -77,12 +75,6 @@ export class Network extends ReadyResource {
     /** @type {import('protomux-wakeup')} */
     this.wakeup = new ProtomuxWakeup()
     this.presence = new Presence(this, presence)
-
-    this.info = null
-    /** @private */
-    this._peerInfo = new Map()
-    /** @private */
-    this._infoSenders = new Set()
 
     /** @private */
     this._replicateables = new Set()
@@ -234,7 +226,6 @@ export class Network extends ReadyResource {
     conn.on('error', safetyCatch) // a dropped radio link must not crash the host
 
     this.wakeup.addStream(conn)
-    this._attachInfo(conn)
     for (const r of this._replicateables) replicateInto(r, conn)
     this.emit('connection', conn, { injected: true })
     return conn
@@ -257,28 +248,6 @@ export class Network extends ReadyResource {
       })
     }
     return this._blindPeering
-  }
-
-  /**
-   * Declare this peer's self-reported info ({ name, ... }) to the peers of injected streams.
-   *
-   * @param {object | null} info
-   */
-  setInfo(info) {
-    this.info = info || null
-    if (!this.info) return
-    for (const send of this._infoSenders) send()
-  }
-
-  /**
-   * Info a connected peer declared about itself, or null.
-   *
-   * @param {Uint8Array | string} key  Peer public key (bytes or hex).
-   * @returns {object | null}
-   */
-  getInfo(key) {
-    const hex = typeof key === 'string' ? key : b4a.toHex(key)
-    return this._peerInfo.get(hex) ?? null
   }
 
   /**
@@ -422,34 +391,6 @@ export class Network extends ReadyResource {
       else this._lost.clear()
     }, RELOOKUPS[i])
     this._relookup.unref()
-  }
-
-  // injected streams only: bytes on a fresh swarm connection trip hyperswarm's duplicate guard
-  /** @private */
-  _attachInfo(conn) {
-    const mux = Protomux.from(conn)
-    let message = null
-    const send = () => {
-      if (!message) {
-        const channel = mux.createChannel({ protocol: 'cero/info' })
-        if (channel === null) return
-        message = channel.addMessage({
-          encoding: c.json,
-          onmessage: (info) => {
-            if (!info || typeof info !== 'object') return
-            const hex = b4a.toHex(conn.remotePublicKey)
-            this._peerInfo.set(hex, info)
-            this.emit('peer-info', hex, info)
-          }
-        })
-        channel.open()
-      }
-      if (this.info) message.send(this.info)
-    }
-    mux.pair({ protocol: 'cero/info' }, send)
-    this._infoSenders.add(send)
-    conn.on('close', () => this._infoSenders.delete(send))
-    if (this.info) send()
   }
 }
 

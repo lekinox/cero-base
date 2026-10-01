@@ -289,6 +289,7 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, after = {
     identity,
     network,
     spec,
+    encryptionKey: Identity.randomBytes(32),
     onerror: (err) => errors.push(err),
     ...opts
   })
@@ -309,7 +310,13 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, after = {
 export async function withRole(t, role, { members = [], after = {}, ...opts } = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec, ...opts })
+  const db = new Database({
+    store,
+    identity,
+    spec,
+    encryptionKey: Identity.randomBytes(32),
+    ...opts
+  })
   for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })

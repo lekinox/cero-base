@@ -50,7 +50,6 @@ export { Ref } from '../lib/refs.js'
  * @property {Array<{ epoch: number, entropy: Uint8Array }>} [epochs]  Rotation epochs delivered at join.
  * @property {string} [namespace]              Corestore namespace.
  * @property {KeyPair} [keyPair]               Writer keypair.
- * @property {boolean} [pair]                  When `false`, skips creating a `Pairing` session.
  * @property {import('../lib/bluetooth.js').Bluetooth | null} [bluetooth]  Root only: the radio, up before the root opens.
  * @property {{ name?: string | null, isMobile?: boolean, recovering?: boolean, timeout?: number } | null} [bootstrap]  Root only: provision this device as it opens, its genesis or its recovery.
  *
@@ -58,16 +57,6 @@ export { Ref } from '../lib/refs.js'
  * @property {string | null} [name]
  *
  * @typedef {object} JoinChildOpts
- * @property {number} [timeout]
- *
- * @typedef {object} StaticJoinOpts
- * @property {Handle} [parent]
- * @property {Network} [network]
- * @property {Identity} [identity]
- * @property {import('corestore')} [store]
- * @property {Spec} [spec]
- * @property {string} [namespace]
- * @property {KeyPair} [writer]                  Writer keypair in the joined handle; a fresh one by default.
  * @property {number} [timeout]
  *
  * @typedef {object} HandleExtra
@@ -155,7 +144,8 @@ export class Handle extends ReadyResource {
       network,
       spec,
       key: opts.key,
-      encryptionKey: opts.encryptionKey,
+      // the root stays seed-derived: a phrase recovers it, nothing delivers it
+      encryptionKey: parent ? opts.encryptionKey : identity.encryptionKey,
       epochs: opts.epochs,
       namespace: opts.namespace,
       keyPair: opts.keyPair,
@@ -164,8 +154,6 @@ export class Handle extends ReadyResource {
     })
     /** @private */
     this._pair = null
-    /** @private */
-    this._wantsPair = opts.pair !== false
     /** @private */
     this._boot = opts.bootstrap || null
     /** @private */
@@ -177,7 +165,7 @@ export class Handle extends ReadyResource {
       status: { get: () => this._status(), watch: (fn) => this._onStatus(fn) },
       ...(!this.parent && {
         joins: { get: (q) => this._joins(q), watch: (fn) => this._onJoins(fn) },
-        nearby: { get: () => this._peers(), watch: (fn) => this._onPeers(fn) }
+        nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) }
       })
     }
   }
@@ -269,7 +257,7 @@ export class Handle extends ReadyResource {
     await this.store.ready()
     // a fresh device takes writes only once provisioned, and an operator waits for the open
     if (this._boot) await this.store.bootstrap(this._boot)
-    if (this._wantsPair) {
+    if (this.parent) {
       this._pair = new Pairing({ mailbox: this.mailbox, db: this.store })
       await this._pair.ready()
     }
@@ -355,16 +343,6 @@ export class Handle extends ReadyResource {
   /** @private */
   _link(id) {
     return this.root.fileServer.getLink(id)
-  }
-
-  /**
-   * Claim writer capability on an existing database (paired-device flow).
-   * Forwards to `Database.claim`.
-   *
-   * @returns {Promise<void>}
-   */
-  claim() {
-    return this.store.claim()
   }
 
   // the verbs in lib/operators.js land here
@@ -515,17 +493,6 @@ export class Handle extends ReadyResource {
       if (data?.name) return data.name
     }
     return null
-  }
-
-  // a link opening, closing, or a peer telling a new name
-  /** @private */
-  _onPeers(fn) {
-    const off = this._onRadio(fn)
-    this.network.on('peer-info', fn)
-    return () => {
-      off()
-      this.network.off('peer-info', fn)
-    }
   }
 
   /** @private */
@@ -894,21 +861,25 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _load(type, id) {
-    for (const c of this.children) if (c.id === id) return c
-    const existing = this._loading.get(id)
-    if (existing) return existing
-    const loading = this._reopen(type, id)
-    this._loading.set(id, loading)
+    const loading = this._loading.get(id)
+    // no await unless one is loading: a concurrent open must see this one's entry, not race it
+    const open = [...this.children].find((c) => c.id === id) || (loading && (await loading))
+    if (open && open.type !== type) {
+      throw CeroError.INVALID(`handle ${id} is type ${open.type}, not ${type}`)
+    }
+    if (open) return open
+    const reopening = this._reopen(type, id)
+    this._loading.set(id, reopening)
     try {
-      return await loading
+      return await reopening
     } finally {
       this._loading.delete(id)
     }
   }
 
   /**
-   * Reconstruct a child handle by id. Reuses the stored writer keypair if
-   * available; otherwise generates a fresh one and claims writer capability.
+   * Reconstruct a child handle by id. Reuses the stored writer keypair if available; otherwise
+   * stores a fresh one, and a device that may write claims its seat with it.
    *
    * @param {string} type
    * @param {string} id
@@ -922,9 +893,10 @@ export class Handle extends ReadyResource {
       throw CeroError.INVALID(`handle ${id} is type ${data.type}, not ${type}`)
     }
     let writer = await this._loadKeyPair(id)
-    const firstTime = !writer
-    if (firstTime) {
+    if (!writer) {
       writer = Identity.randomKeyPair()
+      // stored before its claim is on the log: a retry claims with it, never with another
+      await this._saveKeyPair(id, writer)
     }
     const child = this._room({
       spec: pickHandle(this.spec, type),
@@ -935,11 +907,10 @@ export class Handle extends ReadyResource {
     })
     try {
       await child.ready()
-      if (firstTime && !child.store.writable) {
-        await child.store.claim()
-      }
-      if (firstTime) {
-        await this._saveKeyPair(id, writer)
+      // a writer that never wrote has not claimed yet, and a reader never claims
+      if (!child.store.writable && child.store.length === 0) {
+        const member = await wait(admitted(child.store, this.identity.id), TIMEOUT)
+        if (member.role !== 'reader') await child.store.claim()
       }
       this._adopt(child, {})
     } catch (err) {
@@ -1062,52 +1033,6 @@ export class Handle extends ReadyResource {
       publicKey: data.publicKey,
       secretKey: data.secretKey
     }
-  }
-
-  /**
-   * Pair into an existing handle via an invite, returning a brand-new `Handle` opened with the
-   * delivered keys. A one-shot join: the root's `_join` is the one that survives restarts.
-   *
-   * @param {string} invite
-   * @param {StaticJoinOpts} [opts]
-   * @returns {Promise<Handle>}
-   */
-  static async join(
-    invite,
-    { parent, network, identity, store, spec, namespace, writer, timeout = TIMEOUT } = {}
-  ) {
-    const net = network || parent?.network
-    const id = identity || parent?.identity
-    if (!net) throw CeroError.REQUIRED('network')
-    if (!id) throw CeroError.REQUIRED('identity')
-    if (!store && !parent) throw CeroError.REQUIRED('store')
-    if (!spec) throw CeroError.REQUIRED('spec')
-
-    // standalone, a mailbox of its own for this one join
-    const mailbox = parent ? null : new Mailbox(net)
-    try {
-      const reply = await Pairing.join(mailbox || parent.mailbox, invite, {
-        identity: id,
-        spec,
-        writer,
-        timeout
-      })
-      const opts = { parent, store, identity: id, network: net, spec, namespace }
-      return Handle.fromReply(reply, opts)
-    } finally {
-      await mailbox?.close()
-    }
-  }
-
-  /**
-   * A handle opened with the keys a pairing reply delivered.
-   *
-   * @param {import('@cero-base/core/pairing').JoinResult} reply
-   * @param {Omit<HandleOpts, 'key' | 'encryptionKey' | 'epochs' | 'keyPair'>} opts
-   * @returns {Handle}
-   */
-  static fromReply(reply, opts) {
-    return new Handle({ ...opts, ...delivered(reply) })
   }
 }
 

@@ -414,9 +414,7 @@ const operators = {
  * @returns {Promise<Client>}
  */
 export async function restore(me, phrase) {
-  const res = await me.rpc.restore({ phrase })
-  me.id = res.id
-  me.device = device(res)
+  me._identify(await me.rpc.restore({ phrase }))
   return me
 }
 
@@ -501,17 +499,20 @@ export class Client extends RPCClient {
   /** @private */
   async _open() {
     await super._open()
-    const res = await this.rpc.init({})
-    const { id, fileBase, fileToken } = res
-    this.id = id
-    this.device = device(res)
-    /** @private */
-    this._fileBase = fileBase || ''
-    /** @private */
-    this._fileToken = fileToken || ''
+    this._identify(await this.rpc.init({}))
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
     this._pumpErrors()
+  }
+  // the worker's answer to init and to restore: who this UI is, and where its files are served
+  /** @private */
+  _identify(res) {
+    this.id = res.id
+    this.device = device(res)
+    /** @private */
+    this._fileBase = res.fileBase || ''
+    /** @private */
+    this._fileToken = res.fileToken || ''
   }
 
   /**
@@ -540,7 +541,7 @@ export class Client extends RPCClient {
    * @private
    */
   async _load(type, id) {
-    const stub = await this.rpc.openHandle({ parent: this.id, row: id })
+    const stub = await this.rpc.openHandle({ parent: this.id, row: id, type })
     return new Handle(this, stub.id, stub.type, stub.name || null)
   }
 

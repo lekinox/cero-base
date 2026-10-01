@@ -9,6 +9,7 @@ import {
   makeTestnet,
   makeStore,
   connectPair,
+  randomTopic,
   streamFromChunks,
   streamToBuffer
 } from '../helpers/index.js'
@@ -17,32 +18,23 @@ test.configure({ timeout: 60000 })
 
 async function makeBlobs(t, opts = {}) {
   const { store } = opts.store ? { store: opts.store } : await makeStore(t)
-  const identity = opts.identity || (await Identity.create())
-  const blobs = new Blobs({ store, identity, ...opts })
+  const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32), ...opts })
   await blobs.ready()
   t.teardown(() => blobs.close().catch(() => {}), { order: 1 })
-  return { blobs, store, identity }
+  return { blobs, store }
 }
 
 // ─── construction validation ──────────────────────────────────────────────
 
 test('construction: store is required', (t) => {
   t.exception.all(() => new Blobs({}), /store is required/)
-  t.exception.all(() => new Blobs({ identity: {} }), /store is required/)
+  t.exception.all(() => new Blobs({ encryptionKey: b4a.alloc(32, 1) }), /store is required/)
 })
 
-test('construction: identity or encryptionKey is required', async (t) => {
-  const { store } = await makeStore(t)
-  t.exception.all(() => new Blobs({ store }), /identity or encryptionKey/)
-})
-
-test('construction: accepts identity', async (t) => {
+test('construction: encryptionKey is required, the identity never stands in', async (t) => {
   const { store } = await makeStore(t)
   const identity = await Identity.create()
-  const blobs = new Blobs({ store, identity })
-  t.is(blobs.opened, false)
-  t.is(blobs.closed, false)
-  t.is(blobs.identity, identity)
+  t.exception.all(() => new Blobs({ store, identity }), /encryptionKey is required/)
 })
 
 test('construction: accepts explicit encryptionKey', async (t) => {
@@ -56,8 +48,7 @@ test('construction: accepts explicit encryptionKey', async (t) => {
 
 test('ready/close: opens and closes cleanly', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const blobs = new Blobs({ store, identity })
+  const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32) })
   await blobs.ready()
   t.is(blobs.opened, true)
   t.ok(blobs.key)
@@ -77,8 +68,7 @@ test('ready is idempotent', async (t) => {
 
 test('close is idempotent', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const blobs = new Blobs({ store, identity })
+  const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32) })
   await blobs.ready()
   await blobs.close()
   await blobs.close()
@@ -87,8 +77,7 @@ test('close is idempotent', async (t) => {
 
 test('id, key, discoveryKey are null before ready', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const blobs = new Blobs({ store, identity })
+  const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32) })
   t.is(blobs.id, null)
   t.is(blobs.key, null)
   t.is(blobs.discoveryKey, null)
@@ -206,8 +195,7 @@ test('put: non-buffer non-stream input rejected', async (t) => {
 
 test('methods after close throw', async (t) => {
   const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const blobs = new Blobs({ store, identity })
+  const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32) })
   await blobs.ready()
   const blobId = await blobs.put(b4a.from('ok'))
   await blobs.close()
@@ -221,15 +209,15 @@ test('methods after close throw', async (t) => {
 
 test('open existing blob store by key on a separate store', async (t) => {
   const { store: storeA } = await makeStore(t)
-  const identity = await Identity.create()
-  const a = new Blobs({ store: storeA, identity })
+  const encryptionKey = Identity.randomBytes(32)
+  const a = new Blobs({ store: storeA, encryptionKey })
   await a.ready()
   await a.put(b4a.from('persist me'))
   const key = a.key
   await a.close()
 
   const { store: storeB } = await makeStore(t)
-  const b = new Blobs({ store: storeB, identity, key })
+  const b = new Blobs({ store: storeB, encryptionKey, key })
   await b.ready()
   t.teardown(() => b.close().catch(() => {}))
   t.alike(b.key, key)
@@ -291,22 +279,23 @@ test('decodeId rejects a truncated payload', (t) => {
 // ─── replication ────────────────────────────────────────────────────────
 
 // Build A (writer) + B (replica of A) connected over the testnet.
-async function makeReplicationPair(t) {
+async function makeReplicationPair(t, { topic } = {}) {
   const testnet = await makeTestnet(t)
   const netA = await makeNet(t, testnet)
   const netB = await makeNet(t, testnet)
   const { store: storeA } = await makeStore(t)
   const { store: storeB } = await makeStore(t)
-  const idA = await Identity.create()
-  const idB = await Identity.create()
 
-  const blobsA = new Blobs({ store: storeA, identity: idA, network: netA })
+  const blobsA = new Blobs({
+    store: storeA,
+    network: netA,
+    encryptionKey: Identity.randomBytes(32)
+  })
   await blobsA.ready()
   t.teardown(() => blobsA.close().catch(() => {}), { order: 1 })
 
   const blobsB = new Blobs({
     store: storeB,
-    identity: idB,
     network: netB,
     key: blobsA.key,
     encryptionKey: blobsA.encryptionKey
@@ -314,9 +303,9 @@ async function makeReplicationPair(t) {
   await blobsB.ready()
   t.teardown(() => blobsB.close().catch(() => {}), { order: 1 })
 
-  await connectPair(t, netA, netB, blobsA.discoveryKey)
+  await connectPair(t, netA, netB, topic || blobsA.discoveryKey)
 
-  return { blobsA, blobsB }
+  return { blobsA, blobsB, netA, netB }
 }
 
 test('replication: peer B reads a blob put on peer A', async (t) => {
@@ -341,4 +330,13 @@ test('replication: stream blob read from peer', async (t) => {
   const blobId = await blobsA.put(streamFromChunks(chunks))
   const out = await streamToBuffer(blobsB.createReadStream(blobId))
   t.alike(out, b4a.concat(chunks))
+})
+
+test('replication: rides the connections a network already has, joining no topic of its own', async (t) => {
+  const { blobsA, blobsB, netA, netB } = await makeReplicationPair(t, { topic: randomTopic() })
+  t.absent(netA.swarm.status(blobsA.discoveryKey), 'the writer joined no blob topic')
+  t.absent(netB.swarm.status(blobsB.discoveryKey), 'nor the reader')
+  const payload = b4a.from('over the room link')
+  const blobId = await blobsA.put(payload)
+  t.alike(await blobsB.get(blobId), payload)
 })

@@ -1,5 +1,5 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS, REMOVALS } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
@@ -134,6 +134,7 @@ export function declare(ref, fields) {
  * @param {'main' | 'local'} scope
  * @returns {Array<{ name: string, schema: string, key: string[] }>}
  */
+// frozen once an app ships: collections number by position, so a new one goes after the app's
 export function collections(ns, scope) {
   const out = Object.entries(defs[scope]).map(([name, def]) => ({
     name,
@@ -144,6 +145,8 @@ export function collections(ns, scope) {
     out.push({ name: COUNTERS, schema: `@${ns}/counter`, key: ['name'] })
     out.push({ name: EPOCHS, schema: `@${ns}/epoch`, key: ['epoch'] })
     out.push({ name: REMOVALS, schema: `@${ns}/removal`, key: ['id'] })
+    out.push({ name: REFUSALS, schema: `@${ns}/refusal`, key: ['id'] })
+    out.push({ name: SPENT, schema: `@${ns}/spent`, key: ['id'] })
   }
   return out
 }
@@ -152,6 +155,7 @@ export function collections(ns, scope) {
  * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
+// frozen once an app ships: routes number by position, so a new one goes after the app's
 export function dispatches(ns) {
   return [
     { name: 'add-writer', requestType: `@${ns}/writer` },
@@ -163,7 +167,10 @@ export function dispatches(ns) {
       { name: `del-${type}`, requestType: `@${ns}/del-by-id` }
     ]),
     { name: 'join', requestType: `@${ns}/join` },
-    { name: 'accept', requestType: `@${ns}/accept` }
+    { name: 'accept', requestType: `@${ns}/accept` },
+    { name: 'deny', requestType: `@${ns}/deny` },
+    { name: 'rotate-key', requestType: `@${ns}/epoch` },
+    { name: 'del-refusal', requestType: `@${ns}/del-by-id` }
   ]
 }
 

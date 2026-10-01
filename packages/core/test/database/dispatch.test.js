@@ -30,7 +30,13 @@ test.configure({ timeout: 60000 })
 async function bootstrapped(t, opts = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = opts.identity || (await Identity.create())
-  const db = new Database({ store, identity, spec, ...opts })
+  const db = new Database({
+    store,
+    identity,
+    spec,
+    encryptionKey: Identity.randomBytes(32),
+    ...opts
+  })
   await db.ready()
   await db.bootstrap({ name: 'first', isMobile: false })
   t.teardown(() => db.close().catch(() => {}), { order: 5 })
@@ -376,7 +382,7 @@ test('fast-forward: an empty reference trusts only the genesis writer', async (t
   // a fresh db pre-bootstrap: its view has no device rows yet
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
-  const fresh = new Database({ store, identity, spec })
+  const fresh = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
   await fresh.ready()
   t.teardown(() => fresh.close().catch(() => {}), { order: 5 })
 

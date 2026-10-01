@@ -38,7 +38,14 @@ async function main() {
   const aStore = await store()
   const aNet = new Network({ store: aStore, mirrors: [MIRROR] }) // no bootstrap = real DHT
   await aNet.ready()
-  const a = new Database({ store: aStore, identity, network: aNet, spec, mirrors: [MIRROR] })
+  const a = new Database({
+    store: aStore,
+    identity,
+    network: aNet,
+    spec,
+    encryptionKey: Identity.randomBytes(32),
+    mirrors: [MIRROR]
+  })
   await a.ready()
   await a.bootstrap({ name: 'a' })
   const { data: row } = await a.put('messages', { text: 'mirror ok' })

@@ -8,8 +8,7 @@ import { makeStore, fetch } from '../helpers/index.js'
 
 async function putBytes(t, bytes) {
   const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const blobs = new Blobs({ store, identity })
+  const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32) })
   await blobs.ready()
   t.teardown(() => blobs.close().catch(() => {}), { order: 10 })
   const blobId = await blobs.put(bytes)

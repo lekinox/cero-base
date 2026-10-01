@@ -93,11 +93,6 @@ export declare class Network extends ReadyResource {
     /** @type {import('protomux-wakeup')} */
     wakeup: import('protomux-wakeup');
     presence: Presence;
-    info: object;
-    /** @private */
-    _peerInfo;
-    /** @private */
-    _infoSenders;
     /** @private */
     _replicateables;
     /** @private */
@@ -144,19 +139,6 @@ export declare class Network extends ReadyResource {
      * @returns {import('blind-peering')}
      */
     peering(): import('blind-peering');
-    /**
-     * Declare this peer's self-reported info ({ name, ... }) to the peers of injected streams.
-     *
-     * @param {object | null} info
-     */
-    setInfo(info: object | null): void;
-    /**
-     * Info a connected peer declared about itself, or null.
-     *
-     * @param {Uint8Array | string} key  Peer public key (bytes or hex).
-     * @returns {object | null}
-     */
-    getInfo(key: Uint8Array | string): object | null;
     /**
      * Wait for pending DHT announces and lookups to settle, bounded by timeout.
      *
@@ -218,6 +200,4 @@ export declare class Network extends ReadyResource {
     private _lose;
     /** @private */
     private _relook;
-    /** @private */
-    private _attachInfo;
 }

@@ -127,6 +127,7 @@ export class Storage extends ReadyResource {
   async put(name, row) {
     this._guard()
     const ref = this._ref(name)
+    if (ref.kind === SINGLE) throw CeroError.INVALID(`${name} is a single: write it with set`)
     checkFields(name, this.refs[name], row)
     const was = row.id == null ? null : await this._read(ref, row.id)
     const stored = stamp({ ...row, id: row.id ?? genId() }, was?.createdAt)
@@ -149,8 +150,10 @@ export class Storage extends ReadyResource {
     checkFields(name, this.refs[name], row)
     const existing = await this._read(ref, row?.id)
     if (!upsert && !existing) return null
+    // a single is one record with no fields of Cero's
+    const merged = { ...existing, ...row }
     /** @type {Row} */
-    const stored = stamp({ ...existing, ...row }, existing?.createdAt)
+    const stored = ref.kind === SINGLE ? merged : stamp(merged, existing?.createdAt)
     checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     await this._write(ref, stored)

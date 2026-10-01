@@ -27,6 +27,7 @@ const joined = await cero.open(me.room, { invite }) // join: invite is a string 
 
 `{ name }`, or nothing, creates a handle. `{ id }` reopens one: an id not in your list throws
 `UNKNOWN`, the id of another type's handle `INVALID`. An invite string, bare or as `{ invite }`, joins.
+Anything else, such as a misspelt key or `{ id: undefined }`, is `INVALID`, never a new handle.
 Handles are isolated: `me.messages` and `room.messages` are different collections, and one handle's key
 never opens another.
 
@@ -159,7 +160,8 @@ await cero.set(room.members, { id: memberId, role: 'admin' })
 
 The ranks run owner, admin, member, reader. Changing a role needs assign, a new role within your own
 and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invite')` from
-`@cero-base/core/utils` checks a rank in your UI.
+`@cero-base/core/utils` checks a rank in your UI; it knows the four names in the table, and any
+other is `INVALID`.
 
 ## Remove a member
 

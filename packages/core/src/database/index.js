@@ -42,7 +42,7 @@ import { keyPair } from '../mailbox/inbox.js'
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
  * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
- * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
+ * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
@@ -86,6 +86,7 @@ export class Database extends ReadyResource {
     if (!opts.spec || !opts.spec.database || !opts.spec.dispatch) {
       throw CeroError.INVALID('spec must have database + dispatch')
     }
+    if (!opts.encryptionKey) throw CeroError.REQUIRED('encryptionKey')
 
     /** @type {import('corestore')} */
     this.store = opts.store
@@ -99,7 +100,7 @@ export class Database extends ReadyResource {
     /** @type {number | null} */
     this.behind = null
     this.namespace = opts.namespace || NAMESPACE
-    this.encryptionKey = opts.encryptionKey || opts.identity.encryptionKey || null
+    this.encryptionKey = opts.encryptionKey
     this.keyring = new Keyring()
     if (opts.epochs) for (const e of opts.epochs) this.keyring.add(e.stamp, e.entropy, e.epoch)
     /** @private */
@@ -116,7 +117,7 @@ export class Database extends ReadyResource {
     this._onerror = opts.onerror || ((err) => console.error(err))
     // a join is sealed to the address the encryption key owns: every member opens it, no one else
     /** @private */
-    this._room = this.encryptionKey ? keyPair(this.encryptionKey) : null
+    this._room = keyPair(this.encryptionKey)
     this.bee = null
     this.dispatcher = null
     /** @private */
@@ -285,6 +286,7 @@ export class Database extends ReadyResource {
    */
   async put(name, row) {
     const ref = this._prepare(name, row)
+    if (ref.kind === SINGLE) throw CeroError.INVALID(`${name} is a single: write it with set`)
     const was = row.id ? (await this.get(name, row.id)).data : null
     const stored = stamp({ ...row, id: row.id || genId() }, was?.createdAt)
     checkRequired(name, this.refs[name], stored)
@@ -704,12 +706,17 @@ export class Database extends ReadyResource {
   async _apply(nodes, view, host) {
     const ready = []
     for (const node of nodes) {
-      const { version, body } = unwrap(node.value)
-      if (version > this.version) {
-        this._onfuture(version)
+      const op = unwrap(node.value)
+      // bytes with no envelope, or a cut one, are no op: skipped and surfaced like any node that does not decode
+      if (!op) {
+        this._onerror(CeroError.INVALID('an op with no envelope'))
         continue
       }
-      ready.push(version === 0 ? node : { ...node, value: body })
+      if (op.version > this.version) {
+        this._onfuture(op.version)
+        continue
+      }
+      ready.push({ ...node, value: op.body })
     }
     const result = await this.dispatcher.apply(ready, view, host)
     this._notify(ready)
@@ -830,7 +837,9 @@ export class Database extends ReadyResource {
     const ref = this._prepare(name, row)
     const existing = ref.kind === SINGLE || row?.id ? (await this.get(name, row?.id)).data : null
     if (!upsert && !existing) return null
-    const stored = stamp({ ...existing, ...row }, existing?.createdAt)
+    // a single is one record with no fields of Cero's
+    const merged = { ...existing, ...row }
+    const stored = ref.kind === SINGLE ? merged : stamp(merged, existing?.createdAt)
     checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     const insert = ref.kind === COLLECTION && upsert && !BESPOKE.has(ref.verb)

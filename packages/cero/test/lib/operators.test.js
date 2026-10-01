@@ -1,15 +1,29 @@
 import test from 'brittle'
 import AbortController from 'bare-abort-controller'
+import process from 'process'
+import { rmSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { Readable } from 'streamx'
+import b4a from 'b4a'
 
 import { Ref } from '../../src/handle/index.js'
 import { put, set, get, del, watch, call, open } from '../../src/lib/operators.js'
 import { onAbort } from '@cero-base/core/utils'
 import { cero } from '../../src/index.js'
+import { build } from '../../src/build/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import { FakeStore, makeTestnet, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 30000 })
+
+const buildRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'fixtures',
+  '.build-operators'
+)
+process.on('exit', () => rmSync(buildRoot, { recursive: true, force: true }))
 
 test('onAbort: returns a disposer that detaches the listener early', (t) => {
   const ctrl = new AbortController()
@@ -162,4 +176,83 @@ test('get: rooms list in the order they were added', async (t) => {
     (await get(me.team)).data.map((row) => row.name),
     names
   )
+})
+
+async function twoTypes(t) {
+  const dir = join(buildRoot, 'two-types')
+  const notes = { notes: cero.t.collection({ text: cero.t.string }) }
+  await build(dir, cero.schema({ expo: notes, group: notes }), { extensions: [] })
+  const { spec: two } = await import(pathToFileURL(join(dir, 'index.js')).href)
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), two, { bootstrap: testnet.bootstrap, extensions: [] })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  return me
+}
+
+test('handle refs: limit and total count only their own type', async (t) => {
+  const me = await twoTypes(t)
+  for (const n of [1, 2, 3]) {
+    await open(me.group, { name: `group ${n}` })
+    await open(me.expo, { name: `expo ${n}` })
+  }
+
+  const { data, total } = await get(me.expo, { limit: 2, total: true })
+  t.alike(
+    data.map((r) => r.name),
+    ['expo 1', 'expo 2'],
+    'a full page of expos'
+  )
+  t.is(total, 3, 'every expo counted, no group')
+
+  const first = await new Promise((resolve) => {
+    watch(me.expo, { limit: 2, total: true }).once('data', resolve)
+  })
+  t.is(first.data.length, 2, 'a watch pages the same')
+  t.is(first.total, 3)
+})
+
+test('open by id: a handle of another type is INVALID, open or not', async (t) => {
+  const me = await twoTypes(t)
+  const expo = await open(me.expo, { name: 'fair' })
+  await t.exception(open(me.group, { id: expo.id }), /INVALID/, 'while it is open')
+  await expo.close()
+  await t.exception(open(me.group, { id: expo.id }), /INVALID/, 'once it closed')
+  t.is((await open(me.expo, { id: expo.id })).id, expo.id, 'its own type opens it')
+})
+
+test('singles: put is INVALID, and set returns the record with no fields of its own', async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const cases = [
+    [me.profile, { name: 'Ada' }],
+    [me.local.settings, { entropy: b4a.from('seed') }]
+  ]
+  for (const [ref, row] of cases) {
+    await t.exception(put(ref, row), /INVALID.*set/, `put on ${ref.name} says to use set`)
+    const { data: written } = await set(ref, row)
+    const { data: read } = await get(ref)
+    for (const k of Object.keys(row)) t.alike(written[k], read[k], `${ref.name}.${k} as stored`)
+    t.absent('createdAt' in written || 'updatedAt' in written, 'a single has no timestamps')
+  }
+})
+
+test('open: an argument it does not know is INVALID, never a new handle', async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  for (const arg of [
+    { id: undefined },
+    { nmae: 'typo' },
+    { name: 'a', id: 'b' },
+    { invite: 5 },
+    null,
+    42
+  ]) {
+    await t.exception(open(me.team, arg), /INVALID/, JSON.stringify(arg))
+  }
+  t.is((await get(me.team)).data.length, 0, 'nothing was created')
+  t.ok((await open(me.team, { name: 'real' })).id, '{ name } creates')
+  t.ok((await open(me.team)).id, 'no argument creates too')
+  t.is((await get(me.team)).data.length, 2)
 })

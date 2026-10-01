@@ -3,6 +3,7 @@ import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import safetyCatch from 'safety-catch'
 import c from 'compact-encoding'
+import b4a from 'b4a'
 import fs from 'fs'
 
 import { Identity } from '@cero-base/core/identity'
@@ -28,8 +29,7 @@ export { t, schema } from './lib/spec.js'
 
 /**
  * @typedef {object} CeroOpts
- * @property {Identity} [identity]                     Pre-resolved identity. If absent, derived from `seed` or generated.
- * @property {Uint8Array} [seed]                       16- or 32-byte seed entropy: `toSeed(phrase)` restores from a phrase.
+ * @property {string} [phrase]                         The identity's BIP-39 phrase, as `cero.phrase(me)` gives it: on a new `dir` it recovers that identity.
  * @property {12 | 24} [words]                         Mnemonic length when generating a fresh identity.
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.
@@ -38,8 +38,6 @@ export { t, schema } from './lib/spec.js'
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
- * @property {Uint8Array} [key]                        Existing database key to recover into, skipping the pointer lookup.
- * @property {Uint8Array} [encryptionKey]              Pre-existing encryption key.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
@@ -91,12 +89,11 @@ async function start(dir, spec, opts = {}) {
       await local.ready()
     }
 
-    const { identity, fresh, seed } = await resolveIdentity(opts, local)
     const device = local ? (await local.store.get('keypair')).data : null
     const done = !!device && !device.setup
+    const { identity, fresh, seed } = await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
-    const creating =
-      !done && !opts.key && !opts.seed && !opts.identity && (fresh || device?.setup === 'create')
+    const creating = !done && !opts.phrase && (fresh || device?.setup === 'create')
     const recovering = !done && !creating
     const setup = done ? null : creating ? 'create' : 'recover'
     const keyPair =
@@ -146,7 +143,7 @@ async function start(dir, spec, opts = {}) {
     await pointer.ready()
     network.attach(pointer)
 
-    const key = opts.key || (recovering ? await readPointer(pointer, timeout) : undefined)
+    const key = recovering ? await readPointer(pointer, timeout) : undefined
 
     me = new Handle({
       storage,
@@ -159,10 +156,8 @@ async function start(dir, spec, opts = {}) {
       opts,
       dir,
       key,
-      encryptionKey: opts.encryptionKey,
       keyPair,
       bluetooth,
-      pair: false,
       bootstrap: done
         ? null
         : { name: opts.name || null, isMobile: opts.isMobile === true, recovering, timeout }
@@ -205,46 +200,31 @@ async function start(dir, spec, opts = {}) {
 }
 
 /**
- * Restore a cero instance from a seed.
+ * Restore a cero instance from a recovery phrase.
  *
  * @param {Context} me  The root to restore.
- * @param {Uint8Array} seed   The identity's seed: `toSeed(phrase)` from a phrase.
+ * @param {string} phrase  The identity's BIP-39 phrase, as `cero.phrase(me)` gives it.
  * @returns {Promise<Handle>}  Freshly restored root handle.
  */
-export async function restore(me, seed) {
+export async function restore(me, phrase) {
   if (!me?._dir) throw CeroError.INVALID('me must be a cero instance')
-  // no seed would mint a fresh identity and wipe this one
-  if (!seed) throw CeroError.REQUIRED('seed')
+  if (!phrase) throw CeroError.REQUIRED('phrase')
 
-  const current = await Identity.create({ seed })
+  const current = await Identity.create({ seed: Identity.toSeed(phrase) })
   if (current.id === me.identity.id) return me
 
   // everything carries over except the identity, the channel above all
-  const {
-    _dir: dir,
-    spec,
-    _opts: { identity, key, keyPair, ...opts }
-  } = me
+  const { _dir: dir, spec, _opts: opts } = me
 
   await me.close()
   await fs.promises.rm(`${dir}/main`, { recursive: true, force: true })
 
-  return start(dir, spec, { ...opts, seed })
-}
-
-/**
- * The seed a BIP-39 phrase writes out, for `cero(dir, spec, { seed })` and `restore(me, seed)`.
- *
- * @param {string} phrase
- * @returns {Uint8Array}
- */
-export function toSeed(phrase) {
-  return Identity.toSeed(phrase)
+  return start(dir, spec, { ...opts, phrase })
 }
 
 // the facade: cero.put and import { put } are the same function
-/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, toSeed: typeof toSeed }} */
-export const cero = Object.assign(start, verbs, { t, schema, peek, restore, toSeed })
+/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore }} */
+export const cero = Object.assign(start, verbs, { t, schema, peek, restore })
 
 function pointerManifest(store, identity) {
   return { version: store.manifestVersion, signers: [{ publicKey: identity.publicKey }] }
@@ -259,11 +239,13 @@ async function readPointer(pointer, timeout) {
 }
 
 // `seed` is the one to store: supplied or minted, null when already stored
-async function resolveIdentity(opts, local) {
-  if (opts.identity) return { identity: opts.identity, fresh: false, seed: null }
-
-  const provided = opts.seed
-  const stored = !provided && local && (await local.store.get('master')).data?.seed
+async function resolveIdentity(opts, local, done) {
+  const provided = opts.phrase ? Identity.toSeed(opts.phrase) : null
+  const stored = local && (await local.store.get('master')).data?.seed
+  // another identity comes in only through restore, which wipes this one first
+  if (done && provided && !b4a.equals(provided, stored)) {
+    throw CeroError.INVALID('dir holds another identity: switch with cero.restore')
+  }
   const identity = await Identity.create({ seed: provided || stored || null, words: opts.words })
-  return { identity, fresh: !provided && !stored, seed: stored ? null : identity.seed }
+  return { identity, fresh: !provided && !stored, seed: stored && !provided ? null : identity.seed }
 }

@@ -1,5 +1,4 @@
 import hid from 'hypercore-id-encoding'
-import c from 'compact-encoding'
 
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
@@ -37,8 +36,6 @@ export class Request {
     /** @type {Uint8Array} */
     this.writer = hid.decode(row.id)
     /** @private */
-    this._reply = row.reply
-    /** @private */
     this._answer = null
   }
 
@@ -70,13 +67,7 @@ export class Request {
    */
   async deny(reason = '') {
     if (this._answer) return this._answer
-    const { db, mailbox } = this.pairing
-    const denied = { status: STATUS_DENIED, reason, key: null, encryptionKey: null, epochs: null }
-    const denying = async () => {
-      await db.call('del-request', { id: this.id })
-      await mailbox.send(this._reply, c.encode(Response, denied))
-    }
-    return this._answering(denying())
+    return this._answering(this.pairing.db.call('deny', { id: this.id, reason }))
   }
 
   // the first answer holds while it is written; refused, the request is answerable again

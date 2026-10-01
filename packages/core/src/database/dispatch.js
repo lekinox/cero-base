@@ -610,6 +610,14 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const { identity, reply, createdAt: ts = 0 } = waiting
     await admit(ctx, { invite, identity, writer: hid.decode(op.id), reply, role, ts })
   })
+  // answered through the log like every refusal; a deny that lost the race to an accept is nothing
+  add('deny', async (op, ctx) => {
+    const waiting = await ctx.view.get(requests, { id: op.id })
+    if (!waiting || waiting.admitted) return
+    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    await drop(ctx, 'requests', op.id)
+    await refuse(ctx, waiting, op.reason || '')
+  })
   // only a join writes a request
   const joinsOnly = async () => {
     throw CeroError.REFUSED('request')

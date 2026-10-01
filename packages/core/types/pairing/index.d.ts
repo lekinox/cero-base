@@ -67,6 +67,10 @@ export type JoinOpts = {
      * Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
      */
     signal?: AbortSignal;
+    /**
+     * Saves the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed with the same writer after a crash gets it again.
+     */
+    keep?: (answer: JoinResult | Error) => Promise<unknown>;
 };
 export type JoinResult = {
     key: Uint8Array;
@@ -101,6 +105,7 @@ export type JoinResult = {
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
+ * @property {(answer: JoinResult | Error) => Promise<unknown>} [keep]  Saves the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed with the same writer after a crash gets it again.
  *
  * @typedef {object} JoinResult
  * @property {Uint8Array} key
@@ -189,7 +194,7 @@ export declare class Pairing extends ReadyResource {
      * @param {JoinOpts} opts
      * @returns {Promise<JoinResult>}
      */
-    static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal }?: JoinOpts): Promise<JoinResult>;
+    static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal, keep }?: JoinOpts): Promise<JoinResult>;
 }
 /**
  * A join's payload: sealed to the database's address, so only its members read who joins; proven

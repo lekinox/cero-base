@@ -513,9 +513,9 @@ test('restore() over RPC: rejects empty phrase', async (t) => {
   await t.exception.all(() => restore(client, ''), /phrase|REQUIRED|INVALID/)
 })
 
-// ─── Seed lifecycle ───────────────────────────────────────────────────────
+// ─── Phrase lifecycle ───────────────────────────────────────────────────────
 
-test('seed: data persists across boots when the same phrase is supplied', async (t) => {
+test('phrase: data persists across boots when the same phrase is supplied', async (t) => {
   const storage = await t.tmp()
 
   const first = await cero(storage, spec)
@@ -523,7 +523,7 @@ test('seed: data persists across boots when the same phrase is supplied', async 
   await set(first.profile, { name: 'jb' })
   await first.close()
 
-  const second = await cero(storage, spec, { seed: cero.toSeed(phrase) })
+  const second = await cero(storage, spec, { phrase })
   t.teardown(() => second.close())
 
   t.is(second.id, first.id, 'same identity from same phrase + storage')
@@ -531,13 +531,13 @@ test('seed: data persists across boots when the same phrase is supplied', async 
   t.is(profile.name, 'jb', 'profile read back from disk')
 })
 
-test('seed: recovery from a phrase yields that identity on a fresh dir', async (t) => {
+test('phrase: recovery yields that identity on a fresh dir', async (t) => {
   const net = await makeTestnet(t)
 
   const a = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap })
   t.teardown(() => a.close())
   const phrase = await cero.phrase(a)
-  const b = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap, seed: cero.toSeed(phrase) })
+  const b = await cero(await t.tmp(), spec, { bootstrap: net.bootstrap, phrase })
   t.teardown(() => b.close())
 
   t.is(a.id, b.id, 'same identity from same phrase across storages')

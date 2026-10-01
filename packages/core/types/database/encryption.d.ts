@@ -61,8 +61,10 @@ export declare class Keyring {
     current: number;
     /** highest adopted apply-order sequence (0 = base era) */
     seq: number;
-    /** bumped on every add/remove — cheap change detection for retries */
+    /** bumped on every add/remove — cheap change detection */
     version: number;
+    /** @type {(() => void) | null} called when an epoch is learned or dropped */
+    onchange: (() => void) | null;
     constructor();
     /** @returns {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} ascending by seq */
     all(): Array<{
@@ -99,11 +101,9 @@ export declare class EpochAutobee extends Autobee {
     /** @private */
     _epochStalled;
     /** @private */
-    _epochRetry;
+    _epochParked;
     /** @private */
-    _epochRetryDelay;
-    /** @private */
-    _epochRetrySeen;
+    _epochWake;
     /**
      * @param {import('corestore')} store
      * @param {Uint8Array | null} key
@@ -119,11 +119,9 @@ export declare class EpochAutobee extends Autobee {
         key?: Uint8Array;
     }): Promise<Uint8Array>;
     /** @private */
-    private _close;
-    /** @private */
     private _bumpPendingWriters;
     /** @private */
     private _applyWakeupHints;
     /** @private */
-    private _scheduleEpochRetry;
+    private _scheduleEpochWake;
 }

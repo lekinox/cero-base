@@ -1,5 +1,6 @@
 import test from 'brittle'
 import b4a from 'b4a'
+import { Duplex } from 'streamx'
 import process from 'process'
 import { rmSync } from 'fs'
 import { dirname, join } from 'path'
@@ -270,7 +271,7 @@ test('nearby: two devices of one person link over Bluetooth and sync', async (t)
   const b = await open(t, {
     testnet,
     channel: 'own',
-    seed: a.identity.seed,
+    phrase: a.identity.toPhrase(),
     bluetooth: { on: true, backend: radio }
   })
 
@@ -341,6 +342,43 @@ test("nearby: a room member's device shows the member, named by the room without
   )
 })
 
+test('nearby: what a peer told is forgotten once its link closes', async (t) => {
+  const testnet = await makeTestnet(t)
+  const radio = makeMockBluetooth()
+  const a = await open(t, { testnet, channel: 'forget', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { testnet, channel: 'forget', bluetooth: { on: true, backend: radio } })
+  const hex = await waitUntil(() => [...a._bluetooth.peers.keys()][0] ?? null)
+  await waitUntil(() => a._bluetooth.told(hex))
+  await cero.nearby(b, false)
+  await waitUntil(() => !a._bluetooth.peers.has(hex) || null)
+  t.is(a._bluetooth.told(hex), null, 'dropped with the link')
+})
+
+// two links between a and b by hand, as ble-swarm hands them over: b's key on a's end, a's on b's
+function link(a, b) {
+  const ends = [new Duplex({ write: (data, cb) => cb(null, ends[1].push(data)) })]
+  ends.push(new Duplex({ write: (data, cb) => cb(null, ends[0].push(data)) }))
+  ends[0].remotePublicKey = b.store.keyPair.publicKey
+  ends[1].remotePublicKey = a.store.keyPair.publicKey
+  a._bluetooth._attach(ends[0])
+  b._bluetooth._attach(ends[1])
+  return ends
+}
+
+test('nearby: a link replaced by a newer one keeps what the peer told', async (t) => {
+  const a = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const b = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const hex = b4a.toHex(b.store.keyPair.publicKey)
+  const [old] = link(a, b)
+  await waitUntil(() => a._bluetooth.told(hex))
+  const fresh = link(a, b)
+  t.teardown(() => fresh.forEach((end) => end.destroy()))
+  await waitUntil(() => a._bluetooth._heard.get(hex) && a._bluetooth._links?.get(hex) !== old)
+  old.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  t.ok(a._bluetooth.told(hex), 'the old link closing does not forget the peer on the new one')
+})
+
 test('nearby: a Wi-Fi connection carries none of it', async (t) => {
   const testnet = await makeTestnet(t)
   // two airwaves: the devices meet over the DHT only
@@ -364,7 +402,9 @@ test('nearby: a Wi-Fi connection carries none of it', async (t) => {
     const { data } = await get(roomB.messages)
     return data.find((m) => m.text === 'after-open') ?? null
   })
-  const heard = [...b.network.swarm.connections].map((c) => b.network.getInfo(c.remotePublicKey))
+  const heard = [...b.network.swarm.connections].map(
+    (c) => b._bluetooth._heard.get(b4a.toHex(c.remotePublicKey)) ?? null
+  )
   t.ok(heard.length > 0, 'connected over the DHT')
   t.alike(
     heard,
@@ -380,9 +420,9 @@ test('nearby: a device claiming someone else is not shown as them', async (t) =>
   const victim = await Identity.create()
   await waitUntil(() => linked(a))
 
-  b.network.setInfo({ ...b.network.info, id: victim.id, name: 'mallory' })
+  b._bluetooth._say({ ...b._bluetooth._info, id: victim.id, name: 'mallory' })
   const hex = b4a.toHex(b.store.keyPair.publicKey)
-  await waitUntil(() => a.network.getInfo(hex)?.name === 'mallory')
+  await waitUntil(() => a._bluetooth._heard.get(hex)?.name === 'mallory')
   t.alike((await get(a.nearby)).data, [], 'a signature from another person names no one')
 })
 
@@ -394,13 +434,13 @@ test('nearby: a person with two devices in range shows each device', async (t) =
   await open(t, {
     testnet,
     channel: 'twice',
-    seed: b.identity.seed,
+    phrase: b.identity.toPhrase(),
     bluetooth: { on: true, backend: radio }
   })
 
   await waitUntil(() => {
     const keys = [...a._bluetooth.peers.keys()]
-    return keys.length === 2 && keys.every((hex) => a.network.getInfo(hex))
+    return keys.length === 2 && keys.every((hex) => a._bluetooth._heard.get(hex))
   })
   const { data } = await get(a.nearby)
   t.alike(
@@ -502,7 +542,7 @@ test('recovery: a phrase restores this person over Bluetooth with no internet', 
 
   const b = await open(t, {
     channel: 'recover',
-    seed: a.identity.seed,
+    phrase: a.identity.toPhrase(),
     recoveryTimeout: 15000,
     bluetooth: { on: true, backend: radio }
   })

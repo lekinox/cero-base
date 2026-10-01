@@ -43,7 +43,7 @@ const me = await serve(ipc, { storage: './data', name: 'alice' })
 
 - First launch: cero generates a fresh identity and stores its seed in the local `master` row.
 - Subsequent launches: re-opening the same `${storage}` dir loads that stored identity back — no phrase needed.
-- Recovery: the UI's `connect(ipc, { phrase })` restores from a phrase; the worker turns it into the seed. In process, `cero(dir, spec, { seed: cero.toSeed(phrase) })`.
+- Recovery: the UI's `connect(ipc, { phrase })` restores from a phrase; in process, `cero(dir, spec, { phrase })`.
 
 ## Connect a client
 
