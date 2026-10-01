@@ -6,7 +6,7 @@ export type BlobsOpts = {
      */
     store: object;
     /**
-     * Optional network: the core rides its connections and mirrors.
+     * Optional network on this store: the core rides its connections and mirrors.
      */
     network?: import('../network/index.js').Network;
     /**
@@ -26,7 +26,7 @@ export type RawBlobId = import('./codec.js').RawBlobId;
 /**
  * @typedef {object} BlobsOpts
  * @property {object} store                                           Corestore (or compatible) used to host the blob core.
- * @property {import('../network/index.js').Network} [network]        Optional network: the core rides its connections and mirrors.
+ * @property {import('../network/index.js').Network} [network]        Optional network on this store: the core rides its connections and mirrors.
  * @property {Uint8Array} [key]                                       Pre-existing blob core key — joins an existing blob feed.
  * @property {Uint8Array} encryptionKey                               Encrypts the core.
  * @property {string} [name]                                          Core name in the store when no `key` is given; `blobs` by default.

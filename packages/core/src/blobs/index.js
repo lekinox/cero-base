@@ -12,7 +12,7 @@ const NS = `${NAMESPACE}/blobs`
 /**
  * @typedef {object} BlobsOpts
  * @property {object} store                                           Corestore (or compatible) used to host the blob core.
- * @property {import('../network/index.js').Network} [network]        Optional network: the core rides its connections and mirrors.
+ * @property {import('../network/index.js').Network} [network]        Optional network on this store: the core rides its connections and mirrors.
  * @property {Uint8Array} [key]                                       Pre-existing blob core key — joins an existing blob feed.
  * @property {Uint8Array} encryptionKey                               Encrypts the core.
  * @property {string} [name]                                          Core name in the store when no `key` is given; `blobs` by default.
@@ -27,6 +27,10 @@ export class Blobs extends ReadyResource {
     super()
     if (!store) throw CeroError.REQUIRED('store')
     if (!encryptionKey) throw CeroError.REQUIRED('encryptionKey')
+    // a network replicates its own store only: a core in another would never leave the device
+    if (network && !network.replicates(store)) {
+      throw CeroError.INVALID("store must be the network's store or a session of it")
+    }
 
     this.store = store
     this.network = network || null
@@ -90,7 +94,6 @@ export class Blobs extends ReadyResource {
 
   /** @private */
   async _close() {
-    if (this.network && this.core) this.network.detach(this.core)
     if (this.hyperblobs) await this.hyperblobs.close()
     if (this.core) await this.core.close()
   }

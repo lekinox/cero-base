@@ -34,7 +34,7 @@ import { CeroError } from '../lib/errors.js'
  */
 export class Mailbox extends ReadyResource {
   /**
-   * @param {import('../network/index.js').Network} network  Needs a store: messages travel as cores in it.
+   * @param {import('../network/index.js').Network} network  Messages travel as cores in its store.
    * @param {MailboxOpts} [opts]
    */
   constructor(
@@ -42,7 +42,7 @@ export class Mailbox extends ReadyResource {
     { inbox = memory(), outbox = memory(), onerror = (err) => console.error(err) } = {}
   ) {
     super()
-    if (!network?.store) throw CeroError.REQUIRED('store')
+    if (!network) throw CeroError.REQUIRED('network')
     this.network = network
     this.inbox = inbox
     this.outbox = outbox

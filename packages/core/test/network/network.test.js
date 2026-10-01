@@ -1,7 +1,6 @@
 import test from 'brittle'
 import createTestnet from '@hyperswarm/testnet'
 import b4a from 'b4a'
-import Hypercore from 'hypercore'
 import { hash } from 'hypercore-crypto'
 import process from 'process'
 import { spawn } from 'child_process'
@@ -68,9 +67,15 @@ test('channel: different channels stay isolated on the same topic', async (t) =>
 
 // ─── lifecycle ────────────────────────────────────────────────────────────
 
-test('new Network({}) + ready() + close() lifecycle', async (t) => {
+test('new Network: a store is required', (t) => {
+  t.exception.all(() => new Network(), /store is required/)
+  t.exception.all(() => new Network({ bootstrap: [] }), /store is required/)
+})
+
+test('new Network({ store }) + ready() + close() lifecycle', async (t) => {
   const testnet = await makeTestnet(t)
-  const net = new Network({ bootstrap: testnet.bootstrap })
+  const { store } = await makeStore(t)
+  const net = new Network({ bootstrap: testnet.bootstrap, store })
   t.is(net.swarm, null, 'swarm not created until ready')
   t.ok(net.wakeup, 'wakeup created in constructor')
 
@@ -92,7 +97,8 @@ test('ready() is idempotent', async (t) => {
 
 test('close() is idempotent', async (t) => {
   const testnet = await makeTestnet(t)
-  const net = new Network({ bootstrap: testnet.bootstrap })
+  const { store } = await makeStore(t)
+  const net = new Network({ bootstrap: testnet.bootstrap, store })
   await net.ready()
   await net.close()
   await net.close()
@@ -104,7 +110,8 @@ test('close() is idempotent', async (t) => {
 test('identity opt: swarm keyPair matches identity publicKey', async (t) => {
   const testnet = await makeTestnet(t)
   const id = await Identity.create()
-  const net = new Network({ identity: id, bootstrap: testnet.bootstrap })
+  const { store } = await makeStore(t)
+  const net = new Network({ identity: id, bootstrap: testnet.bootstrap, store })
   await net.ready()
   t.alike(b4a.toBuffer(net.swarm.keyPair.publicKey), b4a.toBuffer(id.publicKey))
   await net.close()
@@ -279,7 +286,7 @@ test('connection event fires on peer connect with stream + info', async (t) => {
   await db.destroy()
 })
 
-// ─── attach / detach ──────────────────────────────────────────────────────
+// ─── attach / mirrors ─────────────────────────────────────────────────────
 
 test('channel: leaving a topic removes its swarm discovery — no announce leak', async (t) => {
   const testnet = await makeTestnet(t)
@@ -290,138 +297,41 @@ test('channel: leaving a topic removes its swarm discovery — no announce leak'
   t.is(a.swarm._discovery.size, 0, 'left — the discovery entry is gone, topic unannounced')
 })
 
-test('peering(): needs a store, built once, refused on a closed network', async (t) => {
+test('peering(): built once, refused on a closed network', async (t) => {
   const testnet = await makeTestnet(t)
-  const bare = await makeNet(t, testnet)
-  t.exception(() => bare.peering(), /store/)
-  const { store } = await makeStore(t)
-  const a = await makeNet(t, testnet, { store })
+  const a = await makeNet(t, testnet)
   t.is(a.peering(), a.peering(), 'one client per network')
   await a.close()
   t.exception(() => a.peering(), /closed/i, 'no client on a dead swarm')
 })
 
-test('attach/detach: no errors and idempotent', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  const fake = { replicate() {} }
-  net.attach(fake)
-  net.attach(fake) // duplicate add — set dedupe
-  net.detach(fake)
-  net.detach(fake) // already gone — no throw
-  t.pass('attach/detach are safe to call repeatedly')
-})
-
-test('attach: invalid input throws', async (t) => {
+test('attach: a core is required', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   t.exception.all(() => net.attach(null), /required/)
-  t.exception.all(() => net.detach(null), /required/)
 })
 
-test('attach: calls replicate(stream) on each current peer', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { a, b } = await makePair(t, testnet)
-  await connectPair(t, a, b)
-
-  let called = 0
-  const fake = {
-    replicate(stream) {
-      called++
-      t.ok(stream, 'got a stream')
-    }
-  }
-  a.attach(fake)
-  t.ok(called >= 1, 'replicate called for the existing peer')
-  t.is(called, a.connections.size, 'replicate called once per current peer connection')
-})
-
-test('attach: calls replicate(stream) on new peer connection', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { a, b } = await makePair(t, testnet)
-
-  let called = 0
-  const fake = {
-    replicate() {
-      called++
-    }
-  }
-  a.attach(fake)
-  t.is(called, 0, 'no peers yet')
-
-  await connectPair(t, a, b)
-  t.ok(called >= 1, 'replicate called for the new peer')
-})
-
-// ─── replicate(target) ────────────────────────────────────────────────────
-
-test('replicate: fans replicate(stream) to all current peers', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { a, b } = await makePair(t, testnet)
-  await connectPair(t, a, b)
-
-  let called = 0
-  const fake = {
-    replicate() {
-      called++
-    }
-  }
-  a.replicate(fake)
-  t.ok(called >= 1, 'fanned to at least one peer')
-  t.is(called, a.connections.size, 'fanned once per current peer connection')
-})
-
-test('replicate: rejects targets without a replicate method', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  t.exception.all(() => net.replicate(null), /replicate/)
-  t.exception.all(() => net.replicate({}), /replicate/)
-  t.exception.all(() => net.replicate({ replicate: 'not a fn' }), /replicate/)
-})
-
-// ─── hypercore end-to-end smoke ───────────────────────────────────────────
-
-test('end-to-end: replicate a hypercore between two networks via attach', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { a, b } = await makePair(t, testnet)
-
-  const dirA = await t.tmp()
-  const dirB = await t.tmp()
-
-  const coreA = new Hypercore(dirA)
-  await coreA.ready()
-  await coreA.append('hello')
-  await coreA.append('world')
-
-  const coreB = new Hypercore(dirB, coreA.key)
-  await coreB.ready()
-  t.teardown(() => Promise.all([coreA.close(), coreB.close()]).catch(() => {}), { order: 1 })
-
-  a.attach(coreA)
-  b.attach(coreB)
-
-  await connectPair(t, a, b, coreA.discoveryKey)
-
-  await coreB.update({ wait: true })
-  t.is(coreB.length, 2, 'replicated 2 blocks')
-  t.alike(await coreB.get(0), b4a.from('hello'))
-  t.alike(await coreB.get(1), b4a.from('world'))
+test('replicates: the store and its sessions, no other store', async (t) => {
+  const { store } = await makeStore(t)
+  const { store: other } = await makeStore(t)
+  const net = new Network({ store: store.namespace('net') })
+  t.ok(net.replicates(store), 'the root')
+  t.ok(net.replicates(store.namespace('a').namespace('b')), 'a nested namespace')
+  t.absent(net.replicates(other), 'another store')
 })
 
 // ─── methods after close ──────────────────────────────────────────────────
 
 test('join after close throws', async (t) => {
   const testnet = await makeTestnet(t)
-  const net = new Network({ bootstrap: testnet.bootstrap })
-  await net.ready()
+  const net = await makeNet(t, testnet)
   await net.close()
   t.exception.all(() => net.join(randomTopic()), /closed|not ready/)
 })
 
 test('close while joined: destroys discoveries', async (t) => {
   const testnet = await makeTestnet(t)
-  const net = new Network({ bootstrap: testnet.bootstrap })
-  await net.ready()
+  const net = await makeNet(t, testnet)
   const d = net.join(randomTopic())
   await net.close()
   t.ok(d.destroyed, 'discovery destroyed by close')
@@ -478,189 +388,64 @@ test('replication: passive announces, active connects in', async (t) => {
   await da.destroy()
 })
 
-test('replication: two active networks replicate a hypercore', async (t) => {
+// a core in a's store, and its copy in b's
+async function cores(t, a, b, blocks) {
+  const writer = a.store.get({ name: 'core' })
+  await writer.ready()
+  for (const block of blocks) await writer.append(block)
+  const reader = b.store.get({ key: writer.key })
+  await reader.ready()
+  t.teardown(() => Promise.all([writer.close(), reader.close()]).catch(() => {}), { order: 1 })
+  return { writer, reader }
+}
+
+test('replication: a core in the store replicates between two networks', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b } = await makePair(t, testnet)
+  const { writer, reader } = await cores(t, a, b, ['alpha', 'beta', 'gamma'])
 
-  const dirA = await t.tmp()
-  const dirB = await t.tmp()
+  await connectPair(t, a, b, writer.discoveryKey)
+  await reader.update({ wait: true })
 
-  const coreA = new Hypercore(dirA)
-  await coreA.ready()
-  await coreA.append('alpha')
-  await coreA.append('beta')
-  await coreA.append('gamma')
-
-  const coreB = new Hypercore(dirB, coreA.key)
-  await coreB.ready()
-  t.teardown(() => Promise.all([coreA.close(), coreB.close()]).catch(() => {}), { order: 1 })
-
-  a.attach(coreA)
-  b.attach(coreB)
-
-  await connectPair(t, a, b, coreA.discoveryKey)
-  await coreB.update({ wait: true })
-
-  t.is(coreB.length, 3, 'all 3 blocks replicated')
-  t.alike(await coreB.get(0), b4a.from('alpha'))
-  t.alike(await coreB.get(2), b4a.from('gamma'))
+  t.is(reader.length, 3, 'all 3 blocks replicated')
+  t.alike(await reader.get(0), b4a.from('alpha'))
+  t.alike(await reader.get(2), b4a.from('gamma'))
 })
 
-test('replication: replicate(target) fans to every peer stream', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await makeNet(t, testnet)
-  const b = await makeNet(t, testnet)
-  const c = await makeNet(t, testnet)
-  const topic = randomTopic()
-
-  const da = a.join(topic)
-  const db = b.join(topic)
-  const dc = c.join(topic)
-  await Promise.all([da.flush(), db.flush(), dc.flush()])
-  await Promise.all([da.activate(), db.activate(), dc.activate()])
-
-  await waitFor(() => a.connections.size >= 2, { timeout: 30000 })
-  t.is(a.connections.size, 2, 'A is connected to B and C')
-
-  const seenStreams = new Set()
-  const fake = {
-    replicate(stream) {
-      seenStreams.add(stream)
-    }
-  }
-  a.replicate(fake)
-
-  t.is(seenStreams.size, 2, 'replicate fanned to both peer streams')
-  for (const stream of a.connections) {
-    t.ok(seenStreams.has(stream), 'received this peer stream')
-  }
-
-  await Promise.all([da.destroy(), db.destroy(), dc.destroy()])
-})
-
-test('replication: attach AFTER peers already connected', async (t) => {
+test('replication: a core opened after the connection replicates too', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b } = await makePair(t, testnet)
   await connectPair(t, a, b)
+  const { reader } = await cores(t, a, b, ['late'])
 
-  const dirA = await t.tmp()
-  const dirB = await t.tmp()
-
-  const coreA = new Hypercore(dirA)
-  await coreA.ready()
-  await coreA.append('late-attach')
-
-  const coreB = new Hypercore(dirB, coreA.key)
-  await coreB.ready()
-  t.teardown(() => Promise.all([coreA.close(), coreB.close()]).catch(() => {}), { order: 1 })
-
-  // attach happens AFTER the peer connection
-  a.attach(coreA)
-  b.attach(coreB)
-
-  await coreB.update({ wait: true })
-  t.is(coreB.length, 1, 'replicated after late attach')
-  t.alike(await coreB.get(0), b4a.from('late-attach'))
+  await reader.update({ wait: true })
+  t.is(reader.length, 1, 'replicated on the open connection')
+  t.alike(await reader.get(0), b4a.from('late'))
 })
 
-test('replication: attach BEFORE peers connect', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await makeNet(t, testnet)
-  const b = await makeNet(t, testnet)
-
-  const dirA = await t.tmp()
-  const dirB = await t.tmp()
-
-  const coreA = new Hypercore(dirA)
-  await coreA.ready()
-  await coreA.append('early-attach')
-
-  const coreB = new Hypercore(dirB, coreA.key)
-  await coreB.ready()
-  t.teardown(() => Promise.all([coreA.close(), coreB.close()]).catch(() => {}), { order: 1 })
-
-  // attach BEFORE joining the swarm
-  a.attach(coreA)
-  b.attach(coreB)
-
-  await connectPair(t, a, b, coreA.discoveryKey)
-  await coreB.update({ wait: true })
-
-  t.is(coreB.length, 1, 'replicated for new connection')
-  t.alike(await coreB.get(0), b4a.from('early-attach'))
-})
-
-test('replication: detach stops further replication', async (t) => {
+test('replication: each connection replicates the store once', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b } = await makePair(t, testnet)
-
-  const dirA = await t.tmp()
-  const dirB = await t.tmp()
-
-  const coreA = new Hypercore(dirA)
-  await coreA.ready()
-  await coreA.append('one')
-
-  const coreB = new Hypercore(dirB, coreA.key)
-  await coreB.ready()
-  t.teardown(() => Promise.all([coreA.close(), coreB.close()]).catch(() => {}), { order: 1 })
-
-  a.attach(coreA)
-  b.attach(coreB)
-
-  await connectPair(t, a, b, coreA.discoveryKey)
-  await coreB.update({ wait: true })
-  t.is(coreB.length, 1, 'initial block replicated')
-
-  // detach on both ends — new writes should not propagate via new wiring
-  a.detach(coreA)
-  b.detach(coreB)
-
-  // simulate a fresh peer connection where coreA is no longer attached
-  const c = await makeNet(t, testnet)
-  const dirC = await t.tmp()
-  const coreC = new Hypercore(dirC, coreA.key)
-  await coreC.ready()
-  t.teardown(() => coreC.close().catch(() => {}), { order: 1 })
-
-  await coreA.append('two')
-  await connectPair(t, a, c, coreA.discoveryKey)
-
-  // coreC must NOT replicate because A detached coreA — wait briefly then check
-  try {
-    await coreC.update({ wait: true, timeout: 1500 })
-  } catch {}
-  t.is(coreC.length, 0, 'detached core did not replicate to new peer')
+  await connectPair(t, a, b)
+  t.is(a.store.streamTracker.records.length, a.connections.size, 'one stream per connection on a')
+  t.is(b.store.streamTracker.records.length, b.connections.size, 'and on b')
 })
 
 test('replication: wakeup propagates appends to peers', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b } = await makePair(t, testnet)
+  const { writer, reader } = await cores(t, a, b, ['initial'])
 
-  const dirA = await t.tmp()
-  const dirB = await t.tmp()
+  await connectPair(t, a, b, writer.discoveryKey)
+  await reader.update({ wait: true })
+  t.is(reader.length, 1, 'initial block replicated')
 
-  const coreA = new Hypercore(dirA)
-  await coreA.ready()
-  await coreA.append('initial')
+  // B's length grows without an explicit update
+  await writer.append('woke-up')
 
-  const coreB = new Hypercore(dirB, coreA.key)
-  await coreB.ready()
-  t.teardown(() => Promise.all([coreA.close(), coreB.close()]).catch(() => {}), { order: 1 })
-
-  a.attach(coreA)
-  b.attach(coreB)
-
-  await connectPair(t, a, b, coreA.discoveryKey)
-  await coreB.update({ wait: true })
-  t.is(coreB.length, 1, 'initial block replicated')
-
-  // now append on A — wakeup should make B's length grow without an explicit update
-  await coreA.append('woke-up')
-
-  await waitFor(() => coreB.length >= 2, { timeout: 30000 })
-  t.is(coreB.length, 2, 'append propagated via wakeup')
-  t.alike(await coreB.get(1), b4a.from('woke-up'))
+  await waitFor(() => reader.length >= 2, { timeout: 30000 })
+  t.is(reader.length, 2, 'append propagated via wakeup')
+  t.alike(await reader.get(1), b4a.from('woke-up'))
 })
 
 test('replication: passive discovery upgraded via activate() connects to peers', async (t) => {
@@ -765,8 +550,7 @@ test('resume(): no-op when not suspended', async (t) => {
 
 test('suspend(): no-op after close', async (t) => {
   const testnet = await makeTestnet(t)
-  const net = new Network({ bootstrap: testnet.bootstrap })
-  await net.ready()
+  const net = await makeNet(t, testnet)
   await net.close()
   await net.suspend()
   await net.resume()
@@ -804,7 +588,7 @@ test('suspend() drops live connections; resume() reconnects', async (t) => {
 test('a connection the remote never answers on is dropped within seconds', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const args = [PEER, JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
+  const args = [PEER, await t.tmp(), JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
   const peer = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] })
   t.teardown(() => process.kill(peer.pid, 'SIGKILL'))
   await new Promise((resolve) => {
@@ -931,18 +715,36 @@ function duplexPair() {
   return [a, b]
 }
 
-test('inject: replication + writer admission over an injected duplex, no shared DHT', async (t) => {
-  // two SEPARATE testnets — the DHTs can never meet; only the injected pipe connects them
-  const netA = new Network({ bootstrap: (await createTestnet(2, t)).bootstrap })
-  const netB = new Network({ bootstrap: (await createTestnet(2, t)).bootstrap })
+// two networks on testnets that never meet: only an injected pipe connects them
+async function isolated(t) {
+  const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const netA = new Network({ bootstrap: (await createTestnet(2, t)).bootstrap, store: storeA })
+  const netB = new Network({ bootstrap: (await createTestnet(2, t)).bootstrap, store: storeB })
   await netA.ready()
   await netB.ready()
   t.teardown(() => Promise.all([netA.close(), netB.close()]).catch(() => {}), { order: 9 })
+  return { netA, netB, storeA, storeB }
+}
 
+test('inject: the injected stream replicates the store, once', async (t) => {
+  const { netA, netB } = await isolated(t)
+  const { reader } = await cores(t, netA, netB, ['over', 'the', 'link'])
+
+  const [s1, s2] = duplexPair()
+  netA.inject(s1, { isInitiator: true })
+  netB.inject(s2, { isInitiator: false })
+
+  await reader.update({ wait: true })
+  t.is(reader.length, 3, 'a core of the store crossed the injected link')
+  t.alike(await reader.get(2), b4a.from('link'))
+  t.is(netA.store.streamTracker.records.length, 1, 'one replication stream for the one link')
+})
+
+test('inject: replication + writer admission over an injected duplex, no shared DHT', async (t) => {
+  const { netA, netB, storeA, storeB } = await isolated(t)
   const idA = await Identity.create()
   const idB = await Identity.create()
-  const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
   const a = new Database({
     store: storeA,
@@ -983,13 +785,8 @@ test('inject: replication + writer admission over an injected duplex, no shared 
   t.is(onA.text, 'reply', 'B writes converge back on A')
 })
 
-test('inject: a core attached AFTER the injected connection still replicates', async (t) => {
-  const netA = new Network({ bootstrap: (await createTestnet(2, t)).bootstrap })
-  const netB = new Network({ bootstrap: (await createTestnet(2, t)).bootstrap })
-  await netA.ready()
-  await netB.ready()
-  t.teardown(() => Promise.all([netA.close(), netB.close()]).catch(() => {}), { order: 9 })
-
+test('inject: a database opened after the injected connection still replicates', async (t) => {
+  const { netA, netB, storeA, storeB } = await isolated(t)
   const [s1, s2] = duplexPair()
   netA.inject(s1, { isInitiator: true })
   netB.inject(s2, { isInitiator: false })
@@ -997,8 +794,6 @@ test('inject: a core attached AFTER the injected connection still replicates', a
 
   const idA = await Identity.create()
   const idB = await Identity.create()
-  const { store: storeA } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const { store: storeB } = await makeStore(t, { columnFamilies: ['cero/local'] })
 
   const a = new Database({
     store: storeA,
@@ -1022,5 +817,5 @@ test('inject: a core attached AFTER the injected connection still replicates', a
 
   const { data: row } = await a.put('messages', { text: 'late-attach' })
   const onB = await waitFor(async () => (await b.get('messages', row.id)).data)
-  t.is(onB.text, 'late-attach', 'attach() reached the pre-existing injected link')
+  t.is(onB.text, 'late-attach', 'the store reached the pre-existing injected link')
 })

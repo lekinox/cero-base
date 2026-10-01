@@ -32,9 +32,9 @@ export type NetworkOpts = {
      */
     channel?: string;
     /**
-     * Corestore; required for mirrors (blind peers replicate its cores).
+     * Corestore; every connection replicates it, so every core it holds rides every peer.
      */
-    store?: import('corestore');
+    store: import('corestore');
     /**
      * Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
      */
@@ -52,9 +52,6 @@ export type NetworkOpts = {
         idle?: number;
     };
 };
-export type Replicable = {
-    replicate: (stream: import('@hyperswarm/secret-stream')) => unknown;
-};
 /**
  * @typedef {object} NetworkOpts
  * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the swarm identity.
@@ -63,16 +60,14 @@ export type Replicable = {
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
- * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
+ * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
- *
- * @typedef {{ replicate: (stream: import('@hyperswarm/secret-stream')) => unknown }} Replicable
  */
 /**
- * Hyperswarm peer-discovery + replication multiplexer. Wraps a swarm and a
- * shared wakeup channel, replicating any attached resource onto every peer.
+ * Hyperswarm peer discovery plus a shared wakeup channel. Every connection, swarm or injected,
+ * replicates the store.
  */
 export declare class Network extends ReadyResource {
     identity: import("../index.js").Identity;
@@ -84,8 +79,8 @@ export declare class Network extends ReadyResource {
     relayThrough: Uint8Array<ArrayBufferLike>[];
     backoffs: number[];
     channel: string;
-    /** @type {import('corestore') | null} */
-    store: import('corestore') | null;
+    /** @type {import('corestore')} */
+    store: import('corestore');
     /** @type {Uint8Array[]} */
     mirrors: Uint8Array[];
     /** @private */
@@ -93,8 +88,6 @@ export declare class Network extends ReadyResource {
     /** @type {import('protomux-wakeup')} */
     wakeup: import('protomux-wakeup');
     presence: Presence;
-    /** @private */
-    _replicateables;
     /** @private */
     _discoveries;
     /** @private */
@@ -107,7 +100,7 @@ export declare class Network extends ReadyResource {
     _relookup;
     /** @private */
     _onerror;
-    /** @param {NetworkOpts} [opts] */
+    /** @param {NetworkOpts} opts */
     constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
     /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
     get swarm(): import('hyperswarm') | null;
@@ -132,6 +125,8 @@ export declare class Network extends ReadyResource {
     inject(stream: import('streamx').Duplex, { isInitiator }?: {
         isInitiator?: boolean;
     }): import('@hyperswarm/secret-stream');
+    /** @private */
+    private _add;
     /**
      * The blind-peering client, built on first use: a mailbox post names mirrors this network
      * may not have been given.
@@ -171,31 +166,22 @@ export declare class Network extends ReadyResource {
         mode?: 'active' | 'passive';
     }): Discovery;
     /**
-     * Register a replicable resource (hypercore, autobee, hyperdb).
-     * It is replicated on every current and future swarm connection.
+     * Whether `store` replicates on this network's connections: the network's store or a session of it.
      *
-     * @param {Replicable} core
+     * @param {import('corestore')} store
+     * @returns {boolean}
+     */
+    replicates(store: import('corestore')): boolean;
+    /**
+     * Keep a core or an autobee on the mirrors, so it stays reachable while its writers are
+     * offline. It rides the connections already, from the store; a mirror drops it once it closes.
+     *
+     * @param {import('hypercore') | import('autobee')} core
      * @returns {void}
      */
-    attach(core: Replicable): void;
+    attach(core: import('hypercore') | import('autobee')): void;
     /** @private */
     private _mirror;
-    /**
-     * Unregister a previously attached resource. New connections will no
-     * longer replicate it (existing replication streams continue).
-     *
-     * @param {Replicable} core
-     * @returns {void}
-     */
-    detach(core: Replicable): void;
-    /**
-     * Replicate a one-off resource onto every current swarm connection
-     * without registering it as a long-lived attachment.
-     *
-     * @param {Replicable} target
-     * @returns {void}
-     */
-    replicate(target: Replicable): void;
     /** @private */
     private _lose;
     /** @private */

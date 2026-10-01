@@ -40,7 +40,7 @@ import { keyPair } from '../mailbox/inbox.js'
  * @typedef {object} DatabaseOpts
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
- * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
+ * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
  * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
@@ -88,6 +88,10 @@ export class Database extends ReadyResource {
       throw CeroError.INVALID('spec must have database + dispatch')
     }
     if (!opts.encryptionKey) throw CeroError.REQUIRED('encryptionKey')
+    // a network replicates its own store only: a database in another would never leave the device
+    if (opts.network && !opts.network.replicates(opts.store)) {
+      throw CeroError.INVALID("store must be the network's store or a session of it")
+    }
 
     /** @type {import('corestore')} */
     this.store = opts.store
@@ -233,8 +237,6 @@ export class Database extends ReadyResource {
     for (const { range } of held) range.destroy()
     await Promise.allSettled(held.map(({ core }) => core.close()))
     if (this.bee) {
-      // detach first, else the closed bee replicates into every new connection
-      if (this.network) this.network.detach(this.bee)
       await this.bee.close()
       this.bee = null
     }
@@ -674,7 +676,6 @@ export class Database extends ReadyResource {
     if (this.behind === null || this.behind > this.version) return false
     await this.bee.local.setUserData('autobee/head', null)
     await this.bee.local.setUserData('cero/behind', null)
-    if (this.network) this.network.detach(this.bee)
     await this.bee.close()
     this.behind = null
     return true

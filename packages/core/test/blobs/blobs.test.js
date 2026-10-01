@@ -4,6 +4,7 @@ import z32 from 'z32'
 
 import { Blobs, encodeId, decodeId } from '../../src/blobs/index.js'
 import { Identity } from '../../src/identity/index.js'
+import { Network } from '../../src/network/index.js'
 import {
   makeNet,
   makeTestnet,
@@ -29,6 +30,18 @@ async function makeBlobs(t, opts = {}) {
 test('construction: store is required', (t) => {
   t.exception.all(() => new Blobs({}), /store is required/)
   t.exception.all(() => new Blobs({ encryptionKey: b4a.alloc(32, 1) }), /store is required/)
+})
+
+test('construction: refuses a store its network does not replicate', async (t) => {
+  const { store } = await makeStore(t)
+  const { store: other } = await makeStore(t)
+  const network = new Network({ store })
+  const encryptionKey = Identity.randomBytes(32)
+  t.exception.all(() => new Blobs({ store: other, network, encryptionKey }), /INVALID/)
+  t.ok(
+    new Blobs({ store: store.namespace('x'), network, encryptionKey }),
+    'a session of its store is fine'
+  )
 })
 
 test('construction: encryptionKey is required, the identity never stands in', async (t) => {
@@ -281,10 +294,10 @@ test('decodeId rejects a truncated payload', (t) => {
 // Build A (writer) + B (replica of A) connected over the testnet.
 async function makeReplicationPair(t, { topic } = {}) {
   const testnet = await makeTestnet(t)
-  const netA = await makeNet(t, testnet)
-  const netB = await makeNet(t, testnet)
   const { store: storeA } = await makeStore(t)
   const { store: storeB } = await makeStore(t)
+  const netA = await makeNet(t, testnet, { store: storeA })
+  const netB = await makeNet(t, testnet, { store: storeB })
 
   const blobsA = new Blobs({
     store: storeA,

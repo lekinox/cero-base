@@ -58,6 +58,16 @@ test('constructor: rejects missing store', async (t) => {
   t.exception.all(() => new Database({ identity: {}, spec }), /store is required/)
 })
 
+test('constructor: refuses a store its network does not replicate', async (t) => {
+  const { store } = await makeStore(t)
+  const { store: other } = await makeStore(t)
+  const network = new Network({ store })
+  const identity = await Identity.create()
+  const opts = { identity, network, spec, encryptionKey: Identity.randomBytes(32) }
+  t.exception.all(() => new Database({ store: other, ...opts }), /INVALID/)
+  t.ok(new Database({ store: store.namespace('x'), ...opts }), 'a session of its store is fine')
+})
+
 test('constructor: rejects missing identity', async (t) => {
   const { store } = await makeStore(t)
   t.exception.all(() => new Database({ store, spec }), /identity is required/)
@@ -119,25 +129,26 @@ test('ready/close: opens and closes cleanly', async (t) => {
 // tear it down for the others
 test('close: one database does not destroy the network-shared wakeup', async (t) => {
   const testnet = await makeTestnet(t)
-  const network = new Network({ bootstrap: testnet.bootstrap })
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const network = new Network({ bootstrap: testnet.bootstrap, store })
   await network.ready()
   t.teardown(() => network.close().catch(() => {}), { order: 9 })
 
   const identity = await Identity.create()
-  const mk = async () => {
-    const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const mk = async (namespace) => {
     const db = new Database({
       store,
       identity,
       network,
       spec,
+      namespace,
       encryptionKey: Identity.randomBytes(32)
     })
     await db.ready()
     return db
   }
-  const a = await mk()
-  const b = await mk()
+  const a = await mk('a')
+  const b = await mk('b')
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
   await b.bootstrap({ name: 'b' })
 
@@ -153,7 +164,7 @@ test('replicate: N databases on one store replicate it once per connection', asy
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const network = new Network({ bootstrap: testnet.bootstrap })
+  const network = new Network({ bootstrap: testnet.bootstrap, store })
   await network.ready()
   t.teardown(() => network.close().catch(() => {}), { order: 9 })
 
@@ -175,7 +186,7 @@ test('replicate: N databases on one store replicate it once per connection', asy
   await mkDb('a')
   await mkDb('b')
 
-  const peer = new Network({ bootstrap: testnet.bootstrap })
+  const peer = new Network({ bootstrap: testnet.bootstrap, store: (await makeStore(t)).store })
   await peer.ready()
   t.teardown(() => peer.close().catch(() => {}), { order: 9 })
   await network.join(topic).flush()
@@ -183,7 +194,7 @@ test('replicate: N databases on one store replicate it once per connection', asy
   await waitForConnection(network)
   await new Promise((r) => setTimeout(r, 100))
 
-  t.is(store.streamTracker.records.length, 1, 'one stream record despite two attached bees')
+  t.is(store.streamTracker.records.length, 1, 'one stream record despite two bees')
 })
 
 test('close is idempotent', async (t) => {
@@ -196,20 +207,14 @@ test('close is idempotent', async (t) => {
   t.is(db.closed, true)
 })
 
-test('close detaches the bee from the network (no _replicateables leak)', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { db, network } = await makePeer(t, testnet)
-  t.is(network._replicateables.size, 1, 'bee attached on open')
-  await db.close()
-  t.is(network._replicateables.size, 0, 'bee detached on close — not left to replicate forever')
-})
-
 // a database whose only device is gone: its key and identity, and nobody to replicate it from
 async function abandoned(t, testnet) {
-  const { db: gone, identity } = await makePeer(t, testnet)
+  const { db: gone, identity, network } = await makePeer(t, testnet)
   await gone.bootstrap({ name: 'gone' })
   const { key, encryptionKey } = gone
   await gone.close()
+  // its store still serves the closed database's cores while the network is up
+  await network.close()
   return makePeer(t, testnet, { identity, key, encryptionKey })
 }
 
@@ -2194,7 +2199,7 @@ async function reopen(t, testnet, { db, store, identity, discovery, network }, r
   await discovery.destroy()
   await offline({ db, network })
   const { topic, mirrors, key, encryptionKey } = room
-  const net = new Network({ bootstrap: testnet.bootstrap, store: mirrors && store, mirrors })
+  const net = new Network({ bootstrap: testnet.bootstrap, store, mirrors })
   await net.ready()
   const joined = net.join(topic)
   const reopened = new Database({
@@ -2406,6 +2411,7 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
 
   const network = new Network({
     bootstrap: testnet.bootstrap,
+    store,
     presence: { active: 1, announced: 0, idle: 50 }
   })
   await network.ready()
@@ -2819,7 +2825,6 @@ test('gate: a database rebuilt past skipped ops still leaves its topic on close'
 
   await again.close()
   t.is(network.presence.mode(discoveryKey), null, 'off its topic once closed')
-  t.is(network._replicateables.size, 0, 'and no closed bee left attached')
 })
 
 // ─── diff watchers: Database.changes ──────────────────────────────────────

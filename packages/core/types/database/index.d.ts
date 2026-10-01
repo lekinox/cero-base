@@ -12,7 +12,7 @@ export type DatabaseOpts = {
      */
     identity: import('../identity/index.js').Identity;
     /**
-     * Optional swarm; required for multi-writer replication.
+     * Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
      */
     network?: import('../network/index.js').Network;
     /**
@@ -147,7 +147,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @typedef {object} DatabaseOpts
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
- * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
+ * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
  * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.

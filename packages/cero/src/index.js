@@ -162,10 +162,7 @@ async function start(dir, spec, opts = {}) {
     const setups = Promise.all(me.extensions.map(async (ext) => ext.setup?.(me)))
     setups.catch(() => {}) // a failed setup surfaces below, once the root can close
     await me.ready()
-    me.once('close', () => {
-      network.detach(pointer)
-      pointer.close().catch(safetyCatch)
-    })
+    me.once('close', () => pointer.close().catch(safetyCatch))
 
     if (!done) {
       if (creating && pointer.length === 0) {

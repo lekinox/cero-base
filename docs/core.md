@@ -44,22 +44,22 @@ An identity is frozen, and `JSON.stringify` shows only its `id`. A device's writ
 
 ## Network
 
-Hyperswarm plus wakeup, with managed discovery sessions.
+Hyperswarm plus wakeup, with managed discovery sessions. Every connection, swarm or injected, replicates the network's store, so every core in it rides every peer.
 
 ```js
 import { Network } from '@cero-base/core'
 
-// store: a Corestore; topic: 32 bytes; core: any hypercore
+// store: a Corestore; topic: 32 bytes; core: a hypercore in the store
 const net = new Network({ store, channel: 'my-app' })
 await net.ready()
 const discovery = net.join(topic) // announce and look up
 await net.flush({ timeout: 2000 }) // wait for the DHT, 2 s at most
-net.attach(core) // replicate it on every connection
+net.attach(core) // keep it on the mirrors too
 ```
 
 | Option         | Meaning                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| `store`        | A Corestore. Every connection replicates it; mirrors and the Mailbox need it.              |
+| `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                   |
 | `identity`     | The swarm keypair. A random one without.                                                   |
 | `channel`      | Only peers on the same channel meet.                                                       |
 | `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                            |
@@ -74,11 +74,11 @@ net.attach(core) // replicate it on every connection
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `net.join(topic, { mode })`                                        | A `Discovery`. `'active'` (default) announces and looks up, `'passive'` only announces. It has `mode`, `activate()`, `deactivate()`, `destroy()`, and `flush()`, which waits for the current announce with no bound. |
 | `net.flush({ timeout })`                                           | Wait for pending announces and lookups, `timeout` ms at most (500).                                                                                                                                                  |
-| `net.attach(core)`, `net.detach(core)`                             | Replicate a core, bee or database on every current and future connection, and on the mirrors; stop for new ones.                                                                                                     |
-| `net.replicate(target)`                                            | Replicate once on the current connections.                                                                                                                                                                           |
+| `net.attach(core)`                                                 | Keep a core or a database's bee on the mirrors while its writers are offline. A mirror drops it once it closes.                                                                                                      |
+| `net.replicates(store)`                                            | Whether `store` is this network's store or a session of it: only those cores ride its connections.                                                                                                                   |
 | `net.suspend()`, `net.resume()`                                    | Drop the sockets and keep the state; come back.                                                                                                                                                                      |
 | `net.inject(stream, { isInitiator })`                              | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                |
-| `net.peering()`                                                    | The mirror client, built on first use. Needs `store`.                                                                                                                                                                |
+| `net.peering()`                                                    | The mirror client, built on first use.                                                                                                                                                                               |
 | `swarm`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live swarm and its state.                                                                                                                                                                                        |
 | `'connection'` event                                               | `(stream, info)` per connection.                                                                                                                                                                                     |
 
@@ -120,7 +120,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 | Option          | Meaning                                                                                 |
 | --------------- | --------------------------------------------------------------------------------------- |
-| `store`         | A Corestore. `REQUIRED`.                                                                |
+| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).    |
 | `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                        |
 | `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                           |
 | `network`       | Replicates it. Without one it stays on the device.                                      |
@@ -176,7 +176,7 @@ A device's mailbox: it receives at the addresses it holds the secret of, and sen
 import b4a from 'b4a'
 import { Identity, Mailbox } from '@cero-base/core'
 
-// network: a Network with a store, as above
+// network: a Network, as above
 const mailbox = new Mailbox(network, { onerror: console.error })
 await mailbox.ready()
 
@@ -331,6 +331,8 @@ const bytes = await blobs.get(blobId)
 | `get(blobId)`, `createReadStream(blobId)`                 | The bytes, fetched from peers when not on the device; or a stream of them.                                                                                                                                                                                                                               |
 | `clear(blobId)`                                           | Drop its blocks from this device.                                                                                                                                                                                                                                                                        |
 | `key`, `id`, `discoveryKey`, `core`                       | The core's key, its z32 id, its topic, the core.                                                                                                                                                                                                                                                         |
+
+With a `network`, `store` is the network's store or a session of it (`INVALID` otherwise): a network replicates its own store only.
 
 `encodeId(coreKey, blobId, type)` and `decodeId(id)`, from `@cero-base/core/blobs/codec`, turn that into the one-string file id Cero stores. `FileServer`, from `@cero-base/core/blobs/server`, serves a file id at a local url: `new FileServer({ store, resolve })`, `listen()`, `getLink(id)`, `close()`. `cero.put(room.files, …)` is these three plus a `files` row.
 

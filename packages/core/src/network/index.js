@@ -32,20 +32,18 @@ export function channelTopic(topic, channel) {
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
- * @property {import('corestore')} [store]                          Corestore; required for mirrors (blind peers replicate its cores).
+ * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
- *
- * @typedef {{ replicate: (stream: import('@hyperswarm/secret-stream')) => unknown }} Replicable
  */
 
 /**
- * Hyperswarm peer-discovery + replication multiplexer. Wraps a swarm and a
- * shared wakeup channel, replicating any attached resource onto every peer.
+ * Hyperswarm peer discovery plus a shared wakeup channel. Every connection, swarm or injected,
+ * replicates the store.
  */
 export class Network extends ReadyResource {
-  /** @param {NetworkOpts} [opts] */
+  /** @param {NetworkOpts} opts */
   constructor({
     identity,
     bootstrap,
@@ -59,14 +57,15 @@ export class Network extends ReadyResource {
     onerror = (err) => console.error(err)
   } = {}) {
     super()
+    if (!store) throw CeroError.REQUIRED('store')
     this.identity = identity || null
     this.bootstrap = bootstrap || null
     this.firewall = firewall || null
     this.relayThrough = relayThrough || null
     this.backoffs = backoffs || null
     this.channel = channel || null
-    /** @type {import('corestore') | null} */
-    this.store = store || null
+    /** @type {import('corestore')} */
+    this.store = store
     /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map((k) => (typeof k === 'string' ? decodeKey(k) : k))
 
@@ -76,8 +75,6 @@ export class Network extends ReadyResource {
     this.wakeup = new ProtomuxWakeup()
     this.presence = new Presence(this, presence)
 
-    /** @private */
-    this._replicateables = new Set()
     /** @private */
     this._discoveries = new Set()
     /** @private */
@@ -141,17 +138,10 @@ export class Network extends ReadyResource {
       }
       dropIfSilent(stream)
       stream.on('close', () => this._lose(stream.remotePublicKey))
-      this.wakeup.addStream(stream)
-      for (const r of this._replicateables) replicateInto(r, stream)
-      this.emit('connection', stream, info)
+      this._add(stream, info)
     })
 
-    if (this.store) {
-      // mailbox cores live in the store: every connection replicates it, so a listener can fetch them
-      const store = this.store
-      this._replicateables.add({ store, replicate: (stream) => store.replicate(stream) })
-      if (this.mirrors.length) this.peering()
-    }
+    if (this.mirrors.length) this.peering()
   }
 
   /** @private */
@@ -225,10 +215,15 @@ export class Network extends ReadyResource {
     conn.on('close', () => this._injected.delete(conn))
     conn.on('error', safetyCatch) // a dropped radio link must not crash the host
 
-    this.wakeup.addStream(conn)
-    for (const r of this._replicateables) replicateInto(r, conn)
-    this.emit('connection', conn, { injected: true })
+    this._add(conn, { injected: true })
     return conn
+  }
+
+  /** @private */
+  _add(conn, info) {
+    this.wakeup.addStream(conn)
+    this.store.replicate(conn)
+    this.emit('connection', conn, info)
   }
 
   /**
@@ -239,7 +234,6 @@ export class Network extends ReadyResource {
    */
   peering() {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
-    if (!this.store) throw CeroError.REQUIRED('store')
     if (!this._blindPeering) {
       this._blindPeering = new BlindPeering(this.swarm.dht, this.store, {
         blindPeers: this.mirrors.map((key) => ({ key })),
@@ -312,21 +306,27 @@ export class Network extends ReadyResource {
   }
 
   /**
-   * Register a replicable resource (hypercore, autobee, hyperdb).
-   * It is replicated on every current and future swarm connection.
+   * Whether `store` replicates on this network's connections: the network's store or a session of it.
    *
-   * @param {Replicable} core
+   * @param {import('corestore')} store
+   * @returns {boolean}
+   */
+  replicates(store) {
+    return (store.root || store) === (this.store.root || this.store)
+  }
+
+  /**
+   * Keep a core or an autobee on the mirrors, so it stays reachable while its writers are
+   * offline. It rides the connections already, from the store; a mirror drops it once it closes.
+   *
+   * @param {import('hypercore') | import('autobee')} core
    * @returns {void}
    */
   attach(core) {
     if (!core) throw CeroError.REQUIRED('core')
-    this._replicateables.add(core)
-    for (const stream of this.connections) replicateInto(core, stream)
-    // mirror the core so it stays available while its writers are offline
-    if (this._blindPeering) {
-      if (Autobee.isAutobee(core)) core.ready().then(() => this._mirror(core), this._onerror)
-      else this._blindPeering.addCoreBackground(core)
-    }
+    if (!this._blindPeering) return
+    if (Autobee.isAutobee(core)) core.ready().then(() => this._mirror(core), this._onerror)
+    else this._blindPeering.addCoreBackground(core)
   }
 
   /** @private */
@@ -342,32 +342,6 @@ export class Network extends ReadyResource {
     bee.once('close', () => {
       for (const view of views) view.close().catch(safetyCatch)
     })
-  }
-
-  /**
-   * Unregister a previously attached resource. New connections will no
-   * longer replicate it (existing replication streams continue).
-   *
-   * @param {Replicable} core
-   * @returns {void}
-   */
-  detach(core) {
-    if (!core) throw CeroError.REQUIRED('core')
-    this._replicateables.delete(core)
-  }
-
-  /**
-   * Replicate a one-off resource onto every current swarm connection
-   * without registering it as a long-lived attachment.
-   *
-   * @param {Replicable} target
-   * @returns {void}
-   */
-  replicate(target) {
-    if (!target || typeof target.replicate !== 'function') {
-      throw CeroError.INVALID('target must be an object with a replicate(stream) method')
-    }
-    for (const stream of this.connections) replicateInto(target, stream)
   }
 
   // hyperswarm stops redialing a peer after a few failed tries and looks it up again only every 10 min
@@ -400,24 +374,6 @@ function dropIfSilent(conn) {
   }, SILENT_TIMEOUT)
   timer.unref()
   conn.once('close', () => clearTimeout(timer))
-}
-
-// corestore replication is store-wide: replicate each root once per connection
-const replicatedRoots = new WeakMap()
-
-function replicateInto(core, stream) {
-  const root = core.store ? core.store.root || core.store : null
-  if (root) {
-    let seen = replicatedRoots.get(stream)
-    if (!seen) replicatedRoots.set(stream, (seen = new WeakSet()))
-    if (seen.has(root)) return
-    seen.add(root)
-  }
-  try {
-    core.replicate(stream)
-  } catch (err) {
-    safetyCatch(err)
-  }
 }
 
 function isTopic(x) {
