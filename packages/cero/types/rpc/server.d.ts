@@ -137,15 +137,15 @@ export declare class Server extends RPCServer {
      */
     private _wireData;
     /**
-     * Register invite/revoke/join RPC handlers.
-     * @private
-     */
-    private _wirePairing;
-    /**
-     * Register add/open/close/leave RPC handlers for child handles.
+     * Register add/open/join/close/leave RPC handlers for child handles.
      * @private
      */
     private _wireHandles;
+    /**
+     * Register the `verb` handler: the operator by its name, on the handle, as in the worker.
+     * @private
+     */
+    private _wireVerbs;
     /**
      * Look up a live handle by id, throwing if unknown. Binds the handle's
      * codec on first use.
@@ -172,11 +172,6 @@ export declare class Server extends RPCServer {
      * @private
      */
     private _identity;
-    /**
-     * Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked.
-     * @private
-     */
-    private _wireSeed;
 }
 /**
  * Construct a `Server`, wait for it to be ready, and return it.

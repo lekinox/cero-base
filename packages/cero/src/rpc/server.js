@@ -15,6 +15,8 @@ import {
   invite,
   revoke,
   rotate,
+  accept,
+  deny,
   cancel,
   leave,
   suspend,
@@ -24,6 +26,24 @@ import {
   phrase,
   nearby
 } from '../lib/operators.js'
+
+// what a UI reaches by name: these operators, never close or a handle's privates
+const VERBS = new Map(
+  Object.entries({
+    invite,
+    revoke,
+    rotate,
+    accept,
+    deny,
+    cancel,
+    suspend,
+    resume,
+    activate,
+    deactivate,
+    phrase,
+    nearby
+  })
+)
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCServer} BaseRPCServer
@@ -114,10 +134,9 @@ export class Server extends RPCServer {
     this.handles.set(this.me.id, this.me)
     await this.me.fileServer.listen()
     this._wireData()
-    this._wirePairing()
     this._wireHandles()
+    this._wireVerbs()
     this._wireRestore()
-    this._wireSeed()
   }
 
   /** @private */
@@ -279,71 +298,7 @@ export class Server extends RPCServer {
   }
 
   /**
-   * Register invite/revoke/join RPC handlers.
-   * @private
-   */
-  _wirePairing() {
-    this.rpc.onInvite(async ({ handle, role, ttl, reuse, confirm, data }) => {
-      const code = await invite(this._resolve(handle), {
-        role: role || undefined,
-        ttl: ttl || undefined,
-        reuse: reuse === true,
-        confirm: confirm === true,
-        data: data || null
-      })
-      return { invite: code }
-    })
-
-    this.rpc.onRevoke(async ({ handle, invite: code }) => {
-      return { ok: await revoke(this._resolve(handle), code) }
-    })
-
-    this.rpc.onRotate(({ handle }) => rotate(this._resolve(handle)))
-
-    this.rpc.onAnswer(async ({ handle, id, accept, role, reason }) => {
-      await this._resolve(handle)._answer(id, { accept, role: role || undefined, reason })
-      return {}
-    })
-
-    this.rpc.onSuspend(async ({ handle }) => {
-      await suspend(this._resolve(handle))
-      return {}
-    })
-
-    this.rpc.onResume(async ({ handle }) => {
-      await resume(this._resolve(handle))
-      return {}
-    })
-
-    this.rpc.onSetActive(async ({ handle, active: on }) => {
-      await (on ? activate : deactivate)(this._resolve(handle))
-      return {}
-    })
-
-    this.rpc.onNearby(async ({ args }) => {
-      await nearby(this.me, ...args)
-      return {}
-    })
-
-    this.rpc.onCancel(async ({ invite: code }) => ({ ok: await cancel(this.me, code) }))
-
-    this.rpc.onJoin(async ({ parent, ref, invite }) => {
-      if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
-      let child
-      try {
-        child = await this.me._join(invite, ref)
-      } catch (err) {
-        if (err.code !== 'DENIED') throw err
-        return { id: '', type: ref, denied: true, reason: err.reason || '' }
-      }
-      const id = child.id
-      this.handles.set(id, child)
-      return { id, type: ref, name: '' }
-    })
-  }
-
-  /**
-   * Register add/open/close/leave RPC handlers for child handles.
+   * Register add/open/join/close/leave RPC handlers for child handles.
    * @private
    */
   _wireHandles() {
@@ -368,6 +323,20 @@ export class Server extends RPCServer {
       return { id: row, type: data.type, name: data.name || '' }
     })
 
+    this.rpc.onJoin(async ({ parent, ref, invite }) => {
+      if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
+      let child
+      try {
+        child = await this.me._join(invite, ref)
+      } catch (err) {
+        if (err.code !== 'DENIED') throw err
+        return { id: '', type: ref, denied: true, reason: err.reason || '' }
+      }
+      const id = child.id
+      this.handles.set(id, child)
+      return { id, type: ref, name: '' }
+    })
+
     this.rpc.onCloseHandle(async ({ handle }) => {
       const h = this.handles.get(handle)
       if (!h || h === this.me) return {}
@@ -382,6 +351,25 @@ export class Server extends RPCServer {
       this._endWatches(handle)
       this.handles.delete(handle)
       return {}
+    })
+  }
+
+  /**
+   * Register the `verb` handler: the operator by its name, on the handle, as in the worker.
+   * @private
+   */
+  _wireVerbs() {
+    this.rpc.onVerb(async ({ handle, verb, args }) => {
+      const run = VERBS.get(verb)
+      if (!run) throw CeroError.UNKNOWN('verb', verb)
+      let data
+      try {
+        data = await run(this._resolve(handle), ...c.decode(c.any, args))
+      } catch (err) {
+        // bare-rpc rethrows a TypeError and ends the worker: a bad argument fails only the call
+        throw Object.assign(new Error(err.message), { code: err.code })
+      }
+      return { data: data === undefined ? null : c.encode(c.any, data) }
     })
   }
 
@@ -436,17 +424,6 @@ export class Server extends RPCServer {
       fileBase: `http://127.0.0.1:${fs.port}`,
       fileToken: fs.server.token || ''
     }
-  }
-
-  /**
-   * Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked.
-   * @private
-   */
-  _wireSeed() {
-    this.rpc.onSeed(async () => {
-      if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      return { phrase: await phrase(this.me) }
-    })
   }
 }
 

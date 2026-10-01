@@ -96,7 +96,7 @@ const room = await cero.open(me.room, { name: 'team' })
 cero.watch(room.notes).on('data', ({ data }) => render(data)) // render: your UI's
 ```
 
-`cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses, `rotate` included.
+`cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses: the worker runs the same operator on the same context, so it returns and refuses as it does there, and it runs nothing else the UI names.
 
 Each watch item is a full result, and with `changes: true` the client diffs them itself, so a slow link skips items, never changes. A reloaded UI is a new client on the same worker: its old streams end.
 

@@ -201,24 +201,14 @@ export declare const rpc: {
         op: import("@cero-base/core").Prim;
         data: import("@cero-base/core").Prim;
     };
-    'req-invite': {
+    'req-verb': {
         handle: import("@cero-base/core").Prim;
-        role: import("@cero-base/core").Prim;
-        ttl: import("@cero-base/core").Prim;
-        reuse: import("@cero-base/core").Prim;
-        data: import("@cero-base/core").Prim;
-        confirm: import("@cero-base/core").Prim;
-    };
-    'req-revoke': {
-        handle: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
+        verb: import("@cero-base/core").Prim;
+        args: import("@cero-base/core").Prim;
     };
     'req-join': {
         parent: import("@cero-base/core").Prim;
         ref: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
-    };
-    'req-cancel': {
         invite: import("@cero-base/core").Prim;
     };
     'req-open': {
@@ -229,10 +219,6 @@ export declare const rpc: {
     'req-handle': {
         handle: import("@cero-base/core").Prim;
     };
-    'req-set-active': {
-        handle: import("@cero-base/core").Prim;
-        active: import("@cero-base/core").Prim;
-    };
     'res-data': {
         data: import("@cero-base/core").Prim;
     };
@@ -240,9 +226,6 @@ export declare const rpc: {
         data: import("@cero-base/core").Prim;
         total: import("@cero-base/core").Prim;
         size: import("@cero-base/core").Prim;
-    };
-    'res-invite': {
-        invite: import("@cero-base/core").Prim;
     };
     'res-handle': {
         id: import("@cero-base/core").Prim;
@@ -264,29 +247,13 @@ export declare const rpc: {
         fileToken: import("@cero-base/core").Prim;
         deviceName: import("@cero-base/core").Prim;
     };
-    'res-seed': {
-        phrase: import("@cero-base/core").Prim;
-    };
     'res-ok': {
         ok: import("@cero-base/core").Prim;
-    };
-    'res-epoch': {
-        epoch: import("@cero-base/core").Prim;
     };
     'res-error': {
         message: import("@cero-base/core").Prim;
         code: import("@cero-base/core").Prim;
         stack: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;
-    };
-    'req-answer': {
-        handle: import("@cero-base/core").Prim;
-        id: import("@cero-base/core").Prim;
-        accept: import("@cero-base/core").Prim;
-        role: import("@cero-base/core").Prim;
-        reason: import("@cero-base/core").Prim;
-    };
-    'req-nearby': {
-        args: import("@cero-base/core").Prim;
     };
 };

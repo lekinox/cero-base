@@ -1,7 +1,7 @@
 // field order is the wire format: append only, never reorder
 import { t } from '../lib/spec.js'
 
-const { string, bytes, int, uint, bool, json, required } = t
+const { string, bytes, int, uint, bool, required } = t
 
 export const main = {
   'del-by-id': {
@@ -228,25 +228,15 @@ export const rpc = {
     op: required(string),
     data: bytes
   },
-  'req-invite': {
+  // an operator by name, run on the handle as in the worker: the args and the result are c.any
+  'req-verb': {
     handle: required(string),
-    role: string,
-    // ms, or a duration like '12h'
-    ttl: string,
-    reuse: bool,
-    data: bytes,
-    confirm: bool
-  },
-  'req-revoke': {
-    handle: required(string),
-    invite: required(string)
+    verb: required(string),
+    args: required(bytes)
   },
   'req-join': {
     parent: required(string),
     ref: required(string),
-    invite: required(string)
-  },
-  'req-cancel': {
     invite: required(string)
   },
   'req-open': {
@@ -257,10 +247,6 @@ export const rpc = {
   'req-handle': {
     handle: required(string)
   },
-  'req-set-active': {
-    handle: required(string),
-    active: bool
-  },
   'res-data': {
     data: bytes
   },
@@ -268,9 +254,6 @@ export const rpc = {
     data: required(bytes),
     total: required(int),
     size: required(int)
-  },
-  'res-invite': {
-    invite: required(string)
   },
   'res-handle': {
     id: required(string),
@@ -293,30 +276,13 @@ export const rpc = {
     fileToken: string,
     deviceName: string
   },
-  'res-seed': {
-    phrase: string
-  },
   'res-ok': {
     ok: bool
-  },
-  'res-epoch': {
-    epoch: required(uint)
   },
   'res-error': {
     message: required(string),
     code: string,
     stack: string,
     reason: string
-  },
-  // accept, or deny with a reason
-  'req-answer': {
-    handle: required(string),
-    id: required(string),
-    accept: bool,
-    role: string,
-    reason: string
-  },
-  'req-nearby': {
-    args: json
   }
 }

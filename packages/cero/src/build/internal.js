@@ -177,29 +177,21 @@ export function dispatches(ns) {
 const COMMANDS = [
   ['init', 'req-empty', 'res-identity'],
   ['restore', 'req-restore', 'res-identity'],
-  ['seed', 'req-empty', 'res-seed'],
+  ['errors', 'req-empty', 'res-error', true],
   ['add-row', 'req-row', 'res-data'],
   ['add-file', 'req-add-file', 'res-data'],
-  ['add-handle', 'req-row', 'res-handle'],
   ['set', 'req-row', 'res-data'],
   ['get', 'req-query', 'res-rows'],
   ['del', 'req-id', 'res-ok'],
   ['watch', 'req-query', 'res-rows', true],
   ['call', 'req-call', 'res-data'],
-  ['invite', 'req-invite', 'res-invite'],
-  ['revoke', 'req-revoke', 'res-ok'],
-  ['join', 'req-join', 'res-handle'],
-  ['cancel', 'req-cancel', 'res-ok'],
+  ['add-handle', 'req-row', 'res-handle'],
   ['open-handle', 'req-open', 'res-handle'],
+  ['join', 'req-join', 'res-handle'],
   ['close-handle', 'req-handle', 'res-ok'],
+  // not a verb: it ends the handle on both sides
   ['leave', 'req-handle', 'res-ok'],
-  ['rotate', 'req-handle', 'res-epoch'],
-  ['set-active', 'req-set-active', 'res-ok'],
-  ['suspend', 'req-handle', 'res-ok'],
-  ['resume', 'req-handle', 'res-ok'],
-  ['errors', 'req-empty', 'res-error', true],
-  ['answer', 'req-answer', 'res-ok'],
-  ['nearby', 'req-nearby', 'res-ok']
+  ['verb', 'req-verb', 'res-data']
 ]
 
 /**

@@ -337,36 +337,26 @@ const operators = {
     await this.rpc.call({ handle: this.id, op, data: encoded })
   },
 
-  // the verbs in lib/operators.js land here, and cross to the worker
+  // the verbs in lib/operators.js land here, and cross to the worker, which runs the same operator
 
   /** @private */
-  async _invite({ role, ttl, reuse, confirm, data } = {}) {
-    const { invite } = await this.rpc.invite({
-      handle: this.id,
-      role: role || '',
-      ttl: ttl ? String(ttl) : '',
-      reuse: reuse === true,
-      confirm: confirm === true,
-      data: data || null
-    })
-    return invite
+  _invite(opts) {
+    return this._verb('invite', opts)
   },
 
   /** @private */
-  async _revoke(invite) {
-    const { ok } = await this.rpc.revoke({ handle: this.id, invite })
-    return ok
+  _revoke(invite) {
+    return this._verb('revoke', invite)
   },
 
   /** @private */
-  async _rotate() {
-    const { epoch } = await this.rpc.rotate({ handle: this.id })
-    return { epoch }
+  _rotate() {
+    return this._verb('rotate')
   },
 
   /** @private */
-  async _answer(id, { accept, role, reason }) {
-    await this.rpc.answer({ handle: this.id, id, accept, role: role || '', reason: reason || '' })
+  _answer(id, { accept, role, reason }) {
+    return accept ? this._verb('accept', { id }, { role }) : this._verb('deny', { id }, reason)
   },
 
   /** @private */
@@ -375,33 +365,43 @@ const operators = {
   },
 
   /** @private */
-  async _cancel(invite) {
-    return (await this.rpc.cancel({ invite })).ok
+  _cancel(invite) {
+    return this._verb('cancel', invite)
   },
 
   /** @private */
-  async _suspend() {
-    await this.rpc.suspend({ handle: this.id })
+  _suspend() {
+    return this._verb('suspend')
   },
 
   /** @private */
-  async _resume() {
-    await this.rpc.resume({ handle: this.id })
+  _resume() {
+    return this._verb('resume')
   },
 
   /** @private */
-  async _active(on) {
-    await this.rpc.setActive({ handle: this.id, active: on })
+  _active(on) {
+    return this._verb(on ? 'activate' : 'deactivate')
   },
 
   /** @private */
-  async _phrase() {
-    return (await this.rpc.seed({})).phrase || null
+  _phrase() {
+    return this._verb('phrase')
   },
 
   /** @private */
-  async _nearby(on, opts) {
-    await this.rpc.nearby({ args: [on, opts] })
+  _nearby(on, opts) {
+    return this._verb('nearby', on, opts)
+  },
+
+  /** @private */
+  async _verb(verb, ...args) {
+    const { data } = await this.rpc.verb({
+      handle: this.id,
+      verb,
+      args: c.encode(c.any, given(args))
+    })
+    return data ? c.decode(c.any, data) : undefined
   }
 }
 
@@ -654,9 +654,16 @@ const ZERO = {
 // c.any carries undefined as null, and in a query undefined is absent
 function toWire(query) {
   if (query === undefined) return null
-  const defined =
-    query && typeof query === 'object'
-      ? Object.fromEntries(Object.entries(query).filter(([, v]) => v !== undefined))
-      : query
-  return c.encode(c.any, defined)
+  return c.encode(c.any, query && typeof query === 'object' ? defined(query) : query)
+}
+
+// an option or a last argument left undefined stays absent, so the operator's default applies
+function given(args) {
+  const out = args.map((arg) => (arg?.constructor === Object ? defined(arg) : arg))
+  while (out.length && out[out.length - 1] === undefined) out.pop()
+  return out
+}
+
+function defined(obj) {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined))
 }

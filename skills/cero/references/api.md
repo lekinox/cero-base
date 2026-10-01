@@ -319,6 +319,7 @@ const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
 
 - A client root has `id`, `device`, its refs and `local`. A handle has `id`, `type`, `name` and its refs.
 - `before`, `after`, `tx` and `peek` stay in the worker. `status`, `joins`, `nearby`, `requests` and `cero.phrase(me)` read as in process.
+- Every other verb runs in the worker as the same operator, on the context it is given: the same result, the same refusal. The worker runs only the operators, so nothing else on a context is reachable from the UI.
 - An error crosses with its `code` and `message`, and a denied join with its `reason`: match `err.code`, `err.rule` stays in the worker. The worker's background errors reach `onerror` with `code`, `message`, `stack` and `reason`.
 - Opening or joining a handle from inside a handle is `UNSUPPORTED`.
 
