@@ -2,6 +2,7 @@ import { Readable } from 'streamx'
 
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 import { onAbort, subscribe } from '@cero-base/core/utils'
+import { CeroError } from '@cero-base/core/errors'
 
 /**
  * @typedef {import('./refs.js').Ref} Ref
@@ -153,11 +154,9 @@ function hook(phase, ref, fn, opts) {
 // handle refs read their rows from the parent's `handles` collection, filtered by type
 const parentStore = (ref) => (ref.handle.root ? ref.handle.root.store : ref.handle.store)
 
-const normalize = (rows, name) => {
-  if (!Array.isArray(rows)) return { data: rows?.type === name ? rows : null }
-  const data = rows.filter((r) => r.type === name)
-  return { data, total: data.length, size: data.length }
-}
+// a list asks the store for the type, so limit and total count only it; an id is checked after
+const ofType = (ref, q) => (typeof q === 'string' ? q : { ...q, type: ref.name })
+const typed = (row, name) => ({ data: row?.type === name ? row : null })
 
 function resolveResult(ref, res) {
   if (res == null || res.data == null) return res
@@ -201,8 +200,8 @@ export async function get(ref, q) {
   const live = ref.handle._live?.[ref.name]
   if (live) return live.get(q)
   if (ref.kind === 'handle') {
-    const { data } = await parentStore(ref).get('handles', q)
-    return normalize(data, ref.name)
+    const res = await parentStore(ref).get('handles', ofType(ref, q))
+    return typeof q === 'string' ? typed(res.data, ref.name) : res
   }
   const res = await ref.handle.store.get(ref.name, q)
   return resolveResult(ref, res)
@@ -244,10 +243,8 @@ function source(ref, q) {
     return { src: subscribe({ get: () => live.get(q), watch: live.watch }), map: (res) => res }
   }
   if (ref.kind === 'handle') {
-    return {
-      src: parentStore(ref).watch('handles', q),
-      map: (snap) => normalize(snap?.data, ref.name)
-    }
+    const map = typeof q === 'string' ? (snap) => typed(snap?.data, ref.name) : (res) => res
+    return { src: parentStore(ref).watch('handles', ofType(ref, q)), map }
   }
   return { src: ref.handle.store.watch(ref.name, q), map: (res) => resolveResult(ref, res) }
 }
@@ -327,12 +324,20 @@ function same(a, b) {
  * @param {string | { invite?: string, id?: string, name?: string } | undefined} [arg]
  * @returns {Promise<Context>}  The resolved child handle.
  */
-export function open(ref, arg) {
-  if (typeof arg === 'string') return ref.handle._join(arg, ref.name)
-  if (arg && typeof arg.invite === 'string') return ref.handle._join(arg.invite, ref.name)
-  if (arg && typeof arg.id === 'string') return ref.handle._load(ref.name, arg.id)
-  return ref.handle._create(ref.name, arg)
+export async function open(ref, arg = {}) {
+  const opts = typeof arg === 'string' ? { invite: arg } : arg
+  const [key, ...more] = opts && typeof opts === 'object' ? Object.keys(opts) : [null]
+  // one of the three, or nothing: a typo never quietly creates a handle
+  const known = key === undefined || (OPENS.has(key) && typeof opts[key] === 'string')
+  if (more.length || !known) {
+    throw CeroError.INVALID('open takes an invite, { invite }, { id }, { name } or nothing')
+  }
+  if (key === 'invite') return ref.handle._join(opts.invite, ref.name)
+  if (key === 'id') return ref.handle._load(ref.name, opts.id)
+  return ref.handle._create(ref.name, opts)
 }
+
+const OPENS = new Set(['invite', 'id', 'name'])
 
 /**
  * Mint an invite code into a handle.
@@ -490,14 +495,16 @@ export function phrase(me) {
 }
 
 /**
- * Choose what the device's Bluetooth radio does: find the mesh (`true`), nothing (`false`), or
- * hold one invite's rendezvous (its code) so a joiner in range finds this device with no internet,
- * until the next call or the invite expires.
+ * Turn the device's Bluetooth radio on or off, on `opts.topic` or else the default topic: the one
+ * `cero()` opened with, or the channel's own. On, it links with the devices in range on the same
+ * channel and topic, and everything syncs and joins over those links as over the internet.
+ * Nothing is stored: the app sets it at every start.
  *
  * @param {Context} ctx
- * @param {boolean | string} mode
+ * @param {boolean} on
+ * @param {{ topic?: string }} [opts]
  * @returns {Promise<void>}
  */
-export function nearby(ctx, mode) {
-  return ctx._nearby(mode)
+export async function nearby(ctx, on, opts = {}) {
+  return ctx._nearby(on, opts)
 }

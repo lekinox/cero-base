@@ -50,7 +50,9 @@ export declare const cero: {
     activate(ctx: operators.Context): Promise<void>;
     deactivate(ctx: operators.Context): Promise<void>;
     phrase(me: operators.Context): Promise<string>;
-    nearby(ctx: operators.Context, mode: boolean | string): Promise<void>;
+    nearby(ctx: operators.Context, on: boolean, opts?: {
+        topic?: string;
+    }): Promise<void>;
     t: {
         string: import("@cero-base/core").Prim;
         uint: import("@cero-base/core").Prim;

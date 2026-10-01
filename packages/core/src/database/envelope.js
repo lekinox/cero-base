@@ -16,15 +16,19 @@ export function wrap(version, body) {
 }
 
 /**
- * Split an op into contract version and payload. Ops written before the
- * envelope existed carry no sentinel and read as version 0.
+ * Split an op into contract version and payload, or `null` for bytes with no envelope or a cut one.
  *
  * @param {Uint8Array} buf
- * @returns {{ version: number, body: Uint8Array }}
+ * @returns {{ version: number, body: Uint8Array } | null}
  */
 export function unwrap(buf) {
-  if (buf.byteLength === 0 || buf[0] !== SENTINEL) return { version: 0, body: buf }
+  if (buf.byteLength === 0 || buf[0] !== SENTINEL) return null
   const state = { buffer: buf, start: 1, end: buf.byteLength }
-  const version = c.uint.decode(state)
-  return { version, body: buf.subarray(state.start) }
+  try {
+    const version = c.uint.decode(state)
+    return { version, body: buf.subarray(state.start) }
+  } catch {
+    // any writer can append bytes: a version cut short must not throw inside apply
+    return null
+  }
 }

@@ -231,12 +231,16 @@ export declare function deactivate(ctx: Context): Promise<void>;
  */
 export declare function phrase(me: Context): Promise<string>;
 /**
- * Choose what the device's Bluetooth radio does: find the mesh (`true`), nothing (`false`), or
- * hold one invite's rendezvous (its code) so a joiner in range finds this device with no internet,
- * until the next call or the invite expires.
+ * Turn the device's Bluetooth radio on or off, on `opts.topic` or else the default topic: the one
+ * `cero()` opened with, or the channel's own. On, it links with the devices in range on the same
+ * channel and topic, and everything syncs and joins over those links as over the internet.
+ * Nothing is stored: the app sets it at every start.
  *
  * @param {Context} ctx
- * @param {boolean | string} mode
+ * @param {boolean} on
+ * @param {{ topic?: string }} [opts]
  * @returns {Promise<void>}
  */
-export declare function nearby(ctx: Context, mode: boolean | string): Promise<void>;
+export declare function nearby(ctx: Context, on: boolean, opts?: {
+    topic?: string;
+}): Promise<void>;

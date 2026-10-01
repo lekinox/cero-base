@@ -40,10 +40,8 @@ test('Mailbox.getAddress: one secret, one address', (t) => {
   t.absent(b4a.equals(Mailbox.getAddress(crypto.randomBytes(32)), Mailbox.getAddress(secret)))
 })
 
-test('Mailbox: requires a store', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  t.exception(() => new Mailbox(net), /store/)
+test('Mailbox: requires a network', (t) => {
+  t.exception(() => new Mailbox(), /network is required/)
 })
 
 test('Mailbox: send to an address another mailbox receives at', async (t) => {

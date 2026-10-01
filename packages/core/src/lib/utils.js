@@ -1,15 +1,16 @@
 import b4a from 'b4a'
 import { Readable } from 'streamx'
 
-import { ROLE_PERMS, RANK, QUERY_RESERVED } from './constants.js'
+import { ROLE_PERMS, RANK, QUERY_RESERVED, WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 import { CeroError } from './errors.js'
 
 // can() callers need the capability names, and constants.js is not public
 export { WRITE, INVITE, ASSIGN, REMOVE } from './constants.js'
 
+const PERMS = new Set([WRITE, INVITE, ASSIGN, REMOVE])
+
 // binding the db key makes an admission unreplayable across databases
 const ADD_WRITER_TAG = b4a.from('cero/add-writer')
-const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer')
 const JOIN_TAG = b4a.from('cero/join')
 
 // fields the write path stamps itself, always allowed
@@ -18,11 +19,6 @@ const SYSTEM_FIELDS = new Set(['id', 'memberId', 'index', 'createdAt', 'updatedA
 /** @type {(dbKey: Uint8Array, writer: Uint8Array, appender: Uint8Array) => Uint8Array} */
 export function admission(dbKey, writer, appender) {
   return b4a.concat([ADD_WRITER_TAG, dbKey, writer, appender])
-}
-
-/** @type {(dbKey: Uint8Array, writer: Uint8Array) => Uint8Array} */
-export function ownership(dbKey, writer) {
-  return b4a.concat([CLAIM_WRITER_TAG, dbKey, writer])
 }
 
 // what a joiner's identity signs: this database, this invite, this writer, where the keys go
@@ -39,6 +35,9 @@ export function joining(dbKey, invite, writer, reply) {
  * @returns {boolean}
  */
 export function can(role, perm) {
+  if (!PERMS.has(perm)) {
+    throw CeroError.INVALID(`'${perm}' is not a permission: write, invite, assign or remove`)
+  }
   const perms = ROLE_PERMS[role]
   return !!perms && (perms.includes('*') || perms.includes(perm))
 }

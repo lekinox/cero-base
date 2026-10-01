@@ -69,7 +69,7 @@ That is a working, encrypted, offline-first, peer-to-peer app. Your phrase, `awa
 
 | Subpath                      | What it gives you                                                                                                                          |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@cero-base/cero`            | `cero`, `t`, `schema`, `restore`, `toSeed`, `peek`, the 24 operators, `Handle`, `Ref`, `Local`                                             |
+| `@cero-base/cero`            | `cero`, `t`, `schema`, `restore`, `peek`, the 24 operators, `Handle`, `Ref`, `Local`                                                       |
 | `@cero-base/cero/build`      | `build(specDir, schema, opts)`                                                                                                             |
 | `@cero-base/cero/server`     | `serve(ipc, spec, opts)` and `Server`, the worker that owns the data                                                                       |
 | `@cero-base/cero/client`     | `cero(ipc, spec)` (also `connect`), `Client`, `restore`, `t`, `schema` and every operator but `before`, `after` and `tx`, for a UI process |

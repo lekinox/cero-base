@@ -1,5 +1,5 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS, REMOVALS } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
@@ -134,6 +134,7 @@ export function declare(ref, fields) {
  * @param {'main' | 'local'} scope
  * @returns {Array<{ name: string, schema: string, key: string[] }>}
  */
+// frozen once an app ships: collections number by position, so a new one goes after the app's
 export function collections(ns, scope) {
   const out = Object.entries(defs[scope]).map(([name, def]) => ({
     name,
@@ -144,6 +145,8 @@ export function collections(ns, scope) {
     out.push({ name: COUNTERS, schema: `@${ns}/counter`, key: ['name'] })
     out.push({ name: EPOCHS, schema: `@${ns}/epoch`, key: ['epoch'] })
     out.push({ name: REMOVALS, schema: `@${ns}/removal`, key: ['id'] })
+    out.push({ name: REFUSALS, schema: `@${ns}/refusal`, key: ['id'] })
+    out.push({ name: SPENT, schema: `@${ns}/spent`, key: ['id'] })
   }
   return out
 }
@@ -152,18 +155,21 @@ export function collections(ns, scope) {
  * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
+// frozen once an app ships: routes number by position, so a new one goes after the app's
 export function dispatches(ns) {
   return [
     { name: 'add-writer', requestType: `@${ns}/writer` },
     { name: 'del-writer', requestType: `@${ns}/writer` },
-    { name: 'claim-writer', requestType: `@${ns}/claim` },
     ...Object.values(defs.main).flatMap(({ type }) => [
       { name: `add-${type}`, requestType: `@${ns}/${type}` },
       { name: `set-${type}`, requestType: `@${ns}/${type}` },
       { name: `del-${type}`, requestType: `@${ns}/del-by-id` }
     ]),
     { name: 'join', requestType: `@${ns}/join` },
-    { name: 'accept', requestType: `@${ns}/accept` }
+    { name: 'accept', requestType: `@${ns}/accept` },
+    { name: 'deny', requestType: `@${ns}/deny` },
+    { name: 'rotate-key', requestType: `@${ns}/epoch` },
+    { name: 'del-refusal', requestType: `@${ns}/del-by-id` }
   ]
 }
 
@@ -171,29 +177,21 @@ export function dispatches(ns) {
 const COMMANDS = [
   ['init', 'req-empty', 'res-identity'],
   ['restore', 'req-restore', 'res-identity'],
-  ['seed', 'req-empty', 'res-seed'],
+  ['errors', 'req-empty', 'res-error', true],
   ['add-row', 'req-row', 'res-data'],
   ['add-file', 'req-add-file', 'res-data'],
-  ['add-handle', 'req-row', 'res-handle'],
   ['set', 'req-row', 'res-data'],
   ['get', 'req-query', 'res-rows'],
   ['del', 'req-id', 'res-ok'],
   ['watch', 'req-query', 'res-rows', true],
   ['call', 'req-call', 'res-data'],
-  ['invite', 'req-invite', 'res-invite'],
-  ['revoke', 'req-revoke', 'res-ok'],
-  ['join', 'req-join', 'res-handle'],
-  ['cancel', 'req-cancel', 'res-ok'],
+  ['add-handle', 'req-row', 'res-handle'],
   ['open-handle', 'req-open', 'res-handle'],
+  ['join', 'req-join', 'res-handle'],
   ['close-handle', 'req-handle', 'res-ok'],
+  // not a verb: it ends the handle on both sides
   ['leave', 'req-handle', 'res-ok'],
-  ['rotate', 'req-handle', 'res-epoch'],
-  ['set-active', 'req-set-active', 'res-ok'],
-  ['suspend', 'req-handle', 'res-ok'],
-  ['resume', 'req-handle', 'res-ok'],
-  ['errors', 'req-empty', 'res-error', true],
-  ['answer', 'req-answer', 'res-ok'],
-  ['nearby', 'req-nearby', 'res-ok']
+  ['verb', 'req-verb', 'res-data']
 ]
 
 /**

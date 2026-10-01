@@ -155,10 +155,7 @@ const a = await peer(t, testnet, 'laptop')
 await cero.put(a.notes, { text: 'from-a' })
 const phrase = await cero.phrase(a)
 
-const b = await cero(await t.tmp(), spec, {
-  seed: cero.toSeed(phrase),
-  bootstrap: testnet.bootstrap
-})
+const b = await cero(await t.tmp(), spec, { phrase, bootstrap: testnet.bootstrap })
 t.is(b.id, a.id)
 t.not(b.device.id, a.device.id) // its own writer
 await waitUntil(async () => (await cero.get(b.notes)).data.find((n) => n.text === 'from-a'))

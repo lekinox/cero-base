@@ -6,11 +6,7 @@ export type BlobsOpts = {
      */
     store: object;
     /**
-     * Identity supplying the default encryption key.
-     */
-    identity?: import('../identity/index.js').Identity;
-    /**
-     * Optional network used to announce + replicate the core.
+     * Optional network on this store: the core rides its connections and mirrors.
      */
     network?: import('../network/index.js').Network;
     /**
@@ -18,9 +14,9 @@ export type BlobsOpts = {
      */
     key?: Uint8Array;
     /**
-     * Explicit encryption key, overrides `identity.encryptionKey`.
+     * Encrypts the core.
      */
-    encryptionKey?: Uint8Array;
+    encryptionKey: Uint8Array;
     /**
      * Core name in the store when no `key` is given; `blobs` by default.
      */
@@ -30,10 +26,9 @@ export type RawBlobId = import('./codec.js').RawBlobId;
 /**
  * @typedef {object} BlobsOpts
  * @property {object} store                                           Corestore (or compatible) used to host the blob core.
- * @property {import('../identity/index.js').Identity} [identity]     Identity supplying the default encryption key.
- * @property {import('../network/index.js').Network} [network]        Optional network used to announce + replicate the core.
+ * @property {import('../network/index.js').Network} [network]        Optional network on this store: the core rides its connections and mirrors.
  * @property {Uint8Array} [key]                                       Pre-existing blob core key — joins an existing blob feed.
- * @property {Uint8Array} [encryptionKey]                             Explicit encryption key, overrides `identity.encryptionKey`.
+ * @property {Uint8Array} encryptionKey                               Encrypts the core.
  * @property {string} [name]                                          Core name in the store when no `key` is given; `blobs` by default.
  *
  * @typedef {import('./codec.js').RawBlobId} RawBlobId
@@ -41,7 +36,6 @@ export type RawBlobId = import('./codec.js').RawBlobId;
 /** Thin wrapper over a single Hyperblobs core; deals only in raw blobIds. */
 export declare class Blobs extends ReadyResource {
     store: object;
-    identity: import("../index.js").Identity;
     network: import("../index.js").Network;
     encryptionKey: Uint8Array<ArrayBufferLike>;
     name: string;
@@ -51,10 +45,8 @@ export declare class Blobs extends ReadyResource {
     core: import('hypercore') | null;
     /** @type {import('hyperblobs') | null} */
     hyperblobs: import('hyperblobs') | null;
-    /** @private */
-    _discovery;
     /** @param {BlobsOpts} [opts] */
-    constructor({ store, identity, network, key, encryptionKey, name }?: BlobsOpts);
+    constructor({ store, network, key, encryptionKey, name }?: BlobsOpts);
     /**
      * Canonical z32 id of the underlying core (null until ready).
      *

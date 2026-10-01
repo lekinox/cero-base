@@ -7,13 +7,12 @@
  */
 export declare function wrap(version: number, body: Uint8Array): Uint8Array;
 /**
- * Split an op into contract version and payload. Ops written before the
- * envelope existed carry no sentinel and read as version 0.
+ * Split an op into contract version and payload, or `null` for bytes with no envelope or a cut one.
  *
  * @param {Uint8Array} buf
- * @returns {{ version: number, body: Uint8Array }}
+ * @returns {{ version: number, body: Uint8Array } | null}
  */
 export declare function unwrap(buf: Uint8Array): {
     version: number;
     body: Uint8Array;
-};
+} | null;

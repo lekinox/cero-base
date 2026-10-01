@@ -225,6 +225,15 @@ test('build: incremental rebuild over an existing spec stays loadable', async (t
   t.pass('rebuild loads and rotate-key routes')
 })
 
+// a built spec keeps its route numbers, so the routes cero registers ahead of the app's are
+// frozen: one more there takes the id an app route shipped with
+test('build: the app routes start at the id they shipped with', async (t) => {
+  const specDir = await buildInto(t, 'route-ids')
+  const json = await fs.readFile(join(specDir, 'main/dispatch/dispatch.json'), 'utf-8')
+  const ids = Object.fromEntries(JSON.parse(json).schema.map((r) => [r.name, r.id]))
+  t.is(ids['@cero/set-profile'], 25, 'the first app route')
+})
+
 test('fields: bytes is a buffer column, file an id string, the rest map to themselves', (t) => {
   t.alike(
     fields({

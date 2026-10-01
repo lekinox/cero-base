@@ -17,7 +17,7 @@ import {
 test.configure({ timeout: 90000 })
 
 async function room(t, testnet) {
-  const a = await openHandle(t, { local: true, testnet })
+  const a = await openHandle(t, { testnet })
   await a.me.store.bootstrap({ name: 'owner-root' })
   const clinic = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => clinic.close().catch(() => {}))
@@ -32,7 +32,7 @@ test('rejoin: joining a room that is already open returns it, no pairing conflic
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
   const joined = await open(b.me.team, await cero.invite(clinic))
   t.teardown(() => joined.close().catch(() => {}))
@@ -47,7 +47,7 @@ test('rejoin: re-admission after removal while the room is still open', async (t
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
   const joined = await open(b.me.team, await cero.invite(clinic))
   t.teardown(() => joined.close().catch(() => {}))
@@ -72,7 +72,7 @@ test('rejoin: re-admission after removal while the room is still open', async (t
 test('rejoin: a member let back in after a re-key reopens the room and reads its history', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
   const joined = await open(b.me.team, await cero.invite(clinic))
   await waitForConnection(a.net)
@@ -105,7 +105,7 @@ test('rejoin: a revoked device re-joins with a fresh writer', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
   const joined = await open(b.me.team, await cero.invite(clinic))
   await waitForConnection(a.net)
@@ -139,7 +139,7 @@ test('rejoin: after leave() then re-join with a fresh invite', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
   const joined = await open(b.me.team, await cero.invite(clinic))
   await waitForConnection(a.net)
@@ -156,7 +156,7 @@ test('rejoin: two concurrent joins of the same room do not collide', async (t) =
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
 
   // a retry racing a still-pending join (the client times out before the
@@ -171,12 +171,12 @@ test('rejoin: two concurrent joins of the same room do not collide', async (t) =
 test('rejoin: joins to two DIFFERENT rooms can be in flight at once', async (t) => {
   const testnet = await makeTestnet(t)
   const { clinic } = await room(t, testnet)
-  const other = await openHandle(t, { local: true, testnet })
+  const other = await openHandle(t, { testnet })
   await other.me.store.bootstrap({ name: 'other-owner' })
   const gym = await open(other.me.team, { name: 'gym' })
   t.teardown(() => gym.close().catch(() => {}))
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
 
   const [one, two] = await Promise.all([
@@ -194,7 +194,7 @@ test('rejoin: coalesced by room, not by invite string', async (t) => {
   const testnet = await makeTestnet(t)
   const { clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
 
   // two DIFFERENT invites to the same room, in flight together — the in-flight
@@ -213,7 +213,7 @@ test('rejoin: a failed join does not poison later joins of the same room', async
   const id = clinic.id
   const dead = await cero.invite(clinic)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
 
   // nobody serves the invite once the room is closed → the join times out
@@ -240,7 +240,7 @@ test('rejoin: concurrent waiters share the in-flight join failure', async (t) =>
   const dead = await cero.invite(clinic)
   await clinic.close()
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-root' })
 
   const results = await Promise.allSettled([
@@ -260,7 +260,7 @@ test('rejoin: hosting a room while joining another does not collide', async (t) 
   const testnet = await makeTestnet(t)
   const { clinic } = await room(t, testnet)
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'host-and-joiner' })
   const gym = await open(b.me.team, { name: 'gym' }) // b hosts…
   t.teardown(() => gym.close().catch(() => {}))
@@ -270,7 +270,7 @@ test('rejoin: hosting a room while joining another does not collide', async (t) 
   t.ok(joined.id, 'joined while hosting')
 
   // and b's own room still serves invites afterwards
-  const c = await openHandle(t, { local: true, testnet })
+  const c = await openHandle(t, { testnet })
   await c.me.store.bootstrap({ name: 'third' })
   const intoGym = await open(c.me.team, await cero.invite(gym))
   t.teardown(() => intoGym.close().catch(() => {}))
@@ -282,9 +282,9 @@ test('rejoin: reuse invite admits two identities concurrently', async (t) => {
   const { clinic } = await room(t, testnet)
   const invite = await cero.invite(clinic, { reuse: true })
 
-  const b = await openHandle(t, { local: true, testnet })
+  const b = await openHandle(t, { testnet })
   await b.me.store.bootstrap({ name: 'peer-b' })
-  const c = await openHandle(t, { local: true, testnet })
+  const c = await openHandle(t, { testnet })
   await c.me.store.bootstrap({ name: 'peer-c' })
 
   const [one, two] = await Promise.all([open(b.me.team, invite), open(c.me.team, invite)])

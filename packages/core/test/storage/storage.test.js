@@ -86,11 +86,10 @@ for (const backend of backends) {
     t.is(data, null)
   })
 
-  test(`[${backend}] put on single also works (acts like set)`, async (t) => {
+  test(`[${backend}] put on a single is INVALID: a single is written with set`, async (t) => {
     const { storage } = await make(t, backend)
-    await storage.put('settings', { entropy: b4a.from('x') })
-    const { data } = await storage.get('settings')
-    t.alike(data.entropy, b4a.from('x'))
+    await t.exception(storage.put('settings', { entropy: b4a.from('x') }), /INVALID.*set/)
+    t.is((await storage.get('settings')).data, null, 'nothing written')
   })
 
   // ─── put / set on collection ───────────────────────────────────────────────

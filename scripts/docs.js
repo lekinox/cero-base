@@ -9,7 +9,6 @@ import { cero } from '@cero-base/cero'
 import { cero as client } from '@cero-base/cero/client'
 import { Database } from '@cero-base/core/database'
 import { Pairing } from '@cero-base/core/pairing'
-import { Request } from '../packages/core/src/pairing/request.js'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { Network } from '@cero-base/core/network'
 import { Identity } from '@cero-base/core/identity'
@@ -31,7 +30,6 @@ const CORE = {
   db: Database.prototype,
   room: Database.prototype,
   pairing: Pairing.prototype,
-  request: Request.prototype,
   mailbox: Mailbox.prototype,
   net: Network.prototype,
   network: Network.prototype,

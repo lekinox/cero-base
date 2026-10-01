@@ -19,7 +19,7 @@ test.configure({ timeout: 900000 })
 async function open(t) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec })
+  const db = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
   await db.ready()
   await db.bootstrap({ name: 'bench', isMobile: false })
   t.teardown(() => db.close().catch(() => {}), { order: 5 })

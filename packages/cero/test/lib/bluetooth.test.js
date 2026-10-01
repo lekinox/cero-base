@@ -1,5 +1,6 @@
 import test from 'brittle'
 import b4a from 'b4a'
+import { Duplex } from 'streamx'
 import process from 'process'
 import { rmSync } from 'fs'
 import { dirname, join } from 'path'
@@ -10,7 +11,7 @@ import { cero, put, set, get, watch, open as openRef } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { Bluetooth } from '../../src/lib/bluetooth.js'
 import { spec } from '../fixtures/spec/index.js'
-import { makeTestnet, waitUntil } from '../helpers/index.js'
+import { makeTestnet, waitUntil, nextRequest } from '../helpers/index.js'
 import { makeMockBluetooth, makeStateBackend } from 'ble-swarm/mock.js'
 
 test.configure({ timeout: 90000 })
@@ -34,7 +35,7 @@ async function open(t, opts = {}) {
 }
 
 test('no backend → the transport reports unsupported, start() is a safe no-op', async (t) => {
-  const me = await open(t, { bluetooth: false })
+  const me = await open(t)
   const bt = new Bluetooth(me.network, {
     identity: me.identity,
     keyPair: me.store.keyPair,
@@ -47,30 +48,75 @@ test('no backend → the transport reports unsupported, start() is a safe no-op'
   await bt.close()
 })
 
-test('bluetooth: true auto-starts and reaches "on" when the adapter is powered', async (t) => {
-  const me = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+test('bluetooth: { on: true } starts the radio at open, "on" when the adapter is powered', async (t) => {
+  const me = await open(t, { bluetooth: { on: true, backend: makeMockBluetooth() } })
   t.is(await radioOf(me), 'on', 'advertising + scanning')
   t.absent(await linked(me), 'no peers alone')
 })
 
 test('adapter powered off → state waiting, not on', async (t) => {
-  const me = await open(t, { bluetooth: { backend: makeStateBackend('poweredOff') } })
+  const me = await open(t, { bluetooth: { on: true, backend: makeStateBackend('poweredOff') } })
   t.is(await radioOf(me), 'waiting', 'waits for the adapter')
 })
 
 test('adapter unauthorized → state surfaced, never silent', async (t) => {
-  const me = await open(t, { bluetooth: { backend: makeStateBackend('unauthorized') } })
+  const me = await open(t, { bluetooth: { on: true, backend: makeStateBackend('unauthorized') } })
   t.is(await radioOf(me), 'unauthorized')
 })
 
-test('nearby: without the bluetooth option the radio is not there to turn on', async (t) => {
-  const me = await open(t)
-  t.is(await radioOf(me), null)
-  await t.exception(cero.nearby(me, true), /bluetooth option/)
+test('nearby: every cero() has the radio, off until the app turns it on', async (t) => {
+  const me = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  t.is(await radioOf(me), 'off', 'off at open')
+  await cero.nearby(me, true)
+  t.is(await radioOf(me), 'on', 'the app turned it on')
+  await cero.nearby(me, false)
+  t.is(await radioOf(me), 'off', 'and off again')
+})
+
+test('bluetooth: the option is an object, on and topic typed', async (t) => {
+  const testnet = await makeTestnet(t)
+  for (const bluetooth of [
+    true,
+    false,
+    { on: 'yes' },
+    { topic: 5 },
+    { topic: '' },
+    { topic: null }
+  ]) {
+    const res = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, bluetooth }).catch(
+      (err) => err
+    )
+    if (!(res instanceof Error)) await res.close()
+    t.is(res.code, 'INVALID', JSON.stringify(bluetooth))
+  }
+})
+
+test('nearby: true or false, then an optional { topic }, anything else is INVALID', async (t) => {
+  const me = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const room = await openRef(me.team, { name: 'r' })
+  const modes = [await cero.invite(room), 'on', 1, null, undefined, { on: true }]
+  for (const mode of modes) {
+    await t.exception(
+      cero.nearby(me, mode),
+      /INVALID/,
+      JSON.stringify(mode)?.slice(0, 12) ?? 'undefined'
+    )
+  }
+  for (const opts of [
+    { topic: 5 },
+    { topic: '' },
+    { topic: null },
+    { other: true },
+    'hall-1',
+    null
+  ]) {
+    await t.exception(cero.nearby(me, true, opts), /INVALID/, JSON.stringify(opts))
+  }
+  t.is(await radioOf(me), 'off', 'none of them turned the radio on')
 })
 
 test('start/stop toggles the transport and emits update', async (t) => {
-  const me = await open(t, { bluetooth: false })
+  const me = await open(t)
   const bt = new Bluetooth(me.network, {
     identity: me.identity,
     keyPair: me.store.keyPair,
@@ -95,8 +141,8 @@ test('start/stop toggles the transport and emits update', async (t) => {
 
 test('toggle cycle: stop() suspends and start() resumes the SAME transport, re-linking', async (t) => {
   const radio = makeMockBluetooth() // one shared airwave for both devices
-  const a = await open(t, { channel: 'toggle', bluetooth: { backend: radio } })
-  const b = await open(t, { channel: 'toggle', bluetooth: { backend: radio } })
+  const a = await open(t, { channel: 'toggle', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { channel: 'toggle', bluetooth: { on: true, backend: radio } })
 
   await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
   const ta = a._bluetooth.swarm.transport
@@ -119,11 +165,75 @@ test('toggle cycle: stop() suspends and start() resumes the SAME transport, re-l
   t.pass('re-linked after a full toggle cycle')
 })
 
+test('nearby: a topic keeps devices apart, and the same topic links them', async (t) => {
+  const testnet = await makeTestnet(t)
+  const radio = makeMockBluetooth()
+  const a = await open(t, { testnet, channel: 'expo', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { testnet, channel: 'expo', bluetooth: { on: true, backend: radio } })
+  await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
+  t.pass('linked on the default topic')
+
+  await cero.nearby(a, true, { topic: 'hall-1' })
+  await cero.nearby(b, true, { topic: 'hall-2' })
+  await waitUntil(async () => !(await linked(a)) || null)
+  await new Promise((r) => setTimeout(r, 500))
+  t.absent(await linked(a), 'different topics do not link')
+  t.is(await radioOf(a), 'on', 'a topic leaves the radio on')
+
+  await cero.nearby(b, true, { topic: 'hall-1' })
+  await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
+  t.pass('the same topic links them')
+
+  await cero.nearby(a, true)
+  await cero.nearby(b, true)
+  await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
+  t.pass('no topic is the default topic again')
+})
+
+test('nearby: the channel stays a boundary on a shared topic', async (t) => {
+  const testnet = await makeTestnet(t)
+  const radio = makeMockBluetooth()
+  const bluetooth = { on: true, topic: 'hall-1', backend: radio }
+  const a = await open(t, { testnet, channel: 'preview', bluetooth })
+  const b = await open(t, { testnet, channel: 'production', bluetooth })
+  await new Promise((r) => setTimeout(r, 500))
+  t.absent(await linked(a), 'preview never meets production')
+  t.absent(await linked(b))
+})
+
+test('nearby: false with a topic stays off; true with it links on it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const radio = makeMockBluetooth()
+  const a = await open(t, { testnet, channel: 'late', bluetooth: { backend: radio } })
+  const b = await open(t, {
+    testnet,
+    channel: 'late',
+    bluetooth: { on: true, topic: 'hall-1', backend: radio }
+  })
+  await cero.nearby(a, false, { topic: 'hall-1' })
+  t.is(await radioOf(a), 'off', 'still off')
+  await cero.nearby(a, true, { topic: 'hall-1' })
+  await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
+  t.pass('came on straight onto the topic')
+})
+
+test('nearby: the topic given at start is the default one', async (t) => {
+  const testnet = await makeTestnet(t)
+  const radio = makeMockBluetooth()
+  const bluetooth = { topic: 'expo-cr', backend: radio }
+  const a = await open(t, { testnet, channel: 'start', bluetooth })
+  const b = await open(t, { testnet, channel: 'start', bluetooth: { ...bluetooth, on: true } })
+  await cero.nearby(a, true, { topic: 'hall-1' })
+  await cero.nearby(a, true)
+  await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
+  t.pass('on without a topic went back to the start topic, where b is')
+})
+
 test('channel scopes the BLE mesh — no shared topic, no link', async (t) => {
   const testnet = await makeTestnet(t)
   const radio = makeMockBluetooth() // one shared airwave — discovery is per-tag now
-  const a = await open(t, { testnet, channel: 'expo-1', bluetooth: { backend: radio } })
-  const b = await open(t, { testnet, channel: 'expo-2', bluetooth: { backend: radio } })
+  const a = await open(t, { testnet, channel: 'expo-1', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { testnet, channel: 'expo-2', bluetooth: { on: true, backend: radio } })
   // discovery is topic-scoped: different channels advertise different uuids
   await new Promise((r) => setTimeout(r, 500))
   t.absent(await linked(a), 'different channel peers refuse each other')
@@ -132,8 +242,8 @@ test('channel scopes the BLE mesh — no shared topic, no link', async (t) => {
 
 test('global nearby: channelless devices link on the tag-global topic', async (t) => {
   const radio = makeMockBluetooth() // one shared airwave, two strangers, no channel
-  const a = await open(t, { bluetooth: { backend: radio } })
-  const b = await open(t, { bluetooth: { backend: radio } })
+  const a = await open(t, { bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { bluetooth: { on: true, backend: radio } })
   await waitUntil(async () => ((await linked(a)) && (await linked(b))) || null)
   t.pass('strangers link with no channel — replication still syncs zero bytes')
 })
@@ -141,8 +251,8 @@ test('global nearby: channelless devices link on the tag-global topic', async (t
 test('nearby: a peer carries the name it shows in a room you share', async (t) => {
   const testnet = await makeTestnet(t)
   const radio = makeMockBluetooth()
-  const a = await open(t, { testnet, channel: 'names', bluetooth: { backend: radio } })
-  const b = await open(t, { testnet, channel: 'names', bluetooth: { backend: radio } })
+  const a = await open(t, { testnet, channel: 'names', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { testnet, channel: 'names', bluetooth: { on: true, backend: radio } })
   await set(b.profile, { name: 'bee' })
   const room = await openRef(a.team, { name: 'shared' })
   await openRef(b.team, await cero.invite(room))
@@ -157,12 +267,12 @@ test('nearby: a peer carries the name it shows in a room you share', async (t) =
 test('nearby: two devices of one person link over Bluetooth and sync', async (t) => {
   const testnet = await makeTestnet(t)
   const radio = makeMockBluetooth()
-  const a = await open(t, { testnet, channel: 'own', bluetooth: { backend: radio } })
+  const a = await open(t, { testnet, channel: 'own', bluetooth: { on: true, backend: radio } })
   const b = await open(t, {
     testnet,
     channel: 'own',
-    seed: a.identity.seed,
-    bluetooth: { backend: radio }
+    phrase: a.identity.toPhrase(),
+    bluetooth: { on: true, backend: radio }
   })
 
   const peer = await waitUntil(async () => (await get(a.nearby)).data[0] ?? null)
@@ -180,8 +290,12 @@ test('nearby: two devices of one person link over Bluetooth and sync', async (t)
 
 test('nearby: a stranger shows the name and device type it sends over the link', async (t) => {
   const radio = makeMockBluetooth()
-  const a = await open(t, { channel: 'strangers', bluetooth: { backend: radio } })
-  const b = await open(t, { channel: 'strangers', isMobile: true, bluetooth: { backend: radio } })
+  const a = await open(t, { channel: 'strangers', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, {
+    channel: 'strangers',
+    isMobile: true,
+    bluetooth: { on: true, backend: radio }
+  })
   await set(b.profile, { name: 'bee' })
 
   const peer = await waitUntil(async () => (await get(a.nearby)).data.find((p) => p.name) ?? null)
@@ -193,8 +307,8 @@ test('nearby: a stranger shows the name and device type it sends over the link',
 
 test('nearby: a profile rename reaches the devices linked over Bluetooth', async (t) => {
   const radio = makeMockBluetooth()
-  const a = await open(t, { channel: 'rename', bluetooth: { backend: radio } })
-  const b = await open(t, { channel: 'rename', bluetooth: { backend: radio } })
+  const a = await open(t, { channel: 'rename', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { channel: 'rename', bluetooth: { on: true, backend: radio } })
 
   await set(b.profile, { name: 'bee' })
   for await (const { data } of watch(a.nearby)) {
@@ -207,12 +321,12 @@ test('nearby: a profile rename reaches the devices linked over Bluetooth', async
 test("nearby: a room member's device shows the member, named by the room without a profile name", async (t) => {
   const testnet = await makeTestnet(t)
   const radio = makeMockBluetooth()
-  const a = await open(t, { testnet, channel: 'members', bluetooth: { backend: radio } })
+  const a = await open(t, { testnet, channel: 'members', bluetooth: { on: true, backend: radio } })
   const b = await open(t, {
     testnet,
     channel: 'members',
     isMobile: true,
-    bluetooth: { backend: radio }
+    bluetooth: { on: true, backend: radio }
   })
   const room = await openRef(a.team, { name: 'shared' })
   const roomB = await openRef(b.team, await cero.invite(room))
@@ -228,11 +342,56 @@ test("nearby: a room member's device shows the member, named by the room without
   )
 })
 
+test('nearby: what a peer told is forgotten once its link closes', async (t) => {
+  const testnet = await makeTestnet(t)
+  const radio = makeMockBluetooth()
+  const a = await open(t, { testnet, channel: 'forget', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { testnet, channel: 'forget', bluetooth: { on: true, backend: radio } })
+  const hex = await waitUntil(() => [...a._bluetooth.peers.keys()][0] ?? null)
+  await waitUntil(() => a._bluetooth.told(hex))
+  await cero.nearby(b, false)
+  await waitUntil(() => !a._bluetooth.peers.has(hex) || null)
+  t.is(a._bluetooth.told(hex), null, 'dropped with the link')
+})
+
+// two links between a and b by hand, as ble-swarm hands them over: b's key on a's end, a's on b's
+function link(a, b) {
+  const ends = [new Duplex({ write: (data, cb) => cb(null, ends[1].push(data)) })]
+  ends.push(new Duplex({ write: (data, cb) => cb(null, ends[0].push(data)) }))
+  ends[0].remotePublicKey = b.store.keyPair.publicKey
+  ends[1].remotePublicKey = a.store.keyPair.publicKey
+  a._bluetooth._attach(ends[0])
+  b._bluetooth._attach(ends[1])
+  return ends
+}
+
+test('nearby: a link replaced by a newer one keeps what the peer told', async (t) => {
+  const a = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const b = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const hex = b4a.toHex(b.store.keyPair.publicKey)
+  const [old] = link(a, b)
+  await waitUntil(() => a._bluetooth.told(hex))
+  const fresh = link(a, b)
+  t.teardown(() => fresh.forEach((end) => end.destroy()))
+  await waitUntil(() => a._bluetooth._heard.get(hex) && a._bluetooth._links?.get(hex) !== old)
+  old.destroy()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  t.ok(a._bluetooth.told(hex), 'the old link closing does not forget the peer on the new one')
+})
+
 test('nearby: a Wi-Fi connection carries none of it', async (t) => {
   const testnet = await makeTestnet(t)
   // two airwaves: the devices meet over the DHT only
-  const a = await open(t, { testnet, channel: 'wifi', bluetooth: { backend: makeMockBluetooth() } })
-  const b = await open(t, { testnet, channel: 'wifi', bluetooth: { backend: makeMockBluetooth() } })
+  const a = await open(t, {
+    testnet,
+    channel: 'wifi',
+    bluetooth: { on: true, backend: makeMockBluetooth() }
+  })
+  const b = await open(t, {
+    testnet,
+    channel: 'wifi',
+    bluetooth: { on: true, backend: makeMockBluetooth() }
+  })
   await set(a.profile, { name: 'ada' })
   await set(b.profile, { name: 'bo' })
   const room = await openRef(a.team, { name: 'wifi' })
@@ -243,7 +402,9 @@ test('nearby: a Wi-Fi connection carries none of it', async (t) => {
     const { data } = await get(roomB.messages)
     return data.find((m) => m.text === 'after-open') ?? null
   })
-  const heard = [...b.network.swarm.connections].map((c) => b.network.getInfo(c.remotePublicKey))
+  const heard = [...b.network.swarm.connections].map(
+    (c) => b._bluetooth._heard.get(b4a.toHex(c.remotePublicKey)) ?? null
+  )
   t.ok(heard.length > 0, 'connected over the DHT')
   t.alike(
     heard,
@@ -254,27 +415,32 @@ test('nearby: a Wi-Fi connection carries none of it', async (t) => {
 
 test('nearby: a device claiming someone else is not shown as them', async (t) => {
   const radio = makeMockBluetooth()
-  const a = await open(t, { channel: 'forged', bluetooth: { backend: radio } })
-  const b = await open(t, { channel: 'forged', bluetooth: { backend: radio } })
+  const a = await open(t, { channel: 'forged', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { channel: 'forged', bluetooth: { on: true, backend: radio } })
   const victim = await Identity.create()
   await waitUntil(() => linked(a))
 
-  b.network.setInfo({ ...b.network.info, id: victim.id, name: 'mallory' })
+  b._bluetooth._say({ ...b._bluetooth._info, id: victim.id, name: 'mallory' })
   const hex = b4a.toHex(b.store.keyPair.publicKey)
-  await waitUntil(() => a.network.getInfo(hex)?.name === 'mallory')
+  await waitUntil(() => a._bluetooth._heard.get(hex)?.name === 'mallory')
   t.alike((await get(a.nearby)).data, [], 'a signature from another person names no one')
 })
 
 test('nearby: a person with two devices in range shows each device', async (t) => {
   const testnet = await makeTestnet(t)
   const radio = makeMockBluetooth()
-  const a = await open(t, { testnet, channel: 'twice', bluetooth: { backend: radio } })
-  const b = await open(t, { testnet, channel: 'twice', bluetooth: { backend: radio } })
-  await open(t, { testnet, channel: 'twice', seed: b.identity.seed, bluetooth: { backend: radio } })
+  const a = await open(t, { testnet, channel: 'twice', bluetooth: { on: true, backend: radio } })
+  const b = await open(t, { testnet, channel: 'twice', bluetooth: { on: true, backend: radio } })
+  await open(t, {
+    testnet,
+    channel: 'twice',
+    phrase: b.identity.toPhrase(),
+    bluetooth: { on: true, backend: radio }
+  })
 
   await waitUntil(() => {
     const keys = [...a._bluetooth.peers.keys()]
-    return keys.length === 2 && keys.every((hex) => a.network.getInfo(hex))
+    return keys.length === 2 && keys.every((hex) => a._bluetooth._heard.get(hex))
   })
   const { data } = await get(a.nearby)
   t.alike(
@@ -294,7 +460,11 @@ test('nearby: an app without a profile still tells whose device it is', async (t
   const radio = makeMockBluetooth()
   const mk = async () => {
     const testnet = await makeTestnet(t)
-    const opts = { bootstrap: testnet.bootstrap, extensions: [], bluetooth: { backend: radio } }
+    const opts = {
+      bootstrap: testnet.bootstrap,
+      extensions: [],
+      bluetooth: { on: true, backend: radio }
+    }
     const me = await cero(await t.tmp(), plain, opts)
     t.teardown(() => me.close().catch(() => {}), { order: 5 })
     return me
@@ -311,24 +481,20 @@ test('nearby: an app without a profile still tells whose device it is', async (t
 
 // ─── offline join: the design's field scenario, no radio required ────────────
 
-test('offline join: invite QR + BLE rendezvous, zero shared DHT', async (t) => {
+test('offline join: an invite works over Bluetooth alone, zero shared DHT', async (t) => {
   const radio = makeMockBluetooth() // one shared airwave for both devices
 
   // organizer and late volunteer on SEPARATE testnets — no DHT path exists
-  const organizer = await open(t, { bluetooth: { backend: radio } })
-  const volunteer = await open(t, { bluetooth: { backend: radio } })
+  const organizer = await open(t, { bluetooth: { on: true, backend: radio } })
+  const volunteer = await open(t, { bluetooth: { on: true, backend: radio } })
 
   const room = await openRef(organizer.team, { name: 'field-expo' })
   await put(room.messages, { text: 'registered-before-join' })
   const invite = await cero.invite(room, { role: 'member' })
 
-  // organizer shows the QR → advertises the invite-derived UUID
-  await cero.nearby(organizer, invite)
-
-  // volunteer scans the QR → open() auto-rendezvouses over BLE
+  // the same open as online: the join rides the mesh link, nothing else is switched
   const roomB = await openRef(volunteer.team, invite)
   t.ok(roomB.id, 'volunteer joined with zero internet')
-  await cero.nearby(organizer, true) // QR closed: back to the mesh, the established link stays
 
   const seen = await waitUntil(async () => {
     const { data } = await get(roomB.messages)
@@ -345,39 +511,40 @@ test('offline join: invite QR + BLE rendezvous, zero shared DHT', async (t) => {
   t.ok(back, 'writer grant carried over BLE — new member writes converge back')
 })
 
-test('offline join: a host with every Bluetooth slot taken still pairs a joiner', async (t) => {
+test('offline join: a confirm invite is asked and accepted over Bluetooth alone', async (t) => {
   const radio = makeMockBluetooth()
-  const host = await open(t, {
-    channel: 'crowd',
-    bluetooth: { backend: radio, maxOutbound: 1, maxInbound: 1 }
+  // each on its own testnet: Bluetooth is the only way between them
+  const host = await open(t, { bluetooth: { on: true, backend: radio } })
+  const joiner = await open(t, { bluetooth: { on: true, backend: radio } })
+
+  const room = await openRef(host.team, { name: 'field-group' })
+  const invite = await cero.invite(room, { confirm: true })
+  const joining = openRef(joiner.team, invite)
+  const request = await nextRequest(room)
+  t.alike(request.identity, joiner.identity.publicKey, 'the request came over Bluetooth')
+  await cero.accept(room, request)
+  const joined = await joining
+  t.ok(joined.id, 'admitted with zero internet')
+
+  await waitUntil(() => joined.store.writable)
+  await put(joined.messages, { text: 'hi from the field' })
+  const seen = await waitUntil(async () => {
+    const { data } = await get(room.messages)
+    return data.find((m) => m.text === 'hi from the field') ?? null
   })
-  await open(t, { channel: 'crowd', bluetooth: { backend: radio } })
-  await waitUntil(() => linked(host))
-
-  // only the smaller key dials, and a host at its cap dials no one: the worst joiner is larger
-  let joiner = null
-  while (!joiner || b4a.compare(joiner.store.keyPair.publicKey, host.store.keyPair.publicKey) < 0) {
-    await joiner?.close()
-    joiner = await open(t, { channel: 'crowd', bluetooth: { backend: radio } })
-  }
-
-  const room = await openRef(host.team, { name: 'crowded' })
-  const invite = await cero.invite(room)
-  await cero.nearby(host, invite)
-  const joined = await openRef(joiner.team, invite)
-  t.ok(joined.id, 'paired past a full mesh')
+  t.ok(seen, 'their write reached the host over Bluetooth')
 })
 
 test('recovery: a phrase restores this person over Bluetooth with no internet', async (t) => {
   const radio = makeMockBluetooth()
-  const a = await open(t, { channel: 'recover', bluetooth: { backend: radio } })
+  const a = await open(t, { channel: 'recover', bluetooth: { on: true, backend: radio } })
   await put(a.messages, { text: 'before-recovery' })
 
   const b = await open(t, {
     channel: 'recover',
-    seed: a.identity.seed,
+    phrase: a.identity.toPhrase(),
     recoveryTimeout: 15000,
-    bluetooth: { backend: radio }
+    bluetooth: { on: true, backend: radio }
   })
   t.is(b.id, a.id, 'the identity of the phrase')
   const seen = await waitUntil(async () => {
@@ -387,44 +554,8 @@ test('recovery: a phrase restores this person over Bluetooth with no internet', 
   t.ok(seen, 'the log came over Bluetooth')
 })
 
-test('announce: no backend → noop stop, no throw', async (t) => {
-  const me = await open(t, { bluetooth: false })
-  const bt = new Bluetooth(me.network, {
-    identity: me.identity,
-    keyPair: me.store.keyPair,
-    backend: null
-  })
-  await bt.ready()
-  const stop = bt.announce('not-even-a-valid-invite')
-  stop()
-  t.pass('unsupported announce is safe')
-  await bt.close()
-})
-
-test('announce: no-op until start(), no-op again after stop()', async (t) => {
-  const radio = makeMockBluetooth()
-  const me = await open(t, { bluetooth: { backend: radio, autoStart: false } })
-
-  const room = await openRef(me.team, { name: 'gated' })
-  const invite = await cero.invite(room, { role: 'member' })
-
-  let stop = me._bluetooth.announce(invite)
-  t.is(me._bluetooth._announce, null, 'radio never started → announce touches nothing')
-  stop()
-
-  await me._bluetooth.start()
-  stop = me._bluetooth.announce(invite)
-  t.ok(me._bluetooth._announce, 'nearby sync on → announce retunes to the invite topic')
-  stop()
-
-  await me._bluetooth.stop()
-  stop = me._bluetooth.announce(invite)
-  t.is(me._bluetooth._announce, null, 'radio stopped → announce touches nothing again')
-  stop()
-})
-
 test('close: the BLE swarm is down before the network closes', async (t) => {
-  const me = await open(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const me = await open(t, { bluetooth: { on: true, backend: makeMockBluetooth() } })
   const close = me.network.close.bind(me.network)
   let btClosed = null
   me.network.close = () => {

@@ -24,7 +24,6 @@ import {
   grants,
   outranks,
   admission,
-  ownership,
   joining,
   checkFields,
   checkRequired,
@@ -319,18 +318,6 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     await drop(ctx, 'devices', hid.encode(op.writer))
   })
 
-  add('claim-writer', async (op, ctx) => {
-    if (!isKey(op.identity) || !isKey(op.writer) || !isSig(op.sig)) return
-    if (!Identity.verify(op.identity, ownership(ctx.dbKey, op.writer), op.sig)) return
-    // from any other core a claim is inapplicable, not refused: it must not abort that writer's batch
-    if (!b4a.equals(ctx.key, op.writer)) return
-    const memberId = hid.encode(op.identity)
-    if (!can(await getRole(ctx.view, op.identity), WRITE)) throw CeroError.REFUSED('write')
-    if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
-    await ctx.host.addWriter(op.writer, { isIndexer: true })
-    await seat(ctx, op.writer, memberId, op.ts || 0)
-  })
-
   // the genesis batch names the creator; everyone after comes in through a signed join
   add('add-member', async (op, ctx) => {
     if (!isKey(op.key)) return
@@ -609,6 +596,14 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     }
     const { identity, reply, createdAt: ts = 0 } = waiting
     await admit(ctx, { invite, identity, writer: hid.decode(op.id), reply, role, ts })
+  })
+  // answered through the log like every refusal; a deny that lost the race to an accept is nothing
+  add('deny', async (op, ctx) => {
+    const waiting = await ctx.view.get(requests, { id: op.id })
+    if (!waiting || waiting.admitted) return
+    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    await drop(ctx, 'requests', op.id)
+    await refuse(ctx, waiting, op.reason || '')
   })
   // only a join writes a request
   const joinsOnly = async () => {

@@ -12,20 +12,9 @@ import { Invite } from '@cero-base/core/invite'
 import { Pairing } from '@cero-base/core/pairing'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { epochEntries } from '@cero-base/core/database/encryption'
+import { makeMockBluetooth } from 'ble-swarm/mock.js'
 
-import {
-  cero,
-  put,
-  set,
-  get,
-  open,
-  call,
-  accept,
-  deny,
-  peek,
-  restore,
-  toSeed
-} from '../../src/index.js'
+import { cero, put, set, get, open, call, accept, deny, peek, restore } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
   makeTestnet,
@@ -500,6 +489,57 @@ test('invites: a denial reaches the caller, or onerror once nobody waits', async
   t.alike(await joinsOf(back), [])
 })
 
+// the joiner's store hangs on one write, as a device that stops mid-write does
+function stall(store, method, when) {
+  const call = store[method].bind(store)
+  let stopping
+  const stopped = new Promise((resolve) => (stopping = resolve))
+  store[method] = (...args) => {
+    if (!when(...args)) return call(...args)
+    stopping()
+    return new Promise(() => {})
+  }
+  return stopped
+}
+
+test('invites: a reply the joiner stopped before keeping is handed over again after a restart', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+
+  const joiner = await ceroOpen(t, { testnet })
+  const stopped = stall(joiner.me.local.store, 'put', (name, row) => name === 'joins' && !!row.key)
+  joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
+  await stopped
+  await joiner.me.close()
+
+  // the member saw the reply read and never offers it again: only the joiner's inbox has it
+  await waitUntil(async () => ((await get(room.requests)).data.length === 0 ? true : null))
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, room.id), 'the kept reply opens the room')
+})
+
+test('invites: a denial the joiner stopped before forgetting is handed over again after a restart', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+
+  const joiner = await ceroOpen(t, { testnet })
+  const stopped = stall(joiner.me.local.store, 'del', (name) => name === 'joins')
+  joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
+  await deny(room, await nextRequest(room), 'not now')
+  await stopped
+  await joiner.me.close()
+
+  const errors = []
+  const again = await reopen(t, joiner.dir, testnet, { onerror: (err) => errors.push(err) })
+  await waitUntil(() => errors.length || null)
+  t.is(errors[0].code, 'DENIED', 'the kept denial ends the resumed join')
+  t.alike(await joinsOf(again), [])
+})
+
 test('mirrors: absent opt leaves blind peering off', async (t) => {
   const { me } = await ceroOpen(t)
   t.is(me.network._blindPeering, null, 'no mirrors → no blind peering')
@@ -545,9 +585,10 @@ test('cero: a failed open releases the storage lock so a retry succeeds', async 
   await t.exception(
     cero(dir, spec, {
       bootstrap: testnet.bootstrap,
-      seed: b4a.alloc(7)
+      phrase: 'not a phrase'
     }),
-    'invalid seed rejected'
+    /INVALID/,
+    'invalid phrase rejected'
   )
   // a retry on the same dir must not hit a corestore lock leaked by the failure
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
@@ -555,11 +596,11 @@ test('cero: a failed open releases the storage lock so a retry succeeds', async 
   t.ok(me.id, 'retry opened cleanly — storage was not left locked')
 })
 
-test('cero: a recovery that times out as the root opens releases the storage lock', async (t) => {
+test('cero: a recovery that times out releases the storage lock', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
-  const { seed } = await Identity.create()
-  const opts = { bootstrap: testnet.bootstrap, seed, key: b4a.alloc(32, 1), recoveryTimeout: 500 }
+  const phrase = (await Identity.create()).toPhrase()
+  const opts = { bootstrap: testnet.bootstrap, phrase, recoveryTimeout: 500 }
   await t.exception(cero(dir, spec, opts), /TIMEOUT/)
   await t.exception(cero(dir, spec, opts), /TIMEOUT/, 'the retry recovers again, no lock held')
 })
@@ -599,10 +640,30 @@ test('cero: a first launch that dies setting up, reopened with a phrase, recover
   const dies = { setup: (me) => me.store.close() }
   await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap, extensions: [dies] }), /CLOSED/)
 
-  const b = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed: a.identity.seed })
+  const b = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase: a.identity.toPhrase() })
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
   t.is(b.id, a.id, 'the identity of the phrase')
   t.alike(b.store.key, a.store.key, 'recovered into its database, never created')
+})
+
+test('cero: a set-up dir keeps its identity, another phrase is INVALID', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap }
+  const a = await cero(dir, spec, opts)
+  const { id } = a.identity
+  const phrase = a.identity.toPhrase()
+  await a.close()
+
+  const other = await Identity.create()
+  await t.exception(cero(dir, spec, { ...opts, phrase: other.toPhrase() }), /INVALID/)
+  const same = await cero(dir, spec, { ...opts, phrase })
+  t.is(same.id, id, 'its own phrase opens it')
+  await same.close()
+
+  const me = await cero(dir, spec, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.is(me.id, id, 'the stored identity is untouched')
 })
 
 test('cero: a recovery that dies once seated resumes with its device key, no dead seat', async (t) => {
@@ -621,7 +682,7 @@ test('cero: a recovery that dies once seated resumes with its device key, no dea
     }
   }
   const dir = await t.tmp()
-  const opts = { bootstrap: testnet.bootstrap, seed: a.identity.seed, extensions: [dies] }
+  const opts = { bootstrap: testnet.bootstrap, phrase: a.identity.toPhrase(), extensions: [dies] }
   await t.exception(cero(dir, spec, opts), /REFUSED/)
 
   const b = await cero(dir, spec, opts)
@@ -660,7 +721,7 @@ test('peek(): true after reopening with the stored phrase', async (t) => {
   const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   const phrase = await cero.phrase(first)
   await first.close()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed: toSeed(phrase) })
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
   await me.close()
   t.is(await peek(dir, spec), true)
 })
@@ -690,9 +751,9 @@ test('restore(): rejects bad input', async (t) => {
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
 
   await t.exception.all(() => restore(null, 'x'), /me/)
-  await t.exception.all(() => restore(me, null), /seed/)
-  await t.exception.all(() => restore(me, 'words'), /seed/)
-  t.exception.all(() => toSeed('not actually a valid bip39 mnemonic'), /BIP-39/)
+  await t.exception.all(() => restore(me, null), /REQUIRED/)
+  await t.exception.all(() => restore(me, 'words'), /BIP-39/)
+  await t.exception.all(() => restore(me, me.identity.seed), /BIP-39/, 'a seed is not a phrase')
 })
 
 test('restore(): swaps identity to the given phrase', async (t) => {
@@ -700,7 +761,7 @@ test('restore(): swaps identity to the given phrase', async (t) => {
 
   let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   const oldId = b.id
-  b = await restore(b, toSeed(phrase))
+  b = await restore(b, phrase)
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   t.not(b.id, oldId, 'identity changed')
@@ -716,7 +777,7 @@ test('restore(): wipes prior local store data', async (t) => {
   await put(me.messages, { text: 'before-restore' })
   t.is((await get(me.messages)).data.length, 1, 'wrote data before restore')
 
-  me = await restore(me, toSeed(phrase))
+  me = await restore(me, phrase)
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
 
   t.is((await get(me.messages)).data.length, 0, 'old data is wiped')
@@ -736,7 +797,7 @@ test('restore(): carries the channel so channeled peers still meet', async (t) =
   const bDir = await t.tmp()
   const storageKey = b4a.alloc(32, 9)
   let b = await cero(bDir, spec, { bootstrap: testnet.bootstrap, channel, storageKey })
-  b = await restore(b, toSeed(phrase))
+  b = await restore(b, phrase)
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   t.is(b.id, a.id, 'restore succeeded on a channeled network')
@@ -828,7 +889,7 @@ test('restore(): keeps channel isolation from peers on another channel', async (
   })
 
   await t.exception(
-    () => restore(b, toSeed(phrase)),
+    () => restore(b, phrase),
     /TIMEOUT/,
     'cross-channel recovery finds no peer and times out'
   )
@@ -838,7 +899,7 @@ test('restore(): no-op when the phrase is the current identity', async (t) => {
   const { a, phrase } = await withPeer(t)
   await put(a.messages, { text: 'keep-me' })
 
-  const same = await restore(a, toSeed(phrase))
+  const same = await restore(a, phrase)
 
   t.is(same, a, 'returns the same running instance')
   t.is(same.id, a.id, 'identity unchanged')
@@ -850,7 +911,7 @@ test('restore(): identity persists across reopen', async (t) => {
   const dir = await t.tmp()
 
   let me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  me = await restore(me, toSeed(phrase))
+  me = await restore(me, phrase)
   const restoredId = me.id
   await me.close()
 
@@ -865,7 +926,7 @@ test('restore(): peek reflects the new identity', async (t) => {
   const dir = await t.tmp()
 
   let me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  me = await restore(me, toSeed(phrase))
+  me = await restore(me, phrase)
   await me.close()
 
   t.is(await peek(dir, spec), true, 'peek sees new identity')
@@ -876,7 +937,7 @@ test('restore(): syncs data from the peer holding the phrase', async (t) => {
   await set(a.profile, { name: 'jb' })
 
   let b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
-  b = await restore(b, toSeed(phrase))
+  b = await restore(b, phrase)
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   await waitUntil(async () => (await get(b.profile)).data?.name === 'jb')
@@ -900,24 +961,13 @@ test('cero(): opens, exposes identity, closes cleanly', async (t) => {
 
 // ─── identity sources ─────────────────────────────────────────────────────
 
-test('cero(): from seed', async (t) => {
-  const testnet = await makeTestnet(t)
-  const dir = await t.tmp()
-  const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  const seed = first.identity.seed
-  await first.close()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed })
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  t.alike(b4a.toBuffer(me.identity.seed), b4a.toBuffer(seed))
-})
-
 test('cero(): from phrase', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
   const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   const phrase = await cero.phrase(first)
   await first.close()
-  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed: toSeed(phrase) })
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   t.is(await cero.phrase(me), phrase)
 })
@@ -998,18 +1048,18 @@ test('cero(): close cleans up all open public scopes', async (t) => {
 
 // ─── persistence ──────────────────────────────────────────────────────────
 
-test('cero(): data persists across reopen with same dir + seed', async (t) => {
+test('cero(): data persists across reopen with same dir + phrase', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
 
   const me1 = await cero(dir, spec, { bootstrap: testnet.bootstrap })
-  const seed = me1.identity.seed
+  const phrase = me1.identity.toPhrase()
   await put(me1.messages, { text: 'persist me' })
   await set(me1.profile, { name: 'jb' })
   await put(me1.local.drafts, { text: 'draft-1' })
   await me1.close()
 
-  const me2 = await cero(dir, spec, { bootstrap: testnet.bootstrap, seed })
+  const me2 = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
   t.teardown(() => me2.close().catch(() => {}), { order: 5 })
 
   const { data: msgs } = await get(me2.messages)
@@ -1030,11 +1080,11 @@ test.skip('cero(): device B can _load a sub-handle created by device A and write
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet, name: 'laptop-A' })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
   const room = await a.me._create('team', { name: 'general' })
   await put(room.messages, { text: 'from-a' })
 
-  const b = await ceroOpen(t, { testnet, seed, name: 'laptop-B' })
+  const b = await ceroOpen(t, { testnet, phrase, name: 'laptop-B' })
   // B sees the handle metadata via root replication, then loads + writes.
   const bRoom = await b.me._load('team', room.id)
   await put(bRoom.messages, { text: 'from-b' })
@@ -1071,12 +1121,12 @@ test('cero(): phrase-only recovery — device B syncs from device A without out-
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet, name: 'laptop-A' })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
   await set(a.me.profile, { name: 'alice' })
 
-  // Device B has only the seed (no key handed over). Recovery should
+  // Device B has only the phrase (no key handed over). Recovery should
   // discover device A via the identity topic and replicate its data.
-  const b = await ceroOpen(t, { testnet, seed, name: 'laptop-B' })
+  const b = await ceroOpen(t, { testnet, phrase, name: 'laptop-B' })
 
   t.is(b.me.id, a.me.id, 'same identity')
   const profile = await waitUntil(async () => {
@@ -1097,10 +1147,10 @@ test('cero(): a second device auto-claims', async (t) => {
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
   await put(a.me.messages, { text: 'from-a' })
 
-  const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
+  const b = await ceroOpen(t, { testnet, phrase })
 
   t.ok(b.me.store.writable, 'b is writable after recovery resolves')
 
@@ -1118,14 +1168,14 @@ test('cero(): private scope syncs across the same identity on two devices', asyn
   const testnet = await makeTestnet(t)
 
   const a = await ceroOpen(t, { testnet })
-  const seed = a.me.identity.seed
+  const phrase = a.me.identity.toPhrase()
 
   // Publish a member entry so device B can claim against it.
   await put(a.me.messages, { text: 'from-a' })
 
-  // Device B opens with the same seed: its own device core, admitted by the
+  // Device B opens with the same phrase: its own device core, admitted by the
   // identity's signature over the history it pulled from A.
-  const b = await ceroOpen(t, { testnet, seed, key: a.me.store.key })
+  const b = await ceroOpen(t, { testnet, phrase })
 
   t.ok(b.me.store.writable, 'b writable after recovery')
 
@@ -1177,7 +1227,7 @@ test('cero(): a phrase alone recovers a second device — no flag, no new histor
   // history pulled from A, admitted by the identity's signature
   const b = await cero(await t.tmp(), spec, {
     bootstrap: testnet.bootstrap,
-    seed: toSeed(phrase),
+    phrase,
     name: 'laptop-B'
   })
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
@@ -1215,7 +1265,8 @@ test('cero(): suspend()/resume() flips swarm + corestore state', async (t) => {
 })
 
 test('status: a room reports its role, writability, epoch and suspension, live', async (t) => {
-  const { me } = await ceroOpen(t)
+  // the radio's state is the platform's: a mock makes it the same everywhere
+  const { me } = await ceroOpen(t, { bluetooth: { backend: makeMockBluetooth() } })
   const room = await open(me.team, { name: 'clinic' })
   const status = async () => (await get(room.status)).data
   const expected = {
@@ -1224,7 +1275,7 @@ test('status: a room reports its role, writability, epoch and suspension, live',
     epoch: 0,
     suspended: false,
     behind: 0,
-    nearby: null
+    nearby: 'off'
   }
   t.alike(await status(), expected)
 
@@ -1429,7 +1480,7 @@ test('open: an open by id that fails closes the room it opened', async (t) => {
   const a = await ceroOpen(t, { testnet })
   const room = await open(a.me.team, { name: 'clinic' })
   const topic = discoveryKey(room.store.key)
-  const b = await ceroOpen(t, { testnet, seed: a.me.identity.seed })
+  const b = await ceroOpen(t, { testnet, phrase: a.me.identity.toPhrase() })
   await waitUntil(async () => (await get(b.me.team)).data.length === 1)
   await a.me.close()
 
@@ -1451,7 +1502,7 @@ test('open: an open by id waiting on its seat when the root closes rejects with 
   const a = await ceroOpen(t, { testnet })
   const room = await open(a.me.team, { name: 'clinic' })
   const topic = discoveryKey(room.store.key)
-  const b = await ceroOpen(t, { testnet, seed: a.me.identity.seed })
+  const b = await ceroOpen(t, { testnet, phrase: a.me.identity.toPhrase() })
   await waitUntil(async () => (await get(b.me.team)).data.length === 1)
   await a.me.close()
 

@@ -44,22 +44,22 @@ An identity is frozen, and `JSON.stringify` shows only its `id`. A device's writ
 
 ## Network
 
-Hyperswarm plus wakeup, with managed discovery sessions.
+Hyperswarm plus wakeup, with managed discovery sessions. Every connection, swarm or injected, replicates the network's store, so every core in it rides every peer.
 
 ```js
 import { Network } from '@cero-base/core'
 
-// store: a Corestore; topic: 32 bytes; core: any hypercore
+// store: a Corestore; topic: 32 bytes; core: a hypercore in the store
 const net = new Network({ store, channel: 'my-app' })
 await net.ready()
 const discovery = net.join(topic) // announce and look up
 await net.flush({ timeout: 2000 }) // wait for the DHT, 2 s at most
-net.attach(core) // replicate it on every connection
+net.attach(core) // keep it on the mirrors too
 ```
 
 | Option         | Meaning                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| `store`        | A Corestore. Every connection replicates it; mirrors and the Mailbox need it.              |
+| `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                   |
 | `identity`     | The swarm keypair. A random one without.                                                   |
 | `channel`      | Only peers on the same channel meet.                                                       |
 | `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                            |
@@ -74,14 +74,13 @@ net.attach(core) // replicate it on every connection
 | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `net.join(topic, { mode })`                                        | A `Discovery`. `'active'` (default) announces and looks up, `'passive'` only announces. It has `mode`, `activate()`, `deactivate()`, `destroy()`, and `flush()`, which waits for the current announce with no bound. |
 | `net.flush({ timeout })`                                           | Wait for pending announces and lookups, `timeout` ms at most (500).                                                                                                                                                  |
-| `net.attach(core)`, `net.detach(core)`                             | Replicate a core, bee or database on every current and future connection, and on the mirrors; stop for new ones.                                                                                                     |
-| `net.replicate(target)`                                            | Replicate once on the current connections.                                                                                                                                                                           |
+| `net.attach(core)`                                                 | Keep a core or a database's bee on the mirrors while its writers are offline. A mirror drops it once it closes.                                                                                                      |
+| `net.replicates(store)`                                            | Whether `store` is this network's store or a session of it: only those cores ride its connections.                                                                                                                   |
 | `net.suspend()`, `net.resume()`                                    | Drop the sockets and keep the state; come back.                                                                                                                                                                      |
 | `net.inject(stream, { isInitiator })`                              | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                |
-| `net.setInfo(info)`, `net.getInfo(key)`                            | Tell the peers of injected streams `{ name, … }` about this one; read what such a peer told, or `null`. Swarm connections carry none of it.                                                                          |
-| `net.peering()`                                                    | The mirror client, built on first use. Needs `store`.                                                                                                                                                                |
+| `net.peering()`                                                    | The mirror client, built on first use.                                                                                                                                                                               |
 | `swarm`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live swarm and its state.                                                                                                                                                                                        |
-| `'connection'`, `'peer-info'` events                               | `(stream, info)` per connection; `(key, info)` when an injected stream's peer tells its info.                                                                                                                        |
+| `'connection'` event                                               | `(stream, info)` per connection.                                                                                                                                                                                     |
 
 An `'active'` join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s. After a connection drops, or on `resume()`, active topics look up again, backing off from 5 s to 60 s, until the lost peers are back, and after a network change this peer announces where it is now reached.
 
@@ -100,7 +99,13 @@ import { spec } from './spec/index.js' // from build(), with a room type holding
 const store = new Corestore(new HypercoreStorage('./data'), { manifestVersion: 2 })
 const identity = await Identity.create()
 const network = new Network({ store })
-const db = new Database({ store, identity, network, spec: spec.handles.room })
+const db = new Database({
+  store,
+  identity,
+  network,
+  spec: spec.handles.room,
+  encryptionKey: Identity.randomBytes(32) // the room's own: a join hands it out
+})
 await db.ready()
 await db.bootstrap({ name: 'laptop' }) // this device writes first, as owner
 
@@ -115,12 +120,12 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 | Option          | Meaning                                                                                 |
 | --------------- | --------------------------------------------------------------------------------------- |
-| `store`         | A Corestore. `REQUIRED`.                                                                |
+| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).    |
 | `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                        |
 | `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                           |
 | `network`       | Replicates it. Without one it stays on the device.                                      |
 | `key`           | Open an existing database. A new one without.                                           |
-| `encryptionKey` | Its encryption key, the identity's by default.                                          |
+| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.           |
 | `epochs`        | The keys it rotated to, as a join delivers them.                                        |
 | `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`). |
 | `namespace`     | The Corestore namespace, `'cero'`.                                                      |
@@ -140,7 +145,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
 | `rotate()`                                           | `{ epoch }`: a new key sealed to every member. `INVALID` inside `tx`.                                                                      |
 | `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
-| `claim()`                                            | Seat this device's writer where your identity is already a member that writes.                                                             |
+| `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
 | `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
 | `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
 | `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
@@ -156,9 +161,9 @@ It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `ad
 
 Who writes:
 
-- **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It catches up, admits itself with an add-writer signed by the identity, and records its device row.
+- **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It claims its seat, then records its device row.
 - **A member you invited** needs nothing: its join seats it, and `db.whenWritable()` resolves once that lands.
-- **A member's new device** opening a database it has the key of runs `db.claim()`.
+- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer the identity signs from the device's own core, and resolves when it writes. A reader's device holds no seat.
 - Only the genesis batch names a member directly. Everyone after comes in through a join, and nobody seats a writer for another identity.
 
 Keys: `db.rotate()` opens a new key, and rotations on one device run one after another. A device that may remove also re-keys by itself when the members change, a database's first removal included. See [How it works](how-it-works.md).
@@ -171,7 +176,7 @@ A device's mailbox: it receives at the addresses it holds the secret of, and sen
 import b4a from 'b4a'
 import { Identity, Mailbox } from '@cero-base/core'
 
-// network: a Network with a store, as above
+// network: a Network, as above
 const mailbox = new Mailbox(network, { onerror: console.error })
 await mailbox.ready()
 
@@ -253,26 +258,29 @@ How a join goes:
 4. **Keys.** Every device of a member that can invite offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed.
 5. **Expiry.** Apply has no clock: past an invite's expiry, a member that can remove drops the invite and any joiner still without keys.
 
-A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too.
+A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.
 
 ### Accepting or rejecting a join
 
 A plain invite admits the joiner by itself: the invite is the approval. An invite minted with `confirm: true` holds each join as a request until a member answers it:
 
 ```js
-// pairing from above; approve is your own check
+// pairing and room from above; approve is your own check
 const invite = await pairing.invite({ confirm: true })
 
-pairing.on('request', async (request) => {
-  // request.identity: who is asking. request.role: what for, the invite's role
-  if (await approve(request)) await request.accept()
-  else await request.deny('not now')
-})
+for await (const { data: requests } of room.watch('requests', { admitted: false })) {
+  for (const request of requests) {
+    // request.identity: who is asking. request.role: what for, the invite's role
+    if (await approve(request)) await pairing.accept(request.id)
+    else await pairing.deny(request.id, 'not now')
+  }
+}
 ```
 
-- `request.accept()` admits the joiner at the invite's role. `request.accept({ role })` can grant a lower one, never above the invite's or your own rank. It throws `EXPIRED` once the invite has expired.
-- `request.deny(reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
-- `pairing.pending` holds the requests not answered yet, and `pairing.request(id)` finds one by the id of its row. They live in the database, rows of `requests` with the `role` they ask for, so they survive a restart and the first member to answer settles it for all.
+- Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold admitted joins until their keys are read (`admitted: true`), hence the filter.
+- `pairing.accept(id)` admits the joiner at the invite's role. `pairing.accept(id, { role })` can grant a lower one: `INVALID` for a role that is not a rank or is above the invite's, `REFUSED` above your own. It throws `EXPIRED` once the invite has expired.
+- `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
+- Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
 - A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
@@ -303,26 +311,28 @@ From a Cero build, its `spec` is `{ database: spec.local.database, meta: spec.me
 
 ## Blobs
 
-Bytes in one Hyperblobs core, addressed by position (not by content) and encrypted with the given `encryptionKey`, the identity's by default.
+Bytes in one Hyperblobs core, addressed by position (not by content) and encrypted with its `encryptionKey`.
 
 ```js
 import b4a from 'b4a'
 import { Blobs } from '@cero-base/core'
 
-// store, identity, network from above
-const blobs = new Blobs({ store, identity, network })
+// store, network and db from above
+const blobs = new Blobs({ store, network, encryptionKey: db.encryptionKey })
 await blobs.ready()
 const blobId = await blobs.put(b4a.from('hello'))
 const bytes = await blobs.get(blobId)
 ```
 
-| Member                                                              | Does                                                                                                             |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `new Blobs({ store, identity, encryptionKey, network, key, name })` | `identity` or `encryptionKey` is required. `key` opens an existing blob core; `name` names a new one, `'blobs'`. |
-| `put(bytes)`, `put(readable)`                                       | The blob id: `{ blockOffset, blockLength, byteOffset, byteLength }`.                                             |
-| `get(blobId)`, `createReadStream(blobId)`                           | The bytes, fetched from peers when not on the device; or a stream of them.                                       |
-| `clear(blobId)`                                                     | Drop its blocks from this device.                                                                                |
-| `key`, `id`, `discoveryKey`, `core`                                 | The core's key, its z32 id, its topic, the core.                                                                 |
+| Member                                                    | Does                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `new Blobs({ store, encryptionKey, network, key, name })` | `encryptionKey` is required. `key` opens an existing blob core; `name` names a new one, `'blobs'`. `network` replicates the core over the connections it already has and through its mirrors, and joins no topic of its own: a reader reaches the writer through a topic they share, such as a handle's. |
+| `put(bytes)`, `put(readable)`                             | The blob id: `{ blockOffset, blockLength, byteOffset, byteLength }`.                                                                                                                                                                                                                                     |
+| `get(blobId)`, `createReadStream(blobId)`                 | The bytes, fetched from peers when not on the device; or a stream of them.                                                                                                                                                                                                                               |
+| `clear(blobId)`                                           | Drop its blocks from this device.                                                                                                                                                                                                                                                                        |
+| `key`, `id`, `discoveryKey`, `core`                       | The core's key, its z32 id, its topic, the core.                                                                                                                                                                                                                                                         |
+
+With a `network`, `store` is the network's store or a session of it (`INVALID` otherwise): a network replicates its own store only.
 
 `encodeId(coreKey, blobId, type)` and `decodeId(id)`, from `@cero-base/core/blobs/codec`, turn that into the one-string file id Cero stores. `FileServer`, from `@cero-base/core/blobs/server`, serves a file id at a local url: `new FileServer({ store, resolve })`, `listen()`, `getLink(id)`, `close()`. `cero.put(room.files, …)` is these three plus a `files` row.
 

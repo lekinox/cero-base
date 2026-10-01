@@ -116,8 +116,9 @@ Those are the defaults. `active` handles search and announce, `announced` handle
 ## Sync nearby over Bluetooth
 
 ```js
-const me = await cero('./data', spec, { channel: 'my-app', bluetooth: true })
+const me = await cero('./data', spec, { channel: 'my-app' })
 
+await cero.nearby(me, true) // the app's Bluetooth setting
 const { data: status } = await cero.get(me.status)
 status.nearby // see the table
 const { data: peers } = await cero.get(me.nearby) // [{ id, device, name, isMobile }]
@@ -140,24 +141,29 @@ it is. `cero.watch` follows both refs, renames included.
 | `'unauthorized'` | no Bluetooth permission       | send the user to the app's settings |
 | `'off'`          | stopped                       | `cero.nearby(me, true)`             |
 | `'unsupported'`  | no Bluetooth on this platform |                                     |
-| `null`           | no `bluetooth` option         |                                     |
 
-`bluetooth: { autoStart: false }` opens with the radio off; `cero.nearby(me, true)` and
-`cero.nearby(me, false)` drive it from a settings toggle. `bluetooth: { pipe: 'gatt' }` picks the
-other data pipe, `'l2cap'` by default, and both peers must match. Without the `bluetooth` option
-`cero.nearby` throws `INVALID`.
+Every `cero()` has Bluetooth, with the radio off. The app turns it on and off from its own setting,
+`cero.nearby(me, true)` and `cero.nearby(me, false)`, at every start: Cero stores neither the radio
+nor the topic.
 
-An invite works offline too. The host holds its rendezvous while the QR code is on screen, and the
-joiner, radio on, runs the same `cero.open(me.room, invite)` as online:
+The radio links with the devices in range on the same channel and topic. The default topic is the
+channel's own; `cero.nearby(me, true, { topic: 'hall-1' })` moves to another, such as one hall of an
+event, and a call without a topic goes back to the default. A new topic drops the links on the old
+one. The channel still bounds it: the same topic on another channel is another topic, so a preview
+build never meets production.
 
 ```js
-const invite = await cero.invite(room, { ttl: '1h' })
-await cero.nearby(me, invite) // until the next call or the invite expires
-await cero.nearby(me, true) // the QR code closed: back to the mesh
+const me = await cero('./data', spec, { channel: 'my-app', bluetooth: { on: true, topic: 'expo' } })
 ```
 
-While a device holds an invite, and on the joiner during its `cero.open`, its other Bluetooth links
-drop until it lets go of the invite and the joiner's link closes.
+`bluetooth` sets the start: `on`, and `topic`, which becomes the default one. A phrase recovers
+over Bluetooth only with the radio on at start, since the recovery runs inside `cero()`.
+`pipe: 'gatt'` picks the other data pipe, `'l2cap'` by default, and both peers must match;
+`maxOutbound` and `maxInbound` cap the links.
+
+An invite works over Bluetooth too, with no internet: the joiner runs the same
+`cero.open(me.room, invite)` as online, and the join travels over the link to a member's device in
+range.
 
 ## Mixed app versions
 

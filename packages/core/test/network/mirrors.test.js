@@ -19,7 +19,7 @@ async function peer(t, testnet, opts = {}) {
     network,
     spec,
     key: opts.key,
-    encryptionKey: opts.encryptionKey
+    encryptionKey: opts.encryptionKey || Identity.randomBytes(32)
   })
   await db.ready()
   const close = async () => {
@@ -65,7 +65,13 @@ test('mirrors: a joiner boots from the mirror even when the writer reached it on
   const network = new Network({ bootstrap: testnet.bootstrap, store, mirrors: [mirror] })
   await network.ready()
   await network.suspend()
-  const a = new Database({ store, identity: await Identity.create(), network, spec })
+  const a = new Database({
+    store,
+    identity: await Identity.create(),
+    network,
+    spec,
+    encryptionKey: Identity.randomBytes(32)
+  })
   await a.ready()
   t.teardown(
     async () => {

@@ -25,7 +25,7 @@ export type Identity = {
      */
     id: string;
     /**
-     * Per-device id (empty when no `local` spec).
+     * Per-device id.
      */
     deviceId: string;
     /**
@@ -57,7 +57,7 @@ export type GetResult = {
  *
  * @typedef {object} Identity
  * @property {string} id        Long-lived cero identity id.
- * @property {string} deviceId  Per-device id (empty when no `local` spec).
+ * @property {string} deviceId  Per-device id.
  * @property {string} deviceName  This device's name, empty when it has none.
  *
  * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
@@ -127,7 +127,7 @@ export declare class Server extends RPCServer {
      */
     private _wireInit;
     /**
-     * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.
+     * Wire the `restore` handler.
      * @private
      */
     private _wireRestore;
@@ -137,15 +137,15 @@ export declare class Server extends RPCServer {
      */
     private _wireData;
     /**
-     * Register invite/revoke/join RPC handlers.
-     * @private
-     */
-    private _wirePairing;
-    /**
-     * Register add/open/close/leave RPC handlers for child handles.
+     * Register add/open/join/close/leave RPC handlers for child handles.
      * @private
      */
     private _wireHandles;
+    /**
+     * Register the `verb` handler: the operator by its name, on the handle, as in the worker.
+     * @private
+     */
+    private _wireVerbs;
     /**
      * Look up a live handle by id, throwing if unknown. Binds the handle's
      * codec on first use.
@@ -172,11 +172,6 @@ export declare class Server extends RPCServer {
      * @private
      */
     private _identity;
-    /**
-     * Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked.
-     * @private
-     */
-    private _wireSeed;
 }
 /**
  * Construct a `Server`, wait for it to be ready, and return it.

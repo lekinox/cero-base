@@ -14,13 +14,14 @@ import {
   ACTION,
   QUERY_RESERVED,
   RANK,
-  ADMIN
+  ADMIN,
+  WRITE
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
   subscribe,
   admission,
-  ownership,
+  can,
   filter,
   checkFields,
   checkRequired,
@@ -39,10 +40,10 @@ import { keyPair } from '../mailbox/inbox.js'
  * @typedef {object} DatabaseOpts
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
- * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication.
+ * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
  * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
- * @property {Uint8Array | null} [encryptionKey]                      Optional encryption key; falls back to identity's key.
+ * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
@@ -86,6 +87,11 @@ export class Database extends ReadyResource {
     if (!opts.spec || !opts.spec.database || !opts.spec.dispatch) {
       throw CeroError.INVALID('spec must have database + dispatch')
     }
+    if (!opts.encryptionKey) throw CeroError.REQUIRED('encryptionKey')
+    // a network replicates its own store only: a database in another would never leave the device
+    if (opts.network && !opts.network.replicates(opts.store)) {
+      throw CeroError.INVALID("store must be the network's store or a session of it")
+    }
 
     /** @type {import('corestore')} */
     this.store = opts.store
@@ -99,7 +105,7 @@ export class Database extends ReadyResource {
     /** @type {number | null} */
     this.behind = null
     this.namespace = opts.namespace || NAMESPACE
-    this.encryptionKey = opts.encryptionKey || opts.identity.encryptionKey || null
+    this.encryptionKey = opts.encryptionKey
     this.keyring = new Keyring()
     if (opts.epochs) for (const e of opts.epochs) this.keyring.add(e.stamp, e.entropy, e.epoch)
     /** @private */
@@ -116,7 +122,7 @@ export class Database extends ReadyResource {
     this._onerror = opts.onerror || ((err) => console.error(err))
     // a join is sealed to the address the encryption key owns: every member opens it, no one else
     /** @private */
-    this._room = this.encryptionKey ? keyPair(this.encryptionKey) : null
+    this._room = keyPair(this.encryptionKey)
     this.bee = null
     this.dispatcher = null
     /** @private */
@@ -231,8 +237,6 @@ export class Database extends ReadyResource {
     for (const { range } of held) range.destroy()
     await Promise.allSettled(held.map(({ core }) => core.close()))
     if (this.bee) {
-      // detach first, else the closed bee replicates into every new connection
-      if (this.network) this.network.detach(this.bee)
       await this.bee.close()
       this.bee = null
     }
@@ -285,6 +289,7 @@ export class Database extends ReadyResource {
    */
   async put(name, row) {
     const ref = this._prepare(name, row)
+    if (ref.kind === SINGLE) throw CeroError.INVALID(`${name} is a single: write it with set`)
     const was = row.id ? (await this.get(name, row.id)).data : null
     const stored = stamp({ ...row, id: row.id || genId() }, was?.createdAt)
     checkRequired(name, this.refs[name], stored)
@@ -492,7 +497,6 @@ export class Database extends ReadyResource {
   async bootstrap({ name, isMobile, recovering = false, timeout = 30000 } = {}) {
     this.guard()
     const ts = Date.now()
-    const writer = this._admission(this.writerKey, ts)
     const device = [
       'set-device',
       {
@@ -504,10 +508,7 @@ export class Database extends ReadyResource {
       }
     ]
     if (recovering) {
-      await this._backfilled(timeout)
-      await this._optimistic(this.spec.dispatch.encode(`@${this.ns}/add-writer`, writer), {
-        timeout
-      })
+      await this.claim({ timeout })
       await this.write([device])
     } else {
       // one batch: a writer is never on the log without its member row
@@ -519,28 +520,30 @@ export class Database extends ReadyResource {
         createdAt: ts,
         updatedAt: ts
       }
+      const writer = this._admission(this.writerKey, ts)
       await this.write([['add-writer', writer], ['add-member', member], device])
     }
     return { id: this.writerKey, writer: this.keyPair }
   }
 
   /**
-   * Claim writership on an existing database by signing our writer key with the member identity;
-   * the claim rides in the device core as an optimistic node.
+   * Seat this device's writer where its identity is a member: wait for the member row, append
+   * the add-writer the identity signs from this device's own core, and resolve once it writes.
+   * A member whose role cannot write takes no seat.
    *
+   * @param {{ timeout?: number }} [opts]
    * @returns {Promise<void>}
    */
-  async claim() {
+  async claim({ timeout = 30000 } = {}) {
     this.guard()
     if (this.bee.writable) return
-    const writer = this.writerKey
-    const op = this.spec.dispatch.encode(`@${this.ns}/claim-writer`, {
-      identity: this.identity.publicKey,
-      writer,
-      sig: this.identity.sign(ownership(this.key, writer)),
-      ts: Date.now()
-    })
-    await this._optimistic(op)
+    const { role } = await this._member(timeout)
+    if (!can(role, WRITE)) return
+    const op = this.spec.dispatch.encode(`@${this.ns}/add-writer`, this._admission(this.writerKey))
+    // from a core not yet admitted: apply verifies the identity's signature and seats it
+    await this.bee.append(wrap(this.version, op), { optimistic: true })
+    await this.bee.update()
+    await this.whenWritable({ timeout })
   }
 
   /**
@@ -673,7 +676,6 @@ export class Database extends ReadyResource {
     if (this.behind === null || this.behind > this.version) return false
     await this.bee.local.setUserData('autobee/head', null)
     await this.bee.local.setUserData('cero/behind', null)
-    if (this.network) this.network.detach(this.bee)
     await this.bee.close()
     this.behind = null
     return true
@@ -704,12 +706,17 @@ export class Database extends ReadyResource {
   async _apply(nodes, view, host) {
     const ready = []
     for (const node of nodes) {
-      const { version, body } = unwrap(node.value)
-      if (version > this.version) {
-        this._onfuture(version)
+      const op = unwrap(node.value)
+      // bytes with no envelope, or a cut one, are no op: skipped and surfaced like any node that does not decode
+      if (!op) {
+        this._onerror(CeroError.INVALID('an op with no envelope'))
         continue
       }
-      ready.push(version === 0 ? node : { ...node, value: body })
+      if (op.version > this.version) {
+        this._onfuture(op.version)
+        continue
+      }
+      ready.push({ ...node, value: op.body })
     }
     const result = await this.dispatcher.apply(ready, view, host)
     this._notify(ready)
@@ -830,7 +837,9 @@ export class Database extends ReadyResource {
     const ref = this._prepare(name, row)
     const existing = ref.kind === SINGLE || row?.id ? (await this.get(name, row?.id)).data : null
     if (!upsert && !existing) return null
-    const stored = stamp({ ...existing, ...row }, existing?.createdAt)
+    // a single is one record with no fields of Cero's
+    const merged = { ...existing, ...row }
+    const stored = ref.kind === SINGLE ? merged : stamp(merged, existing?.createdAt)
     checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     const insert = ref.kind === COLLECTION && upsert && !BESPOKE.has(ref.verb)
@@ -937,25 +946,28 @@ export class Database extends ReadyResource {
     return (await view.find(path, bounds).toArray()).length
   }
 
-  // an append by a core not yet admitted: apply verifies the signature and admits it
+  // this identity's member row, looked up again on every update until one lands it
   /** @private */
-  async _optimistic(op, opts) {
-    await this.bee.append(wrap(this.version, op), { optimistic: true })
-    await this.bee.update()
-    if (!this.bee.writable) await this.whenWritable(opts)
-  }
-
-  // the genesis device row is the first write of every database, so any device row means backfilled
-  /** @private */
-  async _backfilled(timeout) {
-    const deadline = Date.now() + timeout
-    while (Date.now() < deadline) {
-      if (this.closing || this.closed) throw CeroError.CLOSED('Database')
-      if ((await this.get('devices')).data.length > 0) return
-      await this.bee.update()
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-    throw CeroError.TIMEOUT('recovery — no peer replicated')
+  _member(timeout) {
+    return new Promise((resolve, reject) => {
+      const done = (err, member) => {
+        clearTimeout(timer)
+        this.off('update', check)
+        this.off('close', onclose)
+        if (err) reject(err)
+        else resolve(member)
+      }
+      const check = () =>
+        this.get('members', this.identity.id).then(({ data }) => data && done(null, data), done)
+      const onclose = () => done(CeroError.CLOSED('Database'))
+      const timer =
+        timeout > 0
+          ? setTimeout(() => done(CeroError.TIMEOUT('waiting for the member row')), timeout)
+          : null
+      this.on('update', check)
+      this.once('close', onclose)
+      check()
+    })
   }
 
   // the add-writer row for `writer`, appended by this device and signed by the identity

@@ -44,7 +44,7 @@ async function main() {
   const me = await cero(storage, spec, {
     name,
     bootstrap,
-    seed: opts.phrase && cero.toSeed(opts.phrase)
+    phrase: opts.phrase
   })
   await cero.set(me.profile, { name })
 

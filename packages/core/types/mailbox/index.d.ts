@@ -65,7 +65,7 @@ export declare class Mailbox extends ReadyResource {
     /** @private */
     _resources;
     /**
-     * @param {import('../network/index.js').Network} network  Needs a store: messages travel as cores in it.
+     * @param {import('../network/index.js').Network} network  Messages travel as cores in its store.
      * @param {MailboxOpts} [opts]
      */
     constructor(network: import('../network/index.js').Network, { inbox, outbox, onerror }?: MailboxOpts);

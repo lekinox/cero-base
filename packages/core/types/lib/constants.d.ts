@@ -10,9 +10,7 @@ export declare const OWNER = "owner";
 export declare const ADMIN = "admin";
 export declare const MEMBER = "member";
 export declare const READER = "reader";
-export declare const READ = "read";
 export declare const WRITE = "write";
-export declare const DELETE = "delete";
 export declare const INVITE = "invite";
 export declare const REMOVE = "remove";
 export declare const ASSIGN = "assign";
@@ -20,7 +18,7 @@ export declare const ROLE_PERMS: {
     owner: string[];
     admin: string[];
     member: string[];
-    reader: string[];
+    reader: any[];
 };
 export declare const RANK: {
     owner: number;

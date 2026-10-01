@@ -16,8 +16,14 @@ export function profileSync({ fields = { avatar: t.string } } = {}) {
       members: t.extend(fields)
     },
     setup(me) {
-      const publish = (child, profile) =>
-        mirror(me.profile, profile, fields, child.members, me.identity.id)
+      const publish = async (child, profile) => {
+        try {
+          await mirror(me.profile, profile, fields, child.members, me.identity.id)
+        } catch (err) {
+          // a handle that closed meanwhile has no member row left to update
+          if (!child.closing) throw err
+        }
+      }
 
       const onHandle = async (child) => {
         const { data: profile } = await get(me.profile)

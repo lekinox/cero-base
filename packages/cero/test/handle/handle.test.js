@@ -10,21 +10,30 @@ import { spec } from '../fixtures/spec/index.js'
 import {
   makeStore,
   makeTestnet,
-  makeNet,
   waitForConnection,
   waitUntil,
   nextRequest,
   fetch,
-  openHandle
+  openHandle,
+  ceroOpen
 } from '../helpers/index.js'
 
 // ─── Phase 4: root getter, fileServer, blobs, files ops ─────────────────────
 
 test.configure({ timeout: 90000 })
 
-const teamSpec = spec.handles.team
-
 // ─── admission guards (B3.2) ──────────────────────────────────────────────
+
+// a host's room, and people joining it, each with their own cero() as an app opens them
+async function hosted(t, name) {
+  const { me: host, testnet } = await ceroOpen(t)
+  const room = await open(host.team, { name })
+  const join = async (invite) => {
+    const { me } = await ceroOpen(t, { testnet })
+    return { me, room: await open(me.team, invite) }
+  }
+  return { host, room, join, testnet }
+}
 
 test('invite: a confirm invite waits for the app to accept', async (t) => {
   const testnet = await makeTestnet(t)
@@ -71,12 +80,17 @@ test('Handle: rejects missing spec', async (t) => {
   t.exception.all(() => new Handle({ store, identity: {}, network: {} }), /spec is required/)
 })
 
+test('Handle: a root rejects missing local', async (t) => {
+  const { store } = await makeStore(t)
+  t.exception.all(() => new Handle({ store, identity: {}, network: {}, spec }), /local is required/)
+})
+
 // ─── lifecycle ────────────────────────────────────────────────────────────
 
 test('Handle: opens and closes', async (t) => {
   const { me } = await openHandle(t)
   t.is(me.opened, true)
-  t.ok(me._pair, 'pair instance attached')
+  t.absent(me._pair, 'a root pairs nothing: its handles do')
   await me.close()
   t.is(me.closed, true)
 })
@@ -103,13 +117,7 @@ test('Handle: ref carries handle + name + kind', async (t) => {
 // ─── bootstrap ────────────────────────────────────────────────────────────
 
 test('Handle: bootstrap on fresh', async (t) => {
-  const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const net = await makeNet(t, await makeTestnet(t), null, store)
-  const me = new Handle({ store, identity, network: net, spec })
-  await me.ready()
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  await me.store.bootstrap({ name: 'desktop' })
+  const { me } = await openHandle(t, { name: 'desktop' })
   t.is(me.store.writable, true)
   t.is((await get(me.members)).data.length, 1, 'bootstrap enrolls the owner')
 })
@@ -182,6 +190,76 @@ test('Handle: t.extend adds a field to the member builtin', async (t) => {
 
 // ─── multi-device sync (same identity, claim) ─────────────────────────────
 
+test('open: a reader opens the room by id on a second device', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  t.teardown(() => room.close().catch(() => {}))
+  await put(room.messages, { text: 'hi' })
+  const a = await openHandle(t, { testnet })
+  const joined = await open(a.me.team, await cero.invite(room, { role: 'reader' }))
+  t.teardown(() => joined.close().catch(() => {}))
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  await waitUntil(async () => (await get(b.me.team)).data.length === 1)
+
+  const reopened = await open(b.me.team, { id: joined.id })
+  t.teardown(() => reopened.close().catch(() => {}))
+  await waitUntil(async () => (await get(reopened.messages)).data.length === 1)
+  t.absent(reopened.store.writable, 'a reader holds no seat')
+  t.is(reopened.store.length, 0, 'and appends nothing')
+})
+
+test('open: an invited member opens the room by id on a second device and writes', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  t.teardown(() => room.close().catch(() => {}))
+  const a = await openHandle(t, { testnet })
+  const joined = await open(a.me.team, await cero.invite(room))
+  t.teardown(() => joined.close().catch(() => {}))
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  await waitUntil(async () => (await get(b.me.team)).data.length === 1)
+
+  const reopened = await open(b.me.team, { id: joined.id })
+  t.teardown(() => reopened.close().catch(() => {}))
+  t.ok(reopened.store.writable, 'its claim seats the second device')
+  await put(reopened.messages, { text: 'from the second device' })
+  await waitUntil(async () => (await get(room.messages)).data.length === 1)
+  t.pass('the host reads it')
+})
+
+test('open: a second device stopped once its claim landed reopens on that writer', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await openHandle(t, { testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  t.teardown(() => room.close().catch(() => {}))
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  await waitUntil(async () => (await get(b.me.team)).data.length === 1)
+
+  // the device stops right after its claim reached the log
+  let claimed = null
+  const make = b.me._room
+  b.me._room = (opts) => {
+    const child = make.call(b.me, opts)
+    const claim = child.store.claim.bind(child.store)
+    child.store.claim = async () => {
+      await claim()
+      claimed = b4a.from(child.store.writerKey)
+      throw new Error('stopped')
+    }
+    return child
+  }
+  await t.exception(open(b.me.team, { id: room.id }), /stopped/)
+  b.me._room = make
+
+  const reopened = await open(b.me.team, { id: room.id })
+  t.teardown(() => reopened.close().catch(() => {}))
+  t.alike(b4a.from(reopened.store.writerKey), claimed, 'the retry is the writer on the log')
+})
+
 test('Handle: second device claims and syncs', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.create()
@@ -215,95 +293,25 @@ test('Handle: second device claims and syncs', async (t) => {
 // ─── reader role (can read, cannot write) ────────────────────────────────
 
 test('Handle: reader-role invite can read but cannot write', async (t) => {
-  const testnet = await makeTestnet(t)
-
-  const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId, hostStore)
-  const room = new Handle({
-    store: hostStore,
-    identity: hostId,
-    network: hostNet,
-    spec: teamSpec,
-    namespace: 'cero/team',
-    keyPair: Identity.randomKeyPair()
-  })
-  await room.ready()
-  t.teardown(() => room.close().catch(() => {}))
-
-  await room.store.bootstrap({ name: 'host' })
+  const { room, join } = await hosted(t, 'readers')
   await put(room.messages, { text: 'host-msg' })
-
-  const inviteStr = await cero.invite(room, { role: 'reader' })
-  const readerId = await Identity.create()
-  const { store: readerStore } = await makeStore(t)
-  const readerNet = await makeNet(t, testnet, readerId, readerStore)
-
-  const reader = await Handle.join(inviteStr, {
-    network: readerNet,
-    identity: readerId,
-    store: readerStore,
-    spec: teamSpec,
-    namespace: 'cero/team',
-    timeout: 20_000
-  })
-  await reader.ready()
-  t.teardown(() => reader.close().catch(() => {}))
-
-  await waitForConnection(hostNet)
-  await waitForConnection(readerNet)
-
-  await waitUntil(async () => {
-    const { data } = await get(reader.messages)
-    return data.length > 0 ? true : null
-  })
+  const { room: reader } = await join(await cero.invite(room, { role: 'reader' }))
+  await waitUntil(async () => ((await get(reader.messages)).data.length > 0 ? true : null))
   const { data: list } = await get(reader.messages)
   t.is(list[0].text, 'host-msg', 'reader can read host messages')
-
   await t.exception.all(() => put(reader.messages, { text: 'should fail' }), /not writable/i)
 })
 
 test('Handle: a removal re-keys the room, the removed member reads nothing new, late joiners read all', async (t) => {
-  const testnet = await makeTestnet(t)
-
-  const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId, hostStore)
-  const room = new Handle({
-    store: hostStore,
-    identity: hostId,
-    network: hostNet,
-    spec: teamSpec,
-    namespace: 'cero/team',
-    keyPair: Identity.randomKeyPair(),
-    encryptionKey: Identity.randomBytes(32)
-  })
-  await room.ready()
-  t.teardown(() => room.close().catch(() => {}))
-  await room.store.bootstrap({ name: 'host' })
-
-  const joinRoom = async (name) => {
-    const id = await Identity.create()
-    const { store } = await makeStore(t)
-    const net = await makeNet(t, testnet, id, store)
-    const h = await Handle.join(await cero.invite(room), {
-      network: net,
-      identity: id,
-      store,
-      spec: teamSpec,
-      namespace: 'cero/team',
-      timeout: 20_000
-    })
-    await h.ready()
-    t.teardown(() => h.close().catch(() => {}))
-    return { h, id, net }
+  const { room, join } = await hosted(t, 'rekey')
+  const joinRoom = async () => {
+    const { me, room: h } = await join(await cero.invite(room))
+    return { h, me }
   }
 
   await put(room.messages, { text: 'before' })
-  const stays = await joinRoom('stays')
-  const leaves = await joinRoom('leaves')
-  await waitForConnection(hostNet)
-
+  const stays = await joinRoom()
+  const leaves = await joinRoom()
   const sees = (h, text) =>
     waitUntil(async () => {
       const { data } = await get(h.messages)
@@ -312,14 +320,13 @@ test('Handle: a removal re-keys the room, the removed member reads nothing new, 
   await sees(stays.h, 'before')
   await sees(leaves.h, 'before')
 
-  await del(room.members, leaves.id.id)
+  await del(room.members, leaves.me.id)
   await waitUntil(async () => (await get(room.status)).data.epoch === 1 || null)
   t.pass('the removal opened epoch 1 by itself')
-  await put(room.messages, { text: 'after' })
 
+  await put(room.messages, { text: 'after' })
   await sees(stays.h, 'after')
   t.is(stays.h.store.keyring.seq, 1, 'remaining member picked up the epoch')
-
   const { data: leavesSees } = await get(leaves.h.messages)
   t.alike(
     leavesSees.map((r) => r.text),
@@ -328,7 +335,7 @@ test('Handle: a removal re-keys the room, the removed member reads nothing new, 
   )
   t.is(leaves.h.store.keyring.seq, 0, 'removed member has no envelope')
 
-  const late = await joinRoom('late')
+  const late = await joinRoom()
   await sees(late.h, 'before')
   await sees(late.h, 'after')
   // the join itself may trigger a self-healing rotation, so epoch 1 is a lower bound
@@ -339,23 +346,7 @@ test('Handle: a removal re-keys the room, the removed member reads nothing new, 
 })
 
 test('Handle: files rotate with the room — cross-member reads, epoch cutoff, legacy passthrough', async (t) => {
-  const testnet = await makeTestnet(t)
-
-  const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId, hostStore)
-  const room = new Handle({
-    store: hostStore,
-    identity: hostId,
-    network: hostNet,
-    spec: teamSpec,
-    namespace: 'cero/team',
-    keyPair: Identity.randomKeyPair(),
-    encryptionKey: Identity.randomBytes(32)
-  })
-  await room.ready()
-  t.teardown(() => room.close().catch(() => {}))
-  await room.store.bootstrap({ name: 'host' })
+  const { room, testnet } = await hosted(t, 'files-rotate')
 
   // the reader is a proper root + child room: its ROOT key differs from the
   // room key, which is exactly the shape where blob cores must resolve with
@@ -364,7 +355,6 @@ test('Handle: files rotate with the room — cross-member reads, epoch cutoff, l
   await m.me.store.bootstrap({ name: 'member-root' })
   const member = await open(m.me.team, await cero.invite(room))
   t.teardown(() => member.close().catch(() => {}))
-  await waitForConnection(hostNet)
   await waitForConnection(m.net)
 
   const legacyBytes = b4a.from('legacy-file-contents')
@@ -861,47 +851,11 @@ test('Handle: sibling rooms rotate independently under one root', async (t) => {
 
 // ─── invite + join (different identity, multi-user) ───────────────────────
 
-test('Handle: invite + Handle.join + atomic admission', async (t) => {
-  const testnet = await makeTestnet(t)
-
-  const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId, hostStore)
-  const room = new Handle({
-    store: hostStore,
-    identity: hostId,
-    network: hostNet,
-    spec: teamSpec,
-    namespace: 'cero/team',
-    keyPair: Identity.randomKeyPair()
-  })
-  await room.ready()
-  t.teardown(() => room.close().catch(() => {}))
-
-  await room.store.bootstrap({ name: 'host' })
+test('Handle: an invite admits a member atomically, whose writes reach the host', async (t) => {
+  const { room, join } = await hosted(t, 'admission')
   await put(room.messages, { text: 'from-host' })
-
-  const inviteStr = await cero.invite(room, { role: 'member', ttl: 60_000 })
-
-  const joinerId = await Identity.create()
-  const { store: joinerStore } = await makeStore(t)
-  const joinerNet = await makeNet(t, testnet, joinerId, joinerStore)
-
-  const joiner = await Handle.join(inviteStr, {
-    network: joinerNet,
-    identity: joinerId,
-    store: joinerStore,
-    spec: teamSpec,
-    namespace: 'cero/team',
-    timeout: 20_000
-  })
-  await joiner.ready()
-  t.teardown(() => joiner.close().catch(() => {}))
-
-  await waitForConnection(hostNet)
-  await waitForConnection(joinerNet)
+  const { room: joiner } = await join(await cero.invite(room, { role: 'member', ttl: 60_000 }))
   await waitUntil(() => joiner.store.writable)
-
   await put(joiner.messages, { text: 'from-joiner' })
   await waitUntil(async () => {
     const { data: list } = await get(room.messages)
@@ -912,43 +866,11 @@ test('Handle: invite + Handle.join + atomic admission', async (t) => {
 })
 
 test('Handle: revoke makes the invite un-joinable', async (t) => {
-  const testnet = await makeTestnet(t)
-
-  const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId, hostStore)
-  const room = new Handle({
-    store: hostStore,
-    identity: hostId,
-    network: hostNet,
-    spec: teamSpec,
-    namespace: 'cero/team-revoke',
-    keyPair: Identity.randomKeyPair()
-  })
-  await room.ready()
-  t.teardown(() => room.close().catch(() => {}))
-
-  await room.store.bootstrap({ name: 'host' })
-
+  const { room, join } = await hosted(t, 'revoked')
   const inviteStr = await cero.invite(room, { role: 'member', ttl: 60_000 })
   t.is(await cero.revoke(room, inviteStr), true, 'revoke returns true the first time')
   t.is(await cero.revoke(room, inviteStr), false, 'revoke returns false the second time')
-
-  const joinerId = await Identity.create()
-  const { store: joinerStore } = await makeStore(t)
-  const joinerNet = await makeNet(t, testnet, joinerId, joinerStore)
-
-  await t.exception.all(
-    Handle.join(inviteStr, {
-      network: joinerNet,
-      identity: joinerId,
-      store: joinerStore,
-      spec: teamSpec,
-      namespace: 'cero/team-revoke-joiner',
-      timeout: 10000
-    }),
-    /DENIED/
-  )
+  await t.exception.all(join(inviteStr), /DENIED/)
 })
 
 // ─── Phase 4: root getter + coreKey→handle registry ──────────────────────────
@@ -1102,47 +1024,9 @@ test('files: get(handle.files, id) resolves a single file row', async (t) => {
 // ─── Phase 4: WRITE gate ──────────────────────────────────────────────────────
 
 test('files: a reader cannot add a file', async (t) => {
-  const testnet = await makeTestnet(t)
-
-  const { store: hostStore } = await makeStore(t)
-  const hostId = await Identity.create()
-  const hostNet = await makeNet(t, testnet, hostId, hostStore)
-  const room = new Handle({
-    store: hostStore,
-    identity: hostId,
-    network: hostNet,
-    spec: teamSpec,
-    namespace: 'cero/team-files',
-    keyPair: Identity.randomKeyPair()
-  })
-  await room.ready()
-  t.teardown(() => room.close().catch(() => {}))
-
-  await room.store.bootstrap({ name: 'owner' })
-
-  const inviteStr = await cero.invite(room, { role: 'reader' })
-  const readerId = await Identity.create()
-  const { store: readerStore } = await makeStore(t)
-  const readerNet = await makeNet(t, testnet, readerId, readerStore)
-
-  const reader = await Handle.join(inviteStr, {
-    network: readerNet,
-    identity: readerId,
-    store: readerStore,
-    spec: teamSpec,
-    namespace: 'cero/team-files-reader',
-    timeout: 20_000
-  })
-  await reader.ready()
-  t.teardown(() => reader.close().catch(() => {}))
-
-  await waitForConnection(hostNet)
-  await waitForConnection(readerNet)
-  await waitUntil(async () => {
-    const { data } = await get(reader.members)
-    return data.length > 0 ? true : null
-  })
-
+  const { room, join } = await hosted(t, 'files')
+  const { room: reader } = await join(await cero.invite(room, { role: 'reader' }))
+  await waitUntil(async () => ((await get(reader.members)).data.length > 0 ? true : null))
   await t.exception.all(
     put(reader.files, { data: b4a.from('nope'), type: 'text/plain', name: 'x.txt' }),
     /not writable/i,

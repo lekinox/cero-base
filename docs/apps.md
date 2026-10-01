@@ -98,7 +98,7 @@ const room = await cero.open(me.room, { name: 'team' })
 cero.watch(room.notes).on('data', ({ data }) => render(data)) // render: your UI's
 ```
 
-`cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses, `rotate` included.
+`cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses: the worker runs the same operator on the same context, so it returns and refuses as it does there, and it runs nothing else the UI names.
 
 Each watch item is a full result, and with `changes: true` the client diffs them itself, so a slow link skips items, never changes. A reloaded UI is a new client on the same worker: its old streams end.
 
@@ -170,7 +170,6 @@ document.addEventListener('visibilitychange', () => {
 
 - `before`, `after` and `tx` take functions, so they run in the worker and the client has none. Register hooks in an extension's `setup`, which runs there.
 - `peek` reads a local directory, so it runs in a process that has one: chat-desktop's Electron main calls it, through `isInitialized`, before it starts the worker.
-- `restore(me, phrase)` on a client takes the phrase; the worker turns it into the seed.
 - Errors cross as `code` and `message`, and a denied join with its `reason`, so match `err.code`. A hook that refuses a UI's write arrives as `REFUSED`.
 
 ## Ship one spec to both sides

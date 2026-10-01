@@ -155,8 +155,7 @@ test('invites: a removed member comes back only through an invite minted after i
   const room = await open(a.me.team, { name: 'records' })
   t.teardown(() => room.close().catch(() => {}))
   const before = await cero.invite(room, { reuse: true })
-  // a local store keeps its writer, as cero() does, so reopening the room never claims a seat
-  const b = await joinAsRoot(t, testnet, before, { local: true })
+  const b = await joinAsRoot(t, testnet, before)
   await memberCount(room, 2)
 
   // the patient revokes the clinician, who still holds the reusable invite

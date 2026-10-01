@@ -7,7 +7,7 @@ import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
 import { Invite } from './invite.js'
-import { Request, Response, STATUS_ACCEPTED, STATUS_DENIED } from './request.js'
+import { Response, STATUS_ACCEPTED, STATUS_DENIED } from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
@@ -33,12 +33,16 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
  *
+ * @typedef {object} AcceptOpts
+ * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
+ *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
  * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
+ * @property {(answer: JoinResult | Error) => Promise<unknown>} [keep]  Saves the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed with the same writer after a crash gets it again.
  *
  * @typedef {object} JoinResult
  * @property {Uint8Array} key
@@ -54,7 +58,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * that may invite offers them while online, and the first one read settles it for all. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
- * as requests until a member accepts or denies them; `'request'` fires for each new one.
+ * as rows of `requests` until a member accepts or denies one by its id.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -66,13 +70,9 @@ export class Pairing extends ReadyResource {
 
     this.mailbox = mailbox
     this.db = db
-    /** @type {Set<Request>} requests not answered yet: whoever attaches after one fired goes through these first */
-    this.pending = new Set()
     /** Whether this device answers the database's joins: it may invite, and invites or joiners owed an answer exist. */
     this.serving = false
 
-    /** @private */
-    this._requests = new Map() // writer id → Request
     /** @private */
     this._replies = new Map() // writer id → the Post offering its keys
     /** @private */
@@ -157,20 +157,49 @@ export class Pairing extends ReadyResource {
   }
 
   /**
-   * A join waiting on a `confirm` invite, by its id in the `requests` collection.
+   * Admit a join waiting on a `confirm` invite, by its id in `requests`. Every device of an
+   * inviter then replies with the keys.
    *
    * @param {string} id
-   * @returns {Promise<Request>}
+   * @param {AcceptOpts} [opts]
+   * @returns {Promise<void>}
    */
-  async request(id) {
-    // the row can be read before this device has caught up with it
-    if (!this._requests.has(id)) await this._sync()
-    const request = this._requests.get(id)
-    if (!request) throw CeroError.UNKNOWN('request', id)
-    return request
+  async accept(id, { role } = {}) {
+    const invite = await this._waiting(id)
+    // apply has no clock: it would admit past the expiry
+    if (expired(invite)) throw CeroError.EXPIRED()
+    role = role || invite.role
+    if (!isRank(role)) {
+      throw CeroError.INVALID(`role '${role}' is not a rank (owner, admin, member, reader)`)
+    }
+    if (!grants(invite.role, role)) {
+      throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
+    }
+    await this.db.call('accept', { id, role })
   }
 
-  // follow the log: the invites that ran out, the joins waiting for a member, the answers owed
+  /**
+   * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+   *
+   * @param {string} id
+   * @param {string} [reason]
+   * @returns {Promise<void>}
+   */
+  async deny(id, reason = '') {
+    await this._waiting(id)
+    await this.db.call('deny', { id, reason })
+  }
+
+  // the invite of a join nobody has answered yet
+  /** @private */
+  async _waiting(id) {
+    const { data: row } = await this.db.get('requests', id)
+    const invite = row && !row.admitted && (await this.db.get('invites', row.invite)).data
+    if (!invite) throw CeroError.UNKNOWN('request', id)
+    return invite
+  }
+
+  // follow the log: the invites that ran out, the answers owed
   /** @private */
   async _sync() {
     const me = await this._me()
@@ -191,7 +220,6 @@ export class Pairing extends ReadyResource {
     const inviter = can(role, INVITE)
     const owed = inviter ? requests.filter((row) => row.admitted) : []
     const refused = inviter ? refusals : []
-    this._pending(inviter ? requests.filter((row) => !row.admitted) : [], invites)
     await this._answer(owed, refused, role)
     const live = invites.some((row) => !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
@@ -209,25 +237,6 @@ export class Pairing extends ReadyResource {
       () => this._sync().catch(safetyCatch),
       Math.min(next - Date.now() + 1, MAX_DELAY)
     )
-  }
-
-  /** @private */
-  _pending(rows, invites) {
-    const live = new Set(rows.map((row) => row.id))
-    // settled elsewhere: accepted or denied by another member, or its invite revoked
-    for (const [id, request] of this._requests) {
-      if (live.has(id)) continue
-      this._requests.delete(id)
-      this.pending.delete(request)
-    }
-    for (const row of rows) {
-      const invite = invites.find((i) => i.id === row.invite)
-      if (!invite || this._requests.has(row.id)) continue
-      const request = new Request({ pairing: this, invite, row })
-      this._requests.set(row.id, request)
-      this.pending.add(request)
-      this.emit('request', request)
-    }
   }
 
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
@@ -330,7 +339,14 @@ export class Pairing extends ReadyResource {
   static async join(
     mailbox,
     invite,
-    { identity, spec, writer = crypto.keyPair(), timeout = 30000, signal = null } = {}
+    {
+      identity,
+      spec,
+      writer = crypto.keyPair(),
+      timeout = 30000,
+      signal = null,
+      keep = async () => {}
+    } = {}
   ) {
     if (!mailbox) throw CeroError.REQUIRED('mailbox')
     if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
@@ -348,12 +364,17 @@ export class Pairing extends ReadyResource {
       resolve = res
       fail = rej
     })
-    const onreply = (message) => {
+    const settle = async (answer, done) => {
+      await keep(answer)
+      done(answer)
+    }
+    const onreply = async (message) => {
       const response = decode(Response, message)
-      if (response?.status === STATUS_DENIED) fail(CeroError.DENIED(response.reason || null))
-      else if (response?.key && b4a.equals(response.key, parsed.key)) {
+      if (response?.status === STATUS_DENIED) {
+        await settle(CeroError.DENIED(response.reason || null), fail)
+      } else if (response?.key && b4a.equals(response.key, parsed.key)) {
         const { key, encryptionKey, epochs } = response
-        resolve({ key, encryptionKey, epochs: epochs || [], writer })
+        await settle({ key, encryptionKey, epochs: epochs || [], writer }, resolve)
       }
     }
 

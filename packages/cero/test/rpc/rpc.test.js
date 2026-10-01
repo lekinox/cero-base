@@ -1,9 +1,10 @@
 import test from 'brittle'
 import b4a from 'b4a'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { Duplex } from 'streamx'
+import c from 'compact-encoding'
 import { decodeId } from '@cero-base/core/blobs'
 import { Invite } from '@cero-base/core/invite'
 
@@ -20,8 +21,9 @@ import {
   accept,
   deny
 } from '../../src/index.js'
+import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect } from '../../src/rpc/client.js'
+import { connect, restore } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -165,7 +167,7 @@ test('rpc: recovery phrase is fetched on demand, not via init', async (t) => {
   t.absent(client.identity, 'init carries no identity, so no phrase')
 
   const phrase = await cero.phrase(client)
-  t.ok(phrase && phrase.split(' ').length >= 12, 'client fetches the phrase via the seed RPC')
+  t.ok(phrase && phrase.split(' ').length >= 12, 'the client asks the worker for it')
   t.is(phrase, await cero.phrase(me), 'matches the server identity phrase')
 })
 
@@ -552,6 +554,73 @@ test('rpc: a verb the root cannot take fails the same way in the UI as in the wo
   await t.exception(cero.accept(client, { id: 'x' }), /the root has no invites/)
 })
 
+test('rpc: a verb answers in the UI as in the worker, results and refusals', async (t) => {
+  const { me, client } = await openPair(t)
+  const room = await open(client.team, { name: 'a' })
+  const served = [...me.children][0]
+  const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
+  const link = { key: random(), length: 1 }
+  const stray = Invite.create({ key: random(), address: random(), link }).toString()
+  const cases = {
+    'phrase on the root': (root) => cero.phrase(root),
+    'phrase on a room': (root, room) => cero.phrase(room),
+    'activate a room': (root, room) => cero.activate(room),
+    'revoke an invite never minted': (root, room) => cero.revoke(room, stray),
+    'cancel a join never started': (root) => cero.cancel(root, stray),
+    'cancel what is no invite': (root) => cero.cancel(root, 'nope'),
+    'invite on the root': (root) => cero.invite(root),
+    'invite as no rank': (root, room) => cero.invite(room, { role: 'nope' }),
+    'reuse above member': (root, room) => cero.invite(room, { role: 'admin', reuse: true }),
+    'revoke on the root': (root) => cero.revoke(root, stray),
+    'accept an unknown request': (root, room) => cero.accept(room, { id: 'x' }),
+    'deny an unknown request': (root, room) => cero.deny(room, { id: 'x' }, 'no'),
+    'suspend a room': (root, room) => cero.suspend(room),
+    'resume a room': (root, room) => cero.resume(room),
+    'invite with null for options': (root, room) => cero.invite(room, null)
+  }
+  // a TypeError has no code, and none crosses as ''
+  const outcome = (run) =>
+    run().then(
+      (value) => ({ value }),
+      (err) => ({ code: err.code || null, message: err.message })
+    )
+  for (const [name, run] of Object.entries(cases)) {
+    const there = await outcome(() => run(me, served))
+    t.alike(await outcome(() => run(client, room)), there, `${name}: ${JSON.stringify(there)}`)
+  }
+})
+
+test('rpc: the worker runs a verb only by its name in the list', async (t) => {
+  const { server, client } = await openPair(t)
+  const args = c.encode(c.any, [])
+  const unlisted = ['close', 'leave', 'open', 'put', 'tx', '_loadKeyPair', '_phrase', 'constructor']
+  for (const verb of [...unlisted, '__proto__', 'toString']) {
+    const err = await client.rpc.verb({ handle: client.id, verb, args }).catch((e) => e)
+    t.is(err?.code, 'UNKNOWN', `${verb} is refused`)
+  }
+  t.absent(server.me.closing, 'the root is still open')
+})
+
+test('rpc: an argument or option left undefined takes its default in the worker', async (t) => {
+  const { client } = await openPair(t, { bluetooth: { on: true, backend: makeMockBluetooth() } })
+  const room = await open(client.team, { name: 'a' })
+  const code = await cero.invite(room, { role: undefined, ttl: undefined, data: undefined })
+  t.is(Invite.parse(code).expires, 0, 'no ttl')
+  t.is((await get(room.invites)).data[0].role, 'member', 'the default role')
+  t.ok(await cero.invite(room, undefined), 'no options at all')
+  await cero.nearby(client, false, { topic: undefined })
+  t.is((await get(client.status)).data.nearby, 'off', 'the default topic')
+})
+
+test('rpc: cancel runs on the handle it is called with', async (t) => {
+  const { me, client } = await openPair(t)
+  const room = await open(client.team, { name: 'a' })
+  const calls = []
+  ;[...me.children][0]._cancel = async (code) => calls.push(code) > 0
+  t.ok(await cero.cancel(room, 'code'))
+  t.alike(calls, ['code'], "the room's cancel ran, not the root's")
+})
+
 test('rpc: an action called from the UI runs in the worker', async (t) => {
   const { client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
@@ -736,6 +805,42 @@ test('rpc: file read resolves a url that serves the bytes over http', async (t) 
   t.alike(b4a.toBuffer(body), b4a.toBuffer(data), 'http body is byte-perfect')
 })
 
+test('rpc: a file field reads back as a file whose url serves the bytes', async (t) => {
+  const { client } = await openPair(t)
+  const data = b4a.from('an-avatar')
+  const { data: file } = await put(client.files, { data, name: 'a.png', type: 'image/png' })
+  await set(client.profile, { name: 'Ada', avatar: file.id })
+
+  const { data: profile } = await get(client.profile)
+  t.is(profile.avatar.id, file.id, 'the field carries the file')
+  t.is(profile.avatar.type, 'image/png')
+  const res = await fetch(profile.avatar.url)
+  t.is(res.status, 200, 'its url serves the bytes')
+  t.alike(b4a.toBuffer(b4a.from(await res.arrayBuffer())), b4a.toBuffer(data))
+
+  const first = await new Promise((resolve) => watch(client.profile).once('data', resolve))
+  t.is(first.data.avatar.id, file.id, 'a watch carries it the same way')
+})
+
+test('rpc: after a phrase restore, a new file url serves its bytes', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+
+  await restore(client, await cero.phrase(other))
+  t.is(client.id, other.id, 'the UI is the restored identity')
+  const data = b4a.from('after-restore')
+  const { data: file } = await put(client.files, { data, name: 'r.txt', type: 'text/plain' })
+  const res = await fetch(file.url)
+  t.is(res.status, 200, 'the new root serves it')
+  t.alike(b4a.toBuffer(b4a.from(await res.arrayBuffer())), b4a.toBuffer(data))
+})
+
+test('rpc: put on a single is INVALID, as in process', async (t) => {
+  const { client } = await openPair(t)
+  await t.exception(put(client.profile, { name: 'Ada' }), /INVALID.*set/)
+})
+
 // ─── local (per-device) refs over RPC ─────────────────────────────────────
 
 test('rpc: client.local exposes app local refs, hides builtins', async (t) => {
@@ -809,20 +914,33 @@ test('rpc: server rejects local ops on builtin refs', async (t) => {
 })
 
 test('rpc: the UI turns the radio off and on, and reads it', async (t) => {
-  const { client } = await openPair(t, { bluetooth: { backend: makeMockBluetooth() } })
+  const { client } = await openPair(t, { bluetooth: { on: true, backend: makeMockBluetooth() } })
   const radio = async () => (await get(client.status)).data.nearby
   t.is(await radio(), 'on')
   await cero.nearby(client, false)
   t.is(await radio(), 'off')
   await cero.nearby(client, true)
   t.is(await radio(), 'on')
+  await cero.nearby(client, false)
+  await t.exception(cero.nearby(client, 'yryinvite'), /INVALID/, 'an invite is not a mode')
+  await t.exception(cero.nearby(client, { on: true }), /INVALID/, 'nor an object')
+  await t.exception(cero.nearby(client, true, { topic: null }), /INVALID/, 'nor a null topic')
+  t.is(await radio(), 'off', 'and none turned the radio on')
+  await cero.nearby(client, false, { topic: 'hall-1' })
+  t.is(await radio(), 'off', 'false with a topic stays off')
+  await cero.nearby(client, true, { topic: 'hall-1' })
+  t.is(await radio(), 'on', 'true with a topic comes on')
 })
 
 test('rpc: the UI reads who is nearby, with their name and device type', async (t) => {
   const radio = makeMockBluetooth()
-  const { me, client } = await openPair(t, { bluetooth: { backend: radio } })
+  const { me, client } = await openPair(t, { bluetooth: { on: true, backend: radio } })
   const testnet = await makeTestnet(t)
-  const opts = { bootstrap: testnet.bootstrap, isMobile: true, bluetooth: { backend: radio } }
+  const opts = {
+    bootstrap: testnet.bootstrap,
+    isMobile: true,
+    bluetooth: { on: true, backend: radio }
+  }
   const other = await cero(await t.tmp(), spec, opts)
   t.teardown(() => other.close().catch(() => {}), { order: 5 })
   await set(other.profile, { name: 'bee' })
@@ -896,4 +1014,32 @@ test('rpc: watch carries the same changes over the wire as locally', async (t) =
     replayPairs(localBatches),
     'wire and local replay identically'
   )
+})
+
+test('rpc: open by id refuses a handle of another type, as in process', async (t) => {
+  const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', '.build-rpc')
+  t.teardown(() => rmSync(dir, { recursive: true, force: true }), { order: 10 })
+  const notes = { notes: cero.t.collection({ text: cero.t.string }) }
+  await build(dir, cero.schema({ expo: notes, group: notes }), { extensions: [] })
+  const { spec: two } = await import(pathToFileURL(join(dir, 'index.js')).href)
+  const testnet = await makeTestnet(t)
+  const [serverStream, clientStream] = pair()
+  const storage = await t.tmp()
+  const server = await serve(serverStream, two, {
+    storage,
+    bootstrap: testnet.bootstrap,
+    extensions: []
+  })
+  const client = await connect(clientStream, two)
+  t.teardown(
+    async () => {
+      await client.close().catch(() => {})
+      await server.close().catch(() => {})
+    },
+    { order: 5 }
+  )
+
+  const expo = await open(client.expo, { name: 'fair' })
+  await t.exception(open(client.group, { id: expo.id }), /INVALID/, 'another type is refused')
+  t.is((await open(client.expo, { id: expo.id })).type, 'expo', 'its own type opens')
 })

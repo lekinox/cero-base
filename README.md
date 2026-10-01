@@ -46,9 +46,10 @@ import { schema } from './schema.js'
 await build('./spec', schema)
 ```
 
-Use it:
+Use it, and run it with `node app.js`:
 
 ```js
+// app.js
 import { cero } from '@cero-base/cero'
 import { spec } from './spec/index.js'
 
@@ -62,9 +63,13 @@ console.log(await cero.invite(room)) // give this to a friend
 
 `me` is your context: your own data, on every device you link. `room` is a handle type in the schema, and `cero.open(me.room, …)` opens a handle of it: a context of its own, with its own members and key, that you share with an invite. Every `cero.*` call takes a context or one of its refs, like `room.messages`.
 
-Your friend, on their own machine, with the same `spec/`:
+Your friend, on their own machine, with the same `spec/`, runs `node friend.js <invite>`:
 
 ```js
+// friend.js
+import { cero } from '@cero-base/cero'
+import { spec } from './spec/index.js'
+
 const me = await cero('./data', spec)
 const invite = process.argv[2] // the string you gave them
 const room = await cero.open(me.room, invite)

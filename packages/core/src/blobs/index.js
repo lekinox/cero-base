@@ -12,10 +12,9 @@ const NS = `${NAMESPACE}/blobs`
 /**
  * @typedef {object} BlobsOpts
  * @property {object} store                                           Corestore (or compatible) used to host the blob core.
- * @property {import('../identity/index.js').Identity} [identity]     Identity supplying the default encryption key.
- * @property {import('../network/index.js').Network} [network]        Optional network used to announce + replicate the core.
+ * @property {import('../network/index.js').Network} [network]        Optional network on this store: the core rides its connections and mirrors.
  * @property {Uint8Array} [key]                                       Pre-existing blob core key — joins an existing blob feed.
- * @property {Uint8Array} [encryptionKey]                             Explicit encryption key, overrides `identity.encryptionKey`.
+ * @property {Uint8Array} encryptionKey                               Encrypts the core.
  * @property {string} [name]                                          Core name in the store when no `key` is given; `blobs` by default.
  *
  * @typedef {import('./codec.js').RawBlobId} RawBlobId
@@ -24,15 +23,18 @@ const NS = `${NAMESPACE}/blobs`
 /** Thin wrapper over a single Hyperblobs core; deals only in raw blobIds. */
 export class Blobs extends ReadyResource {
   /** @param {BlobsOpts} [opts] */
-  constructor({ store, identity, network, key, encryptionKey, name } = {}) {
+  constructor({ store, network, key, encryptionKey, name } = {}) {
     super()
     if (!store) throw CeroError.REQUIRED('store')
-    if (!identity && !encryptionKey) throw CeroError.REQUIRED('identity or encryptionKey')
+    if (!encryptionKey) throw CeroError.REQUIRED('encryptionKey')
+    // a network replicates its own store only: a core in another would never leave the device
+    if (network && !network.replicates(store)) {
+      throw CeroError.INVALID("store must be the network's store or a session of it")
+    }
 
     this.store = store
-    this.identity = identity || null
     this.network = network || null
-    this.encryptionKey = encryptionKey || (identity && identity.encryptionKey) || null
+    this.encryptionKey = encryptionKey
     this.name = name || 'blobs'
 
     /** @private */
@@ -41,8 +43,6 @@ export class Blobs extends ReadyResource {
     this.core = null
     /** @type {import('hyperblobs') | null} */
     this.hyperblobs = null
-    /** @private */
-    this._discovery = null
   }
 
   /**
@@ -88,16 +88,12 @@ export class Blobs extends ReadyResource {
     this.hyperblobs = new Hyperblobs(this.core)
     await this.hyperblobs.ready()
 
-    if (this.network) {
-      this.network.attach(this.core)
-      this._discovery = this.network.join(this.core.discoveryKey)
-    }
+    // files ride the connections the network already has, and mirrors through attach
+    if (this.network) this.network.attach(this.core)
   }
 
   /** @private */
   async _close() {
-    if (this._discovery) await this._discovery.destroy()
-    if (this.network && this.core) this.network.detach(this.core)
     if (this.hyperblobs) await this.hyperblobs.close()
     if (this.core) await this.core.close()
   }

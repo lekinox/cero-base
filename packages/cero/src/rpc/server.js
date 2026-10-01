@@ -4,7 +4,7 @@ import safetyCatch from 'safety-catch'
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
 
-import { cero, restore, toSeed } from '../index.js'
+import { cero, restore } from '../index.js'
 import {
   put,
   set,
@@ -15,6 +15,8 @@ import {
   invite,
   revoke,
   rotate,
+  accept,
+  deny,
   cancel,
   leave,
   suspend,
@@ -24,6 +26,24 @@ import {
   phrase,
   nearby
 } from '../lib/operators.js'
+
+// what a UI reaches by name: these operators, never close or a handle's privates
+const VERBS = new Map(
+  Object.entries({
+    invite,
+    revoke,
+    rotate,
+    accept,
+    deny,
+    cancel,
+    suspend,
+    resume,
+    activate,
+    deactivate,
+    phrase,
+    nearby
+  })
+)
 
 /**
  * @typedef {import('@cero-base/core/rpc').RPCServer} BaseRPCServer
@@ -37,7 +57,7 @@ import {
  *
  * @typedef {object} Identity
  * @property {string} id        Long-lived cero identity id.
- * @property {string} deviceId  Per-device id (empty when no `local` spec).
+ * @property {string} deviceId  Per-device id.
  * @property {string} deviceName  This device's name, empty when it has none.
  *
  * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
@@ -114,10 +134,9 @@ export class Server extends RPCServer {
     this.handles.set(this.me.id, this.me)
     await this.me.fileServer.listen()
     this._wireData()
-    this._wirePairing()
     this._wireHandles()
+    this._wireVerbs()
     this._wireRestore()
-    this._wireSeed()
   }
 
   /** @private */
@@ -173,13 +192,13 @@ export class Server extends RPCServer {
   }
 
   /**
-   * Wire the `restore` handler. The phrase becomes a seed here: the UI cannot load the crypto it takes.
+   * Wire the `restore` handler.
    * @private
    */
   _wireRestore() {
     this.rpc.onRestore(async ({ phrase }) => {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      this.me = await restore(this.me, toSeed(phrase))
+      this.me = await restore(this.me, phrase)
       this.handles = new Map([[this.me.id, this.me]])
       return this._identity()
     })
@@ -279,71 +298,7 @@ export class Server extends RPCServer {
   }
 
   /**
-   * Register invite/revoke/join RPC handlers.
-   * @private
-   */
-  _wirePairing() {
-    this.rpc.onInvite(async ({ handle, role, ttl, reuse, confirm, data }) => {
-      const code = await invite(this._resolve(handle), {
-        role: role || undefined,
-        ttl: ttl || undefined,
-        reuse: reuse === true,
-        confirm: confirm === true,
-        data: data || null
-      })
-      return { invite: code }
-    })
-
-    this.rpc.onRevoke(async ({ handle, invite: code }) => {
-      return { ok: await revoke(this._resolve(handle), code) }
-    })
-
-    this.rpc.onRotate(({ handle }) => rotate(this._resolve(handle)))
-
-    this.rpc.onAnswer(async ({ handle, id, accept, role, reason }) => {
-      await this._resolve(handle)._answer(id, { accept, role: role || undefined, reason })
-      return {}
-    })
-
-    this.rpc.onSuspend(async ({ handle }) => {
-      await suspend(this._resolve(handle))
-      return {}
-    })
-
-    this.rpc.onResume(async ({ handle }) => {
-      await resume(this._resolve(handle))
-      return {}
-    })
-
-    this.rpc.onSetActive(async ({ handle, active: on }) => {
-      await (on ? activate : deactivate)(this._resolve(handle))
-      return {}
-    })
-
-    this.rpc.onNearby(async ({ on, invite }) => {
-      await nearby(this.me, invite || on)
-      return {}
-    })
-
-    this.rpc.onCancel(async ({ invite: code }) => ({ ok: await cancel(this.me, code) }))
-
-    this.rpc.onJoin(async ({ parent, ref, invite }) => {
-      if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
-      let child
-      try {
-        child = await this.me._join(invite, ref)
-      } catch (err) {
-        if (err.code !== 'DENIED') throw err
-        return { id: '', type: ref, denied: true, reason: err.reason || '' }
-      }
-      const id = child.id
-      this.handles.set(id, child)
-      return { id, type: ref, name: '' }
-    })
-  }
-
-  /**
-   * Register add/open/close/leave RPC handlers for child handles.
+   * Register add/open/join/close/leave RPC handlers for child handles.
    * @private
    */
   _wireHandles() {
@@ -359,13 +314,27 @@ export class Server extends RPCServer {
       return { id, type: ref, name: opts.name || '' }
     })
 
-    this.rpc.onOpenHandle(async ({ parent, row }) => {
+    this.rpc.onOpenHandle(async ({ parent, row, type }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       const { data } = await this.me.store.get('handles', row)
       if (!data) throw CeroError.UNKNOWN('handle', row)
-      const child = await this.me._load(data.type, row)
+      const child = await this.me._load(type, row)
       this.handles.set(row, child)
       return { id: row, type: data.type, name: data.name || '' }
+    })
+
+    this.rpc.onJoin(async ({ parent, ref, invite }) => {
+      if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
+      let child
+      try {
+        child = await this.me._join(invite, ref)
+      } catch (err) {
+        if (err.code !== 'DENIED') throw err
+        return { id: '', type: ref, denied: true, reason: err.reason || '' }
+      }
+      const id = child.id
+      this.handles.set(id, child)
+      return { id, type: ref, name: '' }
     })
 
     this.rpc.onCloseHandle(async ({ handle }) => {
@@ -382,6 +351,25 @@ export class Server extends RPCServer {
       this._endWatches(handle)
       this.handles.delete(handle)
       return {}
+    })
+  }
+
+  /**
+   * Register the `verb` handler: the operator by its name, on the handle, as in the worker.
+   * @private
+   */
+  _wireVerbs() {
+    this.rpc.onVerb(async ({ handle, verb, args }) => {
+      const run = VERBS.get(verb)
+      if (!run) throw CeroError.UNKNOWN('verb', verb)
+      let data
+      try {
+        data = await run(this._resolve(handle), ...c.decode(c.any, args))
+      } catch (err) {
+        // bare-rpc rethrows a TypeError and ends the worker: a bad argument fails only the call
+        throw Object.assign(new Error(err.message), { code: err.code })
+      }
+      return { data: data === undefined ? null : c.encode(c.any, data) }
     })
   }
 
@@ -413,9 +401,7 @@ export class Server extends RPCServer {
     if (local) {
       const info = this.spec.meta.local?.refs?.[name]
       if (!info || info.internal) throw CeroError.UNKNOWN('local ref', name)
-      const r = this.me.local?.[name]
-      if (!r) throw CeroError.UNKNOWN('local ref', name)
-      return { ref: r, codec: this.spec.local.codec, info }
+      return { ref: this.me.local[name], codec: this.spec.local.codec, info }
     }
     const h = this._resolve(id)
     const r = h[name]
@@ -438,17 +424,6 @@ export class Server extends RPCServer {
       fileBase: `http://127.0.0.1:${fs.port}`,
       fileToken: fs.server.token || ''
     }
-  }
-
-  /**
-   * Wire the on-demand `seed` handler — surfaces the recovery phrase only when asked.
-   * @private
-   */
-  _wireSeed() {
-    this.rpc.onSeed(async () => {
-      if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      return { phrase: await phrase(this.me) }
-    })
   }
 }
 
@@ -477,10 +452,24 @@ function fromWire(buf) {
  */
 function encodeGet(r, codec, query, { data, total, size }) {
   const one = typeof query === 'string' || r.kind === 'single'
+  const wire = toIds(r)
   return {
-    data: one ? codec.encodeRow(r.schema, data) : codec.encodeRows(r.schema, data),
+    data: one ? codec.encodeRow(r.schema, wire(data)) : codec.encodeRows(r.schema, data?.map(wire)),
     total: total ?? -1,
     size: size ?? 0
+  }
+}
+
+// a read resolves file fields to { id, type, size, url }, which a typed row cannot carry: the wire
+// takes the id, and the client builds the same file from it
+function toIds(r) {
+  const fields = r.name === 'files' ? null : r.handle.store?.refs?.[r.name]?.files
+  if (!fields?.length) return (row) => row
+  return (row) => {
+    if (!row) return row
+    const out = { ...row }
+    for (const f of fields) if (out[f] && typeof out[f] === 'object') out[f] = out[f].id
+    return out
   }
 }
 

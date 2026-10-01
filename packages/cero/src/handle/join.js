@@ -55,15 +55,13 @@ export class Join {
     this._running?.abort()
     const running = new AbortController()
     this._running = running
-    const nearby = this.root._bluetooth?.announce(invite)
     try {
       const row = await this._save({ invite })
       const writer = { publicKey: row.publicKey, secretKey: row.secretKey }
       const { mailbox, identity } = this.root
-      const opts = { identity, spec: this.spec, writer, timeout: 0, signal: running.signal }
-      const reply = row.key
-        ? unpack(row)
-        : await this._keep(await Pairing.join(mailbox, invite, opts))
+      const keep = (answer) => (answer instanceof Error ? this._forget() : this._keep(answer))
+      const opts = { identity, spec: this.spec, writer, keep, timeout: 0, signal: running.signal }
+      const reply = row.key ? unpack(row) : await Pairing.join(mailbox, invite, opts)
       this._end(this._resolve, await this.root._enter(this.type, reply))
       await this._forget()
     } catch (err) {
@@ -72,8 +70,6 @@ export class Join {
       if (err.code !== 'CLOSED' || this.cancelled) await this._forget()
       if (err.code !== 'CLOSED' && !this.waiting) this.root._onerror(err)
       this._end(this._reject, err)
-    } finally {
-      nearby?.()
     }
   }
 
@@ -91,10 +87,10 @@ export class Join {
   // the first save fixes the writer, later ones add what was learned
   /** @private */
   async _save(fields) {
-    const store = this.root.local?.store
-    this._row ??= (store && (await store.get('joins', this.id)).data) || Identity.randomKeyPair()
+    const store = this.root.local.store
+    this._row ??= (await store.get('joins', this.id)).data || Identity.randomKeyPair()
     this._row = { ...this._row, id: this.id, type: this.type, ...fields }
-    await store?.put('joins', this._row)
+    await store.put('joins', this._row)
     return this._row
   }
 
@@ -103,12 +99,11 @@ export class Join {
   async _keep(reply) {
     const { key, encryptionKey, epochs } = reply
     await this._save({ key, encryptionKey, epochs: c.encode(epochEntries, epochs) })
-    return reply
   }
 
   /** @private */
   async _forget() {
-    await this.root.local?.store.del('joins', this.id).catch(safetyCatch)
+    await this.root.local.store.del('joins', this.id).catch(safetyCatch)
   }
 
   /** @private */

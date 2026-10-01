@@ -7,17 +7,17 @@ import ReadyResource from 'ready-resource';
  */
 export declare class Bluetooth extends ReadyResource {
     /** @private */
-    _network;
+    _on;
     /** @private */
-    _autoStart;
-    /** @type {{ hex: string, count: number, timer: ReturnType<typeof setTimeout> | null } | null} active invite rendezvous (single topic — one at a time) */
-    _announce: {
-        hex: string;
-        count: number;
-        timer: ReturnType<typeof setTimeout> | null;
-    } | null;
+    _info;
     /** @private */
-    _restorePending;
+    _heard;
+    /** @private */
+    _senders;
+    /** @private */
+    _links;
+    /** @private */
+    _base;
     /** @private */
     _topic;
     /** @private */
@@ -32,16 +32,18 @@ export declare class Bluetooth extends ReadyResource {
      * @param {import('@cero-base/core/identity').Identity} opts.identity  Signs this device's key for the peers it links with.
      * @param {import('@cero-base/core/identity').KeyPair} opts.keyPair  This device's writer keypair.
      * @param {object | null} [opts.backend]  Injected bare-bluetooth-shaped backend (tests); omitted → ble-swarm loads its own, null/false → unsupported.
-     * @param {boolean} [opts.autoStart]  Start on open (from `cero({ bluetooth: true })`).
+     * @param {boolean} [opts.on]  The radio at open; off unless `true`. Nothing is stored.
+     * @param {string} [opts.topic]  The default topic; without one, the channel's own.
      * @param {number} [opts.maxOutbound]  Max concurrent outbound links; gossip covers the rest.
      * @param {number} [opts.maxInbound]   Max concurrent inbound sessions; newcomers past this are refused.
      * @param {'l2cap' | 'gatt'} [opts.pipe]  Data pipe — 'l2cap' (default, faster) or 'gatt'. Both peers must match.
      */
-    constructor(network: import('@cero-base/core/network').Network, { identity, keyPair, backend, autoStart, maxOutbound, maxInbound, pipe }: {
+    constructor(network: import('@cero-base/core/network').Network, opts: {
         identity: import('@cero-base/core/identity').Identity;
         keyPair: import('@cero-base/core/identity').KeyPair;
         backend?: object | null;
-        autoStart?: boolean;
+        on?: boolean;
+        topic?: string;
         maxOutbound?: number;
         maxInbound?: number;
         pipe?: 'l2cap' | 'gatt';
@@ -52,6 +54,17 @@ export declare class Bluetooth extends ReadyResource {
     get peers(): Map<string, object>;
     /** @private */
     private _open;
+    /**
+     * Turn the radio on or off, on `opts.topic` or else the default topic. A new topic drops the
+     * links on the old one.
+     *
+     * @param {boolean} on
+     * @param {{ topic?: string }} [opts]
+     * @returns {Promise<void>}
+     */
+    set(on: boolean, opts?: {
+        topic?: string;
+    }): Promise<void>;
     /** @private */
     private _close;
     /**
@@ -63,6 +76,8 @@ export declare class Bluetooth extends ReadyResource {
         name: string | null;
         isMobile: boolean;
     }): void;
+    /** @private */
+    private _say;
     /**
      * Who a linked device says it is: its person, who signed the key it links with, its name and
      * whether it is a phone. `null` until it said, or when that signature is not its person's.
@@ -82,19 +97,11 @@ export declare class Bluetooth extends ReadyResource {
      */
     start(): Promise<void>;
     /**
-     * Stop advertising/scanning and drop links; open invite rendezvous end with the radio.
+     * Stop advertising/scanning and drop links.
      *
      * @returns {Promise<void>}
      */
     stop(): Promise<void>;
-    /**
-     * Offline join rendezvous: retune the radio to the invite-derived topic so holder and
-     * joiner find each other with zero DHT.
-     *
-     * @param {string} invite  Z32 invite string.
-     * @returns {() => void}
-     */
-    announce(invite: string): () => void;
     /**
      * Host-lifecycle pause (app backgrounded): radio down, user intent kept.
      *
@@ -108,7 +115,5 @@ export declare class Bluetooth extends ReadyResource {
      */
     resume(): Promise<void>;
     /** @private */
-    private _stopAnnounce;
-    /** @private */
-    private _clearAnnounce;
+    private _attach;
 }

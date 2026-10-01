@@ -652,7 +652,7 @@ test('wakeup hints: UNKNOWN_EPOCH parks and retries instead of closing the bee',
   await bee._flushWakeup()
 
   t.ok(!bee.closing && !bee.closed, 'bee survived the epoch-blind hint')
-  t.ok(bee._epochRetry, 'epoch retry scheduled — parked, not dead')
+  t.ok(bee._epochParked, 'parked until the keyring learns an epoch, not dead')
 })
 
 test('epoch retry: a writer frozen over an unknown epoch recovers when the key arrives', async (t) => {
@@ -679,6 +679,86 @@ test('epoch retry: a writer frozen over an unknown epoch recovers when the key a
   for (const row of held) await orig(row)
   await waitFor(async () => (await texts(b.db)).includes('after'))
   t.pass('frozen writer recovered via the wakeup retry')
+})
+
+test('epoch retry: a frozen writer with no key coming polls nothing, and wakes when it comes', async (t) => {
+  const { a, members } = await makeRoom(t, ['member'])
+  const [b] = members
+  await a.db.put('messages', { text: 'before' })
+  await waitFor(async () => (await texts(b.db)).includes('before'))
+
+  const held = []
+  const orig = b.db.rotation.learn.bind(b.db.rotation)
+  b.db.rotation.learn = async (row) => {
+    held.push(row)
+  }
+  await a.db.rotate()
+  await a.db.put('messages', { text: 'after' })
+  await waitFor(() => b.db.bee._epochStalled.size > 0)
+
+  let polls = 0
+  const update = b.db.bee.update.bind(b.db.bee)
+  b.db.bee.update = (...args) => {
+    polls++
+    return update(...args)
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  t.is(polls, 0, 'nothing retries while no key can arrive')
+
+  b.db.rotation.learn = orig
+  for (const row of held) await orig(row)
+  await waitFor(async () => (await texts(b.db)).includes('after'))
+  t.pass('the key arriving woke the frozen writer')
+})
+
+test('epoch retry: a writer frozen in the same pass that learns its key still wakes', async (t) => {
+  const { a, members } = await makeRoom(t, ['member', 'member'])
+  const [b, c] = members
+  await a.db.put('messages', { text: 'before' })
+  await waitFor(async () => (await texts(c.db)).includes('before'))
+  await waitFor(async () => (await texts(b.db)).includes('before'))
+
+  // hold C's next drain, so A's announcement and B's block from the new epoch land in one pass
+  let release
+  const gate = new Promise((resolve) => (release = resolve))
+  const apply = c.db.dispatcher.apply
+  let held = false
+  c.db.dispatcher.apply = async (...args) => {
+    if (!held) {
+      held = true
+      await gate
+    }
+    return apply(...args)
+  }
+  // learning the key awaits its save: slow it, so a wake the learn sets off runs inside the pass
+  const save = c.db.rotation._save.bind(c.db.rotation)
+  c.db.rotation._save = async (...args) => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    return save(...args)
+  }
+
+  await a.db.put('messages', { text: 'gate' })
+  await waitFor(() => held)
+  await a.db.rotate()
+  await waitFor(() => b.db.keyring.seq === 1)
+  await b.db.put('messages', { text: 'hi' })
+  const ns = c.db.store.namespace(c.db.namespace)
+  const cores = [b.db.bee.local, a.db.bee.local].map((local) => ({
+    length: local.length,
+    core: ns.get({ key: local.key, active: false })
+  }))
+  for (const { core, length } of cores) {
+    await core.ready()
+    core.download({ start: 0, end: length })
+  }
+  await waitFor(async () => {
+    for (const { core, length } of cores) if (!(await core.has(length - 1))) return false
+    return true
+  })
+  release()
+
+  await waitFor(async () => (await texts(c.db)).includes('hi'), { timeout: 8000 })
+  t.pass("C applied B's write without anyone writing again")
 })
 
 test('epochs reload: a primed keyring skips re-processing known rotations', async (t) => {

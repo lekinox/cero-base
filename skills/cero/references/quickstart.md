@@ -148,7 +148,7 @@ import { cero } from '@cero-base/cero'
 import { spec } from './spec/index.js'
 
 const [name, phrase] = process.argv.slice(2)
-const me = await cero(`./${name}`, spec, { seed: cero.toSeed(phrase) })
+const me = await cero(`./${name}`, spec, { phrase })
 
 cero.watch(me.room).on('data', ({ data }) => console.log(data.map((room) => room.name)))
 ```

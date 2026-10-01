@@ -69,7 +69,7 @@ export function formatError(ref, err) {
   return `${c.red('✗')} ${c.cyan(ref)}  ${c.dim(err.message || String(err))}`
 }
 
-const OP_COLOR = { add: c.green, set: c.yellow, del: c.red, claim: c.magenta }
+const OP_COLOR = { add: c.green, set: c.yellow, del: c.red }
 
 /**
  * Render one applied-op event as a single colored line.

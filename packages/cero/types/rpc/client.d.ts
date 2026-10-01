@@ -42,7 +42,9 @@ declare const remote: {
     activate(ctx: verbs.Context): Promise<void>;
     deactivate(ctx: verbs.Context): Promise<void>;
     phrase(me: verbs.Context): Promise<string>;
-    nearby(ctx: verbs.Context, mode: boolean | string): Promise<void>;
+    nearby(ctx: verbs.Context, on: boolean, opts?: {
+        topic?: string;
+    }): Promise<void>;
 };
 export declare const put: typeof verbs.put, set: typeof verbs.set, get: typeof verbs.get, del: typeof verbs.del, watch: typeof verbs.watch, call: typeof verbs.call, open: typeof verbs.open, invite: typeof verbs.invite, revoke: typeof verbs.revoke, rotate: typeof verbs.rotate, accept: typeof verbs.accept, deny: typeof verbs.deny, leave: typeof verbs.leave, close: typeof verbs.close, cancel: typeof verbs.cancel, suspend: typeof verbs.suspend, resume: typeof verbs.resume, activate: typeof verbs.activate, deactivate: typeof verbs.deactivate, phrase: typeof verbs.phrase, nearby: typeof verbs.nearby;
 export { t, schema };
@@ -120,6 +122,8 @@ export declare class Client extends RPCClient {
     private _pumpErrors;
     /** @private */
     private _open;
+    /** @private */
+    private _identify;
     /**
      * Create a new child handle of the given type.
      *

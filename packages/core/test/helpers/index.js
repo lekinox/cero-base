@@ -127,12 +127,14 @@ export async function makeTestnet(t, size = 3) {
 }
 
 export async function makeNet(t, testnet, opts = {}) {
+  const store = opts.store || (await makeStore(t)).store
   // tight reconnect tiers: the default escalates to ~10min after a few local
   // connection resets and strands tests long past their own timeout
   const net = new Network({
     bootstrap: testnet.bootstrap,
     backoffs: [300, 800, 1500, 3000],
-    ...opts
+    ...opts,
+    store
   })
   await net.ready()
   t.teardown(() => net.close().catch(() => {}), { order: 1 })
@@ -272,13 +274,7 @@ export async function fetch(...args) {
 export async function makePeer(t, testnet, { topic, presence, mirrors, after = {}, ...opts } = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = opts.identity || (await Identity.create())
-  // only mirrors need the store on the network
-  const network = new Network({
-    bootstrap: testnet.bootstrap,
-    store: mirrors && store,
-    presence,
-    mirrors
-  })
+  const network = new Network({ bootstrap: testnet.bootstrap, store, presence, mirrors })
   await network.ready()
   topic ??= identity.topic
   const discovery = network.join(topic)
@@ -289,6 +285,7 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, after = {
     identity,
     network,
     spec,
+    encryptionKey: Identity.randomBytes(32),
     onerror: (err) => errors.push(err),
     ...opts
   })
@@ -309,7 +306,13 @@ export async function makePeer(t, testnet, { topic, presence, mirrors, after = {
 export async function withRole(t, role, { members = [], after = {}, ...opts } = {}) {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
-  const db = new Database({ store, identity, spec, ...opts })
+  const db = new Database({
+    store,
+    identity,
+    spec,
+    encryptionKey: Identity.randomBytes(32),
+    ...opts
+  })
   for (const [name, fn] of Object.entries(after)) db.after(name, fn)
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 5 })

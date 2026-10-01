@@ -140,8 +140,10 @@ export class Keyring {
     this.current = 0
     /** highest adopted apply-order sequence (0 = base era) */
     this.seq = 0
-    /** bumped on every add/remove — cheap change detection for retries */
+    /** bumped on every add/remove — cheap change detection */
     this.version = 0
+    /** @type {(() => void) | null} called when an epoch is learned or dropped */
+    this.onchange = null
   }
 
   /** @returns {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} ascending by seq */
@@ -171,6 +173,7 @@ export class Keyring {
       this.current = stamp
     }
     this.version++
+    this.onchange?.()
   }
 
   /**
@@ -198,6 +201,7 @@ export class Keyring {
       }
     }
     this.version++
+    this.onchange?.()
   }
 }
 
@@ -216,14 +220,14 @@ export class EpochAutobee extends Autobee {
     super(store, key, handlers)
     /** @type {Keyring | null} */
     this.keyring = handlers.keyring || null
+    // a block from an unknown epoch parks what read it until the keyring learns something
+    if (this.keyring) this.keyring.onchange = () => this._scheduleEpochWake()
     /** @private */
     this._epochStalled = new Set()
     /** @private */
-    this._epochRetry = null
+    this._epochParked = false
     /** @private */
-    this._epochRetryDelay = 1000
-    /** @private */
-    this._epochRetrySeen = 0
+    this._epochWake = null
   }
 
   /** @returns {number} the key id new blocks are written with */
@@ -231,35 +235,25 @@ export class EpochAutobee extends Autobee {
     return this.keyring ? this.keyring.current : 0
   }
 
-  // a block from an epoch not learned yet: the writer freezes over the throw, and the retry
-  // wakes it once the announcement lands
+  // a block from an epoch not learned yet: the writer freezes over the throw, and the keyring
+  // learning an epoch wakes it
   /** @param {number} id @param {{ key?: Uint8Array }} [ctx] @returns {Promise<Uint8Array>} */
   async getEntropy(id, ctx) {
     const entropy = this.keyring && this.keyring.entropy(id)
     if (entropy) return entropy
-    if (ctx?.key) {
-      this._epochStalled.add(b4a.toHex(ctx.key))
-      this._scheduleEpochRetry()
-    }
+    if (ctx?.key) this._epochStalled.add(b4a.toHex(ctx.key))
     throw CeroError.UNKNOWN_EPOCH(id)
   }
 
-  /** @private */
-  async _close() {
-    if (this._epochRetry) clearTimeout(this._epochRetry)
-    this._epochRetry = null
-    return super._close()
-  }
-
-  // an UNKNOWN_EPOCH from the drain parks the pass; the retry wakes the stalled cores once the
-  // announcement lands. Forward the arguments: the local drain passes { local: true }
+  // an UNKNOWN_EPOCH from the drain parks the pass until the keyring learns an epoch. Forward
+  // the arguments: the local drain passes { local: true }
   /** @private */
   async _bumpPendingWriters(...args) {
     try {
       return await super._bumpPendingWriters(...args)
     } catch (err) {
       if (err?.code !== 'UNKNOWN_EPOCH') throw err
-      this._scheduleEpochRetry()
+      this._epochParked = true
       return false
     }
   }
@@ -271,30 +265,28 @@ export class EpochAutobee extends Autobee {
       return await super._applyWakeupHints()
     } catch (err) {
       if (err?.code !== 'UNKNOWN_EPOCH') throw err
-      this._scheduleEpochRetry()
+      this._epochParked = true
       return []
     }
   }
 
-  // a stalled core produces no wake-up of its own, only wakeup() re-adds it; exponential backoff
+  // a stalled core produces no wake-up of its own, only wakeup() re-adds it. The keyring learns
+  // inside a drain pass, which may itself have frozen a writer: let that pass finish and detach it,
+  // then wake what stalled
   /** @private */
-  _scheduleEpochRetry() {
-    if (this._epochRetry || this.closing) return
-    const version = this.keyring ? this.keyring.version : 0
-    if (version !== this._epochRetrySeen) {
-      this._epochRetrySeen = version
-      this._epochRetryDelay = 1000
-    }
-    this._epochRetry = setTimeout(() => {
-      this._epochRetry = null
+  _scheduleEpochWake() {
+    if (this._epochWake || this.closing) return
+    if (!this._epochParked && !this._epochStalled.size) return
+    this._epochWake = setTimeout(async () => {
+      await this.update().catch(noop)
+      this._epochWake = null
       if (this.closing) return
-      for (const hex of this._epochStalled) {
-        this.wakeup({ key: b4a.from(hex, 'hex'), length: 0 }).catch(noop)
-      }
+      const stalled = [...this._epochStalled]
       this._epochStalled.clear()
+      this._epochParked = false
+      for (const hex of stalled) this.wakeup({ key: b4a.from(hex, 'hex'), length: 0 }).catch(noop)
       this.update().catch(noop)
-    }, this._epochRetryDelay)
-    this._epochRetryDelay = Math.min(this._epochRetryDelay * 2, 60000)
+    }, 0)
   }
 }
 
