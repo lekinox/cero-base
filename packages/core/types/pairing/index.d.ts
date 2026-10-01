@@ -1,6 +1,5 @@
 import ReadyResource from 'ready-resource';
 import { Invite } from './invite.js';
-import { Request } from './request.js';
 import { Mailbox } from '../mailbox/index.js';
 export type KeyPair = {
     publicKey: Uint8Array;
@@ -37,6 +36,12 @@ export type InviteOpts = {
      * The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
      */
     data?: Uint8Array | null;
+};
+export type AcceptOpts = {
+    /**
+     * Role granted: the invite's by default, at most the invite's.
+     */
+    role?: string;
 };
 export type JoinOpts = {
     /**
@@ -99,6 +104,9 @@ export type JoinResult = {
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
  *
+ * @typedef {object} AcceptOpts
+ * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
+ *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
  * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
@@ -120,18 +128,14 @@ export type JoinResult = {
  * that may invite offers them while online, and the first one read settles it for all. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
- * as requests until a member accepts or denies them; `'request'` fires for each new one.
+ * as rows of `requests` until a member accepts or denies one by its id.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export declare class Pairing extends ReadyResource {
     mailbox: Mailbox;
     db: import("../index.js").Database;
-    /** @type {Set<Request>} requests not answered yet: whoever attaches after one fired goes through these first */
-    pending: Set<Request>;
     /** Whether this device answers the database's joins: it may invite, and invites or joiners owed an answer exist. */
     serving: boolean;
-    /** @private */
-    _requests;
     /** @private */
     _replies;
     /** @private */
@@ -161,18 +165,28 @@ export declare class Pairing extends ReadyResource {
      */
     revoke(invite: string): Promise<boolean>;
     /**
-     * A join waiting on a `confirm` invite, by its id in the `requests` collection.
+     * Admit a join waiting on a `confirm` invite, by its id in `requests`. Every device of an
+     * inviter then replies with the keys.
      *
      * @param {string} id
-     * @returns {Promise<Request>}
+     * @param {AcceptOpts} [opts]
+     * @returns {Promise<void>}
      */
-    request(id: string): Promise<Request>;
+    accept(id: string, { role }?: AcceptOpts): Promise<void>;
+    /**
+     * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+     *
+     * @param {string} id
+     * @param {string} [reason]
+     * @returns {Promise<void>}
+     */
+    deny(id: string, reason?: string): Promise<void>;
+    /** @private */
+    private _waiting;
     /** @private */
     private _sync;
     /** @private */
     private _arm;
-    /** @private */
-    private _pending;
     /** @private */
     private _answer;
     /** @private */

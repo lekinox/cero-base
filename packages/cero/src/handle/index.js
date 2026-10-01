@@ -365,8 +365,8 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _answer(id, { accept, role, reason }) {
-    const request = await this._pairing().request(id)
-    return accept ? request.accept({ role }) : request.deny(reason)
+    const pairing = this._pairing()
+    return accept ? pairing.accept(id, { role }) : pairing.deny(id, reason)
   }
 
   /** @private */

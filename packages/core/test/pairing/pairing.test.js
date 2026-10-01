@@ -13,7 +13,7 @@ import { Identity } from '../../src/identity/index.js'
 import { Database } from '../../src/database/index.js'
 import { Pairing } from '../../src/pairing/index.js'
 import { Invite } from '../../src/pairing/invite.js'
-import { Response, STATUS_ACCEPTED } from '../../src/pairing/request.js'
+import { Response, STATUS_ACCEPTED } from '../../src/pairing/response.js'
 import { Mailbox } from '../../src/mailbox/index.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { CeroError } from '../../src/lib/errors.js'
@@ -88,6 +88,10 @@ const member = async (db, identity) =>
   (await db.get('members', hid.encode(identity.publicKey))).data
 const refusals = (db) => db.view.find(`@${db.ns}/refusals`, {}).toArray()
 const spent = (db) => db.view.find(`@${db.ns}/spent`, {}).toArray()
+const waiting = async (db) => (await db.get('requests', { admitted: false })).data
+// the first join waiting on a confirm invite, once the database holds it
+const asked = (db) => waitFor(async () => (await waiting(db))[0])
+const code = async (answer) => (await answer.catch((e) => e))?.code
 // resolves once the database applied an op of `name`, local or replicated, and its view shows it
 const applied = (db, op, name) =>
   new Promise((resolve) => {
@@ -216,9 +220,9 @@ test('join: apply admits the joiner, and the reply carries the keys and epochs',
   const { host, joiner } = await makeHostJoiner(t, testnet)
   await host.db.rotate()
   const invite = await host.pairing.invite({ role: 'member' })
-  host.pairing.on('request', () => t.fail('no request: nobody has to accept'))
 
   const result = await joiner.join(invite)
+  t.alike(await waiting(host.db), [], 'no request: nobody has to accept')
   t.alike(result.key, host.db.key)
   t.alike(result.encryptionKey, host.db.encryptionKey)
   t.alike(result.epochs, host.db.keyring.all(), 'the epochs, to read the history before')
@@ -369,39 +373,54 @@ test('confirm: a join waits as a request until a member accepts it', async (t) =
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'member', confirm: true })
-  const asked = new Promise((resolve) => host.pairing.once('request', resolve))
   const joining = joiner.join(invite)
 
-  const request = await asked
+  const request = await asked(host.db)
   t.alike(request.identity, joiner.identity.publicKey, 'the joiner identity, proven')
   t.is(request.role, 'member', 'asking for the role of its invite')
-  t.is((await host.db.get('requests', request.id)).data.role, 'member', 'the row carries it too')
-  t.alike([...host.pairing.pending], [request], 'listed until settled')
-  t.is(await host.pairing.request(request.id), request, 'found by the id of its row')
   t.absent(await member(host.db, joiner.identity), 'not admitted yet')
 
-  await request.accept()
+  await host.pairing.accept(request.id)
   t.alike((await joining).key, host.db.key)
   t.is((await member(host.db, joiner.identity)).role, 'member')
-  await waitFor(() => host.pairing.pending.size === 0)
   await waitFor(async () => (await host.db.get('requests')).data.length === 0)
   t.pass('the request settles once the joiner read its keys')
-  await t.exception(host.pairing.request(request.id), /unknown request/)
+})
+
+test('confirm: only a waiting join is answered, any other id is UNKNOWN', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true, reuse: true })
+  const joining = joiner.join(invite).catch((e) => e)
+  const { id } = await asked(host.db)
+  // away, so the admission stays owed its keys and the invite stays live
+  await joiner.net.suspend()
+  await host.pairing.accept(id)
+
+  t.is(await code(host.pairing.accept(id)), 'UNKNOWN', 'admitted: accepting again writes nothing')
+  t.is(await code(host.pairing.deny(id)), 'UNKNOWN', 'nor does a deny')
+  const none = hid.encode(crypto.randomBytes(32))
+  t.is(await code(host.pairing.accept(none)), 'UNKNOWN', 'no such request')
+  t.is(await code(host.pairing.deny(none)), 'UNKNOWN')
+  await joiner.net.resume()
+  t.alike((await joining).key, host.db.key, 'the accept stands')
 })
 
 test('confirm: accept checks the role and the expiry first', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
-  const invite = await host.pairing.invite({ role: 'member', confirm: true, ttl: 2000 })
-  const asked = new Promise((resolve) => host.pairing.once('request', resolve))
-  const joining = joiner.join(invite).catch((e) => e)
-  const request = await asked
+  const peer = await makeMember(t, testnet, host, 'member')
+  const invite = await host.pairing.invite({ role: 'member', confirm: true, ttl: 4000 })
+  // nobody who can remove is left to drop the invite once it runs out
+  await host.pairing.close()
+  const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
+  const { id } = await asked(peer.db)
 
-  await t.exception(request.accept({ role: 'owner' }), /exceeds the invite role/)
-  await t.exception(request.accept({ role: 'volunteer' }), /not a rank/)
-  await waitFor(() => Invite.parse(invite).expired)
-  await t.exception(request.accept(), /expired/)
+  await t.exception(peer.pairing.accept(id, { role: 'owner' }), /exceeds the invite role/)
+  await t.exception(peer.pairing.accept(id, { role: 'volunteer' }), /not a rank/)
   t.is((await joining).code, 'EXPIRED')
+  t.is(await code(peer.pairing.accept(id)), 'EXPIRED', 'past its invite, though still listed')
+  t.absent(await member(peer.db, joiner.identity), 'and nobody was admitted')
 })
 
 test('confirm: an accept refused at apply leaves the request answerable', async (t) => {
@@ -409,14 +428,12 @@ test('confirm: an accept refused at apply leaves the request answerable', async 
   const { host, joiner } = await makeHostJoiner(t, testnet)
   const peer = await makeMember(t, testnet, host, 'member')
   const invite = await host.pairing.invite({ role: 'admin', confirm: true })
-  const asked = new Promise((resolve) => peer.pairing.once('request', resolve))
   const joining = joiner.join(invite, { timeout: 10000 }).catch((e) => e)
-  const request = await asked
+  const { id } = await asked(peer.db)
 
-  const err = await request.accept().catch((e) => e)
-  t.is(err.code, 'REFUSED', 'admin is above the role of the accepter')
-  t.is(await peer.pairing.request(request.id), request, 'still waiting')
-  await request.accept({ role: 'member' })
+  t.is(await code(peer.pairing.accept(id)), 'REFUSED', 'admin is above the role of the accepter')
+  t.is((await asked(peer.db)).id, id, 'still waiting')
+  await peer.pairing.accept(id, { role: 'member' })
   t.alike((await joining).key, host.db.key)
   t.is((await member(peer.db, joiner.identity)).role, 'member')
 })
@@ -425,9 +442,10 @@ test('confirm: a member can deny with a reason', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
   const invite = await host.pairing.invite({ confirm: true })
-  host.pairing.on('request', (request) => request.deny('not-today'))
+  const joining = joiner.join(invite).catch((e) => e)
+  await host.pairing.deny((await asked(host.db)).id, 'not-today')
 
-  const err = await joiner.join(invite).catch((e) => e)
+  const err = await joining
   t.is(err.code, 'DENIED')
   t.is(err.reason, 'not-today')
   t.alike((await host.db.get('requests')).data, [])
@@ -439,18 +457,18 @@ test('confirm: a deny after another device accepted changes nothing: the joiner 
   const { host, joiner } = await makeHostJoiner(t, testnet)
   const peer = await makeMember(t, testnet, host, 'admin')
   const invite = await host.pairing.invite({ confirm: true })
-  // both devices hold the request before either answers
-  const seen = [host, peer].map((d) => new Promise((resolve) => d.pairing.once('request', resolve)))
   const joining = joiner.join(invite, { timeout: 30000 }).catch((e) => e)
-  const [a, b] = await Promise.all(seen)
+  // both devices hold the request before either answers
+  const [{ id }] = await Promise.all([asked(host.db), asked(peer.db)])
 
   // the joiner is away while the two answers land, and the device that accepted leaves: only the
   // one that denied is left to send the keys the accept owes
   await joiner.net.suspend()
-  await a.accept()
+  await host.pairing.accept(id)
   await waitFor(async () => !!(await member(peer.db, joiner.identity)))
   await host.net.suspend()
-  await b.deny('too late').catch(() => {})
+  // written as by a device that had not seen the accept yet
+  await peer.db.call('deny', { id, reason: 'too late' })
 
   await joiner.net.resume()
   const res = await joining
@@ -466,25 +484,21 @@ test('confirm: accepting one join spends a single-use invite, the others hear it
   const { host, joiner: one } = await makeHostJoiner(t, testnet)
   const two = await makeJoiner(t, testnet)
   const invite = await host.pairing.invite({ role: 'admin', confirm: true })
-  const requests = []
-  host.pairing.on('request', (request) => requests.push(request))
   const joining = [one, two].map((j) => j.join(invite, { timeout: 10000 }).catch((e) => e))
-  await waitFor(() => requests.length === 2)
+  const [first, second] = await waitFor(async () => {
+    const rows = await waiting(host.db)
+    return rows.length === 2 && rows
+  })
 
-  await requests[0].accept()
-  await waitFor(() => host.pairing.pending.size === 0)
-  t.alike(
-    (await host.db.get('requests')).data.filter((row) => !row.admitted),
-    [],
-    'the other request went with the invite'
-  )
-  await requests[1].accept()
+  await host.pairing.accept(first.id)
+  t.alike(await waiting(host.db), [], 'the other request went with the invite')
+  t.is(await code(host.pairing.accept(second.id)), 'UNKNOWN', 'and accepting it does nothing')
   const results = await Promise.all(joining)
   t.is(results.filter((r) => r.key).length, 1, 'one joiner admitted')
   t.alike(
     results.filter((r) => !r.key).map((r) => [r.code, r.reason]),
     [['DENIED', 'spent']],
-    'the other is told, and accepting it does nothing'
+    'the other is told'
   )
 })
 

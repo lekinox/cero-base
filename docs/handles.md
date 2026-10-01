@@ -139,7 +139,8 @@ try {
 - `cero.accept(room, request)` admits at the invite's role, `{ role: 'reader' }` at a lower one.
   `cero.deny(room, request, reason)` turns the joiner away. The first answer settles the request for
   everyone, and it survives restarts.
-- Both reject `UNKNOWN` when another member settled the request, or this device cannot invite.
+- Both reject `UNKNOWN` once the request is settled, here or by another member, and a reader's
+  `NOT_WRITABLE`.
   `accept` also rejects `EXPIRED` past the invite's ttl, `INVALID` for a role above the invite's and
   `REFUSED` for one above your own.
 - On the joiner's side an answer after 30 s arrives as `TIMEOUT` first: an accept adds the handle to

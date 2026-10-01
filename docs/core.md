@@ -265,19 +265,22 @@ A join resumed with the same `writer` still hears its reply. `Pairing.join` take
 A plain invite admits the joiner by itself: the invite is the approval. An invite minted with `confirm: true` holds each join as a request until a member answers it:
 
 ```js
-// pairing from above; approve is your own check
+// pairing and room from above; approve is your own check
 const invite = await pairing.invite({ confirm: true })
 
-pairing.on('request', async (request) => {
-  // request.identity: who is asking. request.role: what for, the invite's role
-  if (await approve(request)) await request.accept()
-  else await request.deny('not now')
-})
+for await (const { data: requests } of room.watch('requests', { admitted: false })) {
+  for (const request of requests) {
+    // request.identity: who is asking. request.role: what for, the invite's role
+    if (await approve(request)) await pairing.accept(request.id)
+    else await pairing.deny(request.id, 'not now')
+  }
+}
 ```
 
-- `request.accept()` admits the joiner at the invite's role. `request.accept({ role })` can grant a lower one, never above the invite's or your own rank. It throws `EXPIRED` once the invite has expired.
-- `request.deny(reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
-- `pairing.pending` holds the requests not answered yet, and `pairing.request(id)` finds one by the id of its row. They live in the database, rows of `requests` with the `role` they ask for, so they survive a restart and the first member to answer settles it for all.
+- Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold admitted joins until their keys are read (`admitted: true`), hence the filter.
+- `pairing.accept(id)` admits the joiner at the invite's role. `pairing.accept(id, { role })` can grant a lower one: `INVALID` for a role that is not a rank or is above the invite's, `REFUSED` above your own. It throws `EXPIRED` once the invite has expired.
+- `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
+- Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
 - A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
