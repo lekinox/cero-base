@@ -87,10 +87,10 @@ export class Join {
   // the first save fixes the writer, later ones add what was learned
   /** @private */
   async _save(fields) {
-    const store = this.root.local?.store
-    this._row ??= (store && (await store.get('joins', this.id)).data) || Identity.randomKeyPair()
+    const store = this.root.local.store
+    this._row ??= (await store.get('joins', this.id)).data || Identity.randomKeyPair()
     this._row = { ...this._row, id: this.id, type: this.type, ...fields }
-    await store?.put('joins', this._row)
+    await store.put('joins', this._row)
     return this._row
   }
 
@@ -103,7 +103,7 @@ export class Join {
 
   /** @private */
   async _forget() {
-    await this.root.local?.store.del('joins', this.id).catch(safetyCatch)
+    await this.root.local.store.del('joins', this.id).catch(safetyCatch)
   }
 
   /** @private */

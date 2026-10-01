@@ -145,7 +145,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
 | `rotate()`                                           | `{ epoch }`: a new key sealed to every member. `INVALID` inside `tx`.                                                                      |
 | `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
-| `claim()`                                            | Seat this device's writer where your identity is already a member that writes.                                                             |
+| `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
 | `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
 | `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
 | `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
@@ -161,9 +161,9 @@ It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `ad
 
 Who writes:
 
-- **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It catches up, admits itself with an add-writer signed by the identity, and records its device row.
+- **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It claims its seat, then records its device row.
 - **A member you invited** needs nothing: its join seats it, and `db.whenWritable()` resolves once that lands.
-- **A member's new device** opening a database it has the key of runs `db.claim()`.
+- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer the identity signs from the device's own core, and resolves when it writes. A reader's device holds no seat.
 - Only the genesis batch names a member directly. Everyone after comes in through a join, and nobody seats a writer for another identity.
 
 Keys: `db.rotate()` opens a new key, and rotations on one device run one after another. A device that may remove also re-keys by itself when the members change, a database's first removal included. See [How it works](how-it-works.md).

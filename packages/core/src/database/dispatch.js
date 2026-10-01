@@ -24,7 +24,6 @@ import {
   grants,
   outranks,
   admission,
-  ownership,
   joining,
   checkFields,
   checkRequired,
@@ -317,18 +316,6 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     }
     await ctx.host.removeWriter(op.writer)
     await drop(ctx, 'devices', hid.encode(op.writer))
-  })
-
-  add('claim-writer', async (op, ctx) => {
-    if (!isKey(op.identity) || !isKey(op.writer) || !isSig(op.sig)) return
-    if (!Identity.verify(op.identity, ownership(ctx.dbKey, op.writer), op.sig)) return
-    // from any other core a claim is inapplicable, not refused: it must not abort that writer's batch
-    if (!b4a.equals(ctx.key, op.writer)) return
-    const memberId = hid.encode(op.identity)
-    if (!can(await getRole(ctx.view, op.identity), WRITE)) throw CeroError.REFUSED('write')
-    if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
-    await ctx.host.addWriter(op.writer, { isIndexer: true })
-    await seat(ctx, op.writer, memberId, op.ts || 0)
   })
 
   // the genesis batch names the creator; everyone after comes in through a signed join

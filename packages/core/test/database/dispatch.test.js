@@ -20,7 +20,7 @@ import {
 } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
 import { genId } from '../../src/lib/ids.js'
-import { admission, ownership, joining } from '../../src/lib/utils.js'
+import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { Invite } from '../../src/pairing/invite.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -95,12 +95,12 @@ function apply(db, key, verb, payload, host = noHost) {
     )
 }
 
-// a member's device seats itself, as claim-writer does on its own core
-function seat(db, writer) {
-  return apply(db, writer.publicKey, 'claim-writer', {
-    identity: writer.publicKey,
+// a member's device seats itself, as claim() does from its own core
+function seat(db, writer, signer = writer) {
+  return apply(db, writer.publicKey, 'add-writer', {
+    master: signer.publicKey,
     writer: writer.publicKey,
-    sig: crypto.sign(ownership(db.key, writer.publicKey), writer.secretKey),
+    sig: crypto.sign(admission(db.key, writer.publicKey, writer.publicKey), signer.secretKey),
     ts: Date.now()
   })
 }
@@ -132,6 +132,13 @@ test('add-writer: genesis (empty members table) is allowed', async (t) => {
   )
 })
 
+test('add-writer: a self-admission with no member row is refused, its signature valid', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const stranger = Identity.randomKeyPair()
+  t.is((await seat(db, stranger))?.code, 'REFUSED')
+  t.absent((await db.get('devices', hid.encode(stranger.publicKey))).data, 'no member, no seat')
+})
+
 // an admission signature binds the db key, so one captured in room A
 // cannot verify in room B
 test('admission signed for another db is rejected (domain separation)', async (t) => {
@@ -149,19 +156,6 @@ test('admission signed for another db is rejected (domain separation)', async (t
   t.absent(
     (await db.get('devices', z32.encode(writer.publicKey))).data,
     'cross-db add-writer replay rejected'
-  )
-
-  const claimed = Identity.randomKeyPair()
-  await db.call('claim-writer', {
-    identity: identity.publicKey,
-    writer: claimed.publicKey,
-    sig: identity.sign(ownership(foreign, claimed.publicKey)),
-    name: 'replayed',
-    isMobile: false
-  })
-  t.absent(
-    (await db.get('devices', z32.encode(claimed.publicKey))).data,
-    'cross-db claim-writer replay rejected'
   )
 })
 
@@ -221,22 +215,6 @@ test('del-member: only an owner can evict (a member cannot)', async (t) => {
   const o = await withRole(t, 'owner', { members: [v2] })
   await o.db.call('del-member', { id: v2.id })
   t.absent((await o.db.get('members', v2.id)).data, 'an owner evicted the member')
-})
-
-test('claim-writer: a reader cannot claim writership', async (t) => {
-  const { db, identity } = await withRole(t, 'reader')
-  const newWriter = Identity.randomKeyPair()
-  await db.call('claim-writer', {
-    identity: identity.publicKey,
-    writer: newWriter.publicKey,
-    sig: identity.sign(ownership(db.key, newWriter.publicKey)),
-    name: 'x',
-    isMobile: false
-  })
-  t.absent(
-    (await db.get('devices', z32.encode(newWriter.publicKey))).data,
-    'a reader cannot claim writership'
-  )
 })
 
 // ─── del-member: removal hierarchy ────────────────────────────────────────
@@ -394,43 +372,6 @@ test('fast-forward: an empty reference trusts only the genesis writer', async (t
     await fresh.bee.trusted.isTrusted(other.writerKey, fresh.view),
     'any other writer stays refused against an empty view'
   )
-})
-
-// ─── claim-writer: signature verification ─────────────────────────────────
-
-test('claim-writer with a forged signature is rejected', async (t) => {
-  const { db, identity } = await bootstrapped(t)
-
-  const newWriter = Identity.randomKeyPair()
-  const forgedSig = b4a.alloc(64)
-
-  await db.call('claim-writer', {
-    identity: identity.publicKey,
-    writer: newWriter.publicKey,
-    sig: forgedSig,
-    name: 'second-device',
-    isMobile: false
-  })
-
-  const { data: device } = await db.get('devices', z32.encode(newWriter.publicKey))
-  t.absent(device, 'forged claim-writer did not admit a writer')
-})
-
-test('claim-writer without a matching member is rejected even with valid signature', async (t) => {
-  const { db, identity } = await bootstrapped(t)
-  const newWriter = Identity.randomKeyPair()
-  const sig = identity.sign(ownership(db.key, newWriter.publicKey))
-
-  await db.call('claim-writer', {
-    identity: identity.publicKey,
-    writer: newWriter.publicKey,
-    sig,
-    name: 'orphan',
-    isMobile: false
-  })
-
-  const { data: device } = await db.get('devices', z32.encode(newWriter.publicKey))
-  t.absent(device, 'no member entry means no admission')
 })
 
 // ─── encryption: wrong key cannot read ────────────────────────────────────
@@ -1394,18 +1335,6 @@ test('poison op: wrong-length key/sig fields are skipped, not crashed', async (t
     'short master skipped without admitting'
   )
 
-  await db.call('claim-writer', {
-    identity: b4a.alloc(8),
-    writer: intruder.publicKey,
-    sig: b4a.alloc(64),
-    name: 'x',
-    isMobile: false
-  })
-  t.absent(
-    (await db.get('devices', z32.encode(intruder.publicKey))).data,
-    'short claim identity skipped without admitting'
-  )
-
   const memberId = genId()
   await db.call('add-member', {
     id: memberId,
@@ -1606,17 +1535,12 @@ test('files: a member cannot overwrite or drop another member file record', asyn
   t.is(data.stamp, 1)
 })
 
-test('escalation: claim-writer cannot move a seated writer to another identity', async (t) => {
+test('escalation: a self-admission cannot move a seated writer to another identity', async (t) => {
   const other = Identity.randomKeyPair()
   const record = { id: hid.encode(other.publicKey), key: other.publicKey, role: 'member' }
   const { db, id, writer } = await withMember(t, 'member', [record])
   await seat(db, writer)
-  const err = await apply(db, writer.publicKey, 'claim-writer', {
-    identity: other.publicKey,
-    writer: writer.publicKey,
-    sig: crypto.sign(ownership(db.key, writer.publicKey), other.secretKey),
-    ts: Date.now()
-  })
+  const err = await seat(db, writer, other)
   t.is(err?.code, 'REFUSED')
   t.is((await db.get('devices', id)).data.memberId, id)
 })

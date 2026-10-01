@@ -40,7 +40,7 @@ export { Ref } from '../lib/refs.js'
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
  * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
  * @property {Spec} [spec]                     Built cero spec.
- * @property {Local} [local]                   Local store for per-handle keypairs.
+ * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs, joins and mail.
  * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
  * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).
@@ -87,6 +87,7 @@ export class Handle extends ReadyResource {
     if (!network) throw CeroError.REQUIRED('network')
     if (!store) throw CeroError.REQUIRED('store')
     if (!spec) throw CeroError.REQUIRED('spec')
+    if (!parent && !opts.local) throw CeroError.REQUIRED('local')
 
     /** @type {Identity} */
     this.identity = identity
@@ -98,7 +99,12 @@ export class Handle extends ReadyResource {
     this.local = opts.local || null
     // one per device: the root's, its boxes in the local store
     /** @type {Mailbox} */
-    this.mailbox = parent ? parent.root.mailbox : new Mailbox(network, boxes(this.local))
+    this.mailbox = parent
+      ? parent.root.mailbox
+      : new Mailbox(network, {
+          inbox: box(this.local.store, 'inbox'),
+          outbox: box(this.local.store, 'outbox')
+        })
     /** @private */
     this._storage = opts.storage || null
     /** @private */
@@ -306,7 +312,7 @@ export class Handle extends ReadyResource {
       steps.push(
         () => this.mailbox.close(),
         () => this._bluetooth?.close(),
-        () => this.local?.close(),
+        () => this.local.close(),
         async () => {
           await this._fileServer?.close()
           this._fileServer = null
@@ -506,7 +512,7 @@ export class Handle extends ReadyResource {
   // the joins this device waits on, without the keys the local store keeps for them
   /** @private */
   async _joins(query = {}) {
-    const rows = this.local ? (await this.local.store.get('joins')).data : []
+    const rows = (await this.local.store.get('joins')).data
     const data = filter(
       rows.map(({ id, type, invite }) => ({ id, type, invite })),
       query
@@ -516,7 +522,6 @@ export class Handle extends ReadyResource {
 
   /** @private */
   _onJoins(fn) {
-    if (!this.local) return () => {}
     this.local.store.db.watch(fn)
     return () => this.local.store.db.unwatch(fn)
   }
@@ -841,7 +846,6 @@ export class Handle extends ReadyResource {
   // outbox kept
   /** @private */
   async _carryOn() {
-    if (!this.local) return
     for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
       if (await this._joined(type, Invite.parse(invite).discoveryKey)) {
         await this.local.store.del('joins', id)
@@ -907,10 +911,9 @@ export class Handle extends ReadyResource {
     })
     try {
       await child.ready()
-      // a writer that never wrote has not claimed yet, and a reader never claims
+      // a writer that never wrote has not claimed yet
       if (!child.store.writable && child.store.length === 0) {
-        const member = await wait(admitted(child.store, this.identity.id), TIMEOUT)
-        if (member.role !== 'reader') await child.store.claim()
+        await child.store.claim({ timeout: TIMEOUT })
       }
       this._adopt(child, {})
     } catch (err) {
@@ -982,7 +985,7 @@ export class Handle extends ReadyResource {
   // not only while the app has the handle open
   /** @private */
   _serve(child) {
-    if (!this.local || !child._pair) return
+    if (!child._pair) return
     const save = async () => {
       const { serving } = child._pair
       if (serving === child._serving) return
@@ -996,7 +999,6 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _reserve() {
-    if (!this.local) return
     for (const { id, type } of (await this.local.store.get('serving')).data) {
       this._load(type, id).catch((err) => {
         if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
@@ -1012,7 +1014,7 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _saveKeyPair(id, keyPair) {
-    if (!this.local || !keyPair) return
+    if (!keyPair) return
     await this.local.store.put('handle-keypairs', {
       id,
       publicKey: keyPair.publicKey,
@@ -1026,7 +1028,6 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _loadKeyPair(id) {
-    if (!this.local) return null
     const { data } = await this.local.store.get('handle-keypairs', id)
     if (!data) return null
     return {
@@ -1059,12 +1060,6 @@ function admitted(db, id) {
     db.once('close', onclose)
     onupdate()
   })
-}
-
-// a device without a local store keeps its mail in memory
-function boxes(local) {
-  if (!local) return {}
-  return { inbox: box(local.store, 'inbox'), outbox: box(local.store, 'outbox') }
 }
 
 function pickHandle(spec, type) {

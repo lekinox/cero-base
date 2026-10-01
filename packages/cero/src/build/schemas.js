@@ -70,12 +70,6 @@ export const main = {
     // the file this one was copied from, so a sync copies it once
     from: string
   },
-  claim: {
-    identity: required(bytes),
-    writer: required(bytes),
-    sig: required(bytes),
-    ts: int
-  },
   epoch: {
     epoch: required(uint),
     wrapped: required(bytes),

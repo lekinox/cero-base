@@ -62,12 +62,6 @@ export declare const main: {
         stamp: import("@cero-base/core").Prim;
         from: import("@cero-base/core").Prim;
     };
-    claim: {
-        identity: import("@cero-base/core").Prim;
-        writer: import("@cero-base/core").Prim;
-        sig: import("@cero-base/core").Prim;
-        ts: import("@cero-base/core").Prim;
-    };
     epoch: {
         epoch: import("@cero-base/core").Prim;
         wrapped: import("@cero-base/core").Prim;

@@ -204,12 +204,21 @@ test('close detaches the bee from the network (no _replicateables leak)', async 
   t.is(network._replicateables.size, 0, 'bee detached on close — not left to replicate forever')
 })
 
+// a database whose only device is gone: its key and identity, and nobody to replicate it from
+async function abandoned(t, testnet) {
+  const { db: gone, identity } = await makePeer(t, testnet)
+  await gone.bootstrap({ name: 'gone' })
+  const { key, encryptionKey } = gone
+  await gone.close()
+  return makePeer(t, testnet, { identity, key, encryptionKey })
+}
+
 test('bootstrap recovering: times out instead of hanging when no peer replicates', async (t) => {
   const testnet = await makeTestnet(t)
-  const { db } = await makePeer(t, testnet)
-  const before = db.bee.local.listenerCount('append')
+  const { db } = await abandoned(t, testnet)
+  const before = db.listenerCount('update')
   await t.exception(db.bootstrap({ recovering: true, timeout: 200 }), /timed out/)
-  t.is(db.bee.local.listenerCount('append'), before, 'append listener removed — no leak')
+  t.is(db.listenerCount('update'), before, 'update listener removed — no leak')
 })
 
 // The autobee contract: a writable core has exactly one author, ever — resuming
@@ -1178,15 +1187,32 @@ test('claim: same identity on second db claims against its member record', async
     encryptionKey: a.db.encryptionKey
   })
 
-  // Wait until b sees the bootstrap state from a.
-  await waitForConnection(a.network)
-  await waitForConnection(b.network)
-  await waitFor(async () => (await b.db.get('members', identity.id)).data)
-
-  // claim admits the writer; the device is named by a later set-device, which
+  // claim waits for the member row itself; the device is named by a later set-device, which
   // the bootstrap tests cover
-  await b.db.claim({ name: 'laptop', isMobile: true })
+  await b.db.claim()
   t.ok(b.db.writable, 'b is admitted as a writer after claim')
+})
+
+test('claim: appends nothing until the member row arrives', { timeout: 10000 }, async (t) => {
+  const testnet = await makeTestnet(t)
+  const { db } = await abandoned(t, testnet)
+  // it times out still waiting for the row, never past it to the append
+  await t.exception(db.claim({ timeout: 200 }), /waiting for the member row timed out/)
+})
+
+test("claim: a reader's second device takes no seat", async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const shared = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const reader = await makePeer(t, testnet, shared)
+  await admit(a.db, reader.db, 'reader')
+
+  const second = await makePeer(t, testnet, { ...shared, identity: reader.identity })
+  await second.db.claim()
+  t.absent(second.db.writable, 'a reader holds no seat')
+  t.is(second.db.length, 0, 'and appends nothing')
 })
 
 // ─── key-type invariants ──────────────────────────────────────────────────

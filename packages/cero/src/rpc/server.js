@@ -37,7 +37,7 @@ import {
  *
  * @typedef {object} Identity
  * @property {string} id        Long-lived cero identity id.
- * @property {string} deviceId  Per-device id (empty when no `local` spec).
+ * @property {string} deviceId  Per-device id.
  * @property {string} deviceName  This device's name, empty when it has none.
  *
  * @typedef {{ ref: import('../lib/refs.js').Ref, codec: import('@cero-base/core/rpc').Codec, info?: import('../lib/spec.js').RefInfo }} RefAndCodec
@@ -413,9 +413,7 @@ export class Server extends RPCServer {
     if (local) {
       const info = this.spec.meta.local?.refs?.[name]
       if (!info || info.internal) throw CeroError.UNKNOWN('local ref', name)
-      const r = this.me.local?.[name]
-      if (!r) throw CeroError.UNKNOWN('local ref', name)
-      return { ref: r, codec: this.spec.local.codec, info }
+      return { ref: this.me.local[name], codec: this.spec.local.codec, info }
     }
     const h = this._resolve(id)
     const r = h[name]

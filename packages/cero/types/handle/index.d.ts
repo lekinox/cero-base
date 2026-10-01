@@ -31,7 +31,7 @@ export type HandleOpts = {
      */
     spec?: Spec;
     /**
-     * Local store for per-handle keypairs.
+     * Root only, and required there: the device store for handle keypairs, joins and mail.
      */
     local?: Local;
     /**
@@ -123,7 +123,7 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
  * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
  * @property {Spec} [spec]                     Built cero spec.
- * @property {Local} [local]                   Local store for per-handle keypairs.
+ * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs, joins and mail.
  * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
  * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).

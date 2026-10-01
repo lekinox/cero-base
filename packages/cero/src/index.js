@@ -84,12 +84,10 @@ async function start(dir, spec, opts = {}) {
       session.on('conflict', () => onerror(CeroError.CONFLICT(`fork on core ${session.id}`)))
     })
 
-    if (spec.local && spec.meta?.local) {
-      local = new Local(null, spec, { store, storageKey: opts.storageKey })
-      await local.ready()
-    }
+    local = new Local(null, spec, { store, storageKey: opts.storageKey })
+    await local.ready()
 
-    const device = local ? (await local.store.get('keypair')).data : null
+    const device = (await local.store.get('keypair')).data
     const done = !!device && !device.setup
     const { identity, fresh, seed } = await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
@@ -101,20 +99,18 @@ async function start(dir, spec, opts = {}) {
         ? { publicKey: device.publicKey, secretKey: device.secretKey }
         : Identity.randomKeyPair()
     // the key before the seed: a seed stored without its create would read as one to recover
-    if (local && !done && device?.setup !== setup) {
+    if (!done && device?.setup !== setup) {
       await local.store.set('keypair', { ...keyPair, setup })
     }
-    if (local && seed) await local.store.set('master', { seed })
+    if (seed) await local.store.set('master', { seed })
     const timeout = opts.recoveryTimeout || TIMEOUT
 
     // a storage remembers its channel; reopening under another would silently rejoin the global network
-    if (local) {
-      const stored = (await local.store.get('environment')).data?.channel ?? null
-      const wanted = opts.channel ?? null
-      if (stored == null && wanted != null) {
-        await local.store.set('environment', { channel: wanted })
-      } else if (stored != null && stored !== wanted) throw CeroError.CHANNEL_MISMATCH()
-    }
+    const stored = (await local.store.get('environment')).data?.channel ?? null
+    const wanted = opts.channel ?? null
+    if (stored == null && wanted != null) {
+      await local.store.set('environment', { channel: wanted })
+    } else if (stored != null && stored !== wanted) throw CeroError.CHANNEL_MISMATCH()
 
     network = new Network({
       bootstrap: opts.bootstrap,
@@ -175,7 +171,7 @@ async function start(dir, spec, opts = {}) {
       if (creating && pointer.length === 0) {
         await pointer.append(c.encode(c.fixed32, me.store.key))
       }
-      if (local) await local.store.set('keypair', { setup: null })
+      await local.store.set('keypair', { setup: null })
     }
 
     for (const off of await setups) {
@@ -241,7 +237,7 @@ async function readPointer(pointer, timeout) {
 // `seed` is the one to store: supplied or minted, null when already stored
 async function resolveIdentity(opts, local, done) {
   const provided = opts.phrase ? Identity.toSeed(opts.phrase) : null
-  const stored = local && (await local.store.get('master')).data?.seed
+  const stored = (await local.store.get('master')).data?.seed
   // another identity comes in only through restore, which wipes this one first
   if (done && provided && !b4a.equals(provided, stored)) {
     throw CeroError.INVALID('dir holds another identity: switch with cero.restore')

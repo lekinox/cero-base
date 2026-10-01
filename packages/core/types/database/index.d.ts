@@ -417,12 +417,16 @@ export declare class Database extends ReadyResource {
         writer: import('../identity/index.js').KeyPair;
     }>;
     /**
-     * Claim writership on an existing database by signing our writer key with the member identity;
-     * the claim rides in the device core as an optimistic node.
+     * Seat this device's writer where its identity is a member: wait for the member row, append
+     * the add-writer the identity signs from this device's own core, and resolve once it writes.
+     * A member whose role cannot write takes no seat.
      *
+     * @param {{ timeout?: number }} [opts]
      * @returns {Promise<void>}
      */
-    claim(): Promise<void>;
+    claim({ timeout }?: {
+        timeout?: number;
+    }): Promise<void>;
     /**
      * Resolve once the bee becomes writable, or reject after `timeout` ms.
      *
@@ -511,9 +515,7 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _total;
     /** @private */
-    private _optimistic;
-    /** @private */
-    private _backfilled;
+    private _member;
     /** @private */
     private _admission;
     /** @private */

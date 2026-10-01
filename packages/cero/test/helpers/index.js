@@ -186,20 +186,17 @@ export async function ceroOpen(t, opts = {}) {
   return { me, dir, testnet }
 }
 
-// a bare root handle on its own network, bootstrapped unless it opens a key; `local` adds the
-// device store, which keeps per-handle keypairs and joins
-export async function openHandle(t, { local, ...opts } = {}) {
+// a bare root handle and its device store on their own network, bootstrapped unless it opens a key
+export async function openHandle(t, opts = {}) {
   const { store } = await makeStore(t)
   const identity = opts.identity || (await Identity.create())
   const testnet = opts.testnet || (await makeTestnet(t))
   const net = await makeNet(t, testnet, null, store)
   const discovery = net.join(identity.topic)
   await discovery.flush()
-  if (local) {
-    opts.local = new Local(null, spec, { store })
-    await opts.local.ready()
-  }
-  const me = new Handle({ store, identity, network: net, spec, ...opts })
+  const local = new Local(null, spec, { store })
+  await local.ready()
+  const me = new Handle({ store, identity, network: net, spec, local, ...opts })
   await me.ready()
   if (!opts.key) await me.store.bootstrap({ name: opts.name || null })
   t.teardown(

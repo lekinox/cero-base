@@ -231,7 +231,7 @@ test('build: the app routes start at the id they shipped with', async (t) => {
   const specDir = await buildInto(t, 'route-ids')
   const json = await fs.readFile(join(specDir, 'main/dispatch/dispatch.json'), 'utf-8')
   const ids = Object.fromEntries(JSON.parse(json).schema.map((r) => [r.name, r.id]))
-  t.is(ids['@cero/set-profile'], 26, 'the first app route')
+  t.is(ids['@cero/set-profile'], 25, 'the first app route')
 })
 
 test('fields: bytes is a buffer column, file an id string, the rest map to themselves', (t) => {

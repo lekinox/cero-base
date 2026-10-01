@@ -11,7 +11,6 @@ const PERMS = new Set([WRITE, INVITE, ASSIGN, REMOVE])
 
 // binding the db key makes an admission unreplayable across databases
 const ADD_WRITER_TAG = b4a.from('cero/add-writer')
-const CLAIM_WRITER_TAG = b4a.from('cero/claim-writer')
 const JOIN_TAG = b4a.from('cero/join')
 
 // fields the write path stamps itself, always allowed
@@ -20,11 +19,6 @@ const SYSTEM_FIELDS = new Set(['id', 'memberId', 'index', 'createdAt', 'updatedA
 /** @type {(dbKey: Uint8Array, writer: Uint8Array, appender: Uint8Array) => Uint8Array} */
 export function admission(dbKey, writer, appender) {
   return b4a.concat([ADD_WRITER_TAG, dbKey, writer, appender])
-}
-
-/** @type {(dbKey: Uint8Array, writer: Uint8Array) => Uint8Array} */
-export function ownership(dbKey, writer) {
-  return b4a.concat([CLAIM_WRITER_TAG, dbKey, writer])
 }
 
 // what a joiner's identity signs: this database, this invite, this writer, where the keys go

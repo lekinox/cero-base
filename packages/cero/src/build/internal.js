@@ -160,7 +160,6 @@ export function dispatches(ns) {
   return [
     { name: 'add-writer', requestType: `@${ns}/writer` },
     { name: 'del-writer', requestType: `@${ns}/writer` },
-    { name: 'claim-writer', requestType: `@${ns}/claim` },
     ...Object.values(defs.main).flatMap(({ type }) => [
       { name: `add-${type}`, requestType: `@${ns}/${type}` },
       { name: `set-${type}`, requestType: `@${ns}/${type}` },

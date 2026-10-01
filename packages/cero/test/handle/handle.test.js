@@ -10,7 +10,6 @@ import { spec } from '../fixtures/spec/index.js'
 import {
   makeStore,
   makeTestnet,
-  makeNet,
   waitForConnection,
   waitUntil,
   nextRequest,
@@ -81,6 +80,11 @@ test('Handle: rejects missing spec', async (t) => {
   t.exception.all(() => new Handle({ store, identity: {}, network: {} }), /spec is required/)
 })
 
+test('Handle: a root rejects missing local', async (t) => {
+  const { store } = await makeStore(t)
+  t.exception.all(() => new Handle({ store, identity: {}, network: {}, spec }), /local is required/)
+})
+
 // ─── lifecycle ────────────────────────────────────────────────────────────
 
 test('Handle: opens and closes', async (t) => {
@@ -113,13 +117,7 @@ test('Handle: ref carries handle + name + kind', async (t) => {
 // ─── bootstrap ────────────────────────────────────────────────────────────
 
 test('Handle: bootstrap on fresh', async (t) => {
-  const { store } = await makeStore(t)
-  const identity = await Identity.create()
-  const net = await makeNet(t, await makeTestnet(t), null, store)
-  const me = new Handle({ store, identity, network: net, spec })
-  await me.ready()
-  t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  await me.store.bootstrap({ name: 'desktop' })
+  const { me } = await openHandle(t, { name: 'desktop' })
   t.is(me.store.writable, true)
   t.is((await get(me.members)).data.length, 1, 'bootstrap enrolls the owner')
 })
@@ -194,14 +192,14 @@ test('Handle: t.extend adds a field to the member builtin', async (t) => {
 
 test('open: a reader opens the room by id on a second device', async (t) => {
   const testnet = await makeTestnet(t)
-  const host = await openHandle(t, { local: true, testnet })
+  const host = await openHandle(t, { testnet })
   const room = await open(host.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
   await put(room.messages, { text: 'hi' })
-  const a = await openHandle(t, { local: true, testnet })
+  const a = await openHandle(t, { testnet })
   const joined = await open(a.me.team, await cero.invite(room, { role: 'reader' }))
   t.teardown(() => joined.close().catch(() => {}))
-  const b = await openHandle(t, { local: true, testnet, identity: a.identity, key: a.me.store.key })
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
   await b.me.store.bootstrap({ recovering: true })
   await waitUntil(async () => (await get(b.me.team)).data.length === 1)
 
@@ -212,12 +210,32 @@ test('open: a reader opens the room by id on a second device', async (t) => {
   t.is(reopened.store.length, 0, 'and appends nothing')
 })
 
+test('open: an invited member opens the room by id on a second device and writes', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  t.teardown(() => room.close().catch(() => {}))
+  const a = await openHandle(t, { testnet })
+  const joined = await open(a.me.team, await cero.invite(room))
+  t.teardown(() => joined.close().catch(() => {}))
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  await waitUntil(async () => (await get(b.me.team)).data.length === 1)
+
+  const reopened = await open(b.me.team, { id: joined.id })
+  t.teardown(() => reopened.close().catch(() => {}))
+  t.ok(reopened.store.writable, 'its claim seats the second device')
+  await put(reopened.messages, { text: 'from the second device' })
+  await waitUntil(async () => (await get(room.messages)).data.length === 1)
+  t.pass('the host reads it')
+})
+
 test('open: a second device stopped once its claim landed reopens on that writer', async (t) => {
   const testnet = await makeTestnet(t)
-  const a = await openHandle(t, { local: true, testnet })
+  const a = await openHandle(t, { testnet })
   const room = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => room.close().catch(() => {}))
-  const b = await openHandle(t, { local: true, testnet, identity: a.identity, key: a.me.store.key })
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
   await b.me.store.bootstrap({ recovering: true })
   await waitUntil(async () => (await get(b.me.team)).data.length === 1)
 
