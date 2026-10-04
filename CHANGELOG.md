@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.4.1 (2026-10-04)
+
+### Bug Fixes
+
+- one contract for the app, stamped by every database, raised only by stored data
+
+### Documentation
+
+- operators are where business logic goes; profileSync copies only name and its fields
+
+### Other
+
+- 🚀 test: the expired-accept case waits for the clock, not the joiner's timer
+
 ## 2.4.0 (2026-10-01)
 
 ### Features
