@@ -152,9 +152,11 @@ Every scope, the root and each handle, has the builtins `members`, `devices`, `i
 extends that builtin in every scope, and inside a handle type it is ignored. Redeclaring a
 builtin's own field fails the build.
 
-The bundled extensions add fields too. A `profile` you declare replaces the extension's, and each
-of its fields is copied onto your row in `members`, so each must exist there with the same type.
-A `t.file` field is copied with its file, so it resolves in every handle. See
+The bundled extensions add fields too. `profileSync` declares `profile: t.single({ name, avatar })`
+and copies `name` and its `fields` onto your row in `members`. To add a profile field, list it in
+`fields`, and every member sees it, or declare `profile` yourself with it: a field outside `fields`
+stays on `me.profile`, on your devices only. `profile` is not a builtin, so `t.extend` cannot add to
+it. A `t.file` field is copied with its file, so it resolves in every handle. See
 [the two that ship](extensions.md#the-two-that-ship).
 
 ## Reserved names

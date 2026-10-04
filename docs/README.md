@@ -82,7 +82,8 @@ Working with an AI agent? Point it at [skills/cero/SKILL.md](../skills/cero/SKIL
 | [Your devices](identity.md)     | be the same user on every device, recover, remove a device                       |
 | [Network](network.md)           | sync offline through mirrors, go nearby over Bluetooth, background, many handles |
 | [Apps](apps.md)                 | run Cero in a worker behind an Electron or Expo UI, run the three example apps   |
-| [Extensions](extensions.md)     | write behaviour once and reuse it: your own functions, extensions, actions       |
+| [Operators](operators.md)       | put your business logic in your own operators, called from the worker or the UI  |
+| [Extensions](extensions.md)     | make every device enforce a rule: hooks, actions, the extensions that ship       |
 | [How it works](how-it-works.md) | predict what happens offline, on conflict, on removal, on join                   |
 | [API reference](api.md)         | look up any verb, option, collection, status field                               |
 | [Errors](errors.md)             | handle every error code                                                          |

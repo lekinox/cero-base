@@ -329,7 +329,7 @@ const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
 import { cero, profileSync, handleSync } from '@cero-base/cero/extensions'
 ```
 
-A light `cero` facade, `t`, `schema` and the 24 operators without the runtime, for an extension module or your own functions over the operators: the spec bundles them into the UI. The operators are named exports too, with `bundled`, the default two, and `extensionsOf(spec, list)`, the list a spec runs.
+A light `cero` facade, `t`, `schema` and the 24 operators without the runtime, for an extension module or your own [operators](operators.md): the spec bundles them into the UI. The operators are named exports too, with `bundled`, the default two, and `extensionsOf(spec, list)`, the list a spec runs.
 
 | Extension                 | Declares                                                                  | Does                                                                                                                                                                                       |
 | ------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

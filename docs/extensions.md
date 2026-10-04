@@ -1,44 +1,12 @@
 # Extensions
 
-[Docs](README.md) · Previous: [Apps](apps.md) · Next: [How it works](how-it-works.md)
+[Docs](README.md) · Previous: [Operators](operators.md) · Next: [How it works](how-it-works.md)
 
-Write behaviour once and reuse it: your own functions for what the app does, extensions for rules
-and schema every device runs, actions for named writes.
-
-```js
-// todo.js
-import { cero } from '@cero-base/cero/extensions'
-
-export const add = (me, text) => cero.put(me.todos, { text })
-export const finish = (me, id) => cero.set(me.todos, { id, done: true })
-export const remove = (me, id) => cero.del(me.todos, id)
-export const pending = (me) => cero.get(me.todos, { done: false })
-```
-
-```js
-import * as todo from './todo.js'
-
-// me from cero('./data', spec) in the worker, or from cero(ipc, spec) in the UI
-const { data: row } = await todo.add(me, 'buy milk')
-await todo.finish(me, row.id)
-```
-
-## Your own functions
-
-A feature is a file of plain functions, each taking the context first, `me` or a handle, and calling
-the `cero.` operators. Nothing registers them: import the file and call `todo.add(me, 'buy milk')`.
-
-```js
-// chat.js
-import { cero } from '@cero-base/cero/extensions'
-
-export const say = (room, text) => cero.put(room.messages, { text })
-export const rename = (room, name) => cero.set(room.profile, { name })
-```
-
-Import `cero` from `@cero-base/cero/extensions`: it carries the operators without the runtime, so
-the same file runs in the worker and bundles into the UI. Everything but `before`, `after` and
-`tx` works on a client.
+An extension is for what every device must do the same way: a rule on each write, the write that
+follows from another, a named action, and the schema they need. What your app does goes in your own
+[operators](operators.md), or in whatever shape your app prefers. Reach for an extension when every
+device has to enforce something: a check in your code holds for the device that calls it, a hook
+holds for every write.
 
 ## Write an extension
 
@@ -119,8 +87,15 @@ export const extensions = [
 ```
 
 `fields` replaces the default `{ avatar: t.string }` and lands on both `profile` and `members`. A
-`profile` you declare yourself replaces the extension's; each of its fields must then exist on
-`members` with the same type and hold a plain value or a file. A `t.file` avatar,
+`profile` you declare yourself replaces the extension's. Only `name` and `fields` are copied into
+the handles; any other field stays on `me.profile`, on your devices only:
+
+```js
+// name and avatar reach every handle you are in; phone stays yours
+profile: t.single({ name: t.string, avatar: t.string, phone: t.string })
+```
+
+A copied field holds a plain value or a file. A `t.file` avatar,
 `profileSync({ fields: { avatar: t.file } })`, is copied with its file into each handle, where every
 member reads it.
 
