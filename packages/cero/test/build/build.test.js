@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { fields } from '../../src/build/internal.js'
+import { rpc } from '../../src/build/schemas.js'
 import { makeTestnet } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -232,6 +233,60 @@ test('build: the app routes start at the id they shipped with', async (t) => {
   const json = await fs.readFile(join(specDir, 'main/dispatch/dispatch.json'), 'utf-8')
   const ids = Object.fromEntries(JSON.parse(json).schema.map((r) => [r.name, r.id]))
   t.is(ids['@cero/set-profile'], 25, 'the first app route')
+})
+
+// one contract for the whole app, stamped by every database: a device on an older build skips newer
+// writes in a handle as it does at the root, and only stored data moves the number
+const plain = schema({
+  notes: t.collection({ text: t.string }),
+  room: { messages: t.collection({ text: t.string }) }
+})
+const tagged = schema({
+  notes: t.collection({ text: t.string }),
+  room: { messages: t.collection({ text: t.string, tag: t.string }) }
+})
+const probe = { note: t.string }
+
+async function rebuilt(t, sub, ...schemas) {
+  const dir = join(buildRoot, sub)
+  await fs.rm(dir, { recursive: true, force: true })
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  for (const sch of schemas) await build(dir, sch, { extensions: [] })
+  return dir
+}
+
+test('build: a change in a handle type raises the contract every database stamps', async (t) => {
+  const dir = await rebuilt(t, 'contract-handle', plain, tagged)
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.version, 2, 'the change in room raises the contract')
+  t.is(spec.handles.room.meta.version, 2, 'and a room carries it')
+
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, extensions: [] })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const room = await open(me.room, { name: 'r' })
+  t.is(room.store.version, 2, 'a room stamps its ops with it')
+})
+
+test('build: a change to RPC alone keeps the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-rpc', plain)
+  rpc['req-probe'] = probe
+  t.teardown(() => delete rpc['req-probe'])
+  await build(dir, plain, { extensions: [] })
+  const { version } = JSON.parse(await fs.readFile(join(dir, 'main/schema/schema.json'), 'utf-8'))
+  t.is(version, 2, 'the RPC type raised the schema')
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.version, 1, 'but not the contract: nothing stored changed')
+})
+
+test('build: a rebuild with no change keeps the contract, and it never goes down', async (t) => {
+  const dir = await rebuilt(t, 'contract-keep', plain, tagged, tagged)
+  t.is(JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8')).version, 2, 'kept')
+  // a spec built before the contract was kept: the first build carries its number forward
+  await fs.rm(join(dir, 'contract.json'), { force: true })
+  await build(dir, tagged, { extensions: [] })
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.version, 2, 'carried forward, never reset')
 })
 
 test('fields: bytes is a buffer column, file an id string, the rest map to themselves', (t) => {

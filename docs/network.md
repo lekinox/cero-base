@@ -172,7 +172,8 @@ range.
 for await (const { data } of cero.watch(room.status)) if (data.behind) showUpdatePrompt()
 ```
 
-Every write carries your app's contract version, stamped by `build`. Peers on different versions keep
+Every write carries your app's contract version, kept by `build` in `spec/contract.json`
+([Schema](schema.md#change-a-schema-that-shipped)). Peers on different versions keep
 working together: writes from a newer version are skipped, not errors, and `status.behind` holds the
 highest version seen. Once the app upgrades, the next open catches up on them. `status.behind` is per
 context, so watch `room.status` for each open handle as well as `me.status`.

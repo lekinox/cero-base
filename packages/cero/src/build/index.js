@@ -2,6 +2,8 @@ import { join, resolve } from 'path'
 import { promises as fs } from 'fs'
 import { pathToFileURL } from 'url'
 
+import b4a from 'b4a'
+import crypto from 'hypercore-crypto'
 import Hyperschema from 'hyperschema'
 import HyperdbBuilder from 'hyperdb/builder'
 import Hyperdispatch from 'hyperdispatch'
@@ -71,12 +73,14 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
     emitMain(join(specDir, 'handles', name), ns, handle, { rpc: false, extend })
   }
 
+  const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
+  const version = await contract(specDir, dirs)
   const meta = {
     ...main.meta,
-    version: await contractVersion(join(specDir, 'main')),
+    version,
     local: local.meta,
     handles: Object.fromEntries(
-      Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n }])
+      Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version }])
     )
   }
 
@@ -231,18 +235,31 @@ function register(name, node, ctx) {
   }
 }
 
-// the contract version is the highest of the schema, db and dispatch versions
-async function contractVersion(mainDir) {
-  const read = async (rel) => {
-    const j = JSON.parse(await fs.readFile(join(mainDir, rel), 'utf-8'))
-    return j.version || 1
-  }
-  const versions = await Promise.all([
-    read('schema/schema.json'),
-    read('db/db.json'),
-    read('dispatch/dispatch.json')
-  ])
-  return Math.max(...versions)
+// one contract for the app, kept in contract.json: it rises once per build that changes what is
+// stored, at the root or in any handle type, never for RPC alone. A spec without one starts from
+// its builders' versions, so a shipped app's number never goes down
+async function contract(specDir, dirs) {
+  const file = join(specDir, 'contract.json')
+  const shapes = await Promise.all(dirs.map((dir) => shapeOf(join(specDir, dir))))
+  const json = JSON.stringify(shapes.map((s) => s.stored))
+  const shape = b4a.toString(crypto.hash(b4a.from(json)), 'hex')
+  const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
+  const version = kept
+    ? kept.version + (kept.shape === shape ? 0 : 1)
+    : Math.max(...shapes.flatMap((s) => s.versions))
+  await fs.writeFile(file, JSON.stringify({ version, shape }, null, 2) + '\n')
+  return version
+}
+
+// what a spec directory stores: its types without the RPC ones, its collections and its routes
+async function shapeOf(dir) {
+  const read = async (rel) => JSON.parse(await fs.readFile(join(dir, rel), 'utf-8'))
+  const rpc = new Set(internal.types('rpc').map((type) => type.name))
+  const { version: types, ...schema } = await read('schema/schema.json')
+  const { version: db, ...collections } = await read('db/db.json')
+  const { version: dispatch, ...routes } = await read('dispatch/dispatch.json')
+  schema.schema = schema.schema.filter((type) => !rpc.has(type.name))
+  return { stored: [schema, collections, routes], versions: [types || 1, db || 1, dispatch || 1] }
 }
 
 function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { rpc, extend = {} }) {
