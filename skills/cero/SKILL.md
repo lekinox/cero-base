@@ -77,33 +77,38 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 
 1. **Open against the built spec**, never the raw schema. The app, the worker and the UI import the
    same generated `spec/index.js`. Keep `spec/` in git.
-2. **Name extensions at build time, by module path**:
+2. **Business logic is your own code, in any shape.** Cero has no recipe: functions, classes or a
+   store all work. The recommended start is plain functions, one file per feature, context first,
+   importing `cero` from `@cero-base/cero/extensions` so the same file runs in the worker and the UI:
+   `guest.create(expo, data)`. Use hooks and actions for a rule every device must enforce. See
+   [operators](references/operators.md).
+3. **Name extensions at build time, by module path**:
    `build('./spec', schema, { extensions: '../extensions.js' })`, so the spec carries them:
    `spec.extensions` is the list `cero()` runs. A list of objects passed to `build` cannot be
    written into the spec: pass the same list to `cero(dir, spec, { extensions })`, or it throws
    `INVALID`. `setup(me)` runs before the root opens and may write, so hooks registered there see
    every op; a hook on a type ref (`me.room.notes`) reaches every handle of the type.
-3. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
+4. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
    fields of the same type swaps their data.
-4. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
+5. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
    pass an existing `id`. `set` merges your fields over the stored row on this device and writes it:
    of two devices setting one row at once, the one applied last wins. On a single, always `set`.
-5. **Use the facade.** `import { cero } from '@cero-base/cero'` (or `/client` in a UI) and call
+6. **Use the facade.** `import { cero } from '@cero-base/cero'` (or `/client` in a UI) and call
    `cero.put`, `cero.get`, `cero.open`. Never alias named imports. Contexts have no methods.
-6. **Cleanup follows the context.** `watch` streams end with their context, or pass
+7. **Cleanup follows the context.** `watch` streams end with their context, or pass
    `cero.watch(ref, query, { signal })`; `await cero.close(me)` on shutdown.
-7. **Invites come from handles.** `cero.invite(room, { role })` admits a member at that rank
+8. **Invites come from handles.** `cero.invite(room, { role })` admits a member at that rank
    (`owner`, `admin`, `member`, `reader`; `member` by default). A `confirm` invite holds each join in
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
    `cero.del(room.members, id)` removes a member and re-keys the handle shortly after;
    `await cero.rotate(room)` re-keys at once.
-8. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
+9. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
    show `await cero.phrase(me)` to the user once. With a phrase, Cero finds one of the user's devices
    (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT`.
-9. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no `node:` prefix, and map
-   them in your package.json `imports` (`"fs": { "bare": "bare-fs", "default": "fs" }`), as Cero
-   does for its own.
-10. **An action is its `after` hook.** `cero.after(me.room.promote, fn)` in an extension's `setup`
+10. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no `node:` prefix, and map
+    them in your package.json `imports` (`"fs": { "bare": "bare-fs", "default": "fs" }`), as Cero
+    does for its own.
+11. **An action is its `after` hook.** `cero.after(me.room.promote, fn)` in an extension's `setup`
     is what `cero.call(room.promote, args)` does, on every peer. An action with no `after` hook
     throws `INVALID`. In a hook, `row` is `null` on a delete.
 
@@ -158,7 +163,8 @@ Bare worker, Expo a Bare worklet, tests a duplex pair.
 | The phrase, a second device, recovery, restore                   | [your devices](references/identity.md)     |
 | Mirrors, channels, background, many handles, Bluetooth, versions | [network](references/network.md)           |
 | A worker behind an Electron or Expo UI, the examples             | [apps](references/apps.md)                 |
-| Your own functions, extensions, actions                          | [extensions](references/extensions.md)     |
+| Your business logic: your own operators                          | [operators](references/operators.md)       |
+| Rules every device enforces: hooks, actions, extensions          | [extensions](references/extensions.md)     |
 | What happens offline, on a join, on a removal, on recovery       | [how it works](references/how-it-works.md) |
 | Every export and option                                          | [api reference](references/api.md)         |
 | Every error code                                                 | [errors](references/errors.md)             |

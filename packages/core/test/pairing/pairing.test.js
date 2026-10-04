@@ -419,6 +419,9 @@ test('confirm: accept checks the role and the expiry first', async (t) => {
   await t.exception(peer.pairing.accept(id, { role: 'owner' }), /exceeds the invite role/)
   await t.exception(peer.pairing.accept(id, { role: 'volunteer' }), /not a rank/)
   t.is((await joining).code, 'EXPIRED')
+  // a timer can fire a millisecond before the clock reads its time: wait for the clock
+  const { expires } = Invite.parse(invite)
+  await waitFor(() => Date.now() > expires)
   t.is(await code(peer.pairing.accept(id)), 'EXPIRED', 'past its invite, though still listed')
   t.absent(await member(peer.db, joiner.identity), 'and nobody was admitted')
 })

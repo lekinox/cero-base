@@ -152,9 +152,11 @@ Every scope, the root and each handle, has the builtins `members`, `devices`, `i
 extends that builtin in every scope, and inside a handle type it is ignored. Redeclaring a
 builtin's own field fails the build.
 
-The bundled extensions add fields too. A `profile` you declare replaces the extension's, and each
-of its fields is copied onto your row in `members`, so each must exist there with the same type.
-A `t.file` field is copied with its file, so it resolves in every handle. See
+The bundled extensions add fields too. `profileSync` declares `profile: t.single({ name, avatar })`
+and copies `name` and its `fields` onto your row in `members`. To add a profile field, list it in
+`fields`, and every member sees it, or declare `profile` yourself with it: a field outside `fields`
+stays on `me.profile`, on your devices only. `profile` is not a builtin, so `t.extend` cannot add to
+it. A `t.file` field is copied with its file, so it resolves in every handle. See
 [the two that ship](extensions.md#the-two-that-ship).
 
 ## Reserved names
@@ -210,8 +212,14 @@ const v2 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool, due
 Fields are stored by position, so add new ones at the end. Removing a field, or changing its type
 or `required`, fails the build. Reordering two fields of the same type builds, and swaps their
 data on every row. Keep `spec/` in git and rebuild over it after every change: it records what
-shipped. A device on an older build skips writes from a newer one until it updates, and
-`me.status` says so in `behind`.
+shipped.
+
+The build keeps one contract version for the app in `spec/contract.json`, and every database stamps
+it on its writes, the root's and every handle's. It rises by one in a build that changes what is
+stored, a type, a collection or an action, at the root or in any handle type, and never goes down.
+A build that changes nothing stored keeps it, and so does an upgrade of Cero that changes only how a
+UI talks to its worker. A device on an older build skips writes from a newer one until it updates,
+and `status.behind` says so.
 
 ## Next
 

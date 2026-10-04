@@ -1,6 +1,6 @@
 # Apps
 
-[Docs](README.md) · Previous: [Network](network.md) · Next: [Extensions](extensions.md)
+[Docs](README.md) · Previous: [Network](network.md) · Next: [Operators](operators.md)
 
 Run Cero in a worker that owns the storage and the network, and drive it from an Electron or Expo UI with the same verbs.
 
@@ -244,6 +244,7 @@ There is no Android bundle script, so the example runs on iOS only.
 
 ## Next
 
+- [Operators](operators.md) for your business logic, one file per feature, called from either side.
 - [Extensions](extensions.md) to put hooks in a `setup` that runs in the worker.
 - [Network](network.md) for mirrors, Bluetooth and what backgrounding pauses.
 - [How it works](how-it-works.md) for what happens between the two devices.

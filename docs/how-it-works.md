@@ -92,7 +92,7 @@ The last write in that order wins, per row: `set` merges on the writing device a
 
 ## App versions
 
-Every write carries its spec's version, which the build raises when the schema changes. An older build skips writes from a newer one, the same way on every device, and `status.behind` shows the newer version so the app can ask for an update. Once updated, it applies the writes it skipped. Newer builds read older writes as they are, which is why the schema only grows.
+Every write carries its app's contract version, which the build raises when what is stored changes, at the root or in any handle type ([Schema](schema.md#change-a-schema-that-shipped)). An older build skips writes from a newer one, the same way on every device, and `status.behind` shows the newer version so the app can ask for an update. Once updated, it applies the writes it skipped. Newer builds read older writes as they are, which is why the schema only grows.
 
 ## Next
 
