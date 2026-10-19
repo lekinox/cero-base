@@ -25,7 +25,7 @@ export function stats(handle, at = 0) {
 
   let dht = null
   try {
-    dht = net?.swarm?.dht?.stats ?? null
+    dht = net?.dht?.stats ?? null
   } catch {}
 
   return {

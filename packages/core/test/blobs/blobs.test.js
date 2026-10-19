@@ -347,8 +347,8 @@ test('replication: stream blob read from peer', async (t) => {
 
 test('replication: rides the connections a network already has, joining no topic of its own', async (t) => {
   const { blobsA, blobsB, netA, netB } = await makeReplicationPair(t, { topic: randomTopic() })
-  t.absent(netA.swarm.status(blobsA.discoveryKey), 'the writer joined no blob topic')
-  t.absent(netB.swarm.status(blobsB.discoveryKey), 'nor the reader')
+  t.absent(netA.state(blobsA.discoveryKey), 'the writer joined no blob topic')
+  t.absent(netB.state(blobsB.discoveryKey), 'nor the reader')
   const payload = b4a.from('over the room link')
   const blobId = await blobsA.put(payload)
   t.alike(await blobsB.get(blobId), payload)

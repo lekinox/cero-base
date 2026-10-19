@@ -44,7 +44,7 @@ An identity is frozen, and `JSON.stringify` shows only its `id`. A device's writ
 
 ## Network
 
-Hyperswarm plus wakeup, with managed discovery sessions. Every connection, swarm or injected, replicates the network's store, so every core in it rides every peer.
+The Holepunch replicator plus wakeup, with one discovery session per topic. Every connection, replicator or injected, replicates the network's store, so every core in it rides every peer.
 
 ```js
 import { Network } from '@cero-base/core'
@@ -52,37 +52,37 @@ import { Network } from '@cero-base/core'
 // store: a Corestore; topic: 32 bytes; core: a hypercore in the store
 const net = new Network({ store, channel: 'my-app' })
 await net.ready()
-const discovery = net.join(topic) // announce and look up
+const discovery = net.join(topic) // pinned: announce and look up now
 await net.flush({ timeout: 2000 }) // wait for the DHT, 2 s at most
 net.attach(core) // keep it on the mirrors too
 ```
 
-| Option         | Meaning                                                                                    |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                   |
-| `identity`     | The swarm keypair. A random one without.                                                   |
-| `channel`      | Only peers on the same channel meet.                                                       |
-| `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                            |
-| `bootstrap`    | `[{ host, port }]` DHT nodes.                                                              |
-| `backoffs`     | Reconnect backoff steps in ms.                                                             |
-| `firewall`     | `(remotePublicKey, payload) => boolean`: `true` refuses the connection.                    |
-| `relayThrough` | Relay keys to tunnel through.                                                              |
-| `presence`     | `{ active, announced, idle }`, the swarm budget for attached databases: 8, 8 and 30000 ms. |
-| `onerror`      | Background errors. The console without one.                                                |
+| Option         | Meaning                                                                                                                                                         |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                                                                                        |
+| `identity`     | The peer keypair. One derived from the store without.                                                                                                           |
+| `channel`      | Only peers on the same channel meet.                                                                                                                            |
+| `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                                                                                                 |
+| `bootstrap`    | `[{ host, port }]` DHT nodes.                                                                                                                                   |
+| `firewall`     | `(remotePublicKey, payload) => boolean`: `true` refuses the connection.                                                                                         |
+| `relayThrough` | Relay keys to tunnel through.                                                                                                                                   |
+| `presence`     | `{ active, idle }`, the budget for topics in the rotation: how many announce at once, 8, and the ms one keeps its slot before a touched one may take it, 30000. |
+| `onerror`      | Background errors. The console without one.                                                                                                                     |
 
-| Member                                                             | Does                                                                                                                                                                                                                 |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `net.join(topic, { mode })`                                        | A `Discovery`. `'active'` (default) announces and looks up, `'passive'` only announces. It has `mode`, `activate()`, `deactivate()`, `destroy()`, and `flush()`, which waits for the current announce with no bound. |
-| `net.flush({ timeout })`                                           | Wait for pending announces and lookups, `timeout` ms at most (500).                                                                                                                                                  |
-| `net.attach(core)`                                                 | Keep a core or a database's bee on the mirrors while its writers are offline. A mirror drops it once it closes.                                                                                                      |
-| `net.replicates(store)`                                            | Whether `store` is this network's store or a session of it: only those cores ride its connections.                                                                                                                   |
-| `net.suspend()`, `net.resume()`                                    | Drop the sockets and keep the state; come back.                                                                                                                                                                      |
-| `net.inject(stream, { isInitiator })`                              | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                |
-| `net.peering()`                                                    | The mirror client, built on first use.                                                                                                                                                                               |
-| `swarm`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live swarm and its state.                                                                                                                                                                                        |
-| `'connection'` event                                               | `(stream, info)` per connection.                                                                                                                                                                                     |
+| Member                                                                         | Does                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `net.join(topic, { pin })`                                                     | A `Discovery`. Pinned by default: it announces and looks up until destroyed, outside the budget; `pin: false` puts it in the rotation. It has `state`, `active`, `activate()` to pin and look up now, `deactivate()` to unpin, `touch()` and `release()` to rank it first or last, `flush()`, which waits for the current query with no bound, and `destroy()`. A topic joined twice is one session, left on the last destroy. |
+| `net.state(topic)`                                                             | `'pinned'`, `'autostarted'`, `'discovering'` or `'inactive'`; `null` once left.                                                                                                                                                                                                                                                                                                                                                |
+| `net.flush({ timeout })`                                                       | Wait for pending announces, lookups and dials, `timeout` ms at most (500).                                                                                                                                                                                                                                                                                                                                                     |
+| `net.attach(core)`                                                             | Keep a core or a database's bee on the mirrors while its writers are offline. A mirror drops it once it closes.                                                                                                                                                                                                                                                                                                                |
+| `net.replicates(store)`                                                        | Whether `store` is this network's store or a session of it: only those cores ride its connections.                                                                                                                                                                                                                                                                                                                             |
+| `net.suspend()`, `net.resume()`                                                | Drop the sockets and keep the state; come back.                                                                                                                                                                                                                                                                                                                                                                                |
+| `net.inject(stream, { isInitiator })`                                          | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                                                                                                                                                                                                                          |
+| `net.peering()`                                                                | The mirror client, built on first use.                                                                                                                                                                                                                                                                                                                                                                                         |
+| `replicator`, `dht`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live replicator and its state.                                                                                                                                                                                                                                                                                                                                                                                             |
+| `'connection'` event                                                           | `(stream, info)` per connection.                                                                                                                                                                                                                                                                                                                                                                                               |
 
-An `'active'` join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s. After a connection drops, or on `resume()`, active topics look up again, backing off from 5 s to 60 s, until the lost peers are back, and after a network change this peer announces where it is now reached.
+A join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s; one that drops is redialed, backing off from 2 s to 10 min. On `resume()`, the joined topics look up again, backing off from 5 s to 60 s, until a peer is back, and after a network change this peer announces where it is now reached. The rotation runs every second: the top `active` topics by their last touch announce, and a touched topic moves in once a slot has been held `idle` ms.
 
 `channelTopic(topic, channel)` is the topic a channel really joins.
 
@@ -129,7 +129,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `epochs`        | The keys it rotated to, as a join delivers them.                                        |
 | `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`). |
 | `namespace`     | The Corestore namespace, `'cero'`.                                                      |
-| `pinned`        | Always search and announce, outside the network's presence budget.                      |
+| `pinned`        | Always announce and look up, outside the network's presence budget.                     |
 | `onerror`       | Ops skipped or refused at apply, and the log's own errors.                              |
 
 | Method                                               | Does                                                                                                                                       |
@@ -148,7 +148,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
 | `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
 | `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
-| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
+| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` ranks it last: a slot only while one is spare, until the next update.                   |
 
 It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view` and `behind`, and emits:
 

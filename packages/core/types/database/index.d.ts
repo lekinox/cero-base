@@ -57,7 +57,7 @@ export type DatabaseOpts = {
      */
     key?: Uint8Array | null;
     /**
-     * Always search and announce, outside the network's presence budget. The root.
+     * Always announce and look up, outside the network's presence budget. The root.
      */
     pinned?: boolean;
     /**
@@ -153,7 +153,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
- * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
+ * @property {boolean} [pinned]                                       Always announce and look up, outside the network's presence budget. The root.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -245,7 +245,7 @@ export declare class Database extends ReadyResource {
         }>, view: object, host: object) => Promise<void>;
     };
     /** @private */
-    _presence;
+    _discovery;
     /** @private */
     _txChain;
     /** @private */
@@ -283,8 +283,8 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _close;
     /**
-     * `true` ranks this database as just touched, `false` takes it out of the swarm until the
-     * next update lands in it.
+     * `true` ranks this database as just touched, `false` ranks it last: it keeps its slot on the
+     * swarm only while one is spare, until the next update lands in it.
      *
      * @param {boolean} active
      */

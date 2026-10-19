@@ -34,10 +34,9 @@ export { t, schema } from './lib/spec.js'
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.
  * @property {Array<{ host: string, port: number }>} [bootstrap]  Custom DHT bootstrap nodes.
- * @property {number[]} [backoffs]                     Swarm reconnect backoff tiers in ms (testing/tuning).
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
- * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
+ * @property {{ active?: number, idle?: number }} [presence]  How many handles announce and search at once, and the ms one keeps its slot before a touched one may take it.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
@@ -114,7 +113,6 @@ async function start(dir, spec, opts = {}) {
 
     network = new Network({
       bootstrap: opts.bootstrap,
-      backoffs: opts.backoffs,
       channel: opts.channel,
       store,
       mirrors: opts.mirrors,

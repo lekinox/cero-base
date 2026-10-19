@@ -278,7 +278,7 @@ test('Mailbox: close does not wait on a DHT that went away', async (t) => {
   const box = await mailbox(t, testnet)
   await box.receive(crypto.randomBytes(32), () => {}).ready()
   await box.send(Mailbox.getAddress(crypto.randomBytes(32)), b4a.from('nobody reads this'))
-  await waitFor(() => [...box.network.swarm.topics()].length === 2)
+  await waitFor(() => box.network.replicator.sessions.size === 2)
   await box.network.flush({ timeout: 10000 })
   await testnet.destroy()
 

@@ -448,18 +448,21 @@ test("rpc: the worker's background errors reach the client's onerror", async (t)
   await cero.resume(client)
 })
 
-test("rpc: deactivate takes a room off the swarm, activate brings it back; suspend is the app's", async (t) => {
-  const { me, client } = await openPair(t, { presence: { active: 1, announced: 0, idle: 50 } })
+test("rpc: deactivate releases a room's slot, activate takes it back; suspend is the app's", async (t) => {
+  const { me, client } = await openPair(t, { presence: { active: 1, idle: 50 } })
+  await open(client.team, { name: 'design' })
   const team = await open(client.team, { name: 'engineering' })
-  const serverTeam = [...me.children][0]
-  const mode = () => me.network.presence.mode(serverTeam.store.bee.discoveryKey)
-  t.is(mode(), 'active', 'creating the room ranked it')
+  const [design, engineering] = [...me.children]
+  const state = (room) => me.network.state(room.store.bee.discoveryKey)
+  await waitUntil(() => state(engineering) === 'autostarted')
+  t.is(state(design), 'inactive', 'the room created last holds the one slot')
 
   await cero.deactivate(team)
-  await waitUntil(() => mode() === null)
-  t.pass('off the swarm')
+  await waitUntil(() => state(engineering) === 'inactive')
+  t.is(state(design), 'autostarted', 'released: the other room took the slot')
   await cero.activate(team)
-  t.is(mode(), 'active', 'back on top once selected')
+  await waitUntil(() => state(engineering) === 'autostarted')
+  t.pass('back on top')
   await t.exception(cero.suspend(team), /the app's, on me/)
 
   await cero.suspend(client)
