@@ -77,7 +77,7 @@ That is a working, encrypted, offline-first, peer-to-peer app. Your phrase, `awa
 
 The 24 operators, each also on the facade as `cero.put` and so on: `put`, `set`, `get`, `del`, `watch`, `call`, `open`, `tx`, `invite`, `revoke`, `rotate`, `accept`, `deny`, `leave`, `close`, `cancel`, `suspend`, `resume`, `activate`, `deactivate`, `phrase`, `nearby`, `before`, `after`.
 
-Built on the [Pear](https://pears.com) stack: Hypercore, Autobee, HyperDB, Hyperblobs, Hyperswarm, blind-peering and Bare. Runs on Node and Bare, with TypeScript declarations.
+Built on the [Pear](https://pears.com) stack: Hypercore, Autobee, HyperDB, Hyperblobs, the Holepunch replicator, blind-peering and Bare. Runs on Node and Bare, with TypeScript declarations.
 
 ## License
 

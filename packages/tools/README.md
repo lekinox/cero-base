@@ -2,7 +2,7 @@
 
 Passive devtools for [cero](https://www.npmjs.com/package/@cero-base/cero) — observe a running instance's **data**, its **event log**, and its **p2p/replication stats** from another process, without ever touching the swarm it measures.
 
-A `devtools()` extension taps the instance over a **local out-of-band pipe** (never the app's hyperswarm), so connection counts, core lengths, and replication numbers stay exactly as they'd be with no devtools attached. Read-only by construction; identity secrets are structurally unreachable.
+A `devtools()` extension taps the instance over a **local out-of-band pipe** (never the app's swarm), so connection counts, core lengths, and replication numbers stay exactly as they'd be with no devtools attached. Read-only by construction; identity secrets are structurally unreachable.
 
 ## Install
 

@@ -13,5 +13,5 @@ const net = new Network({
 })
 await net.ready()
 net.on('connection', (conn) => conn.on('error', () => {}))
-await net.join(b4a.from(topic, 'hex'), { mode: 'passive' }).flush()
+await net.join(b4a.from(topic, 'hex')).flush()
 console.log('ready')

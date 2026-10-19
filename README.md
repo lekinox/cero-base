@@ -80,7 +80,7 @@ That is a working, encrypted, offline-first, peer-to-peer chat. The [quickstart]
 
 ## Built on Pear
 
-Under the hood Cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
+Under the hood Cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), the [replicator](https://github.com/holepunchto/replicator) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
 
 ## Docs
 

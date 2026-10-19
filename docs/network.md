@@ -94,24 +94,24 @@ window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : c
 ```js
 // room: any room you have open
 await cero.activate(room) // the room on screen: ranked first
-await cero.deactivate(room) // off the swarm after about 30 s idle, until something lands in it
+await cero.deactivate(room) // ranked last: on the swarm only while a slot is spare
 ```
 
-Handles are ranked by their last update, from anyone: the latest 8 search and announce, the next 8
-only announce, the rest leave the swarm. A handle moves up the moment something lands in it and down
-only after 30 s idle, so handles at the edge do not churn the DHT. Your own data, on `me`, always
-searches.
+Handles are ranked by their last update, from anyone, and opening one counts: the latest 8 search
+and announce, the rest wait their turn. A handle moves up the moment something lands in it, and
+takes a slot as soon as one has been held 30 s, so handles at the edge do not churn the DHT. Your
+own data, on `me`, always searches.
 
 A handle off the swarm still reads, writes and watches. It still syncs over the connections other
 handles bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
 suspended app keeps its ranks.
 
 ```js
-const me = await cero('./data', spec, { presence: { active: 8, announced: 8, idle: 30000 } })
+const me = await cero('./data', spec, { presence: { active: 8, idle: 30000 } })
 ```
 
-Those are the defaults. `active` handles search and announce, `announced` handles only announce, and
-`idle` is the ms before a handle drops a tier.
+Those are the defaults: `active` handles search and announce at once, and `idle` is the ms a handle
+keeps its slot before a higher-ranked one may take it.
 
 ## Sync nearby over Bluetooth
 

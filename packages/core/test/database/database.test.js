@@ -2379,8 +2379,8 @@ test('a throwing after hook refuses the op', async (t) => {
   t.is(data.length, 0, 'the row never landed')
 })
 
-// which databases swarm is ranked by their last update, not by being open
-test('presence: an update ranks a database, opening it does not', async (t) => {
+// which databases swarm is ranked by their last update, opening counts as one
+test('presence: the last opened or updated database holds the slot', async (t) => {
   const testnet = await makeTestnet(t)
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()
@@ -2412,29 +2412,29 @@ test('presence: an update ranks a database, opening it does not', async (t) => {
   const network = new Network({
     bootstrap: testnet.bootstrap,
     store,
-    presence: { active: 1, announced: 0, idle: 50 }
+    presence: { active: 1, idle: 50 }
   })
   await network.ready()
   t.teardown(() => network.close().catch(() => {}), { order: 9 })
-  const mode = (db) => network.presence.mode(db.bee.discoveryKey)
+  const state = (db) => network.state(db.bee.discoveryKey)
 
   const root = await open({ network, pinned: true })
   const a = await open({ network, ...keys[0] })
   const b = await open({ network, ...keys[1] })
-  t.is(mode(root), 'active', 'the root is pinned')
-  t.is(mode(a), 'active', 'the first opened holds the one slot')
-  t.is(mode(b), null, 'the boot replay did not rank b')
+  t.is(state(root), 'pinned', 'the root is pinned')
+  await waitFor(() => state(b) === 'autostarted')
+  t.is(state(a), 'inactive', 'the last opened holds the one slot')
 
-  await b.put('messages', { text: 'hi' })
-  t.is(mode(b), 'active', 'a local update ranks b')
-  await waitFor(() => mode(a) === null)
-  t.pass('a left after idle')
+  await a.put('messages', { text: 'hi' })
+  await waitFor(() => state(a) === 'autostarted')
+  t.is(state(b), 'inactive', 'a local update ranks a, b slid out')
 
-  b.setActive(false)
-  await waitFor(() => mode(b) === null)
-  b.setActive(true)
-  t.is(mode(b), 'active', 'setActive is a touch')
-  t.is(mode(root), 'active', 'the root never moved')
+  a.setActive(false)
+  await waitFor(() => state(a) === 'inactive')
+  t.is(state(b), 'autostarted', 'released, b took the slot')
+  a.setActive(true)
+  await waitFor(() => state(a) === 'autostarted')
+  t.is(state(root), 'pinned', 'the root never moved')
 })
 
 test('presence: a replicated update ranks the database it lands in', async (t) => {
@@ -2463,7 +2463,7 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
     key: x.db.key,
     encryptionKey: x.db.encryptionKey,
     namespace: 'shared',
-    presence: { active: 1, announced: 0, idle: 50 }
+    presence: { active: 1, idle: 50 }
   })
   await y.db.bootstrap({ recovering: true })
   const yQuiet = new Database({
@@ -2477,16 +2477,20 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   })
   await yQuiet.ready()
   t.teardown(() => yQuiet.close().catch(() => {}), { order: 5 })
-  const mode = (db, net) => net.presence.mode(db.bee.discoveryKey)
-  t.is(mode(y.db, y.network), 'active')
-  t.is(mode(yQuiet, y.network), null, 'quiet never joined its topic on y')
-
+  const state = (db, net) => net.state(db.bee.discoveryKey)
   await waitForConnection(x.network)
   await waitForConnection(y.network)
+  // quiet's first sync lands as an update and ranks it: let it, then rank shared by hand
+  await waitFor(async () => (await yQuiet.get('members')).data.length > 0)
+  y.db.setActive(true)
+  await waitFor(() => state(y.db, y.network) === 'autostarted')
+  t.is(state(yQuiet, y.network), 'inactive', 'quiet lost its slot to the touch')
+
   await quiet.put('messages', { text: 'over the shared connection' })
   await waitFor(async () => (await yQuiet.get('messages')).data.length > 0)
-  t.is(mode(yQuiet, y.network), 'active', 'the replicated update ranked quiet')
-  await waitFor(() => mode(y.db, y.network) === null)
+  await waitFor(() => state(yQuiet, y.network) === 'autostarted')
+  t.pass('the replicated update ranked quiet')
+  await waitFor(() => state(y.db, y.network) === 'inactive')
   t.pass('shared slid out')
 })
 
@@ -2821,10 +2825,10 @@ test('gate: a database rebuilt past skipped ops still leaves its topic on close'
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
   t.is(again.behind, null, 'rebuilt')
-  t.is(network.presence.mode(discoveryKey), 'active', 'on its topic while open')
+  t.not(network.state(discoveryKey), null, 'on its topic while open')
 
   await again.close()
-  t.is(network.presence.mode(discoveryKey), null, 'off its topic once closed')
+  t.is(network.state(discoveryKey), null, 'off its topic once closed')
 })
 
 // ─── diff watchers: Database.changes ──────────────────────────────────────
