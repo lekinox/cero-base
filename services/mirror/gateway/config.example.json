@@ -1,0 +1,5 @@
+{
+  "certPath": "./service-account.json",
+  "notification": { "title": "My app", "body": "New activity" },
+  "apnsTopic": "com.example.app"
+}

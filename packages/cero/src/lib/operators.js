@@ -485,6 +485,19 @@ export async function deactivate(ctx) {
 }
 
 /**
+ * A push the platform delivered, as bytes: the handle it is about, verified against this device's
+ * own data, or `null` for a forged one or one about no handle here.
+ *
+ * @param {Context} me
+ * @param {Uint8Array} payload
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean } | null>}
+ */
+export async function receive(me, payload) {
+  if (me.parent) throw CeroError.INVALID("receive is the app's, on me")
+  return me._receive(payload)
+}
+
+/**
  * Reveal the recovery phrase.
  *
  * @param {Context} me

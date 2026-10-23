@@ -1,6 +1,9 @@
 import createTestnet from '@hyperswarm/testnet'
 import Hyperswarm from 'hyperswarm'
 import BlindPeer from 'blind-peer'
+import BlindPushGateway from 'blind-push-gateway'
+import ProtomuxRpcRouter from 'protomux-rpc-router'
+import HyperDHT from 'hyperdht'
 import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
@@ -227,14 +230,14 @@ export function replay(batches) {
 
 // ─── blind-peer mirror (real, in-process) ─────────────────────────────────
 
-export async function makeMirror(t, testnet) {
-  return (await makeBlindPeer(t, testnet)).publicKey
+export async function makeMirror(t, testnet, opts) {
+  return (await makeBlindPeer(t, testnet, opts)).publicKey
 }
 
-export async function makeBlindPeer(t, testnet) {
+export async function makeBlindPeer(t, testnet, opts = {}) {
   const swarm = new Hyperswarm({ bootstrap: testnet.bootstrap })
   const dir = await t.tmp()
-  const mirror = new BlindPeer(dir, { swarm })
+  const mirror = new BlindPeer(dir, { swarm, ...opts })
   await mirror.listen()
   t.teardown(
     async () => {
@@ -248,6 +251,27 @@ export async function makeBlindPeer(t, testnet) {
     { order: 80 }
   )
   return mirror
+}
+
+// a push gateway whose push service only records what it would send
+export async function makeGateway(t, testnet) {
+  const dht = new HyperDHT({ bootstrap: testnet.bootstrap })
+  const router = new ProtomuxRpcRouter()
+  const sent = []
+  const gateway = new BlindPushGateway(dht, router, { send: async (message) => sent.push(message) })
+  await gateway.ready()
+  t.teardown(
+    async () => {
+      try {
+        await gateway.close()
+      } catch {}
+      try {
+        await dht.destroy()
+      } catch {}
+    },
+    { order: 80 }
+  )
+  return { key: gateway.publicKey, sent }
 }
 
 // the mirror holds every block of what joiners need: the writer core, the bootstrap core and each view

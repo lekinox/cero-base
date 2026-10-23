@@ -47,6 +47,7 @@ import { keyPair } from '../mailbox/inbox.js'
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
+ * @property {boolean} [push]                                         Push a notification through the mirrors after each local write, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -113,6 +114,7 @@ export class Database extends ReadyResource {
     this.rotation = new Rotation(this)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
+    this.push = opts.push === true
     this.keyPair = opts.keyPair || Identity.randomKeyPair()
     if (b4a.equals(this.keyPair.publicKey, this.identity.publicKey)) {
       throw CeroError.INVALID('the identity keypair is never a writer — use a device keypair')
@@ -127,6 +129,18 @@ export class Database extends ReadyResource {
     this.dispatcher = null
     /** @private */
     this._presence = null
+    /** @private */
+    this._pushing = null
+    /** @private */
+    this._pushAgain = false
+    /** @private */
+    this._pushed = -1
+    /** @private */
+    this._onResume = () => {
+      if (!this._pushAgain) return
+      this._pushAgain = false
+      this._push()
+    }
     /** @private */
     this._txChain = null
     /** @private */
@@ -228,6 +242,7 @@ export class Database extends ReadyResource {
   /** @private */
   async _close() {
     this.rotation.close()
+    this.network?.off('resume', this._onResume)
     if (this._presence) {
       this._presence.remove()
       this._presence = null
@@ -419,6 +434,57 @@ export class Database extends ReadyResource {
     } catch (err) {
       if (this.closing || this.closed) throw CeroError.CLOSED('Database')
       throw err
+    }
+    if (this.push) this._push()
+  }
+
+  /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
+  get pushing() {
+    return this._pushing !== null
+  }
+
+  // one in flight, then once more at the latest block: a burst of writes is at most two pushes;
+  // one due while the network sleeps goes at resume
+  /** @private */
+  _push() {
+    if (!this.network?.mirrors.length || this.closing) return
+    if (this._pushing || this.network.suspended) {
+      this._pushAgain = true
+      return
+    }
+    this._pushing = this._send().finally(() => {
+      this._pushing = null
+      if (!this._pushAgain) return
+      this._pushAgain = false
+      this._push()
+    })
+  }
+
+  // a fresh writer core reaches the mirror a few seconds after its first block: one more try
+  /** @private */
+  async _send() {
+    for (let tries = 0; ; tries++) {
+      if (this.closing || !this.bee) return
+      if (this.network.suspended) {
+        this._pushAgain = true
+        return
+      }
+      const core = this.bee.local
+      const index = core.length - 1
+      if (index === this._pushed) return
+      try {
+        await this.network.peering().sendNotification(core, {
+          roomKey: this.key,
+          index,
+          target: this.key
+        })
+        this._pushed = index
+        return
+      } catch (err) {
+        safetyCatch(err)
+        if (tries) return
+        await new Promise((resolve) => setTimeout(resolve, PUSH_RETRY).unref())
+      }
     }
   }
 
@@ -737,6 +803,7 @@ export class Database extends ReadyResource {
   /** @private */
   _joinSwarm(bee, discoveryKey) {
     this.network.attach(bee)
+    if (this.push && !this._presence) this.network.on('resume', this._onResume)
     this._presence ??= this.network.presence.add(discoveryKey, { pinned: this.pinned })
   }
 
@@ -995,6 +1062,7 @@ function bounded(promise, ms = 2000) {
 }
 
 const NO_HOOKS = []
+const PUSH_RETRY = 5000
 
 function addHook(map, op, fn) {
   if (typeof fn !== 'function') throw CeroError.INVALID('hook fn must be a function')

@@ -24,7 +24,8 @@ import {
   activate,
   deactivate,
   phrase,
-  nearby
+  nearby,
+  receive
 } from '../lib/operators.js'
 
 // what a UI reaches by name: these operators, never close or a handle's privates
@@ -41,7 +42,8 @@ const VERBS = new Map(
     activate,
     deactivate,
     phrase,
-    nearby
+    nearby,
+    receive
   })
 )
 

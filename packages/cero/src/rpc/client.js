@@ -8,6 +8,7 @@ import z32 from 'z32'
 import { decodeId } from '@cero-base/core/blobs/codec'
 
 import { Ref } from '../lib/refs.js'
+import { follow } from './push.js'
 import * as verbs from '../lib/operators.js'
 import { t, schema } from '../lib/spec.js'
 
@@ -390,6 +391,11 @@ const operators = {
   },
 
   /** @private */
+  _receive(payload) {
+    return this._verb('receive', payload)
+  },
+
+  /** @private */
   _nearby(on, opts) {
     return this._verb('nearby', on, opts)
   },
@@ -461,8 +467,10 @@ export class Client extends RPCClient {
    * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
    * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
    */
-  constructor(ipc, spec, { onerror } = {}) {
+  constructor(ipc, spec, { onerror, push } = {}) {
     super(ipc, spec)
+    /** @private */
+    this._push = push?.backend || null
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     Object.assign(this, operators)
     /** @private */
@@ -503,6 +511,13 @@ export class Client extends RPCClient {
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
     this._pumpErrors()
+    if (this._push) this._unfollow = follow(this, this._push)
+  }
+
+  /** @private */
+  async _close() {
+    if (this._unfollow) this._unfollow()
+    await super._close()
   }
   // the worker's answer to init and to restore: who this UI is, and where its files are served
   /** @private */

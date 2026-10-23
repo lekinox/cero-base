@@ -14,15 +14,15 @@ const { data } = await cero.get(room.messages, { limit: 20 })
 
 ## The package
 
-| Export                                   | What it is                                                                                                                                                                                                                   |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cero(dir, spec, opts)`                  | Opens this device's data and resolves the root context, `me`.                                                                                                                                                                |
-| the 24 operators                         | `put`, `set`, `get`, `del`, `watch`, `call`, `open`, `tx`, `invite`, `revoke`, `rotate`, `accept`, `deny`, `leave`, `close`, `cancel`, `suspend`, `resume`, `activate`, `deactivate`, `phrase`, `nearby`, `before`, `after`. |
-| `t`, `schema`                            | The field types and the wrapper `build` takes.                                                                                                                                                                               |
-| `restore(me, phrase)`, `peek(dir, spec)` | Recovery and the first-run check.                                                                                                                                                                                            |
-| `Handle`, `Ref`, `Local`                 | The classes behind a context, a ref and `me.local`.                                                                                                                                                                          |
+| Export                                   | What it is                                                                                                                                                                                                                              |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cero(dir, spec, opts)`                  | Opens this device's data and resolves the root context, `me`.                                                                                                                                                                           |
+| the 25 operators                         | `put`, `set`, `get`, `del`, `watch`, `call`, `open`, `tx`, `invite`, `revoke`, `rotate`, `accept`, `deny`, `leave`, `close`, `cancel`, `suspend`, `resume`, `activate`, `deactivate`, `phrase`, `nearby`, `receive`, `before`, `after`. |
+| `t`, `schema`                            | The field types and the wrapper `build` takes.                                                                                                                                                                                          |
+| `restore(me, phrase)`, `peek(dir, spec)` | Recovery and the first-run check.                                                                                                                                                                                                       |
+| `Handle`, `Ref`, `Local`                 | The classes behind a context, a ref and `me.local`.                                                                                                                                                                                     |
 
-Everything but the classes is also a property of `cero`, so one import covers an app: write `cero.put`, never an aliased import. The subpaths are `/build`, `/server`, `/client` and `/extensions`, below.
+Everything but the classes is also a property of `cero`, so one import covers an app: write `cero.put`, never an aliased import. The subpaths are `/build`, `/server`, `/client`, `/extensions`, `/push` and `/push/firebase`, below.
 
 ## cero(dir, spec, opts)
 
@@ -87,21 +87,23 @@ Every context carries these, undeclared. `t.extend` adds fields to the first six
 | `status`   | every | One row, [below](#status). Read-only.                                                                                                                                                                                                                                                                                                                      |
 | `joins`    | root  | `{ id, type, invite }`: the joins this device still waits on. `id` is the handle's discovery key in hex, not its `room.id`. Read-only.                                                                                                                                                                                                                     |
 | `nearby`   | root  | `{ id, device, name, isMobile }`: the devices linked over Bluetooth, one row each: `id` is the person's identity (your own other devices carry yours), `device` a key that stays the same for that device. `name` is their `profile`'s, else theirs in a handle you share and have open here, else `null`; `isMobile` is their device's option. Read-only. |
+| `topics`   | root  | `{ id, handle, type, name }`: the push topic of each handle, `id` the string a device subscribes to. Read-only.                                                                                                                                                                                                                                            |
 
-`status`, `joins` and `nearby` are computed on the device and never stored. A schema cannot declare `status` anywhere, nor `joins` or `nearby` at the root.
+`status`, `joins`, `nearby` and `topics` are computed on the device and never stored. A schema cannot declare `status` anywhere, nor `joins`, `nearby` or `topics` at the root.
 
 Each row of your own collections carries `id`, `memberId` (its author), `index` (insertion order), `createdAt` and `updatedAt` (ms) next to its fields. A `local` row carries `id`, `createdAt` and `updatedAt`.
 
 ### status
 
-| Field       | Value                                                                                                      |
-| ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `role`      | Your role here, `null` when you are not a member.                                                          |
-| `writable`  | `true` once this device can write here.                                                                    |
-| `epoch`     | The key in use, by number: `0` before the first re-key.                                                    |
-| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                   |
-| `behind`    | `0`, or the version of a newer app some peer writes with: this device skips those writes until it updates. |
-| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                |
+| Field       | Value                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| `role`      | Your role here, `null` when you are not a member.                                                             |
+| `writable`  | `true` once this device can write here.                                                                       |
+| `epoch`     | The key in use, by number: `0` before the first re-key.                                                       |
+| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                      |
+| `behind`    | `0`, or the version of a newer app some peer writes with: this device skips those writes until it updates.    |
+| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                   |
+| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it. |
 
 ## Data
 
@@ -191,14 +193,15 @@ Set a role with `cero.set(room.members, { id, role })`: you need to be an admin 
 
 ## App and device
 
-| Call                             | Resolves    | Notes                                                                                                                                                                                                                                                                                                                 |
-| -------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cero.suspend(me)`               | `undefined` | The app goes to the background: network, storage and radio pause, and every `status.suspended` reads `true`. `INVALID` on a handle.                                                                                                                                                                                   |
-| `cero.resume(me)`                | `undefined` | The app is back. `INVALID` on a handle.                                                                                                                                                                                                                                                                               |
-| `cero.activate(room)`            | `undefined` | The handle is in use: it ranks first on the swarm, searching and announcing.                                                                                                                                                                                                                                          |
-| `cero.deactivate(room)`          | `undefined` | Take the handle off the swarm until something lands in it.                                                                                                                                                                                                                                                            |
-| `cero.phrase(me)`                | the phrase  | The recovery phrase, 12 or 24 words.                                                                                                                                                                                                                                                                                  |
-| `cero.nearby(me, on, { topic })` | `undefined` | The radio on (`true`) or off (`false`), on `topic` or else the default topic: the one `cero()` started with, or the channel's own. Anything else is `INVALID`. On, it links with the devices in range on the same channel and topic, and joins and sync run over those links as over the internet. Nothing is stored. |
+| Call                             | Resolves             | Notes                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cero.suspend(me)`               | `undefined`          | The app goes to the background: network, storage and radio pause, and every `status.suspended` reads `true`. `INVALID` on a handle.                                                                                                                                                                                   |
+| `cero.resume(me)`                | `undefined`          | The app is back. `INVALID` on a handle.                                                                                                                                                                                                                                                                               |
+| `cero.activate(room)`            | `undefined`          | The handle is in use: it ranks first on the swarm, searching and announcing.                                                                                                                                                                                                                                          |
+| `cero.deactivate(room)`          | `undefined`          | Take the handle off the swarm until something lands in it.                                                                                                                                                                                                                                                            |
+| `cero.phrase(me)`                | the phrase           | The recovery phrase, 12 or 24 words.                                                                                                                                                                                                                                                                                  |
+| `cero.nearby(me, on, { topic })` | `undefined`          | The radio on (`true`) or off (`false`), on `topic` or else the default topic: the one `cero()` started with, or the channel's own. Anything else is `INVALID`. On, it links with the devices in range on the same channel and topic, and joins and sync run over those links as over the internet. Nothing is stored. |
+| `cero.receive(me, payload)`      | the handle or `null` | A push's bytes, verified against this device's data: `{ id, type, name, newer }`, or `null` for a forged one or one about no handle here. `INVALID` on a handle, and while suspended: the push worklet reads then.                                                                                                    |
 
 ## tx
 
@@ -337,6 +340,21 @@ A light `cero` facade, `t`, `schema` and the 24 operators without the runtime, f
 | `handleSync({ fields })`  | `fields` on `handles`                                                     | Mirrors a handle's own `profile` onto its row in `me.handles`, and writes a new handle's name into it. The handle type must declare its own `profile` single with `name` and the `fields`. |
 
 `fields` defaults to `{ avatar: t.string }` in both. A `t.file` field is copied with its file into the handle or `handles` row it lands on, and resolves there: `profileSync({ fields: { avatar: t.file } })`.
+
+## @cero-base/cero/push
+
+```js
+import { push, receive } from '@cero-base/cero/push'
+import { firebase } from '@cero-base/cero/push/firebase'
+```
+
+| Export                                        | What it is                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `push(spec)`                                  | The bare-kit push entry: registers the handler that verifies each push the OS hands the worklet and answers with the notification to show, `{ title, body }`, or nothing.                                                                                   |
+| `receive(dir, spec, payload, { storageKey })` | What `cero.receive` does, from the storage of an app that is not running, opened read-only. `storageKey` as `cero()` took it.                                                                                                                               |
+| `firebase(messaging)`                         | `@react-native-firebase/messaging` as a push backend for `connect`: pass `messaging()`. It hands over the pushes the app receives in front; the push worklet answers the rest. A backend is any `{ subscribe(topic), unsubscribe(topic), on('push', fn) }`. |
+
+See [Push while the app is dead](network.md#push-while-the-app-is-dead).
 
 ## Schema types
 

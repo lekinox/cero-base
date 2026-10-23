@@ -47,6 +47,9 @@ export declare const defs: {
         serving: {
             type: string;
         };
+        topics: {
+            type: string;
+        };
     };
 };
 export type RefInfo = import('../lib/spec.js').RefInfo;

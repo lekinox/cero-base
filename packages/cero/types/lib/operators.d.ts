@@ -224,6 +224,20 @@ export declare function activate(ctx: Context): Promise<void>;
  */
 export declare function deactivate(ctx: Context): Promise<void>;
 /**
+ * A push the platform delivered, as bytes: the handle it is about, verified against this device's
+ * own data, or `null` for a forged one or one about no handle here.
+ *
+ * @param {Context} me
+ * @param {Uint8Array} payload
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean } | null>}
+ */
+export declare function receive(me: Context, payload: Uint8Array): Promise<{
+    id: string;
+    type: string;
+    name: string | null;
+    newer: boolean;
+} | null>;
+/**
  * Reveal the recovery phrase.
  *
  * @param {Context} me

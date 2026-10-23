@@ -73,6 +73,10 @@
       "types": "./types/pairing/index.d.ts",
       "default": "./src/pairing/index.js"
     },
+    "./push": {
+      "types": "./types/push/index.d.ts",
+      "default": "./src/push/index.js"
+    },
     "./invite": {
       "types": "./types/pairing/invite.d.ts",
       "default": "./src/pairing/invite.js"
@@ -155,6 +159,7 @@
     "bare-path": "^3.1.2",
     "bip39-mnemonic": "^2.5.0",
     "blind-peering": "^2.12.0",
+    "blind-push": "^1.0.2",
     "compact-encoding": "^3.5.2",
     "corestore": "^7.16.1",
     "framed-stream": "^1.0.1",
@@ -188,8 +193,10 @@
     "bare-subprocess": "^6.2.2",
     "bare-url": "^2.5.5",
     "blind-peer": "^3.16.0",
+    "blind-push-gateway": "^1.0.0",
     "brittle": "^4.5.0",
     "protomux": "^3.13.0",
+    "protomux-rpc-router": "^1.3.0",
     "typescript": "^7.0.2",
     "which-runtime": "^1.4.0"
   },

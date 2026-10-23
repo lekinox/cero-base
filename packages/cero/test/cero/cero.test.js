@@ -1275,7 +1275,8 @@ test('status: a room reports its role, writability, epoch and suspension, live',
     epoch: 0,
     suspended: false,
     behind: 0,
-    nearby: 'off'
+    nearby: 'off',
+    topic: b4a.toHex(room.store.discoveryKey)
   }
   t.alike(await status(), expected)
 

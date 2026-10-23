@@ -209,6 +209,7 @@ export declare class Handle extends ReadyResource {
     _live;
     /** @private */
     _ac;
+    _indexing: any;
     /** @param {HandleOpts} [opts] */
     constructor(opts?: HandleOpts);
     /**
@@ -307,7 +308,15 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _joins;
     /** @private */
-    private _onJoins;
+    private _onLocal;
+    /** @private */
+    private _topics;
+    /** @private */
+    private _index;
+    /** @private */
+    private _reindex;
+    /** @private */
+    private _receive;
     /** @private */
     private _phrase;
     /**

@@ -278,6 +278,7 @@ export class Network extends ReadyResource {
     await this._blindPeering?.resume()
     // the lookups hyperswarm runs at resume can go out before the network is back
     this._relook(0)
+    this.emit('resume')
   }
 
   /**

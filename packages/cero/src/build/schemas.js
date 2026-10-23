@@ -145,6 +145,13 @@ export const main = {
   deny: {
     id: required(string),
     reason: string
+  },
+  // a handle's push topic: what a device subscribes to for pushes about it
+  topic: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    name: string
   }
 }
 
@@ -192,6 +199,14 @@ export const local = {
   },
   environment: {
     channel: required(string)
+  },
+  // the handles rows a cold push process can read without the root: topic → handle and its key
+  subscription: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    key: required(bytes),
+    name: string
   }
 }
 

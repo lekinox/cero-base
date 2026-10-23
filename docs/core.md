@@ -118,19 +118,20 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 `spec` is one built scope, with `database`, `dispatch` and `meta`: the root database opens on the built `spec` itself, a handle on `spec.handles.<type>`.
 
-| Option          | Meaning                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------- |
-| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).    |
-| `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                        |
-| `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                           |
-| `network`       | Replicates it. Without one it stays on the device.                                      |
-| `key`           | Open an existing database. A new one without.                                           |
-| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.           |
-| `epochs`        | The keys it rotated to, as a join delivers them.                                        |
-| `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`). |
-| `namespace`     | The Corestore namespace, `'cero'`.                                                      |
-| `pinned`        | Always search and announce, outside the network's presence budget.                      |
-| `onerror`       | Ops skipped or refused at apply, and the log's own errors.                              |
+| Option          | Meaning                                                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).                                                             |
+| `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                                                                                 |
+| `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                                                                                    |
+| `network`       | Replicates it. Without one it stays on the device.                                                                                               |
+| `key`           | Open an existing database. A new one without.                                                                                                    |
+| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.                                                                    |
+| `epochs`        | The keys it rotated to, as a join delivers them.                                                                                                 |
+| `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`).                                                          |
+| `namespace`     | The Corestore namespace, `'cero'`.                                                                                                               |
+| `pinned`        | Always search and announce, outside the network's presence budget.                                                                               |
+| `push`          | Push a notification through the network's mirrors after each local write, one in flight and the latest block once more after it. Off by default. |
+| `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                       |
 
 | Method                                               | Does                                                                                                                                       |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -150,7 +151,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
 | `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
 
-It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view` and `behind`, and emits:
+It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view`, `behind` and `pushing`, and emits:
 
 | Event                    | Carries                                                                       |
 | ------------------------ | ----------------------------------------------------------------------------- |
@@ -284,6 +285,22 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
 - A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
+
+## Push
+
+The receiving end of a blind push: a proof of one block of a writer's core, encrypted with the
+database key, that a mirror built and the platform delivered. Verified against the device's own
+storage, so it holds only for a writer the device already stores.
+
+```js
+import { receive } from '@cero-base/core/push'
+
+// storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key }]
+const hit = await receive(storage, payload, handles) // { id, key, length, newer } or null
+```
+
+`newer` is whether the device is behind the proved length. A database opened with `push: true`
+sends one through its network's mirrors after each local write.
 
 ## Storage
 

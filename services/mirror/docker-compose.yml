@@ -5,10 +5,22 @@ services:
     environment:
       # size to your disk; MB
       MAX_STORAGE: 20000
+      # the push gateway's public key, from its logs; leave empty without push
+      PUSH_GATEWAY_KEY: ''
     volumes:
       # persistent — the mirror's public key is derived from data here.
       # never wipe this or the key (and every app's `mirrors` entry) changes.
       - blind-peer-data:/data
 
+  # push notifications: forwards the mirror's encrypted proofs to Firebase. One per app.
+  push-gateway:
+    build: ./gateway
+    restart: unless-stopped
+    volumes:
+      - ./gateway/config.json:/home/app/.blind-push-gateway/config.json:ro
+      - ./gateway/service-account.json:/home/app/.blind-push-gateway/service-account.json:ro
+      - push-gateway-data:/home/app/.blind-push-gateway/storage
+
 volumes:
   blind-peer-data:
+  push-gateway-data:
