@@ -4,6 +4,9 @@ import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import createTestnet from '@hyperswarm/testnet'
 import BlindPeer from 'blind-peer'
+import BlindPushGateway from 'blind-push-gateway'
+import ProtomuxRpcRouter from 'protomux-rpc-router'
+import HyperDHT from 'hyperdht'
 
 import { Network } from '@cero-base/core/network'
 import { Identity } from '@cero-base/core/identity'
@@ -51,11 +54,32 @@ export async function makeNet(t, testnet, identity = null, store = null) {
 }
 
 // a real blind-peer mirror, in process
-export async function makeMirror(t, testnet) {
-  const mirror = new BlindPeer(await t.tmp(), { bootstrap: testnet.bootstrap })
+export async function makeMirror(t, testnet, opts = {}) {
+  const mirror = new BlindPeer(await t.tmp(), { bootstrap: testnet.bootstrap, ...opts })
   await mirror.listen()
   t.teardown(() => mirror.close().catch(() => {}), { order: 80 })
   return mirror
+}
+
+// a push gateway whose push service only records what it would send
+export async function makeGateway(t, testnet) {
+  const dht = new HyperDHT({ bootstrap: testnet.bootstrap })
+  const router = new ProtomuxRpcRouter()
+  const sent = []
+  const gateway = new BlindPushGateway(dht, router, { send: async (message) => sent.push(message) })
+  await gateway.ready()
+  t.teardown(
+    async () => {
+      try {
+        await gateway.close()
+      } catch {}
+      try {
+        await dht.destroy()
+      } catch {}
+    },
+    { order: 80 }
+  )
+  return { key: gateway.publicKey, sent }
 }
 
 // resolves once the mirror stores the whole core posted to `referrer`

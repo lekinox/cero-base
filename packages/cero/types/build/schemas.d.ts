@@ -125,6 +125,12 @@ export declare const main: {
         id: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;
     };
+    topic: {
+        id: import("@cero-base/core").Prim;
+        handle: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        name: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {
@@ -163,6 +169,13 @@ export declare const local: {
     };
     environment: {
         channel: import("@cero-base/core").Prim;
+    };
+    subscription: {
+        id: import("@cero-base/core").Prim;
+        handle: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        key: import("@cero-base/core").Prim;
+        name: import("@cero-base/core").Prim;
     };
 };
 export declare const rpc: {

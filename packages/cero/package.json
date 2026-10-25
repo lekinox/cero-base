@@ -44,6 +44,14 @@
     "./extensions": {
       "types": "./types/extensions/index.d.ts",
       "default": "./src/extensions/index.js"
+    },
+    "./push": {
+      "types": "./types/push/index.d.ts",
+      "default": "./src/push/index.js"
+    },
+    "./push/firebase": {
+      "types": "./types/push/firebase.d.ts",
+      "default": "./src/push/firebase.js"
     }
   },
   "typesVersions": {
@@ -59,6 +67,12 @@
       ],
       "extensions": [
         "types/extensions/index.d.ts"
+      ],
+      "push": [
+        "types/push/index.d.ts"
+      ],
+      "push/firebase": [
+        "types/push/firebase.d.ts"
       ]
     }
   },

@@ -20,7 +20,8 @@ export const defs = {
     inbox: { type: 'mail' },
     outbox: { type: 'mail' },
     environment: { type: 'environment', kind: 'single' },
-    serving: { type: 'serving' }
+    serving: { type: 'serving' },
+    topics: { type: 'subscription' }
   }
 }
 
@@ -28,7 +29,8 @@ export const defs = {
 const LIVE = {
   status: { type: 'status', kind: 'single' },
   joins: { type: 'joining', root: true },
-  nearby: { type: 'peer', root: true }
+  nearby: { type: 'peer', root: true },
+  topics: { type: 'topic', root: true }
 }
 
 /**

@@ -61,6 +61,10 @@ export type DatabaseOpts = {
      */
     pinned?: boolean;
     /**
+     * Push a notification through the mirrors after each local write, so members learn of it while their app is dead.
+     */
+    push?: boolean;
+    /**
      * This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
      */
     keyPair?: import('../identity/index.js').KeyPair;
@@ -154,6 +158,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
+ * @property {boolean} [push]                                         Push a notification through the mirrors after each local write, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -231,6 +236,7 @@ export declare class Database extends ReadyResource {
     rotation: Rotation;
     key: Uint8Array<ArrayBufferLike>;
     pinned: boolean;
+    push: boolean;
     keyPair: import("../index.js").KeyPair;
     /** @private */
     _onerror;
@@ -246,6 +252,14 @@ export declare class Database extends ReadyResource {
     };
     /** @private */
     _presence;
+    /** @private */
+    _pushing;
+    /** @private */
+    _pushAgain;
+    /** @private */
+    _pushed;
+    /** @private */
+    _onResume;
     /** @private */
     _txChain;
     /** @private */
@@ -372,6 +386,12 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<void>}
      */
     write(ops: Array<[string, unknown]>): Promise<void>;
+    /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
+    get pushing(): boolean;
+    /** @private */
+    private _push;
+    /** @private */
+    private _send;
     /**
      * Read a row. With no `query`: list all (collection) or fetch the one
      * record (single). With a string id: fetch that specific row.

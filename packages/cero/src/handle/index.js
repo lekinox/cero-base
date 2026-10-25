@@ -10,6 +10,7 @@ import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
 import { blobEpochKey } from '@cero-base/core/database/encryption'
 import { Pairing } from '@cero-base/core/pairing'
+import { receive } from '@cero-base/core/push'
 import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
@@ -156,6 +157,8 @@ export class Handle extends ReadyResource {
       namespace: opts.namespace,
       keyPair: opts.keyPair,
       pinned: !parent,
+      // the root has no topic to push to
+      push: !!parent,
       onerror: this._onerror
     })
     /** @private */
@@ -170,8 +173,9 @@ export class Handle extends ReadyResource {
     this._live = {
       status: { get: () => this._status(), watch: (fn) => this._onStatus(fn) },
       ...(!this.parent && {
-        joins: { get: (q) => this._joins(q), watch: (fn) => this._onJoins(fn) },
-        nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) }
+        joins: { get: (q) => this._joins(q), watch: (fn) => this._onLocal(fn) },
+        nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) },
+        topics: { get: (q) => this._topics(q), watch: (fn) => this._onLocal(fn) }
       })
     }
   }
@@ -278,6 +282,10 @@ export class Handle extends ReadyResource {
       }
       await this._carryOn().catch(this._onerror)
       this._reserve().catch(this._onerror)
+      // the handles rows, keyed by push topic, for a cold push process that cannot read the root
+      const off = this.store.onUpdate('handles', () => this._index().catch(this._onerror))
+      this.once('close', off)
+      await this._index()
     }
   }
 
@@ -445,6 +453,7 @@ export class Handle extends ReadyResource {
       behind: this.store.behind || 0,
       nearby: this.root._bluetooth?.state ?? null
     }
+    if (this.parent) data.topic = b4a.toHex(this.store.discoveryKey)
     return { data }
   }
 
@@ -521,9 +530,54 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
-  _onJoins(fn) {
+  _onLocal(fn) {
     this.local.store.db.watch(fn)
     return () => this.local.store.db.unwatch(fn)
+  }
+
+  /** @private */
+  async _topics(query = {}) {
+    const rows = (await this.local.store.get('topics')).data
+    const data = filter(
+      rows.map(({ id, handle, type, name }) => ({ id, handle, type, name })),
+      query
+    )
+    return { data, total: data.length, size: data.length }
+  }
+
+  // one pass at a time: two overlapping could put back a row the later one deleted
+  /** @private */
+  _index() {
+    this._indexing = (this._indexing ?? Promise.resolve()).then(() => this._reindex())
+    return this._indexing
+  }
+
+  /** @private */
+  async _reindex() {
+    if (this.closing || this.closed) return
+    const { data: handles } = await this.store.get('handles')
+    const { data: rows } = await this.local.store.get('topics')
+    const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
+    const have = new Map(rows.map((row) => [row.id, row]))
+    for (const row of rows) {
+      if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
+    }
+    for (const [id, h] of wanted) {
+      const row = { id, handle: h.id, type: h.type, key: h.key, name: h.name ?? null }
+      if (same(have.get(id), row)) continue
+      await this.local.store.put('topics', row)
+    }
+  }
+
+  // a push about one of this device's handles, verified against its own cores
+  /** @private */
+  async _receive(payload) {
+    // a suspended storage answers no read: the cold entry serves a push while the app sleeps
+    if (this._sus.suspended) throw CeroError.INVALID('receive: the app is suspended')
+    const { data: rows } = await this.local.store.get('topics')
+    const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
+    const hit = await receive(this.store.store.storage, payload, handles)
+    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer }
   }
 
   /** @private */
@@ -1070,6 +1124,17 @@ function pickHandle(spec, type) {
 
 function randomNs() {
   return z32.encode(Identity.randomBytes(8))
+}
+
+// a topics row still describes its handle
+function same(row, next) {
+  return (
+    !!row &&
+    row.handle === next.handle &&
+    row.type === next.type &&
+    (row.name ?? null) === next.name &&
+    b4a.equals(row.key, next.key)
+  )
 }
 
 // run every teardown step, then surface the first failure: a bug must not leak the storage lock

@@ -49,6 +49,12 @@ export declare const cero: {
     resume(me: operators.Context): Promise<void>;
     activate(ctx: operators.Context): Promise<void>;
     deactivate(ctx: operators.Context): Promise<void>;
+    receive(me: operators.Context, payload: Uint8Array): Promise<{
+        id: string;
+        type: string;
+        name: string | null;
+        newer: boolean;
+    } | null>;
     phrase(me: operators.Context): Promise<string>;
     nearby(ctx: operators.Context, on: boolean, opts?: {
         topic?: string;

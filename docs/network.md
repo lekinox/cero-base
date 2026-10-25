@@ -89,6 +89,52 @@ powerMonitor.on('resume', () => win.webContents.send('lifecycle', 'resume'))
 window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : cero.resume(me)))
 ```
 
+## Push while the app is dead
+
+A member's phone learns of new data while the app is not running, through the platform's push
+service, without any server reading the data.
+
+Run a push gateway next to the mirror, with the app's Firebase credentials, and give the mirror its
+key: `services/mirror` ships both. Then hand `connect` the platform's messaging service:
+
+```js
+import messaging from '@react-native-firebase/messaging'
+import { firebase } from '@cero-base/cero/push/firebase'
+
+const me = await connect(ipc, spec, { push: { backend: firebase(messaging()) } })
+```
+
+That is the app's whole part while it runs. Cero subscribes the device to one topic per handle it
+belongs to, drops the topic when the handle is left, and when a push arrives verifies it and ranks
+the handle first, so it syncs now. Every write to a handle pushes once its mirror holds it; a burst
+of writes is one push, or two, and one cut off by the app going to the background goes at resume.
+
+For a push that arrives while the app is dead, the OS runs a small worklet instead. Its whole code:
+
+```js
+// worklets/push.js, the bare-kit push entry; spec as the worker imports it
+import { push } from '@cero-base/cero/push'
+import { spec } from './spec.js'
+
+push(spec)
+```
+
+It opens the storage read-only, verifies the push and answers with the notification to show,
+`{ title: <the handle's name>, body: 'New activity' }`, or nothing for a push that is forged, stale
+or about no handle on this device. The request the OS hands it carries `storage`, `payload` and,
+when the app encrypts its local store, `storageKey`, in base64.
+
+What each party sees: the mirror builds the proof from blocks it already holds encrypted; the
+gateway and the push service see a topic name and ciphertext; only a member device reads it, and
+trusts it only after checking it against cores it already has. A device learns of a new member's
+writes only once it has synced that member's admission.
+
+The pieces, for a flow of your own: `status.topic` on a handle is the string to subscribe,
+`me.topics` lists them all, `cero.receive(me, payload)` verifies bytes into
+`{ id, type, name, newer }` or `null`, and `receive(dir, spec, payload)` from `@cero-base/cero/push`
+does the same from a closed app's storage. A backend is any object with `subscribe(topic)`,
+`unsubscribe(topic)` and `on('push', fn)`.
+
 ## Many handles
 
 ```js

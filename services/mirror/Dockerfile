@@ -18,6 +18,8 @@ ENV STORAGE=/data/blind-peer
 ENV MAX_STORAGE=20000
 # pinned so the health check can verify the DHT bound it
 ENV PORT=49737
+# a push gateway's public key, from its logs; empty forwards no push notifications
+ENV PUSH_GATEWAY_KEY=
 
 # healthy once the DHT has bound its UDP port (a crash exits the container;
 # this also catches a start-up hang before it ever listens)
@@ -25,4 +27,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD ss -uln | grep -q ":$PORT " || exit 1
 
 # blind-peer logs its public key on startup — that key goes in cero({ mirrors })
-CMD ["sh", "-c", "blind-peer --storage \"$STORAGE\" --max-storage \"$MAX_STORAGE\" --port \"$PORT\""]
+CMD ["sh", "-c", "blind-peer --storage \"$STORAGE\" --max-storage \"$MAX_STORAGE\" --port \"$PORT\" ${PUSH_GATEWAY_KEY:+--push-gateway-key \"$PUSH_GATEWAY_KEY\"}"]

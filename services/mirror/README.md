@@ -40,3 +40,18 @@ past it, shared across every app the mirror holds. Default 20 GB.
 
 For redundancy run this on a **separate** machine and pass both keys to your apps. Don't
 run multiple copies on one server — they share a failure domain, so it adds no redundancy.
+
+## Push notifications
+
+The `push-gateway` service forwards the mirror's encrypted push proofs to Firebase, which delivers
+them to the app's devices. It sees a topic name and ciphertext, never a message or a member. One
+gateway per app: it carries the app's Firebase project and iOS bundle id.
+
+1. In Firebase, create a service account key for the app's project and enable APNs for iOS.
+2. Copy `gateway/config.example.json` to `gateway/config.json`, set `apnsTopic` to the iOS bundle
+   id and the notification title and body, and put the key at `gateway/service-account.json`.
+3. Deploy. In the gateway's logs, copy its public key into the mirror's `PUSH_GATEWAY_KEY` and
+   redeploy the mirror. Without the key the mirror forwards nothing.
+
+The app side is `connect(ipc, spec, { push: { backend } })` and the push worklet: see
+[Push while the app is dead](../../docs/network.md#push-while-the-app-is-dead).

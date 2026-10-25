@@ -41,6 +41,12 @@ declare const remote: {
     resume(me: verbs.Context): Promise<void>;
     activate(ctx: verbs.Context): Promise<void>;
     deactivate(ctx: verbs.Context): Promise<void>;
+    receive(me: verbs.Context, payload: Uint8Array): Promise<{
+        id: string;
+        type: string;
+        name: string | null;
+        newer: boolean;
+    } | null>;
     phrase(me: verbs.Context): Promise<string>;
     nearby(ctx: verbs.Context, on: boolean, opts?: {
         topic?: string;
@@ -96,6 +102,8 @@ declare class LocalRefs {
  */
 export declare class Client extends RPCClient {
     /** @private */
+    _push;
+    /** @private */
     _onerror;
     /** @type {string | null} */
     id: string | null;
@@ -106,6 +114,7 @@ export declare class Client extends RPCClient {
     } | null;
     store: this;
     local: LocalRefs;
+    _unfollow: () => void;
     /** @private */
     _fileBase;
     /** @private */
@@ -115,13 +124,15 @@ export declare class Client extends RPCClient {
      * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
      * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
      */
-    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror }?: {
+    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror, push }?: {
         onerror?: (err: Error) => void;
     });
     /** @private */
     private _pumpErrors;
     /** @private */
     private _open;
+    /** @private */
+    private _close;
     /** @private */
     private _identify;
     /**
