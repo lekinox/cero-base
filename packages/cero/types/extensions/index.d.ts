@@ -71,12 +71,17 @@ export declare const cero: {
         fixed64: import("@cero-base/core").Prim;
         file: import("@cero-base/core").Prim;
         required: (marker: import("@cero-base/core").Prim) => import("@cero-base/core").Prim;
-        single(fields: Record<string, import("@cero-base/core").Prim>): import("@cero-base/core").TypeDef;
+        single(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
+            push?: string;
+        }): import("@cero-base/core").TypeDef;
         collection(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
             indexes?: Record<string, string[]>;
             own?: boolean;
+            push?: string;
         }): import("@cero-base/core").TypeDef;
-        action(fields: Record<string, import("@cero-base/core").Prim>): import("@cero-base/core").TypeDef;
+        action(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
+            push?: string;
+        }): import("@cero-base/core").TypeDef;
         extend(fields: Record<string, import("@cero-base/core").Prim>): {
             kind: 'extend';
             fields: Record<string, import("@cero-base/core").Prim>;
