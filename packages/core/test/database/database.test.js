@@ -2298,6 +2298,49 @@ test('replication: a member holds a writer only as far as the room applied it', 
   t.absent(await stores(db, [tail], 5000), 'b leaves the rest where it is')
 })
 
+// a member that fast-forwards never opens a writer it skipped: the core it holds may be the only session on it, so it
+// must sit in the bee's wakeup group, or that writer's next block reaches the device and wakes nothing. Held here
+// directly, on cores nobody else opened, so the group is the hold's and not autobee's
+test('replication: a held writer sits in the room’s wakeup group; a view stays out', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { db } = await makePeer(t, testnet, { topic: randomTopic() })
+  await db.bootstrap({ name: 'a' })
+  const group = db.bee.wakeupCapability?.discoveryKey
+  t.ok(group, 'the room has a wakeup group')
+  const fresh = async (name) => {
+    const core = db.store.get({ name })
+    await core.ready()
+    return core
+  }
+  const groupOf = async (key) => {
+    const { core } = db._held.get(b4a.toHex(key))
+    await core.ready()
+    return core.core.header.group?.key || null
+  }
+
+  const writer = await fresh('another device')
+  db._hold(writer.key, 0)
+  t.alike(await groupOf(writer.key), group, 'another device’s writer is in the wakeup group')
+
+  const view = await fresh('a view')
+  db._hold(view.key)
+  t.is(await groupOf(view.key), null, 'a view is not, or autobee would take it for a writer')
+})
+
+// autobee keeps a device's own writer out of the group, so its own blocks never wake it; the room's creator is the
+// exception autobee makes itself, its writer being the room's first. A device that joined holds its own writer out
+test('replication: a joined device holds its own writer out of the wakeup group', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { b } = await pairOnTestnet(t, testnet)
+  const { db } = b
+  await db.bee.local.ready()
+  db._hold(db.bee.local.key, 0)
+  const { core } = db._held.get(b4a.toHex(db.bee.local.key))
+  await core.ready()
+  t.ok(db.bee.wakeupCapability, 'the room has a wakeup group')
+  t.absent(core.core.header.group, 'its own writer is not in it')
+})
+
 // b fast-forwarded while a mirror held the room; reopened without one, it holds the room itself
 test('replication: a member reopened without mirrors holds what it skipped before', async (t) => {
   const testnet = await makeTestnet(t)

@@ -825,7 +825,12 @@ export class Database extends ReadyResource {
     const id = b4a.toHex(key)
     const held = this._held.get(id)
     if (this.closing || (held && (held.end === -1 || end <= held.end))) return
-    const core = held ? held.core : this.store.get({ key, active: false })
+    // another device's writer is held in the bee's wakeup group, as autobee opens its writers: once autobee lets go of
+    // it, a block landing on it still wakes the bee. A view stays out, or autobee would take it for a writer, and so
+    // does this device's own writer, as autobee keeps it
+    const other = end !== -1 && !b4a.equals(key, this.bee.local.key)
+    const group = other ? this.bee.wakeupCapability?.discoveryKey || null : null
+    const core = held ? held.core : this.store.get({ key, active: false, group })
     held?.range.destroy()
     this._held.set(id, { core, end, range: core.download({ start: 0, end }) })
   }
