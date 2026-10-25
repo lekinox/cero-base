@@ -588,7 +588,7 @@ test('suspend() drops live connections; resume() reconnects', async (t) => {
 test('a connection the remote never answers on is dropped within seconds', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const args = [PEER, await t.tmp(), JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
+  const args = [PEER, JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
   const peer = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] })
   t.teardown(() => process.kill(peer.pid, 'SIGKILL'))
   await new Promise((resolve) => {
@@ -600,6 +600,7 @@ test('a connection the remote never answers on is dropped within seconds', async
   const opened = new Promise((resolve) => {
     net.once('connection', (conn) => {
       process.kill(peer.pid, 'SIGSTOP')
+      t.is(conn.rawStream.packetsReceived, 0, 'the remote said nothing before the freeze')
       resolve(conn)
     })
   })
