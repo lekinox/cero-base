@@ -150,16 +150,21 @@ const encoding4_4 = c.array(encoding3)
 const encoding4 = {
   preencode(state, m) {
     c.uint.preencode(state, m.status)
-    state.end++ // max flag is 8 so always one byte
+    state.end++ // max flag is 16 so always one byte
 
     if (m.reason) c.string.preencode(state, m.reason)
     if (m.key) c.fixed32.preencode(state, m.key)
     if (m.encryptionKey) c.buffer.preencode(state, m.encryptionKey)
     if (m.epochs) encoding4_4.preencode(state, m.epochs)
+    if (m.proof) c.buffer.preencode(state, m.proof)
   },
   encode(state, m) {
     const flags =
-      (m.reason ? 1 : 0) | (m.key ? 2 : 0) | (m.encryptionKey ? 4 : 0) | (m.epochs ? 8 : 0)
+      (m.reason ? 1 : 0) |
+      (m.key ? 2 : 0) |
+      (m.encryptionKey ? 4 : 0) |
+      (m.epochs ? 8 : 0) |
+      (m.proof ? 16 : 0)
 
     c.uint.encode(state, m.status)
     c.uint.encode(state, flags)
@@ -168,6 +173,7 @@ const encoding4 = {
     if (m.key) c.fixed32.encode(state, m.key)
     if (m.encryptionKey) c.buffer.encode(state, m.encryptionKey)
     if (m.epochs) encoding4_4.encode(state, m.epochs)
+    if (m.proof) c.buffer.encode(state, m.proof)
   },
   decode(state) {
     const r0 = c.uint.decode(state)
@@ -178,7 +184,8 @@ const encoding4 = {
       reason: (flags & 1) !== 0 ? c.string.decode(state) : null,
       key: (flags & 2) !== 0 ? c.fixed32.decode(state) : null,
       encryptionKey: (flags & 4) !== 0 ? c.buffer.decode(state) : null,
-      epochs: (flags & 8) !== 0 ? encoding4_4.decode(state) : null
+      epochs: (flags & 8) !== 0 ? encoding4_4.decode(state) : null,
+      proof: (flags & 16) !== 0 ? c.buffer.decode(state) : null
     }
   }
 }

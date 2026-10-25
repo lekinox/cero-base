@@ -268,14 +268,14 @@ export class Handle extends ReadyResource {
     await this.store.ready()
     // a fresh device takes writes only once provisioned, and an operator waits for the open
     if (this._boot) await this.store.bootstrap(this._boot)
-    if (this.parent) {
-      this._pair = new Pairing({ mailbox: this.mailbox, db: this.store })
-      await this._pair.ready()
-    }
+    this._pair = new Pairing({ mailbox: this.mailbox, db: this.store })
+    await this._pair.ready()
     this.root._coreKeys.set(b4a.toHex(this.store.key), this.store.encryptionKey)
     if (!this.parent) {
       await this.fileServer.listen()
       await this.mailbox.ready()
+      const prune = this.store.onUpdate('devices', () => this._pruneAll().catch(this._onerror))
+      this.once('close', prune)
       if (this._bluetooth) {
         const off = this.store.onUpdate('profile', () => this._tell().catch(this._onerror))
         this.once('close', off)
@@ -362,20 +362,28 @@ export class Handle extends ReadyResource {
 
   // the verbs in lib/operators.js land here
 
+  // the root's invite is for a device of yours: one, confirmed by hand, carrying the identity the
+  // device checks its chain against
   /** @private */
-  async _invite(opts) {
-    return this._pairing().invite(opts)
+  async _invite(opts = {}) {
+    if (this.parent) return this._pair.invite(opts)
+    const { ttl = '2h' } = opts
+    return this._pair.invite({ role: 'owner', confirm: true, ttl, data: this.identity.publicKey })
   }
 
   /** @private */
   async _revoke(invite) {
-    return this._pairing().revoke(invite)
+    return this._pair.revoke(invite)
   }
 
+  // accepting on the root links the device: this one attests its key
   /** @private */
   async _answer(id, { accept, role, reason }) {
-    const pairing = this._pairing()
-    return accept ? pairing.accept(id, { role }) : pairing.deny(id, reason)
+    if (!accept) return this._pair.deny(id, reason)
+    if (this.parent) return this._pair.accept(id, { role })
+    const { data: row } = await this.store.get('requests', id)
+    if (!row) throw CeroError.UNKNOWN('request', id)
+    return this._pair.accept(id, { proof: this.identity.link(row.key) })
   }
 
   /** @private */
@@ -397,12 +405,6 @@ export class Handle extends ReadyResource {
       }
       return fn(tx)
     })
-  }
-
-  /** @private */
-  _pairing() {
-    if (!this._pair) throw CeroError.INVALID('the root has no invites, open a handle first')
-    return this._pair
   }
 
   /** @private */
@@ -1014,7 +1016,27 @@ export class Handle extends ReadyResource {
     this.children.add(child)
     this._serve(child)
     this._carry(child)
+    this._prune(child).catch(this._onerror)
     this.emit('handle', child, info)
+  }
+
+  // a device removed from the root loses its seats in every handle: its chain is static, so the
+  // handles are told by whichever device of the identity has them open
+  /** @private */
+  async _prune(child) {
+    const { data: mine } = await this.store.get('devices')
+    const kept = new Set(mine.filter((d) => d.key).map((d) => b4a.toHex(d.key)))
+    const { data: rows } = await child.store.get('devices')
+    for (const row of rows) {
+      if (row.memberId !== this.identity.id || !row.key || kept.has(b4a.toHex(row.key))) continue
+      if (child.closing || child.closed) return
+      await child.store.del('devices', row.id)
+    }
+  }
+
+  /** @private */
+  async _pruneAll() {
+    for (const child of this.children) await this._prune(child)
   }
 
   // a handle's epochs ride in its root row, which only the identity's devices read: one that

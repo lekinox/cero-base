@@ -42,6 +42,10 @@ export type AcceptOpts = {
      * Role granted: the invite's by default, at most the invite's.
      */
     role?: string;
+    /**
+     * The joiner's chain to your identity, from `identity.link`: it joins as a device of yours, not as a member.
+     */
+    proof?: Uint8Array | null;
 };
 export type JoinOpts = {
     /**
@@ -89,6 +93,10 @@ export type JoinResult = {
      * The writer the join admitted: open the database with it.
      */
     writer: KeyPair;
+    /**
+     * A device's chain to the identity it was linked under, null for a member.
+     */
+    proof: Uint8Array | null;
 };
 /**
  * @typedef {{ publicKey: Uint8Array, secretKey: Uint8Array }} KeyPair
@@ -106,6 +114,7 @@ export type JoinResult = {
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
+ * @property {Uint8Array | null} [proof]            The joiner's chain to your identity, from `identity.link`: it joins as a device of yours, not as a member.
  *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
@@ -120,6 +129,7 @@ export type JoinResult = {
  * @property {Uint8Array | null} encryptionKey
  * @property {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
  * @property {KeyPair} writer                       The writer the join admitted: open the database with it.
+ * @property {Uint8Array | null} proof              A device's chain to the identity it was linked under, null for a member.
  */
 /**
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
@@ -172,7 +182,7 @@ export declare class Pairing extends ReadyResource {
      * @param {AcceptOpts} [opts]
      * @returns {Promise<void>}
      */
-    accept(id: string, { role }?: AcceptOpts): Promise<void>;
+    accept(id: string, { role, proof }?: AcceptOpts): Promise<void>;
     /**
      * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
      *

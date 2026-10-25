@@ -33,6 +33,7 @@ export declare const main: {
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         key: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
     };
     invite: {
         id: import("@cero-base/core").Prim;
@@ -77,6 +78,7 @@ export declare const main: {
     accept: {
         id: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
     };
     request: {
         id: import("@cero-base/core").Prim;
@@ -170,6 +172,8 @@ export declare const local: {
         key: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
+        device: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
     };
     mail: {
         id: import("@cero-base/core").Prim;

@@ -1215,6 +1215,100 @@ test('devices: a removed device reads on until the root re-keys, then nothing wr
   t.is((await get(b.me.profile)).data?.name, 'seen', 'nothing written after the re-key reaches it')
 })
 
+// ─── link: a device joins by invite, no phrase ────────────────────────────
+
+const asked = (me) =>
+  waitUntil(async () => (await get(me.requests)).data.find((r) => !r.admitted) || null)
+
+// a new device linked from `from`, accepted there
+async function linkTo(t, from) {
+  const invite = await cero.invite(from.me)
+  const linking = ceroOpen(t, { testnet: from.testnet, invite })
+  await cero.accept(from.me, await asked(from.me))
+  return linking
+}
+
+test('link: a device joins by an invite, accepted on another device, with no phrase', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'before' })
+  const invite = await cero.invite(a.me)
+  let code = null
+  const linking = ceroOpen(t, { testnet: a.testnet, invite, onrequest: (id) => (code = id) })
+  const request = await asked(a.me)
+  t.is(request.id, code, 'both screens show the request id')
+  t.is(request.key?.byteLength, 32, 'the request carries the device key to attest')
+  await cero.accept(a.me, request)
+  const b = await linking
+  t.is(b.me.id, a.me.id, 'the same identity')
+  t.not(b.me.device.id, a.me.device.id, 'a device of its own')
+  await t.exception(cero.phrase(b.me), /no phrase on this device/, 'and no phrase')
+  t.absent((await b.me.local.store.get('master')).data, 'no seed on disk')
+  await devices(a.me, 2)
+  t.ok(b.me.store.writable, 'writes to the root')
+
+  const mine = await open(b.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  await put(mine.messages, { text: 'from b' })
+  await waitUntil(async () => ((await get(room.messages)).data.length === 2 ? true : null))
+  t.pass('opens the handles by its proof and writes')
+})
+
+test('link: a linked device links another; a denied one hears it', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await linkTo(t, a)
+  const c = await linkTo(t, b)
+  t.is(c.me.id, a.me.id, 'linked by a linked device')
+  await devices(a.me, 3)
+
+  const invite = await cero.invite(a.me)
+  const refused = ceroOpen(t, { testnet: a.testnet, invite })
+  await cero.deny(a.me, await asked(a.me), 'not mine')
+  await t.exception(refused, /DENIED/)
+})
+
+test('link: a launch that stops waiting resumes on the next, with no new invite', async (t) => {
+  const a = await ceroOpen(t)
+  const invite = await cero.invite(a.me)
+  const dir = await t.tmp()
+  const opts = { bootstrap: a.testnet.bootstrap }
+  await t.exception(cero(dir, spec, { ...opts, invite, recoveryTimeout: 1500 }), /TIMEOUT/)
+  await t.exception(
+    cero(dir, spec, { ...opts, phrase: undefined, invite: undefined, recoveryTimeout: 1500 }),
+    /TIMEOUT/,
+    'resumed'
+  )
+  await cero.accept(a.me, await asked(a.me))
+  const b = await cero(dir, spec, opts)
+  t.is(b.id, a.me.id, 'let in on the launch after the accept')
+  await b.close()
+  await t.exception(
+    cero(dir, spec, { ...opts, invite }),
+    /holds an identity/,
+    'a set-up dir takes no invite'
+  )
+})
+
+test('link: a removed device loses its seats in every handle, and the root re-keys', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await linkTo(t, a)
+  const mine = await open(b.me.team, { id: room.id })
+  await waitUntil(() => (mine.store.writable ? true : null))
+  const key = b.me.identity.device.publicKey
+  const seated = async () =>
+    (await get(room.devices)).data.some((r) => r.key && b4a.equals(r.key, key))
+  await waitUntil(async () => ((await seated()) ? true : null))
+
+  await del(a.me.devices, b.me.device.id)
+  await waitUntil(async () => ((await seated()) ? null : true))
+  t.pass('its seat in the room went with it')
+  await waitUntil(async () => ((await get(a.me.status)).data.epoch >= 1 ? true : null))
+  t.pass('and the root re-keyed')
+  await waitUntil(() => (b.me.store.writable ? null : true))
+  t.pass('the device writes nowhere')
+})
+
 test('cero(): a second device auto-claims', async (t) => {
   const testnet = await makeTestnet(t)
 

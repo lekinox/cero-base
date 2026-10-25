@@ -1012,3 +1012,25 @@ test('rotate: a removed device of a member reads nothing written after the rotat
   t.alike(await texts(dev2.db), ['pre'], 'the removed device is frozen at the cut')
   t.is(dev2.db.keyring.seq, 0, 'no envelope was sealed to it')
 })
+
+test('rotate: the first device removal re-keys by itself, sealing the removed one out', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  const phone = Identity.randomKeyPair()
+  const proof = a.identity.link(phone.publicKey)
+  const dev = await makePeer(t, testnet, {
+    topic,
+    identity: Identity.from({ ...a.identity, seed: null, device: phone, proof }),
+    encryptionKey,
+    key: a.db.key
+  })
+  await waitFor(async () => (await dev.db.get('members', a.identity.id)).data)
+  await dev.db.claim()
+  await a.db.put('messages', { text: 'pre' })
+  await waitFor(async () => (await texts(dev.db)).includes('pre'))
+
+  await a.db.call('del-device', { id: hid.encode(dev.db.writerKey) })
+  await waitFor(() => a.db.keyring.seq >= 1, { timeout: 30000 })
+  await a.db.put('messages', { text: 'post' })
+  await new Promise((r) => setTimeout(r, 1500))
+  t.alike(await texts(dev.db), ['pre'], 'the removed device reads nothing written after')
+})
