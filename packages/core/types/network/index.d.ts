@@ -5,10 +5,6 @@ import { Presence } from './presence.js';
 export declare function channelTopic(topic: Uint8Array<ArrayBufferLike>, channel: string): Uint8Array<ArrayBufferLike>;
 export type NetworkOpts = {
     /**
-     * Long-lived keypair used as the swarm identity.
-     */
-    identity?: import('../identity/index.js').Identity;
-    /**
      * Custom DHT bootstrap nodes.
      */
     bootstrap?: Array<{
@@ -54,7 +50,6 @@ export type NetworkOpts = {
 };
 /**
  * @typedef {object} NetworkOpts
- * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the swarm identity.
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
@@ -70,7 +65,6 @@ export type NetworkOpts = {
  * replicates the store.
  */
 export declare class Network extends ReadyResource {
-    identity: import("../index.js").Identity;
     bootstrap: {
         host: string;
         port: number;
@@ -101,7 +95,7 @@ export declare class Network extends ReadyResource {
     /** @private */
     _onerror;
     /** @param {NetworkOpts} opts */
-    constructor({ identity, bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
+    constructor({ bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
     /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
     get swarm(): import('hyperswarm') | null;
     /** @returns {Map<string, object>} Known peers keyed by public-key string. */

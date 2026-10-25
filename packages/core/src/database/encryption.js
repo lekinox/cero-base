@@ -63,25 +63,26 @@ export async function loadEpochs(keyring, local) {
 }
 
 /**
- * Wire codec for a rotation announcement's envelope list — one sealed box
- * per remaining member, addressed by member id.
+ * A rotation announcement's envelope list — one box per device row, sealed to its device key and
+ * addressed by its writer id.
  *
- * @param {Array<{ id: string }>} members
+ * @param {Array<{ id: string, key: Uint8Array }>} devices
  * @param {Uint8Array} secret
  * @returns {Array<{ id: string, box: Uint8Array }>}
  */
-export function seal(members, secret) {
-  return members.map((m) => ({ id: m.id, box: Identity.seal(hid.decode(m.id), secret) }))
+export function seal(devices, secret) {
+  return devices.map((d) => ({ id: d.id, box: Identity.seal(d.key, secret) }))
 }
 
 /**
- * @param {import('../identity/index.js').Identity} identity
+ * @param {import('../identity/index.js').Identity} identity  Whose device key opens the box.
+ * @param {string} id  This device's writer id in the database.
  * @param {Uint8Array} wrapped
  * @returns {Generator<Uint8Array, void, unknown>}
  */
-export function* opened(identity, wrapped) {
+export function* opened(identity, id, wrapped) {
   for (const w of c.decode(wraps, wrapped)) {
-    if (w.id !== identity.id) continue
+    if (w.id !== id) continue
     const secret = identity.unseal(w.box)
     if (secret) yield secret
   }

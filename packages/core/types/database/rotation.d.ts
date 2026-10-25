@@ -1,5 +1,5 @@
 /**
- * Epoch key rotation for a database: mint a secret, seal it to every member, announce it
+ * Epoch key rotation for a database: mint a secret, seal it to every device, announce it
  * through the log, and on every peer learn the secrets addressed to it.
  */
 export declare class Rotation {
@@ -48,7 +48,7 @@ export declare class Rotation {
     /** @private */
     private _rotate;
     /** @private */
-    private _members;
+    private _devices;
     /** @private */
     private _announce;
     /** @private */

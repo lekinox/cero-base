@@ -11,11 +11,19 @@ test('create: a fresh identity', async (t) => {
   t.ok(identity instanceof Identity)
   t.is(typeof identity.id, 'string')
   t.is(identity.publicKey.length, 32)
-  t.is(identity.secretKey.length, 64)
   t.is(identity.encryptionKey.length, 32)
   t.is(identity.topic.length, 32)
   t.is(identity.toPhrase().split(' ').length, 12)
   t.unlike((await Identity.create()).id, identity.id, 'a different one each call')
+
+  t.is(identity.secretKey, undefined, 'the identity secret is dropped once the device is attested')
+  t.is(identity.device.publicKey.length, 32, 'this device has its own keypair')
+  t.is(identity.device.secretKey.length, 64)
+  t.ok(b4a.isBuffer(identity.proof), 'and a proof chaining it to the identity')
+  t.alike(Identity.verify(identity.proof, null, identity.publicKey), {
+    identity: identity.publicKey,
+    device: identity.device.publicKey
+  })
 })
 
 test('create: words sizes a fresh one, 12 or 24', async (t) => {
@@ -29,8 +37,17 @@ test('create: the same seed restores the same identity', async (t) => {
   t.is(again.id, identity.id)
   t.alike(again.encryptionKey, identity.encryptionKey)
   t.alike(again.topic, identity.topic)
+  t.unlike(again.device.id, identity.device.id, 'a device of its own, attested by the identity')
+  t.alike(Identity.verify(again.proof, null, identity.publicKey)?.device, again.device.publicKey)
   const long = Identity.randomBytes(32)
   t.alike((await Identity.create({ seed: long })).seed, long, '32 bytes, a 24-word phrase')
+})
+
+test('keyPair: the identity keypair the seed writes, for the pointer core alone', async (t) => {
+  const identity = await Identity.create()
+  const pair = await Identity.keyPair(identity.seed)
+  t.alike(pair.publicKey, identity.publicKey)
+  t.is(pair.secretKey.byteLength, 64)
 })
 
 test('create: a seed that is not 16 or 32 bytes throws', async (t) => {
@@ -72,34 +89,59 @@ test('topic differs for different identities', async (t) => {
 
 // ─── sign / verify ────────────────────────────────────────────────────────
 
-test('sign + verify (instance): round-trips', async (t) => {
+test('sign: a proof the device signs, verified back to the identity', async (t) => {
   const me = await Identity.create()
+  const other = await Identity.create()
   const msg = b4a.from('hello')
-  const sig = me.sign(msg)
-  t.is(sig.length, 64)
-  t.ok(me.verify(msg, sig))
+  const proof = me.sign(msg)
+  t.ok(b4a.isBuffer(proof))
+  t.alike(Identity.verify(proof, msg, me.publicKey), {
+    identity: me.publicKey,
+    device: me.device.publicKey
+  })
+  t.is(Identity.verify(proof, msg, other.publicKey), null, 'another identity')
+  t.is(Identity.verify(proof, b4a.from('hellp'), me.publicKey), null, 'tampered message')
+  t.is(Identity.verify(me.proof, msg, me.publicKey), null, 'a chain alone signs no data')
+  const tampered = b4a.from(proof)
+  tampered[tampered.byteLength - 1] ^= 0xff
+  t.is(Identity.verify(tampered, msg, me.publicKey), null, 'tampered proof')
+  t.is(Identity.verify(b4a.from('garbage'), msg, me.publicKey), null, 'not a proof, no throw')
+  t.alike(Identity.verify(proof, msg).identity, me.publicKey, 'the identity read off the proof')
 })
 
-test('verify (instance): rejects tampered message', async (t) => {
-  const me = await Identity.create()
-  const sig = me.sign(b4a.from('hello'))
-  t.absent(me.verify(b4a.from('hellp'), sig))
-})
-
-test('verify (instance): rejects tampered signature', async (t) => {
-  const me = await Identity.create()
-  const sig = me.sign(b4a.from('hello'))
-  sig[0] ^= 0xff
-  t.absent(me.verify(b4a.from('hello'), sig))
-})
-
-test('Identity.verify (static): verifies any publicKey', async (t) => {
+test('link: a device attests another, which signs for the identity and links further', async (t) => {
   const a = await Identity.create()
-  const b = await Identity.create()
-  const msg = b4a.from('signed by a')
-  const sig = a.sign(msg)
-  t.ok(Identity.verify(a.publicKey, msg, sig))
-  t.absent(Identity.verify(b.publicKey, msg, sig))
+  const laptop = Identity.randomKeyPair()
+  const b = Identity.from({
+    publicKey: a.publicKey,
+    encryptionKey: a.encryptionKey,
+    device: laptop,
+    proof: a.link(laptop.publicKey)
+  })
+  t.is(b.id, a.id)
+  t.is(b.seed, null, 'a linked device never has the seed')
+  t.exception(() => b.toPhrase(), /no phrase on this device/)
+  const msg = b4a.from('from the laptop')
+  t.alike(Identity.verify(b.sign(msg), msg, a.publicKey), {
+    identity: a.publicKey,
+    device: laptop.publicKey
+  })
+
+  const phone = Identity.randomKeyPair()
+  const c = Identity.from({ ...b, device: phone, proof: b.link(phone.publicKey) })
+  t.alike(Identity.verify(c.sign(msg), msg, a.publicKey)?.device, phone.publicKey, 'depth 3')
+})
+
+test('from: the proof must end at the device and at the identity', async (t) => {
+  const a = await Identity.create()
+  const other = await Identity.create()
+  const laptop = Identity.randomKeyPair()
+  const proof = a.link(laptop.publicKey)
+  const fields = { publicKey: a.publicKey, encryptionKey: a.encryptionKey, device: laptop, proof }
+  t.exception(() => Identity.from({ ...fields, device: Identity.randomKeyPair() }), /proof/)
+  t.exception(() => Identity.from({ ...fields, publicKey: other.publicKey }), /proof/)
+  t.exception(() => Identity.from({ ...fields, proof: b4a.from('garbage') }), /proof/)
+  t.ok(Identity.from(fields) instanceof Identity)
 })
 
 // ─── randomness ───────────────────────────────────────────────────────────
@@ -176,7 +218,7 @@ test('create: a japanese phrase (ideographic space delimiter) is accepted', asyn
   t.alike(b4a.toBuffer(id.publicKey), b4a.toBuffer(en.publicKey))
 })
 
-// secretKey, encryptionKey and seed must not be enumerable: one
+// the device secret, encryptionKey and seed must not be enumerable: one
 // JSON.stringify or structured logger would leak the whole identity
 test('serialization redacts key material', async (t) => {
   const id = await Identity.create()
@@ -184,31 +226,36 @@ test('serialization redacts key material', async (t) => {
 
   const shown = id[Symbol.for('nodejs.util.inspect.custom')]()
   t.is(shown, `Identity(${id.id})`, 'inspect shows only the id')
-  t.absent(shown.includes(b4a.toHex(id.secretKey)), 'no secret bytes in inspect')
-
-  t.ok(b4a.isBuffer(id.secretKey), 'direct property access still works internally')
+  t.absent(shown.includes(b4a.toHex(id.device.secretKey)), 'no secret bytes in inspect')
+  t.absent(shown.includes(b4a.toHex(id.seed)), 'nor the seed')
 })
 
 // ─── sealed boxes (key-rotation envelopes) ─────────────────────────────────
 
-test('seal/unseal: only the addressed identity can open, on any of its devices', async (t) => {
+test('seal/unseal: only the addressed device opens it, not another of the identity', async (t) => {
   const alice = await Identity.create()
   const eve = await Identity.create()
   const secret = Identity.randomBytes(32)
 
-  const box = Identity.seal(alice.publicKey, secret)
+  const box = Identity.seal(alice.device.publicKey, secret)
   t.unlike(box, secret, 'sealed box is not the plaintext')
 
   t.alike(alice.unseal(box), secret, 'addressee opens it')
   t.is(eve.unseal(box), null, 'anyone else gets null')
 
-  const aliceLaptop = await Identity.create({ seed: alice.seed })
-  t.alike(aliceLaptop.unseal(box), secret, 'same seed on another device opens it too')
+  const laptop = Identity.randomKeyPair()
+  const aliceLaptop = Identity.from({
+    ...alice,
+    device: laptop,
+    proof: alice.link(laptop.publicKey)
+  })
+  t.is(aliceLaptop.unseal(box), null, 'another device of hers has its own key')
+  t.alike(aliceLaptop.unseal(Identity.seal(laptop.publicKey, secret)), secret, 'and its own box')
 })
 
 test('unseal: corrupt or truncated boxes return null, never throw', async (t) => {
   const id = await Identity.create()
-  const box = Identity.seal(id.publicKey, Identity.randomBytes(32))
+  const box = Identity.seal(id.device.publicKey, Identity.randomBytes(32))
   box[0] ^= 0xff
   t.is(id.unseal(box), null, 'corrupt box')
   t.is(id.unseal(box.subarray(0, 10)), null, 'truncated box')

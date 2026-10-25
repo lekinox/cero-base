@@ -24,6 +24,10 @@ export declare const defs: {
             type: string;
             kind: string;
         };
+        device: {
+            type: string;
+            kind: string;
+        };
         keypair: {
             type: string;
             kind: string;

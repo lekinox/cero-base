@@ -13,7 +13,7 @@ Stay on Cero for an app. Drop to Core for a tool that speaks the same protocol w
 
 ## Identity
 
-A keypair from a seed. It signs, verifies, seals to another identity, and names a swarm topic.
+A user identity, as one of its devices holds it. The seed writes the identity key, which attests this device once and is dropped: the device key signs everything after, under a proof chaining it to the identity, and is what boxes are sealed to.
 
 ```js
 import b4a from 'b4a'
@@ -21,26 +21,28 @@ import { Identity } from '@cero-base/core'
 
 const identity = await Identity.create() // 12 words; { words: 24 } for 24
 const phrase = identity.toPhrase() // show it once, the user writes it down
-const same = await Identity.create({ seed: Identity.toSeed(phrase) }) // on any device
+const same = await Identity.create({ seed: Identity.toSeed(phrase) }) // another device: same id, its own key
 
 const message = b4a.from('hi')
-const signature = identity.sign(message)
-Identity.verify(same.publicKey, message, signature) // true
+const proof = identity.sign(message)
+Identity.verify(proof, message, same.publicKey) // { identity, device }
 ```
 
-| Member                                                           | Does                                                                                       |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `Identity.create({ seed, words })`                               | The identity a 16- or 32-byte `seed` writes, or a fresh one: `words` 12 (default) or 24.   |
-| `Identity.toSeed(phrase)`, `Identity.toPhrase(seed)`             | Phrase to seed and back. `INVALID` for a phrase that is not BIP-39.                        |
-| `identity.toPhrase()`                                            | Its phrase.                                                                                |
-| `id`, `publicKey`, `secretKey`, `seed`, `encryptionKey`, `topic` | Its z32 id, keys and seed; a symmetric key from the seed; the swarm topic it announces on. |
-| `identity.sign(message)`, `identity.verify(message, signature)`  | Sign; check a signature against this identity.                                             |
-| `Identity.verify(publicKey, message, signature)`                 | Check a signature against any public key.                                                  |
-| `Identity.seal(publicKey, message)`, `identity.unseal(box)`      | A box only that identity opens; its bytes, or `null` when it does not open.                |
-| `Identity.randomKeyPair()`                                       | A fresh `{ publicKey, secretKey, id }`, for a device's writer.                             |
-| `Identity.randomBytes(n)`                                        | `n` random bytes, 32 by default.                                                           |
+| Member                                                                 | Does                                                                                                                                                                 |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Identity.create({ seed, words, device })`                             | The identity a 16- or 32-byte `seed` writes, or a fresh one: `words` 12 (default) or 24. `device` is this device's keypair, a fresh one by default.                  |
+| `Identity.from({ publicKey, encryptionKey, device, proof, seed })`     | The identity as a stored or linked device holds it. `INVALID` unless `proof` chains `device` to it.                                                                  |
+| `Identity.toSeed(phrase)`, `Identity.toPhrase(seed)`                   | Phrase to seed and back. `INVALID` for a phrase that is not BIP-39.                                                                                                  |
+| `identity.toPhrase()`                                                  | Its phrase. `INVALID` on a linked device, which never has the seed.                                                                                                  |
+| `id`, `publicKey`, `seed`, `encryptionKey`, `topic`, `device`, `proof` | Its z32 id and public key; the seed, `null` on a linked device; a symmetric key from the seed; the swarm topic it announces on; this device's keypair and proof.     |
+| `identity.sign(data)`                                                  | A proof over `data`: this device's signature, under its chain to the identity.                                                                                       |
+| `Identity.verify(proof, data, publicKey)`                              | `{ identity, device }`: whom the proof chains to and who signed, or `null`. `data` `null` checks the chain alone; `publicKey` is the identity expected, any without. |
+| `identity.link(publicKey)`                                             | A proof for a new device of the identity, attested by this one.                                                                                                      |
+| `Identity.seal(publicKey, message)`, `identity.unseal(box)`            | A box only that device opens; its bytes, or `null` when it does not open.                                                                                            |
+| `Identity.randomKeyPair()`                                             | A fresh `{ publicKey, secretKey, id }`, for a device or a writer.                                                                                                    |
+| `Identity.randomBytes(n)`                                              | `n` random bytes, 32 by default.                                                                                                                                     |
 
-An identity is frozen, and `JSON.stringify` shows only its `id`. A device's writer is never the identity keypair: every device authors its own.
+An identity is frozen, and `JSON.stringify` shows only its `id`. The identity's secret key is never kept. A device's writer is never its device keypair: every device authors its own.
 
 ## Network
 
@@ -60,7 +62,6 @@ net.attach(core) // keep it on the mirrors too
 | Option         | Meaning                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                   |
-| `identity`     | The swarm keypair. A random one without.                                                   |
 | `channel`      | Only peers on the same channel meet.                                                       |
 | `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                            |
 | `bootstrap`    | `[{ host, port }]` DHT nodes.                                                              |
@@ -121,13 +122,13 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | Option          | Meaning                                                                                                                                          |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).                                                             |
-| `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                                                                                 |
+| `identity`      | Who writes: its device signs the admissions. `REQUIRED`.                                                                                         |
 | `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                                                                                    |
 | `network`       | Replicates it. Without one it stays on the device.                                                                                               |
 | `key`           | Open an existing database. A new one without.                                                                                                    |
 | `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.                                                                    |
 | `epochs`        | The keys it rotated to, as a join delivers them.                                                                                                 |
-| `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`).                                                          |
+| `keyPair`       | This device's writer keypair, a fresh one by default. Never its device keypair (`INVALID`).                                                      |
 | `namespace`     | The Corestore namespace, `'cero'`.                                                                                                               |
 | `pinned`        | Always search and announce, outside the network's presence budget.                                                                               |
 | `push`          | Push a notification through the network's mirrors after each local write, one in flight and the latest block once more after it. Off by default. |
@@ -144,11 +145,12 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                        |
 | `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs. |
 | `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
-| `rotate()`                                           | `{ epoch }`: a new key sealed to every member. `INVALID` inside `tx`.                                                                      |
+| `rotate()`                                           | `{ epoch }`: a new key sealed to every device. `INVALID` inside `tx`.                                                                      |
 | `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
 | `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
 | `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
-| `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
+| `learn(epochs)`                                      | Keep the epochs handed over after the open, as `epochs` at the open are: the ones not known yet.                                           |
+| `removeWriter(publicKey)`                            | Remove a device, by its writer keypair's public key.                                                                                       |
 | `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
 
 It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view`, `behind` and `pushing`, and emits:
@@ -158,16 +160,17 @@ It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `ad
 | `update`                 | A `Set` of the ref names a batch touched, `'*'` for any.                      |
 | `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated. |
 | `writable`, `unwritable` | This device gained or lost write.                                             |
+| `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.           |
 | `behind`                 | The version of a newer app whose op was skipped.                              |
 
 Who writes:
 
 - **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It claims its seat, then records its device row.
 - **A member you invited** needs nothing: its join seats it, and `db.whenWritable()` resolves once that lands.
-- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer the identity signs from the device's own core, and resolves when it writes. A reader's device holds no seat.
-- Only the genesis batch names a member directly. Everyone after comes in through a join, and nobody seats a writer for another identity.
+- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat.
+- Only the genesis batch names a member directly. Everyone after comes in through a join, and a device seats only itself: an add-writer for another core is ignored.
 
-Keys: `db.rotate()` opens a new key, and rotations on one device run one after another. A device that may remove also re-keys by itself when the members change, a database's first removal included. See [How it works](how-it-works.md).
+Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on one device run one after another. A device that may remove also re-keys by itself when the devices change, a database's first removal included. A device joining later reads the epochs it is handed, `epochs`, never the envelopes sealed to others. See [How it works](how-it-works.md).
 
 ## Mailbox
 
@@ -209,7 +212,7 @@ import { Identity, Network, Mailbox } from '@cero-base/core'
 
 // once per device: who you are, how you connect, where replies arrive. store: a Corestore
 const identity = await Identity.create()
-const network = new Network({ identity, store })
+const network = new Network({ store })
 const mailbox = new Mailbox(network)
 ```
 

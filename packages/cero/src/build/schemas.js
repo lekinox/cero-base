@@ -10,7 +10,8 @@ export const main = {
   writer: {
     master: required(bytes),
     writer: required(bytes),
-    sig: required(bytes),
+    // the device's proof over the admission, chained to `master`
+    proof: required(bytes),
     isIndexer: bool,
     ts: int,
     // the paired add-member decides the rank in the same transaction; `role` here is unread
@@ -37,7 +38,9 @@ export const main = {
     isMobile: bool,
     createdAt: int,
     updatedAt: int,
-    index: uint
+    index: uint,
+    // the device key its admission proved: rotation seals to it
+    key: bytes
   },
   invite: {
     id: required(string),
@@ -57,7 +60,9 @@ export const main = {
     name: string,
     createdAt: int,
     updatedAt: int,
-    index: uint
+    index: uint,
+    // its rotation epochs, for a device of the identity opening it later
+    epochs: bytes
   },
   file: {
     id: required(string),
@@ -97,7 +102,9 @@ export const main = {
     admitted: bool,
     expires: int,
     // what the join asks for, the invite's role; once admitted, the role granted
-    role: string
+    role: string,
+    // the device key the join's proof ends at
+    key: bytes
   },
   // a removed member comes back only through an invite minted after `index`
   removal: {
@@ -158,6 +165,14 @@ export const main = {
 export const local = {
   master: {
     seed: required(bytes)
+  },
+  // this device's key and its proof, with the identity it chains to and the root encryption key
+  device: {
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    proof: required(bytes),
+    identity: required(bytes),
+    encryptionKey: required(bytes)
   },
   keypair: {
     publicKey: required(bytes),

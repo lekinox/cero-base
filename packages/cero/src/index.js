@@ -89,7 +89,7 @@ async function start(dir, spec, opts = {}) {
 
     const device = (await local.store.get('keypair')).data
     const done = !!device && !device.setup
-    const { identity, fresh, seed } = await resolveIdentity(opts, local, done)
+    const { identity, fresh, minted } = await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
     const creating = !done && !opts.phrase && (fresh || device?.setup === 'create')
     const recovering = !done && !creating
@@ -102,7 +102,10 @@ async function start(dir, spec, opts = {}) {
     if (!done && device?.setup !== setup) {
       await local.store.set('keypair', { ...keyPair, setup })
     }
-    if (seed) await local.store.set('master', { seed })
+    if (minted) {
+      await local.store.set('master', { seed: identity.seed })
+      await local.store.set('device', pack(identity))
+    }
     const timeout = opts.recoveryTimeout || TIMEOUT
 
     // a storage remembers its channel; reopening under another would silently rejoin the global network
@@ -133,7 +136,7 @@ async function start(dir, spec, opts = {}) {
     const manifest = pointerManifest(store, identity)
     const pointer = store.get(
       creating
-        ? { keyPair: { publicKey: identity.publicKey, secretKey: identity.secretKey }, manifest }
+        ? { keyPair: await Identity.keyPair(identity.seed), manifest }
         : { key: Hypercore.key(manifest) }
     )
     await pointer.ready()
@@ -231,14 +234,28 @@ async function readPointer(pointer, timeout) {
   }
 }
 
-// `seed` is the one to store: supplied or minted, null when already stored
+// the identity as this device holds it: stored, or minted now from the phrase or afresh
 async function resolveIdentity(opts, local, done) {
   const provided = opts.phrase ? Identity.toSeed(opts.phrase) : null
-  const stored = (await local.store.get('master')).data?.seed
+  const seed = (await local.store.get('master')).data?.seed ?? null
+  const row = (await local.store.get('device')).data
+  if (seed && !row) throw CeroError.INVALID('this storage predates device keys: recreate it')
+  const same =
+    row && provided ? b4a.equals((await Identity.keyPair(provided)).publicKey, row.identity) : true
   // another identity comes in only through restore, which wipes this one first
-  if (done && provided && !b4a.equals(provided, stored)) {
-    throw CeroError.INVALID('dir holds another identity: switch with cero.restore')
-  }
-  const identity = await Identity.create({ seed: provided || stored || null, words: opts.words })
-  return { identity, fresh: !provided && !stored, seed: stored && !provided ? null : identity.seed }
+  if (done && !same) throw CeroError.INVALID('dir holds another identity: switch with cero.restore')
+  // a phrase given to an unfinished setup takes over from the identity it minted
+  if (row && same) return { identity: unpack(row, seed), fresh: false, minted: false }
+  const identity = await Identity.create({ seed: provided, words: opts.words })
+  return { identity, fresh: !provided, minted: true }
+}
+
+function pack({ device, proof, publicKey, encryptionKey }) {
+  const { publicKey: key, secretKey } = device
+  return { publicKey: key, secretKey, proof, identity: publicKey, encryptionKey }
+}
+
+function unpack({ publicKey, secretKey, proof, identity, encryptionKey }, seed) {
+  const device = { publicKey, secretKey }
+  return Identity.from({ publicKey: identity, encryptionKey, device, proof, seed })
 }

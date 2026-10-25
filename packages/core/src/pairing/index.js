@@ -415,7 +415,8 @@ export class Pairing extends ReadyResource {
 
 /**
  * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ * by the invite over the writer; signed by the joiner's device, under its chain to the identity,
+ * for this writer and reply address.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
@@ -427,9 +428,8 @@ export function sealJoin(invite, identity, writer, reply) {
   const join = {
     invite: invite.id,
     reply,
-    proof: invite.prove(writer),
-    identity: identity.publicKey,
-    signature: identity.sign(joining(invite.key, invite.id, writer, reply)),
+    signature: invite.prove(writer),
+    proof: identity.sign(joining(invite.key, invite.id, writer, reply)),
     ts: Date.now()
   }
   return { box: crypto.encrypt(c.encode(Join, join), invite.address) }

@@ -16,9 +16,8 @@ declare function getEncoding(name: any): {
     decode(state: any): {
         invite: any;
         reply: any;
-        proof: any;
-        identity: any;
         signature: any;
+        proof: any;
         ts: any;
     };
 } | {
@@ -80,9 +79,8 @@ declare function getStruct(name: any, v?: number): {
     } | {
         invite: any;
         reply: any;
-        proof: any;
-        identity: any;
         signature: any;
+        proof: any;
         ts: any;
     } | {
         epoch: any;

@@ -15,25 +15,27 @@ export declare function blobEpochKey(entropy: Uint8Array): Uint8Array;
  */
 export declare function loadEpochs(keyring: Keyring, local: import('hypercore')): Promise<void>;
 /**
- * Wire codec for a rotation announcement's envelope list — one sealed box
- * per remaining member, addressed by member id.
+ * A rotation announcement's envelope list — one box per device row, sealed to its device key and
+ * addressed by its writer id.
  *
- * @param {Array<{ id: string }>} members
+ * @param {Array<{ id: string, key: Uint8Array }>} devices
  * @param {Uint8Array} secret
  * @returns {Array<{ id: string, box: Uint8Array }>}
  */
-export declare function seal(members: Array<{
+export declare function seal(devices: Array<{
     id: string;
+    key: Uint8Array;
 }>, secret: Uint8Array): Array<{
     id: string;
     box: Uint8Array;
 }>;
 /**
- * @param {import('../identity/index.js').Identity} identity
+ * @param {import('../identity/index.js').Identity} identity  Whose device key opens the box.
+ * @param {string} id  This device's writer id in the database.
  * @param {Uint8Array} wrapped
  * @returns {Generator<Uint8Array, void, unknown>}
  */
-export declare function opened(identity: import('../identity/index.js').Identity, wrapped: Uint8Array): Generator<Uint8Array, void, unknown>;
+export declare function opened(identity: import('../identity/index.js').Identity, id: string, wrapped: Uint8Array): Generator<Uint8Array, void, unknown>;
 /** @type {import('compact-encoding').Encoder<Array<{ id: string, box: Uint8Array }>>} */
 export declare const wraps: import('compact-encoding').Encoder<Array<{
     id: string;

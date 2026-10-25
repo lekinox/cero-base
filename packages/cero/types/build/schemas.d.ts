@@ -5,7 +5,7 @@ export declare const main: {
     writer: {
         master: import("@cero-base/core").Prim;
         writer: import("@cero-base/core").Prim;
-        sig: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
         isIndexer: import("@cero-base/core").Prim;
         ts: import("@cero-base/core").Prim;
         memberId: import("@cero-base/core").Prim;
@@ -32,6 +32,7 @@ export declare const main: {
         createdAt: import("@cero-base/core").Prim;
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+        key: import("@cero-base/core").Prim;
     };
     invite: {
         id: import("@cero-base/core").Prim;
@@ -51,6 +52,7 @@ export declare const main: {
         createdAt: import("@cero-base/core").Prim;
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+        epochs: import("@cero-base/core").Prim;
     };
     file: {
         id: import("@cero-base/core").Prim;
@@ -86,6 +88,7 @@ export declare const main: {
         admitted: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
+        key: import("@cero-base/core").Prim;
     };
     removal: {
         id: import("@cero-base/core").Prim;
@@ -135,6 +138,13 @@ export declare const main: {
 export declare const local: {
     master: {
         seed: import("@cero-base/core").Prim;
+    };
+    device: {
+        publicKey: import("@cero-base/core").Prim;
+        secretKey: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
+        identity: import("@cero-base/core").Prim;
+        encryptionKey: import("@cero-base/core").Prim;
     };
     keypair: {
         publicKey: import("@cero-base/core").Prim;

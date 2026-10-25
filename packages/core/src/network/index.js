@@ -26,7 +26,6 @@ export function channelTopic(topic, channel) {
 
 /**
  * @typedef {object} NetworkOpts
- * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the swarm identity.
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
@@ -45,7 +44,6 @@ export function channelTopic(topic, channel) {
 export class Network extends ReadyResource {
   /** @param {NetworkOpts} opts */
   constructor({
-    identity,
     bootstrap,
     firewall,
     relayThrough,
@@ -58,7 +56,6 @@ export class Network extends ReadyResource {
   } = {}) {
     super()
     if (!store) throw CeroError.REQUIRED('store')
-    this.identity = identity || null
     this.bootstrap = bootstrap || null
     this.firewall = firewall || null
     this.relayThrough = relayThrough || null
@@ -118,9 +115,6 @@ export class Network extends ReadyResource {
       adaptiveTimeout: { min: 150, max: 1000 }
     })
     const opts = { dht }
-    if (this.identity) {
-      opts.keyPair = { publicKey: this.identity.publicKey, secretKey: this.identity.secretKey }
-    }
     if (this.firewall) opts.firewall = this.firewall
     if (this.relayThrough) opts.relayThrough = this.relayThrough
     if (this.backoffs) opts.backoffs = this.backoffs
@@ -202,10 +196,8 @@ export class Network extends ReadyResource {
   inject(stream, { isInitiator } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
     if (!stream) throw CeroError.REQUIRED('stream')
-    // a raw duplex handshakes as this identity
-    const keyPair = this.identity
-      ? { publicKey: this.identity.publicKey, secretKey: this.identity.secretKey }
-      : (this.swarm?.keyPair ?? undefined)
+    // a raw duplex handshakes as the swarm does
+    const keyPair = this.swarm?.keyPair ?? undefined
     const conn =
       stream.noiseStream === stream
         ? stream

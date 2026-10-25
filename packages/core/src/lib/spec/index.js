@@ -84,9 +84,8 @@ const encoding2 = {
   preencode(state, m) {
     c.fixed32.preencode(state, m.invite)
     c.fixed32.preencode(state, m.reply)
-    c.fixed64.preencode(state, m.proof)
-    c.fixed32.preencode(state, m.identity)
     c.fixed64.preencode(state, m.signature)
+    c.buffer.preencode(state, m.proof)
     state.end++ // max flag is 1 so always one byte
 
     if (m.ts) c.uint.preencode(state, m.ts)
@@ -96,9 +95,8 @@ const encoding2 = {
 
     c.fixed32.encode(state, m.invite)
     c.fixed32.encode(state, m.reply)
-    c.fixed64.encode(state, m.proof)
-    c.fixed32.encode(state, m.identity)
     c.fixed64.encode(state, m.signature)
+    c.buffer.encode(state, m.proof)
     c.uint.encode(state, flags)
 
     if (m.ts) c.uint.encode(state, m.ts)
@@ -107,16 +105,14 @@ const encoding2 = {
     const r0 = c.fixed32.decode(state)
     const r1 = c.fixed32.decode(state)
     const r2 = c.fixed64.decode(state)
-    const r3 = c.fixed32.decode(state)
-    const r4 = c.fixed64.decode(state)
+    const r3 = c.buffer.decode(state)
     const flags = c.uint.decode(state)
 
     return {
       invite: r0,
       reply: r1,
-      proof: r2,
-      identity: r3,
-      signature: r4,
+      signature: r2,
+      proof: r3,
       ts: (flags & 1) !== 0 ? c.uint.decode(state) : 0
     }
   }

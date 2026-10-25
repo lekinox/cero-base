@@ -26,7 +26,7 @@ test.configure({ timeout: 60000 })
 async function makeMailbox(t, testnet, opts = {}) {
   const identity = await Identity.create()
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
-  const net = new Network({ identity, bootstrap: testnet.bootstrap, store, ...opts })
+  const net = new Network({ bootstrap: testnet.bootstrap, store, ...opts })
   await net.ready()
   t.teardown(() => net.close().catch(() => {}), { order: 2 })
   const mailbox = new Mailbox(net)

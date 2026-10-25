@@ -116,8 +116,8 @@ export class Database extends ReadyResource {
     this.pinned = opts.pinned === true
     this.push = opts.push === true
     this.keyPair = opts.keyPair || Identity.randomKeyPair()
-    if (b4a.equals(this.keyPair.publicKey, this.identity.publicKey)) {
-      throw CeroError.INVALID('the identity keypair is never a writer — use a device keypair')
+    if (b4a.equals(this.keyPair.publicKey, this.identity.device.publicKey)) {
+      throw CeroError.INVALID('the device keypair is never a writer — mint one')
     }
 
     /** @private */
@@ -639,13 +639,18 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Admit another device of this identity as a writer. Another member's device seats itself.
+   * Learn epochs handed over after the open, as a root carries them for a handle: the ones not
+   * known yet are kept, as `epochs` at the open are.
    *
-   * @param {Uint8Array} publicKey
+   * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
    * @returns {Promise<void>}
    */
-  async addWriter(publicKey) {
-    return this._admit('add-writer', publicKey)
+  async learn(epochs) {
+    this.guard()
+    const fresh = epochs.filter((e) => !this.keyring.entropy(e.stamp))
+    if (!fresh.length) return
+    for (const e of fresh) this.keyring.add(e.stamp, e.entropy, e.epoch)
+    await this.rotation._save()
   }
 
   /**
@@ -1042,11 +1047,11 @@ export class Database extends ReadyResource {
     })
   }
 
-  // the add-writer row for `writer`, appended by this device and signed by the identity
+  // the add-writer row for `writer`, appended by this device and proven by its device key
   /** @private */
   _admission(writer, ts = Date.now()) {
-    const sig = this.identity.sign(admission(this.key, writer, this.writerKey))
-    return { master: this.identity.publicKey, writer, sig, ts }
+    const proof = this.identity.sign(admission(this.key, writer, this.writerKey))
+    return { master: this.identity.publicKey, writer, proof, ts }
   }
 
   /** @private */

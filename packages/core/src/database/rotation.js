@@ -10,7 +10,7 @@ import { Identity } from '../identity/index.js'
 import { CeroError } from '../lib/errors.js'
 
 /**
- * Epoch key rotation for a database: mint a secret, seal it to every member, announce it
+ * Epoch key rotation for a database: mint a secret, seal it to every device, announce it
  * through the log, and on every peer learn the secrets addressed to it.
  */
 export class Rotation {
@@ -60,6 +60,7 @@ export class Rotation {
       keyring.add(row.stamp, entropy, row.epoch)
       try {
         await this._save()
+        this.db.emit('epoch')
       } catch (err) {
         // an epoch we cannot reload after a restart must not be used for writes
         keyring.remove(row.stamp)
@@ -107,7 +108,7 @@ export class Rotation {
     const stamp = this._mint()
     this.current = { entropy, stamp, epoch: 0 }
     try {
-      const wrapped = seal(await this._members(), entropy)
+      const wrapped = seal(await this._devices(), entropy)
       const epoch = await this._announce(stamp, entropy, wrapped)
       if (!epoch) {
         // a stamp collision (~2^-32, or an adversarial pre-claim) is not a refusal
@@ -120,19 +121,20 @@ export class Rotation {
       }
       db.keyring.add(stamp, entropy, epoch)
       await this._save()
+      db.emit('epoch')
       return { epoch }
     } finally {
       this.current = null
     }
   }
 
+  // every seated device, readers' too: a member keeps reading on each of its devices
   /** @private */
-  async _members() {
-    const { data: members } = await this.db.get('members')
-    if (!Array.isArray(members) || members.length === 0) {
-      throw CeroError.INVALID('cannot rotate a database with no members')
-    }
-    return members
+  async _devices() {
+    const { data: devices } = await this.db.get('devices')
+    const keyed = devices.filter((d) => d.key)
+    if (keyed.length === 0) throw CeroError.INVALID('cannot rotate a database with no devices')
+    return keyed
   }
 
   // resolves the sequence apply assigned, 0 if it never applied
@@ -179,7 +181,8 @@ export class Rotation {
   // every envelope addressed to us is tried, a bad one must not lock us out
   /** @private */
   _unseal(row) {
-    for (const entropy of opened(this.db.identity, row.wrapped)) {
+    const { identity, writerKey } = this.db
+    for (const entropy of opened(identity, hid.encode(writerKey), row.wrapped)) {
       if (entropy.byteLength !== 32) continue
       // a secret failing the row's commitment means the rotator sealed different ones
       if (row.commit && b4a.equals(crypto.hash(entropy), row.commit)) return entropy
@@ -214,8 +217,7 @@ export class Rotation {
     }
     const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
     const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
-    const { data: members } = await db.get('members')
-    const ids = new Set(members.map((m) => m.id))
+    const ids = new Set((await this._devices()).map((d) => d.id))
     const sealedOut = !db.keyring.entropy(top.stamp)
     if (!sealedOut && recipients.size === ids.size && [...recipients].every((id) => ids.has(id))) {
       this._healedFor = null

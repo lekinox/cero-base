@@ -726,6 +726,15 @@ test('peek(): true after reopening with the stored phrase', async (t) => {
   t.is(await peek(dir, spec), true)
 })
 
+test('cero(): a storage from before device keys is refused, to be recreated', async (t) => {
+  const { me, dir, testnet } = await ceroOpen(t)
+  // the seed stored with no device key beside it: what an older cero left
+  await me.local.store.del('device')
+  await me.close()
+  t.is(await peek(dir, spec), false, 'no device, no identity to open')
+  await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }), /predates device keys/)
+})
+
 test('peek(): rejects bad dir', async (t) => {
   await t.exception.all(() => peek(null, spec), /dir/)
   await t.exception.all(() => peek('', spec), /dir/)

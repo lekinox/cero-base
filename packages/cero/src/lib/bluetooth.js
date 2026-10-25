@@ -234,11 +234,8 @@ function topicOf(base, topic) {
 function signed(info, key) {
   if (typeof info?.id !== 'string' || typeof info.proof !== 'string') return false
   try {
-    return Identity.verify(
-      hid.decode(info.id),
-      b4a.concat([DEVICE, key]),
-      b4a.from(info.proof, 'hex')
-    )
+    const proof = b4a.from(info.proof, 'hex')
+    return Identity.verify(proof, b4a.concat([DEVICE, key]), hid.decode(info.id)) !== null
   } catch {
     return false
   }

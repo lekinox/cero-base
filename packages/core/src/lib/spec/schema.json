@@ -75,7 +75,7 @@
       "name": "join",
       "namespace": "cero",
       "compact": false,
-      "flagsPosition": 5,
+      "flagsPosition": 4,
       "fields": [
         {
           "name": "invite",
@@ -90,21 +90,15 @@
           "version": 1
         },
         {
-          "name": "proof",
-          "required": true,
-          "type": "fixed64",
-          "version": 1
-        },
-        {
-          "name": "identity",
-          "required": true,
-          "type": "fixed32",
-          "version": 1
-        },
-        {
           "name": "signature",
           "required": true,
           "type": "fixed64",
+          "version": 1
+        },
+        {
+          "name": "proof",
+          "required": true,
+          "type": "buffer",
           "version": 1
         },
         {

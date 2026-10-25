@@ -22,7 +22,8 @@ import {
   waitFor,
   waitForConnection,
   randomTopic,
-  once
+  once,
+  admit
 } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -105,19 +106,9 @@ test('close() is idempotent', async (t) => {
   t.pass('multiple close() calls succeed')
 })
 
-// ─── identity opt ─────────────────────────────────────────────────────────
+// ─── swarm keypair ────────────────────────────────────────────────────────
 
-test('identity opt: swarm keyPair matches identity publicKey', async (t) => {
-  const testnet = await makeTestnet(t)
-  const id = await Identity.create()
-  const { store } = await makeStore(t)
-  const net = new Network({ identity: id, bootstrap: testnet.bootstrap, store })
-  await net.ready()
-  t.alike(b4a.toBuffer(net.swarm.keyPair.publicKey), b4a.toBuffer(id.publicKey))
-  await net.close()
-})
-
-test('no identity opt: swarm generates its own keypair', async (t) => {
+test('the swarm generates its own keypair', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   t.is(net.swarm.keyPair.publicKey.length, 32)
@@ -777,7 +768,7 @@ test('inject: replication + writer admission over an injected duplex, no shared 
 
   t.is(b.writable, false, 'B is not a writer yet — guards intact')
 
-  await a.addWriter(b.keyPair.publicKey)
+  await admit(a, b)
   await waitFor(() => b.writable)
   t.ok(b.writable, 'admission replicated over the injected stream (wakeup working)')
 
