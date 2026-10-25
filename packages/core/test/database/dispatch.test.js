@@ -281,6 +281,19 @@ test('del-writer: a member can remove its own writer (self)', async (t) => {
   t.absent((await db.get('devices', phone.writer.id)).data, 'self-removal allowed')
 })
 
+test("del-writer: a removed device's proof still seats a fresh writer", async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const phone = linked(identity)
+  await seat(db, phone)
+  await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey))
+  // the chain is static and nothing in the view says the key was removed: removing retires the
+  // writer, it does not lock the key out
+  const again = { identity: phone.identity, writer: Identity.randomKeyPair() }
+  t.is(await seat(db, again), null)
+  const { data: row } = await db.get('devices', again.writer.id)
+  t.alike(row?.key, phone.identity.device.publicKey, 'the removed key is back on a new writer')
+})
+
 // ─── fast-forward trust ───────────────────────────────────────────────────
 
 // autobee trusts every fast-forward candidate unless a hook says otherwise —

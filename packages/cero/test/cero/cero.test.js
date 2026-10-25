@@ -14,7 +14,20 @@ import { Mailbox } from '@cero-base/core/mailbox'
 import { epochEntries } from '@cero-base/core/database/encryption'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 
-import { cero, put, set, get, open, call, accept, deny, peek, restore } from '../../src/index.js'
+import {
+  cero,
+  put,
+  set,
+  get,
+  del,
+  open,
+  call,
+  accept,
+  deny,
+  rotate,
+  peek,
+  restore
+} from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
   makeTestnet,
@@ -1150,6 +1163,56 @@ test('cero(): phrase-only recovery — device B syncs from device A without out-
   t.is(members.length, 1, 'one member entry')
   const { data: devices } = await get(b.me.devices)
   t.is(devices.length, 2, 'two device entries — one per physical device')
+})
+
+// ─── devices: the phrase, removal, re-adding ─────────────────────────────
+
+const devices = (me, n) =>
+  waitUntil(async () => ((await get(me.devices)).data.length === n ? true : null))
+
+test('devices: the phrase shows on the creating device and on one recovered with it', async (t) => {
+  const a = await ceroOpen(t)
+  const phrase = await cero.phrase(a.me)
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase })
+  t.is(await cero.phrase(b.me), phrase, 'a device recovered by the phrase holds it too')
+})
+
+test('devices: a removed device is re-added by the phrase, as a new device', async (t) => {
+  const a = await ceroOpen(t)
+  const phrase = await cero.phrase(a.me)
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase })
+  await devices(a.me, 2)
+
+  const removed = b.me.device.id
+  await del(a.me.devices, removed)
+  await devices(b.me, 1)
+  await waitUntil(() => (b.me.store.writable ? null : true))
+  t.pass('the removed device sees its removal and lost its writer')
+  await b.me.close()
+
+  // wiped and recovered: a new device key the phrase attests, seated again
+  const c = await ceroOpen(t, { testnet: a.testnet, phrase })
+  t.is(c.me.id, a.me.id, 'the same identity')
+  t.not(c.me.device.id, removed, 'as a device of its own')
+  await devices(a.me, 2)
+  t.ok(c.me.store.writable, 'back in')
+})
+
+test('devices: a removed device reads on until the root re-keys, then nothing written after', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
+  await devices(a.me, 2)
+  await del(a.me.devices, b.me.device.id)
+  await devices(b.me, 1)
+
+  await set(a.me.profile, { name: 'seen' })
+  await waitUntil(async () => ((await get(b.me.profile)).data?.name === 'seen' ? true : null))
+  t.pass('the root kept its key, so the removed device still reads')
+
+  await rotate(a.me)
+  await set(a.me.profile, { name: 'unseen' })
+  await new Promise((r) => setTimeout(r, 1500))
+  t.is((await get(b.me.profile)).data?.name, 'seen', 'nothing written after the re-key reaches it')
 })
 
 test('cero(): a second device auto-claims', async (t) => {
