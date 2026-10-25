@@ -5,10 +5,11 @@ export type Handle = {
 export type Hit = Handle & {
     length: number;
     newer: boolean;
+    ref: string | null;
 };
 /**
  * @typedef {{ id: string, key: Uint8Array }} Handle  A handle this device holds: its id and its database key.
- * @typedef {Handle & { length: number, newer: boolean }} Hit  The handle a push is about, the length it proves, and whether this device is behind it.
+ * @typedef {Handle & { length: number, newer: boolean, ref: string | null }} Hit  The handle a push is about, the length it proves, whether this device is behind it, and the ref the write was on.
  */
 /**
  * Verify a push payload against this device's storage: the one the gateway sent, decoded from the

@@ -3,7 +3,7 @@ import { SINGLE, COLLECTION, ACTION } from './constants.js'
 
 /**
  * @typedef {{ prim: string, required?: boolean }} Prim
- * @typedef {{ kind: 'single' | 'collection' | 'action', fields: Record<string, Prim> }} TypeDef
+ * @typedef {{ kind: 'single' | 'collection' | 'action', fields: Record<string, Prim>, indexes?: Record<string, string[]>, own?: boolean, push?: string }} TypeDef
  * @typedef {{ [name: string]: TypeDef | Record<string, TypeDef> } & { local?: Record<string, TypeDef> }} SchemaDefs
  * @typedef {{ defs: SchemaDefs }} Schema
  */
@@ -39,24 +39,29 @@ export const t = {
    * Single-row table (one record, set/get by name).
    *
    * @param {Record<string, Prim>} fields
+   * @param {{ push?: string }} [opts]  `push`: the notification a write sends members, see collection.
    * @returns {TypeDef}
    */
-  single(fields) {
-    return { kind: SINGLE, fields }
+  single(fields, opts) {
+    const def = { kind: SINGLE, fields }
+    if (opts?.push) def.push = opts.push
+    return def
   },
 
   /**
    * Multi-row table keyed by `id`. `own` restricts a row to the member who wrote it — anyone
-   * may add rows, but only the author changes or deletes theirs.
+   * may add rows, but only the author changes or deletes theirs. `push` makes a write to it push
+   * a notification to the other members' devices, with this text as its body.
    *
    * @param {Record<string, Prim>} fields
-   * @param {{ indexes?: Record<string, string[]>, own?: boolean }} [opts]
+   * @param {{ indexes?: Record<string, string[]>, own?: boolean, push?: string }} [opts]
    * @returns {TypeDef}
    */
   collection(fields, opts) {
     const def = { kind: COLLECTION, fields }
     if (opts?.indexes) def.indexes = opts.indexes
     if (opts?.own) def.own = true
+    if (opts?.push) def.push = opts.push
     return def
   },
 
@@ -64,10 +69,13 @@ export const t = {
    * RPC-style mutation that doesn't persist a row.
    *
    * @param {Record<string, Prim>} fields
+   * @param {{ push?: string }} [opts]  `push`: the notification a call sends members, see collection.
    * @returns {TypeDef}
    */
-  action(fields) {
-    return { kind: ACTION, fields }
+  action(fields, opts) {
+    const def = { kind: ACTION, fields }
+    if (opts?.push) def.push = opts.push
+    return def
   },
 
   /**

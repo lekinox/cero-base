@@ -61,7 +61,7 @@ export type DatabaseOpts = {
      */
     pinned?: boolean;
     /**
-     * Push a notification through the mirrors after each local write, so members learn of it while their app is dead.
+     * Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
      */
     push?: boolean;
     /**
@@ -158,7 +158,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
- * @property {boolean} [push]                                         Push a notification through the mirrors after each local write, so members learn of it while their app is dead.
+ * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -237,6 +237,8 @@ export declare class Database extends ReadyResource {
     key: Uint8Array<ArrayBufferLike>;
     pinned: boolean;
     push: boolean;
+    /** @private */
+    _pushes;
     keyPair: import("../index.js").KeyPair;
     /** @private */
     _onerror;
@@ -258,6 +260,8 @@ export declare class Database extends ReadyResource {
     _pushAgain;
     /** @private */
     _pushed;
+    /** @private */
+    _pushTag;
     /** @private */
     _onResume;
     /** @private */
@@ -390,6 +394,8 @@ export declare class Database extends ReadyResource {
     get pushing(): boolean;
     /** @private */
     private _push;
+    /** @private */
+    private _tag;
     /** @private */
     private _send;
     /**

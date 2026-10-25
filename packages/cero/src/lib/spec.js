@@ -15,6 +15,7 @@ export { t, schema } from '@cero-base/core/schema'
  * @property {Record<string, string>} [required]  The required fields and their types.
  * @property {string[]} [files]   The fields holding file ids.
  * @property {string} [verb]
+ * @property {string} [push]     The notification a write to this ref sends, its body.
  *
  * @typedef {object} SpecMeta
  * @property {string} [ns]

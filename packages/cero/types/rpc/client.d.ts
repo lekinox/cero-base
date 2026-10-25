@@ -46,6 +46,7 @@ declare const remote: {
         type: string;
         name: string | null;
         newer: boolean;
+        ref: string | null;
     } | null>;
     phrase(me: verbs.Context): Promise<string>;
     nearby(ctx: verbs.Context, on: boolean, opts?: {

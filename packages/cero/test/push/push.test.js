@@ -140,7 +140,7 @@ test('receive: a push about a joined room verifies as newer, on the worker and o
 
   const hit = await receive(b.me, payload)
   // a joined handle's row carries no name until the app sets one
-  t.alike(hit, { id: b.joined.id, type: 'team', name: null, newer: true })
+  t.alike(hit, { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' })
   t.alike(await receive(b.client, payload), hit, 'the same over RPC')
   t.is(await receive(b.me, b4a.from('garbage')), null)
   await t.exception(receive(b.joined, payload), /on me/, "a push is the app's, not a handle's")
@@ -158,7 +158,7 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   await waitUntil(() => gateway.sent.length === gateway.before + 1)
   const payload = payloadOf(gateway.sent.at(-1))
 
-  const expected = { id: b.joined.id, type: 'team', name: null, newer: true }
+  const expected = { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' }
   t.alike(await cold(b.dir, spec, payload), expected, 'read-only beside the live app')
   await b.client.close()
   await b.me.close()
@@ -167,6 +167,56 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   await storage.ready()
   await storage.close()
   t.pass('the cold read left the storage reopenable')
+})
+
+test('push: a write to a ref that declares no push sends nothing', async (t) => {
+  const { gateway, room } = await scene(t)
+  await put(room.notes, { text: 'quiet' })
+  t.absent(room.store.pushing, 'notes declares no push')
+  const pushed = await waitUntil(() => gateway.sent.length > gateway.before, 2000).catch(
+    () => false
+  )
+  t.absent(pushed, 'nothing sent')
+})
+
+test('push: the bare-kit entry answers with the handle and the text the schema settled', async (t) => {
+  const { gateway, room, b } = await scene(t)
+  await b.me.network.suspend()
+  await put(room.messages, { text: 'ping' })
+  await waitUntil(() => gateway.sent.length === gateway.before + 1)
+  const payload = gateway.sent.at(-1).android.data.payload
+
+  const handlers = {}
+  globalThis.BareKit = { on: (event, fn) => (handlers[event] = fn) }
+  t.teardown(() => delete globalThis.BareKit)
+  entry(spec)
+  const replies = []
+  await handlers.push(JSON.stringify({ storage: b.dir, payload }), (err, res) =>
+    replies.push([err, res])
+  )
+  t.alike(replies, [[null, JSON.stringify({ title: 'team', body: 'New message' })]])
+
+  // a receiver whose schema declares no text for that ref shows the generic one
+  const team = spec.meta.handles.team
+  const quiet = {
+    ...spec,
+    meta: {
+      ...spec.meta,
+      handles: {
+        team: {
+          ...team,
+          refs: { ...team.refs, messages: { ...team.refs.messages, push: undefined } }
+        }
+      }
+    }
+  }
+  entry(quiet)
+  replies.length = 0
+  await handlers.push(JSON.stringify({ storage: b.dir, payload }), (err, res) =>
+    replies.push([err, res])
+  )
+  t.alike(replies, [[null, JSON.stringify({ title: 'team', body: 'New activity' })]])
+  await b.me.network.resume()
 })
 
 test('push: a subscribe that fails is retried at the next change, the follower lives on', async (t) => {

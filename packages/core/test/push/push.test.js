@@ -59,6 +59,7 @@ test('push: a write reaches the gateway, the reader verifies it as newer, then a
   const hit = await receive(b.store.storage, payload, [handle(a.db)])
   t.is(hit.id, 'room')
   t.ok(hit.newer, 'the reader is behind')
+  t.is(hit.ref, 'messages', 'the push names the ref')
 
   await b.network.resume()
   await waitFor(async () => (await b.db.get('messages')).data.length === 1)
@@ -139,6 +140,19 @@ test('push: a push attempt outlives its database without a crash', async (t) => 
   await db.close()
   await waitFor(() => !db.pushing, { timeout: 20000 })
   t.pass('the retry found a closed database and stopped')
+})
+
+test('push: a write to a ref that declares no push sends nothing', async (t) => {
+  const { gateway, a } = await pair(t)
+  await a.db.put('tasks', { title: 'quiet' })
+  t.absent(a.db.pushing, 'tasks declares no push')
+  const pushed = await waitFor(() => gateway.sent.length > gateway.before, { timeout: 2000 }).catch(
+    () => false
+  )
+  t.absent(pushed, 'nothing sent')
+  await a.db.put('messages', { text: 'loud' })
+  await waitFor(() => gateway.sent.length === gateway.before + 1)
+  t.pass('a ref that declares push still does')
 })
 
 test('push: nothing without mirrors, nothing from a database that does not push', async (t) => {

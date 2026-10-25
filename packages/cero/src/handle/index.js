@@ -577,7 +577,7 @@ export class Handle extends ReadyResource {
     const { data: rows } = await this.local.store.get('topics')
     const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
     const hit = await receive(this.store.store.storage, payload, handles)
-    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer }
+    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer, ref: hit.ref }
   }
 
   /** @private */
