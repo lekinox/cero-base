@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.5.0 (2026-10-25)
+
+### Bug Fixes
+
+- a held writer wakes the room: the hold puts other devices' writers in the bee's wakeup group
+
+### Other
+
+- 🚀 test: the frozen peer says nothing, so the drop test asserts what it claims
+- 🚀 push: blind push notifications
+- 🚀 deps: the Holepunch stack to latest
+- build(deps): bump actions/setup-node from 7.0.0 to 7.1.0
+
 ## 2.4.1 (2026-10-04)
 
 ### Bug Fixes
