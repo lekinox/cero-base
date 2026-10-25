@@ -1017,7 +1017,7 @@ export class Handle extends ReadyResource {
     this.emit('handle', child, info)
   }
 
-  // a handle's epochs ride in its root row, sealed to the identity's devices only: one that
+  // a handle's epochs ride in its root row, which only the identity's devices read: one that
   // opens the handle later reads history with them, since envelopes in the log address a device
   /** @private */
   _carry(child) {
@@ -1027,18 +1027,22 @@ export class Handle extends ReadyResource {
       if (!row || b4a.equals(row.epochs || b4a.alloc(0), epochs)) return
       await this.store.set('handles', { id: row.id, epochs })
     }
-    const read = async (touched) => {
-      if (!touched.has('*') && !touched.has('handles')) return
+    // read when the row changes, and when an announcement applies: it is learned only after that
+    const read = async () => {
       const { data: row } = await this.store.get('handles', child.id)
       if (row?.epochs) await child.store.learn(c.decode(epochEntries, row.epochs))
     }
+    const touches = (name) => (touched) => touched.has('*') || touched.has(name)
     const onepoch = () => save().catch(this._onerror)
-    const onupdate = (touched) => read(touched).catch(this._onerror)
+    const onroot = (touched) => touches('handles')(touched) && read().catch(this._onerror)
+    const onchild = (touched) => touches('epochs')(touched) && read().catch(this._onerror)
     child.store.on('epoch', onepoch)
-    this.store.on('update', onupdate)
+    child.store.on('update', onchild)
+    this.store.on('update', onroot)
     child.once('close', () => {
       child.store.off('epoch', onepoch)
-      this.store.off('update', onupdate)
+      child.store.off('update', onchild)
+      this.store.off('update', onroot)
     })
   }
 

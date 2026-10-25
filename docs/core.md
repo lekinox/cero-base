@@ -149,7 +149,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
 | `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
 | `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
-| `learn(epochs)`                                      | Keep the epochs handed over after the open, as `epochs` at the open are: the ones not known yet.                                           |
+| `learn(epochs)`                                      | Keep epochs handed over after the open: each once its announcement applied here and the secret meets the commitment it carries.            |
 | `removeWriter(publicKey)`                            | Remove a device, by its writer keypair's public key.                                                                                       |
 | `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
 

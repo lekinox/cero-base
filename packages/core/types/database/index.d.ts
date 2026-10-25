@@ -457,8 +457,9 @@ export declare class Database extends ReadyResource {
         timeout?: number;
     }): Promise<void>;
     /**
-     * Learn epochs handed over after the open, as a root carries them for a handle: the ones not
-     * known yet are kept, as `epochs` at the open are.
+     * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
+     * once its announcement applied here and the secret meets the commitment it carries: hand them
+     * over again when an announcement applies.
      *
      * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
      * @returns {Promise<void>}

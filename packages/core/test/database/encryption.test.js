@@ -441,9 +441,18 @@ test('rotate: a recovered device reads with the epochs its root hands it, then i
   await new Promise((r) => setTimeout(r, 1000))
   t.alike(await texts(blind.db), ['pre'], 'the log alone yields the base era only')
   t.is(blind.db.keyring.seq, 0, 'no envelope opens for a device nobody sealed to')
+  // an epoch is learned once its announcement applied here and the secret meets its commitment:
+  // the second's announcement sits under the first epoch, unreadable until that one is known
+  const [first, second] = a.db.keyring.all()
+  await blind.db.learn([first, second].map((e) => ({ ...e, entropy: Identity.randomBytes(32) })))
+  t.is(blind.db.keyring.seq, 0, 'wrong secrets are refused against the announcement')
+  await blind.db.learn(a.db.keyring.all())
+  t.ok(blind.db.keyring.entropy(first.stamp), 'the announced one is kept')
+  t.is(blind.db.keyring.entropy(second.stamp), null, 'the other waits for its announcement')
+  await waitFor(async () => (await texts(blind.db)).includes('mid'))
   await blind.db.learn(a.db.keyring.all())
   await waitFor(async () => (await texts(blind.db)).length === 3)
-  t.is(blind.db.keyring.seq, 2, 'epochs learned after the open read the history too')
+  t.is(blind.db.keyring.seq, 2, 'handed over again once it applied, the history is complete')
   await blind.db.close()
 
   // the epochs its root carries make the history readable

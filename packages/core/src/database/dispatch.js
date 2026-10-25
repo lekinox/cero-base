@@ -407,6 +407,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       commit: op.commit
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
+    touch(EPOCHS)
     // never in a dry run: the announcement itself is appended under the old epoch
     if (!ctx.dryRun) {
       try {

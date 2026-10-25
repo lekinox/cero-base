@@ -639,18 +639,25 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Learn epochs handed over after the open, as a root carries them for a handle: the ones not
-   * known yet are kept, as `epochs` at the open are.
+   * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
+   * once its announcement applied here and the secret meets the commitment it carries: hand them
+   * over again when an announcement applies.
    *
    * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
    * @returns {Promise<void>}
    */
   async learn(epochs) {
     this.guard()
-    const fresh = epochs.filter((e) => !this.keyring.entropy(e.stamp))
-    if (!fresh.length) return
-    for (const e of fresh) this.keyring.add(e.stamp, e.entropy, e.epoch)
-    await this.rotation._save()
+    const rows = await this.rotation._epochs()
+    let added = false
+    for (const e of epochs) {
+      if (this.keyring.entropy(e.stamp)) continue
+      const row = rows.find((r) => r.stamp === e.stamp)
+      if (!row?.commit || !b4a.equals(crypto.hash(e.entropy), row.commit)) continue
+      this.keyring.add(e.stamp, e.entropy, e.epoch)
+      added = true
+    }
+    if (added) await this.rotation._save()
   }
 
   /**
