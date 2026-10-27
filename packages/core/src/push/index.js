@@ -4,7 +4,7 @@ import b4a from 'b4a'
 
 /**
  * @typedef {{ id: string, key: Uint8Array }} Handle  A handle this device holds: its id and its database key.
- * @typedef {Handle & { length: number, newer: boolean }} Hit  The handle a push is about, the length it proves, and whether this device is behind it.
+ * @typedef {Handle & { length: number, newer: boolean, ref: string | null }} Hit  The handle a push is about, the length it proves, whether this device is behind it, and the ref the write was on.
  */
 
 /**
@@ -16,7 +16,7 @@ import b4a from 'b4a'
  * @param {Handle[]} handles
  * @returns {Promise<Hit | null>}
  */
-export async function receive(storage, payload, handles) {
+export async function verify(storage, payload, handles) {
   let push
   try {
     push = decode(payload)
@@ -32,5 +32,6 @@ export async function receive(storage, payload, handles) {
     return null
   }
   if (!read) return null
-  return { ...handle, length: read.result.length, newer: read.result.newer }
+  const ref = read.extra?.length ? b4a.toString(read.extra) : null
+  return { ...handle, length: read.result.length, newer: read.result.newer, ref }
 }

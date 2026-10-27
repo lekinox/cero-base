@@ -31,6 +31,10 @@ export type RefInfo = {
      */
     files?: string[];
     verb?: string;
+    /**
+     * Whether a write to this ref pushes a notification.
+     */
+    push?: boolean;
 };
 export type SpecMeta = {
     ns?: string;
@@ -70,6 +74,7 @@ export type Row = import('@cero-base/core/database').Row;
  * @property {Record<string, string>} [required]  The required fields and their types.
  * @property {string[]} [files]   The fields holding file ids.
  * @property {string} [verb]
+ * @property {boolean} [push]    Whether a write to this ref pushes a notification.
  *
  * @typedef {object} SpecMeta
  * @property {string} [ns]

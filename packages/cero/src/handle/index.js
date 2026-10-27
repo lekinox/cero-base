@@ -11,7 +11,7 @@ import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
 import { blobEpochKey, epochEntries } from '@cero-base/core/database/encryption'
 import { Pairing } from '@cero-base/core/pairing'
-import { receive } from '@cero-base/core/push'
+import { verify } from '@cero-base/core/push'
 import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
@@ -579,8 +579,8 @@ export class Handle extends ReadyResource {
     if (this._sus.suspended) throw CeroError.INVALID('receive: the app is suspended')
     const { data: rows } = await this.local.store.get('topics')
     const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
-    const hit = await receive(this.store.store.storage, payload, handles)
-    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer }
+    const hit = await verify(this.store.store.storage, payload, handles)
+    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer, ref: hit.ref }
   }
 
   /** @private */

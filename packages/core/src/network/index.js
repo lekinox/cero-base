@@ -361,9 +361,10 @@ export class Network extends ReadyResource {
   }
 }
 
+// data, not packets: a peer that acked our opener and froze has answered nothing
 function dropIfSilent(conn) {
   const timer = setTimeout(() => {
-    if (conn.rawStream.packetsReceived === 0) conn.destroy()
+    if (conn.rawStream.bytesReceived === 0) conn.destroy()
   }, SILENT_TIMEOUT)
   timer.unref()
   conn.once('close', () => clearTimeout(timer))

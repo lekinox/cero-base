@@ -46,6 +46,7 @@ declare const remote: {
         type: string;
         name: string | null;
         newer: boolean;
+        ref: string | null;
     } | null>;
     phrase(me: verbs.Context): Promise<string>;
     nearby(ctx: verbs.Context, on: boolean, opts?: {
@@ -122,10 +123,11 @@ export declare class Client extends RPCClient {
     /**
      * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-     * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
+     * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]  Where the worker's background errors go, the console without one; `push`: the platform's messaging service, to follow the handles' push topics.
      */
     constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror, push }?: {
         onerror?: (err: Error) => void;
+        push?: import('./push.js').Messaging;
     });
     /** @private */
     private _pumpErrors;
@@ -191,11 +193,12 @@ declare class Handle {
  *
  * @param {import('streamx').Duplex} ipc
  * @param {Spec} spec
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
  * @returns {Promise<Client>}
  */
 export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?: {
     onerror?: (err: Error) => void;
+    push?: import('./push.js').Messaging;
 }): Promise<Client>;
 /**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
@@ -203,11 +206,12 @@ export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?
  *
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
  * @returns {Promise<Context>}
  */
 declare function start(ipc: import('streamx').Duplex, spec: Spec, opts?: {
     onerror?: (err: Error) => void;
+    push?: import('./push.js').Messaging;
 }): Promise<Context>;
 /** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, t: typeof t, schema: typeof schema }} */
 export declare const cero: typeof start & typeof remote & {

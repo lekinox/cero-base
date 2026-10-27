@@ -32,7 +32,7 @@ function pair() {
   return [a, b]
 }
 
-function mockBackend({ failFirst = false } = {}) {
+function mockMessaging({ failFirst = false } = {}) {
   const listeners = new Set()
   let failed = !failFirst
   return {
@@ -57,9 +57,9 @@ function mockBackend({ failFirst = false } = {}) {
   }
 }
 
-// a writes to a room through a mirror behind a gateway; b, served over RPC to a client with a push
-// backend, joined that room
-async function scene(t, { backend, errors } = {}) {
+// a writes to a room through a mirror behind a gateway; b, served over RPC to a client with a
+// messaging service, joined that room
+async function scene(t, { messaging, errors } = {}) {
   const testnet = await makeTestnet(t)
   const gateway = await makeGateway(t, testnet)
   const mirror = await makeMirror(t, testnet, { pushGatewayKeys: [gateway.key] })
@@ -71,7 +71,7 @@ async function scene(t, { backend, errors } = {}) {
   const server = await serve(serverStream, spec, { storage: dir, bootstrap: testnet.bootstrap })
   const client = await connect(clientStream, spec, {
     onerror: (err) => errors?.push(err),
-    ...(backend && { push: { backend } })
+    ...(messaging && { push: messaging })
   })
   t.teardown(
     async () => {
@@ -140,7 +140,7 @@ test('receive: a push about a joined room verifies as newer, on the worker and o
 
   const hit = await receive(b.me, payload)
   // a joined handle's row carries no name until the app sets one
-  t.alike(hit, { id: b.joined.id, type: 'team', name: null, newer: true })
+  t.alike(hit, { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' })
   t.alike(await receive(b.client, payload), hit, 'the same over RPC')
   t.is(await receive(b.me, b4a.from('garbage')), null)
   await t.exception(receive(b.joined, payload), /on me/, "a push is the app's, not a handle's")
@@ -158,7 +158,7 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   await waitUntil(() => gateway.sent.length === gateway.before + 1)
   const payload = payloadOf(gateway.sent.at(-1))
 
-  const expected = { id: b.joined.id, type: 'team', name: null, newer: true }
+  const expected = { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' }
   t.alike(await cold(b.dir, spec, payload), expected, 'read-only beside the live app')
   await b.client.close()
   await b.me.close()
@@ -169,23 +169,78 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   t.pass('the cold read left the storage reopenable')
 })
 
+test('push: a write to a ref that declares no push sends nothing', async (t) => {
+  const { gateway, room } = await scene(t)
+  await put(room.notes, { text: 'quiet' })
+  t.absent(room.store.pushing, 'notes declares no push')
+  const pushed = await waitUntil(() => gateway.sent.length > gateway.before, 2000).catch(
+    () => false
+  )
+  t.absent(pushed, 'nothing sent')
+})
+
+test('push: the bare-kit entry hands a verified push to show and answers what it returns', async (t) => {
+  const { gateway, room, b } = await scene(t)
+  await b.me.network.suspend()
+  await put(room.messages, { text: 'ping' })
+  await waitUntil(() => gateway.sent.length === gateway.before + 1)
+  const payload = gateway.sent.at(-1).android.data.payload
+
+  const handlers = {}
+  globalThis.BareKit = { on: (event, fn) => (handlers[event] = fn) }
+  t.teardown(() => delete globalThis.BareKit)
+  await t.exception(() => entry(spec), /show/, 'the app says what to show, there is no default')
+
+  const request = JSON.stringify({ storage: b.dir, payload })
+  const ask = async () => {
+    const replies = []
+    await handlers.push(request, (err, res) => replies.push([err, res]))
+    return replies
+  }
+  const seen = []
+  entry(spec, (hit) => {
+    seen.push(hit)
+    return { title: hit.name || 'Equipo', body: `Nuevo: ${hit.ref}` }
+  })
+  t.alike(await ask(), [[null, JSON.stringify({ title: 'Equipo', body: 'Nuevo: messages' })]])
+  t.alike(seen, [{ id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' }])
+
+  entry(spec, () => undefined)
+  t.alike(await ask(), [[null, null]], 'nothing returned, nothing shown')
+  entry(spec, () => {
+    throw new Error('boom')
+  })
+  t.alike(
+    await ask(),
+    [[null, null]],
+    'a throwing show shows nothing, the OS still gets its answer'
+  )
+
+  await b.me.network.resume()
+  await waitUntil(async () => (await get(b.joined.messages)).data.length === 1)
+  seen.length = 0
+  entry(spec, (hit) => seen.push(hit))
+  t.alike(await ask(), [[null, null]], 'a push the device already holds is not shown')
+  t.is(seen.length, 0, 'and show was never asked')
+})
+
 test('push: a subscribe that fails is retried at the next change, the follower lives on', async (t) => {
-  const backend = mockBackend({ failFirst: true })
+  const messaging = mockMessaging({ failFirst: true })
   const errors = []
-  const { b } = await scene(t, { backend, errors })
+  const { b } = await scene(t, { messaging, errors })
   await waitUntil(() => errors.length === 1)
-  t.is(backend.topics.size, 0, 'the first subscribe failed, and was reported')
+  t.is(messaging.topics.size, 0, 'the first subscribe failed, and was reported')
   const other = await open(b.client.team, { name: 'other' })
-  await waitUntil(() => backend.topics.size === 2)
+  await waitUntil(() => messaging.topics.size === 2)
   t.pass('the next change subscribed both, the failed one again')
   await leave(other)
 })
 
-test('push: the bare-kit entry answers every push, a bad one with nothing', async (t) => {
+test('push: the bare-kit entry answers every push, a bad one with nothing and show unasked', async (t) => {
   const handlers = {}
   globalThis.BareKit = { on: (event, fn) => (handlers[event] = fn) }
   t.teardown(() => delete globalThis.BareKit)
-  entry(spec)
+  entry(spec, () => t.fail('a bad push is never shown'))
   const replies = []
   await handlers.push('not json', (err, res) => replies.push([err, res]))
   await handlers.push(JSON.stringify({ storage: await t.tmp(), payload: '' }), (err, res) =>
@@ -197,12 +252,12 @@ test('push: the bare-kit entry answers every push, a bad one with nothing', asyn
   ])
 })
 
-test('push: a backend follows the topics, and a push activates the handle', async (t) => {
-  const backend = mockBackend()
+test('push: the messaging service follows the topics, and a push activates the handle', async (t) => {
+  const messaging = mockMessaging()
   const errors = []
-  const { gateway, room, b } = await scene(t, { backend, errors })
-  await waitUntil(() => backend.topics.has(topicOf(room)))
-  t.is(backend.topics.size, 1, 'subscribed to the joined room')
+  const { gateway, room, b } = await scene(t, { messaging, errors })
+  await waitUntil(() => messaging.topics.has(topicOf(room)))
+  t.is(messaging.topics.size, 1, 'subscribed to the joined room')
 
   await b.me.network.suspend()
   await put(room.messages, { text: 'wake up' })
@@ -211,18 +266,18 @@ test('push: a backend follows the topics, and a push activates the handle', asyn
   const dk = room.store.discoveryKey
   await cero.close(b.joined)
   await waitUntil(() => b.me.network.presence.mode(dk) === null)
-  backend.push(payloadOf(gateway.sent.at(-1)))
+  messaging.push(payloadOf(gateway.sent.at(-1)))
   await waitUntil(() => b.me.network.presence.mode(dk) === 'active')
   t.pass('the push opened the handle and ranked it first')
 
   await cero.suspend(b.client)
-  backend.push(payloadOf(gateway.sent.at(-1)))
+  messaging.push(payloadOf(gateway.sent.at(-1)))
   const errored = await waitUntil(() => errors.length > 0, 1000).catch(() => false)
   t.absent(errored, 'a push while the app sleeps is left to the OS, no error')
   await cero.resume(b.client)
 
   const reopened = await open(b.client.team, { id: b.joined.id })
   await leave(reopened)
-  await waitUntil(() => backend.topics.size === 0)
+  await waitUntil(() => messaging.topics.size === 0)
   t.pass('unsubscribed on leave')
 })

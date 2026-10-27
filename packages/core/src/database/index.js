@@ -47,7 +47,7 @@ import { keyPair } from '../mailbox/inbox.js'
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
- * @property {boolean} [push]                                         Push a notification through the mirrors after each local write, so members learn of it while their app is dead.
+ * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
@@ -115,6 +115,8 @@ export class Database extends ReadyResource {
     this.key = opts.key || null
     this.pinned = opts.pinned === true
     this.push = opts.push === true
+    /** @private */
+    this._pushes = pushes(this.refs)
     this.keyPair = opts.keyPair || Identity.randomKeyPair()
     if (b4a.equals(this.keyPair.publicKey, this.identity.device.publicKey)) {
       throw CeroError.INVALID('the device keypair is never a writer — mint one')
@@ -136,10 +138,12 @@ export class Database extends ReadyResource {
     /** @private */
     this._pushed = -1
     /** @private */
+    this._pushRef = null
+    /** @private */
     this._onResume = () => {
       if (!this._pushAgain) return
       this._pushAgain = false
-      this._push()
+      this._push(this._pushRef)
     }
     /** @private */
     this._txChain = null
@@ -435,7 +439,8 @@ export class Database extends ReadyResource {
       if (this.closing || this.closed) throw CeroError.CLOSED('Database')
       throw err
     }
-    if (this.push) this._push()
+    const ref = this.push ? this._ref(ops) : null
+    if (ref) this._push(ref)
   }
 
   /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
@@ -443,10 +448,10 @@ export class Database extends ReadyResource {
     return this._pushing !== null
   }
 
-  // one in flight, then once more at the latest block: a burst of writes is at most two pushes;
-  // one due while the network sleeps goes at resume
+  // one in flight, then once more at the latest block; one due while the network sleeps goes at resume
   /** @private */
-  _push() {
+  _push(ref) {
+    this._pushRef = ref
     if (!this.network?.mirrors.length || this.closing) return
     if (this._pushing || this.network.suspended) {
       this._pushAgain = true
@@ -456,8 +461,18 @@ export class Database extends ReadyResource {
       this._pushing = null
       if (!this._pushAgain) return
       this._pushAgain = false
-      this._push()
+      this._push(this._pushRef)
     })
+  }
+
+  // the first op on a ref that declares push names the notification; a burst keeps the latest
+  /** @private */
+  _ref(ops) {
+    for (const [op] of ops) {
+      const name = this._pushes.get(op.replace(/^(add|set|del)-/, ''))
+      if (name) return name
+    }
+    return null
   }
 
   // a fresh writer core reaches the mirror a few seconds after its first block: one more try
@@ -476,7 +491,8 @@ export class Database extends ReadyResource {
         await this.network.peering().sendNotification(core, {
           roomKey: this.key,
           index,
-          target: this.key
+          target: this.key,
+          extra: b4a.from(this._pushRef)
         })
         this._pushed = index
         return
@@ -1080,6 +1096,13 @@ function bounded(promise, ms = 2000) {
 
 const NO_HOOKS = []
 const PUSH_RETRY = 5000
+
+// the refs whose writes push, by the verb their ops carry
+function pushes(refs) {
+  const map = new Map()
+  for (const [name, ref] of Object.entries(refs)) if (ref.push) map.set(ref.verb || name, name)
+  return map
+}
 
 function addHook(map, op, fn) {
   if (typeof fn !== 'function') throw CeroError.INVALID('hook fn must be a function')
