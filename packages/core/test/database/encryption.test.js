@@ -263,8 +263,9 @@ test('rotate: a removed member cannot decrypt anything written after the rotatio
   await waitFor(async () => (await texts(removed.db)).includes('before'))
 
   await a.db.call('del-member', { id: removed.identity.id })
-  const { epoch } = await a.db.rotate()
-  t.is(epoch, 1, 'first rotation opens epoch 1')
+  // the removal re-keys on its own: epoch 1 is that heal, and a rotation of ours would race it
+  await waitFor(() => a.db.keyring.seq === 1)
+  t.is(a.db.keyring.seq, 1, 'the removal opened epoch 1')
 
   await a.db.put('messages', { text: 'after' })
 
