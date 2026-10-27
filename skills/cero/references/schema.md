@@ -99,6 +99,20 @@ With `own`, anyone who may write adds rows, but only the author, or a member wit
 permission (admins and owners), changes or deletes one. Without it, everyone who may write edits
 every row. [Sharing](handles.md) explains roles.
 
+## Push a notification on a write
+
+```js
+const schema = cero.schema({
+  room: { messages: t.collection({ text: t.string }, { push: true }) }
+})
+```
+
+With `push`, a write to the collection, single or action pushes a notification to the other
+members' devices through the handle's mirror, while their app is dead too. Refs without it never
+push. The schema says only which refs push: what a notification says is the app's, in its push
+worklet, where its other strings live. [Network](network.md#push-while-the-app-is-dead) has the
+setup. Declaring `push` changes nothing stored, so the contract stays.
+
 ## Look rows up by a field
 
 ```js

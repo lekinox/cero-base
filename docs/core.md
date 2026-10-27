@@ -118,20 +118,20 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 `spec` is one built scope, with `database`, `dispatch` and `meta`: the root database opens on the built `spec` itself, a handle on `spec.handles.<type>`.
 
-| Option          | Meaning                                                                                                                                          |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).                                                             |
-| `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                                                                                 |
-| `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                                                                                    |
-| `network`       | Replicates it. Without one it stays on the device.                                                                                               |
-| `key`           | Open an existing database. A new one without.                                                                                                    |
-| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.                                                                    |
-| `epochs`        | The keys it rotated to, as a join delivers them.                                                                                                 |
-| `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`).                                                          |
-| `namespace`     | The Corestore namespace, `'cero'`.                                                                                                               |
-| `pinned`        | Always search and announce, outside the network's presence budget.                                                                               |
-| `push`          | Push a notification through the network's mirrors after each local write, one in flight and the latest block once more after it. Off by default. |
-| `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                       |
+| Option          | Meaning                                                                                                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).                                                                                                              |
+| `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                                                                                                                                  |
+| `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                                                                                                                                     |
+| `network`       | Replicates it. Without one it stays on the device.                                                                                                                                                |
+| `key`           | Open an existing database. A new one without.                                                                                                                                                     |
+| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.                                                                                                                     |
+| `epochs`        | The keys it rotated to, as a join delivers them.                                                                                                                                                  |
+| `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`).                                                                                                           |
+| `namespace`     | The Corestore namespace, `'cero'`.                                                                                                                                                                |
+| `pinned`        | Always search and announce, outside the network's presence budget.                                                                                                                                |
+| `push`          | Push a notification through the network's mirrors after a local write to a ref whose meta declares `push`, naming the ref; one in flight and the latest block once more after it. Off by default. |
+| `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                                                                        |
 
 | Method                                               | Does                                                                                                                                       |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -293,14 +293,15 @@ database key, that a mirror built and the platform delivered. Verified against t
 storage, so it holds only for a writer the device already stores.
 
 ```js
-import { receive } from '@cero-base/core/push'
+import { verify } from '@cero-base/core/push'
 
 // storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key }]
-const hit = await receive(storage, payload, handles) // { id, key, length, newer } or null
+const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref } or null
 ```
 
-`newer` is whether the device is behind the proved length. A database opened with `push: true`
-sends one through its network's mirrors after each local write.
+`newer` is whether the device is behind the proved length, `ref` the ref the write was on, as the
+sender's meta names it. A database opened with `push: true` sends one through its network's mirrors
+after a local write to a ref whose meta entry declares `push`.
 
 ## Storage
 
