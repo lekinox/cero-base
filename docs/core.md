@@ -38,6 +38,8 @@ Identity.verify(proof, message, same.publicKey) // { identity, device }
 | `identity.sign(data)`                                                  | A proof over `data`: this device's signature, under its chain to the identity.                                                                                       |
 | `Identity.verify(proof, data, publicKey)`                              | `{ identity, device }`: whom the proof chains to and who signed, or `null`. `data` `null` checks the chain alone; `publicKey` is the identity expected, any without. |
 | `identity.link(publicKey)`                                             | A proof for a new device of the identity, attested by this one.                                                                                                      |
+| `Identity.bare(device)`                                                | A device with no identity yet: its own key stands for the identity until one attests it. A fresh keypair by default.                                                 |
+| `Identity.chain(proof)`                                                | The keys a proof chains through, the identity first; empty when it is not a proof.                                                                                   |
 | `Identity.seal(publicKey, message)`, `identity.unseal(box)`            | A box only that device opens; its bytes, or `null` when it does not open.                                                                                            |
 | `Identity.randomKeyPair()`                                             | A fresh `{ publicKey, secretKey, id }`, for a device or a writer.                                                                                                    |
 | `Identity.randomBytes(n)`                                              | `n` random bytes, 32 by default.                                                                                                                                     |
@@ -283,10 +285,11 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 
 - Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold admitted joins until their keys are read (`admitted: true`), hence the filter.
 - `pairing.accept(id)` admits the joiner at the invite's role. `pairing.accept(id, { role })` can grant a lower one: `INVALID` for a role that is not a rank or is above the invite's, `REFUSED` above your own. It throws `EXPIRED` once the invite has expired.
+- `pairing.accept(id, { proof })` admits the joiner as a device of your own identity, not as a member: `proof` is `identity.link(request.key)`, your device attesting theirs. Apply checks the chain ends at the request's key under your identity (`REFUSED` otherwise), seats the writer under your member with the proof on its device row, and the reply carries that `proof`. A joiner with no identity yet joins as `Identity.bare(device)` and becomes `Identity.from({ publicKey, encryptionKey, device, proof })` from the reply.
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
 - Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
-- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
+- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
 
 ## Push

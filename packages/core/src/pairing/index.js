@@ -35,6 +35,7 @@ const MAX_DELAY = 2 ** 31 - 1
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
+ * @property {Uint8Array | null} [proof]            The joiner's chain to your identity, from `identity.link`: it joins as a device of yours, not as a member.
  *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
@@ -49,6 +50,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {Uint8Array | null} encryptionKey
  * @property {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
  * @property {KeyPair} writer                       The writer the join admitted: open the database with it.
+ * @property {Uint8Array | null} proof              A device's chain to the identity it was linked under, null for a member.
  */
 
 /**
@@ -164,7 +166,7 @@ export class Pairing extends ReadyResource {
    * @param {AcceptOpts} [opts]
    * @returns {Promise<void>}
    */
-  async accept(id, { role } = {}) {
+  async accept(id, { role, proof = null } = {}) {
     const invite = await this._waiting(id)
     // apply has no clock: it would admit past the expiry
     if (expired(invite)) throw CeroError.EXPIRED()
@@ -175,7 +177,7 @@ export class Pairing extends ReadyResource {
     if (!grants(invite.role, role)) {
       throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
     }
-    await this.db.call('accept', { id, role })
+    await this.db.call('accept', { id, role, proof })
   }
 
   /**
@@ -244,12 +246,18 @@ export class Pairing extends ReadyResource {
   // remove drops an admitted one instead, and a refused one is forgotten
   /** @private */
   async _answer(owed, refused, role) {
-    const keys = () => ({
+    // a device linked under a member reads its chain off its row
+    const proofs = new Map()
+    for (const { id } of owed) {
+      proofs.set(id, (await this.db.get('devices', id)).data?.proof ?? null)
+    }
+    const keys = ({ id }) => ({
       status: STATUS_ACCEPTED,
       reason: '',
       key: this.db.key,
       encryptionKey: this.db.encryptionKey,
-      epochs: this.db.keyring.all()
+      epochs: this.db.keyring.all(),
+      proof: proofs.get(id)
     })
     const denied = ({ reason }) => ({
       status: STATUS_DENIED,
@@ -373,8 +381,8 @@ export class Pairing extends ReadyResource {
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
       } else if (response?.key && b4a.equals(response.key, parsed.key)) {
-        const { key, encryptionKey, epochs } = response
-        await settle({ key, encryptionKey, epochs: epochs || [], writer }, resolve)
+        const { key, encryptionKey, epochs, proof = null } = response
+        await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
       }
     }
 

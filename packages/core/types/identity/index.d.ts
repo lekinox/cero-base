@@ -99,6 +99,21 @@ export declare class Identity {
      */
     link(publicKey: Uint8Array): Uint8Array;
     /**
+     * A device with no identity yet: it signs as itself, its own key standing for the identity,
+     * until one attests it.
+     *
+     * @param {KeyPair} [device]  A fresh keypair by default.
+     * @returns {Promise<Identity>}
+     */
+    static bare(device?: KeyPair): Promise<Identity>;
+    /**
+     * The keys a proof chains through: the identity, then each device down to the signer.
+     *
+     * @param {Uint8Array} proof
+     * @returns {Uint8Array[]}  Empty when it is not a proof.
+     */
+    static chain(proof: Uint8Array): Uint8Array[];
+    /**
      * Open a sealed box addressed to this device.
      *
      * @param {Uint8Array} sealed

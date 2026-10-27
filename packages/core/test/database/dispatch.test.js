@@ -281,17 +281,23 @@ test('del-writer: a member can remove its own writer (self)', async (t) => {
   t.absent((await db.get('devices', phone.writer.id)).data, 'self-removal allowed')
 })
 
-test("del-writer: a removed device's proof still seats a fresh writer", async (t) => {
+test("del-writer: a removed device's key stays out: no new writer, no device it attests, no join", async (t) => {
   const { db, identity } = await withRole(t, 'owner')
+  // minted first: a write through db rebuilds the view without the seats applied straight into it
+  const invite = await minted(db, { reuse: true })
   const phone = linked(identity)
   await seat(db, phone)
   await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey))
-  // the chain is static and nothing in the view says the key was removed: removing retires the
-  // writer, it does not lock the key out
+  // the chain is static, so the removal is kept beside the members' and read on every admission
   const again = { identity: phone.identity, writer: Identity.randomKeyPair() }
-  t.is(await seat(db, again), null)
-  const { data: row } = await db.get('devices', again.writer.id)
-  t.alike(row?.key, phone.identity.device.publicKey, 'the removed key is back on a new writer')
+  t.is((await seat(db, again))?.code, 'REFUSED', 'not with a fresh writer')
+  t.absent((await db.get('devices', again.writer.id)).data)
+  const child = linked(phone.identity)
+  t.is((await seat(db, child))?.code, 'REFUSED', 'nor a device it attests')
+  const writer = Identity.randomKeyPair().publicKey
+  const join = joinOp(db, invite, { identity: phone.identity, writer })
+  t.is(await apply(db, writer, 'join', join), null)
+  t.is((await refusal(db, hid.encode(writer)))?.reason, 'removed', 'a join by it is turned away')
 })
 
 // ─── fast-forward trust ───────────────────────────────────────────────────
@@ -1062,6 +1068,49 @@ test('join: a writer has a request or a refusal, never both', async (t) => {
   await joiner(admitted)(open)
   t.absent(await refusal(db, hid.encode(admitted)), 'an admission takes over too')
   t.is((await db.get('requests', hid.encode(admitted))).data?.admitted, true)
+})
+
+test('accept: with a proof, the joiner is admitted as a device of the accepter, under its member', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const invite = await minted(db, { confirm: true })
+  const device = Identity.randomKeyPair()
+  const bare = await Identity.bare(device)
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity: bare, writer })), null)
+  const { data: waiting } = await db.get('requests', id)
+  t.alike(waiting?.key, device.publicKey, 'the request carries the device key')
+  t.absent((await db.get('members', bare.id)).data, 'a bare device is no member')
+
+  const proof = identity.link(device.publicKey)
+  t.is(await apply(db, db.writerKey, 'accept', { id, proof }), null)
+  const { data: row } = await db.get('devices', id)
+  t.is(row?.memberId, identity.id, 'seated under the accepter')
+  t.alike(row?.key, device.publicKey)
+  t.alike(row?.proof, proof, 'with the chain its reply will carry')
+  t.is((await db.get('members')).data.length, 1, 'no member was added')
+  t.is((await db.get('requests', id)).data?.admitted, true)
+  t.absent((await db.get('invites', b4a.toHex(invite.id))).data, 'spent')
+})
+
+test("accept: a proof must chain the request's key to the accepter's own identity", async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const other = await Identity.create()
+  const invite = await minted(db, { confirm: true, reuse: true })
+  const device = Identity.randomKeyPair()
+  const bare = await Identity.bare(device)
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', joinOp(db, invite, { identity: bare, writer }))
+  const wrong = {
+    'another key': identity.link(Identity.randomKeyPair().publicKey),
+    'another identity': other.link(device.publicKey),
+    'not a proof': b4a.from('garbage')
+  }
+  for (const [why, proof] of Object.entries(wrong)) {
+    t.is((await apply(db, db.writerKey, 'accept', { id, proof }))?.code, 'REFUSED', why)
+  }
+  t.absent((await db.get('devices', id)).data, 'nothing seated')
 })
 
 test('del-refusal: answering a refused join needs INVITE', async (t) => {

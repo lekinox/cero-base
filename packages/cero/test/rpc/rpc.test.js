@@ -551,7 +551,8 @@ test('rpc: leaving a handle ends its watch streams (no dangling)', async (t) => 
 test('rpc: a verb the root cannot take fails the same way in the UI as in the worker', async (t) => {
   const { client } = await openPair(t)
   await t.exception(cero.leave(client), /the root cannot be left/)
-  await t.exception(cero.accept(client, { id: 'x' }), /the root has no invites/)
+  await t.exception(cero.accept(client, { id: 'x' }), /unknown request/)
+  t.is(typeof (await cero.invite(client)), 'string', 'a device invite, minted in the worker')
 })
 
 test('rpc: a verb answers in the UI as in the worker, results and refusals', async (t) => {
@@ -568,7 +569,6 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'revoke an invite never minted': (root, room) => cero.revoke(room, stray),
     'cancel a join never started': (root) => cero.cancel(root, stray),
     'cancel what is no invite': (root) => cero.cancel(root, 'nope'),
-    'invite on the root': (root) => cero.invite(root),
     'invite as no rank': (root, room) => cero.invite(room, { role: 'nope' }),
     'reuse above member': (root, room) => cero.invite(room, { role: 'admin', reuse: true }),
     'revoke on the root': (root) => cero.revoke(root, stray),
