@@ -136,3 +136,28 @@ test('after hooks still fire for a removal and a re-rank decided by a rule', asy
   await db.set('members', { id: other.id, role: 'member' })
   t.alike([...new Set(fired)], ['del admin', 'set member'], 'each lands, its after hooks fire')
 })
+
+test('a grant never demotes the last owner either', async (t) => {
+  const { db, identity } = await withRole(t, 'owner', { members: [someone('admin')] })
+  db.before('set', (ctx) => (ctx.name === 'members' ? 'grant' : undefined))
+  await t.exception(db.set('members', { id: identity.id, role: 'admin' }), /last owner/)
+  t.is(await roleOf(db, identity.id), 'owner')
+})
+
+test('a grant counts only for a member who writes: a reader is refused, whatever a rule says', async (t) => {
+  const target = someone('member')
+  const { db } = await withRole(t, 'reader', { members: [target] })
+  db.before('del', (ctx) => (ctx.name === 'members' ? 'grant' : undefined))
+  db.before('set', (ctx) => (ctx.name === 'members' ? 'grant' : undefined))
+  await t.exception(db.del('members', target.id), /REFUSED/)
+  await t.exception(db.set('members', { id: target.id, role: 'admin' }), /REFUSED/)
+  t.is(await roleOf(db, target.id), 'member')
+})
+
+test('a rank cero has no name for is refused, granted or not', async (t) => {
+  const target = someone('member')
+  const { db } = await withRole(t, 'owner', { members: [target] })
+  db.before('set', (ctx) => (ctx.name === 'members' ? 'grant' : undefined))
+  await t.exception(db.set('members', { id: target.id, role: 'emperor' }))
+  t.is(await roleOf(db, target.id), 'member')
+})

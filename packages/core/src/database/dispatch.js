@@ -17,7 +17,8 @@ import {
   INVITE,
   REMOVE,
   ASSIGN,
-  WRITE
+  WRITE,
+  RANK
 } from '../lib/constants.js'
 import {
   can,
@@ -241,6 +242,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       ...(await author(ctx)),
       ...operators(ctx, ts)
     }
+    // a grant widens rank among the room's writers only: never for a reader, nor for someone who
+    // is no member at all
+    const canGrant = Boolean(hctx.memberId) && can(hctx.role, WRITE)
     let granted = false
     for (const fn of fns?.before ?? []) {
       let verdict
@@ -250,7 +254,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         throw CeroError.REFUSED('hook', err.message)
       }
       if (verdict === false) throw CeroError.REFUSED('hook')
-      if (verdict === 'grant') granted = true
+      if (verdict === 'grant' && canGrant) granted = true
     }
     if (!ranked && !granted) throw refusal()
     return { fns, hctx }
@@ -385,6 +389,14 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
 
     let row
     if (op.role && op.role !== existing.role) {
+      // a rank cero has no name for is no rank, granted or not
+      if (RANK[op.role] == null) throw CeroError.INVALID(`'${op.role}' is not a role`)
+      // the last owner keeps her rank, whatever a rule grants, as she is never removed
+      if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
+        throw CeroError.INVALID(
+          'the last owner cannot be demoted: make another member an owner first'
+        )
+      }
       const r = await getSignerRole(ctx.view, ctx.key)
       next.role = op.role
       const ranked = can(r, ASSIGN) && grants(r, op.role) && outranks(r, existing.role)

@@ -172,7 +172,9 @@ in a rule on `members` instead: on a `del`, or a `set` that changes `role`, `ctx
 whether rank alone allows it. Return `'grant'` to allow it anyway, or `false` to refuse it. A bare
 `true` grants nothing, since every rule returns it for "no objection", and one rule refusing wins
 over another granting. It is decided before anything moves, so a refused removal leaves the member,
-her devices and her seat as they were. The last owner is never removed, whatever a rule grants.
+her devices and her seat as they were. A grant counts only for a member who writes, never a reader,
+and a rank must be one cero names. The last owner is never removed nor demoted, whatever a rule
+grants.
 
 ```js
 cero.before(me.room.members, async ({ op, row, existing, ranked, memberId, get }) => {

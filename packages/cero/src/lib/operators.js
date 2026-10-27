@@ -109,7 +109,8 @@ const WRITES = { single: ['set', 'del'], collection: ['put', 'set', 'del'] }
  * On `members`, removing someone or changing her rank is the rank's call by default: the writer
  * outranks whom she acts on, and `ctx.ranked` says whether she does. A rule there may return
  * `'grant'` to allow what rank alone refuses (a bare `true` grants nothing), or `false` to refuse
- * what it allows. It is decided before anything moves. The last owner still never goes.
+ * what it allows, and only a writer's grant counts. It is decided before anything moves. The
+ * last owner is never removed nor demoted.
  *
  * @param {Ref} ref
  * @param {(ctx: HookContext) => unknown} fn
