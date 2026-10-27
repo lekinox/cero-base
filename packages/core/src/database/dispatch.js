@@ -17,11 +17,11 @@ import {
   INVITE,
   REMOVE,
   ASSIGN,
-  WRITE,
-  RANK
+  WRITE
 } from '../lib/constants.js'
 import {
   can,
+  isRank,
   grants,
   outranks,
   admission,
@@ -390,7 +390,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     let row
     if (op.role && op.role !== existing.role) {
       // a rank cero has no name for is no rank, granted or not
-      if (RANK[op.role] == null) throw CeroError.INVALID(`'${op.role}' is not a role`)
+      if (!isRank(op.role)) throw CeroError.INVALID(`'${op.role}' is not a role`)
       // the last owner keeps her rank, whatever a rule grants, as she is never removed
       if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
         throw CeroError.INVALID(

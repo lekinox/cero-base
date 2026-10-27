@@ -161,3 +161,13 @@ test('a rank cero has no name for is refused, granted or not', async (t) => {
   await t.exception(db.set('members', { id: target.id, role: 'emperor' }))
   t.is(await roleOf(db, target.id), 'member')
 })
+
+test('a rank named after an object’s own keys is no rank either', async (t) => {
+  const target = someone('member')
+  const { db } = await withRole(t, 'owner', { members: [target] })
+  db.before('set', (ctx) => (ctx.name === 'members' ? 'grant' : undefined))
+  for (const role of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    await t.exception(db.set('members', { id: target.id, role }), undefined, role)
+  }
+  t.is(await roleOf(db, target.id), 'member')
+})
