@@ -29,18 +29,18 @@
   },
   "dependencies": {
     "@cero-base/cero": "*",
-    "bare-fs": "^4.8.2",
+    "bare-fs": "^4.8.4",
     "bare-os": "^3.9.3",
     "bare-path": "^3.1.2",
     "chat-backend": "*",
-    "expo": "~57.0.26",
-    "expo-clipboard": "~57.0.2",
-    "expo-file-system": "~57.0.7",
+    "expo": "~58.0.19",
+    "expo-clipboard": "~58.0.4",
+    "expo-file-system": "~58.0.11",
     "react": "19.3.0",
-    "react-native": "0.86.3",
-    "react-native-bare-kit": "^0.15.6"
+    "react-native": "0.88.0",
+    "react-native-bare-kit": "^0.16.0"
   },
   "devDependencies": {
-    "bare-pack": "^2.2.2"
+    "bare-pack": "^3.0.2"
   }
 }

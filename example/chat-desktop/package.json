@@ -29,20 +29,20 @@
     "bare-process": "^4.5.1",
     "chat-backend": "*",
     "graceful-goodbye": "^1.3.3",
-    "paparam": "^1.13.0",
+    "paparam": "^1.14.0",
     "pear-runtime": "^1.3.1",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "streamx": "^2.28.1",
     "which-runtime": "^1.4.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@vitejs/plugin-react": "^6.1.1",
-    "concurrently": "^10.0.5",
-    "electron": "^44.4.5",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "electron": "^45.0.0",
     "tailwindcss": "^4.3.3",
-    "vite": "^8.3.1",
+    "vite": "^8.3.5",
     "vite-plugin-node-polyfills": "^0.28.0",
     "wait-on": "^9.5.1"
   }
