@@ -127,7 +127,9 @@ and answers the OS with what it returns, `{ title, body }`, or nothing. A forged
 one about no handle here, never reaches `show`. `row` is the row the write put: the push carries the
 block when it fits the platform's payload, and the device opens it with the handle's keys it holds,
 so the notification can say what was written; it is `null` when the block stayed behind, and the
-ref's generic text is the fallback. Cero carries and verifies pushes; the app says what
+ref's generic text is the fallback. The row is the writer's claim, decoded before this device applies
+it: the trust is the push's own, a writer this device stores, and what the handle's rules make of
+the write shows once the app syncs. Cero carries and verifies pushes; the app says what
 a notification looks like, so its strings live with the app's other strings and translate with
 them. The request the OS hands it carries `storage`, `payload` and, when the app encrypts its local
 store, `storageKey`, in base64.
