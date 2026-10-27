@@ -14,6 +14,7 @@ export const defs = {
   },
   local: {
     master: { type: 'master', kind: 'single' },
+    device: { type: 'device', kind: 'single' },
     keypair: { type: 'keypair', kind: 'single' },
     'handle-keypairs': { type: 'handle-keypair' },
     joins: { type: 'join' },

@@ -440,15 +440,39 @@ test('Handle: rotation works on nested child rooms — remove, late join, reopen
     'removed nested member frozen at the cut'
   )
 
-  // reopen the rotated child by id via the parent's handles row — the row
-  // carries only key+encryptionKey, so epochs must prime from local userData
+  // reopen the rotated child by id via the parent's handles row: the row carries its epochs, and
+  // local userData primes them too
   const roomId = room.id
   await room.close()
   const reopened = await open(a.me.team, { id: roomId })
   t.teardown(() => reopened.close().catch(() => {}))
-  t.ok(reopened.store.keyring.seq >= 1, 'reopened child primed its keyring from userData')
+  t.ok(reopened.store.keyring.seq >= 1, 'reopened child primed its keyring')
   const { data: reread } = await get(reopened.messages)
   t.alike(reread.map((r) => r.text).sort(), ['after', 'before'], 'reopened child reads every era')
+})
+
+test('rotation: a second device by phrase reads a re-keyed room through the epochs its root carries', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'pre' })
+  await rotate(room)
+  await put(room.messages, { text: 'post' })
+  const texts = async (r) => (await get(r.messages)).data.map((m) => m.text).sort()
+
+  // nothing in the room's log is sealed to this device: the epoch comes with the root's row
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase: a.me.identity.toPhrase() })
+  await waitUntil(async () => ((await get(b.me.handles)).data.length === 1 ? true : null))
+  const mine = await open(b.me.team, { id: room.id })
+  t.teardown(() => mine.close().catch(() => {}))
+  await waitUntil(async () => ((await texts(mine)).length === 2 ? true : null))
+  t.alike(await texts(mine), ['post', 'pre'], 'reads the era sealed before it existed')
+
+  // seated, the next rotation seals to it directly
+  await waitUntil(async () => (mine.store.writable ? true : null))
+  await rotate(room)
+  await put(room.messages, { text: 'later' })
+  await waitUntil(async () => ((await texts(mine)).includes('later') ? true : null))
+  t.pass('and reads on from its own envelope')
 })
 
 // ─── nested rotation: healer, files, devices, watch ────────────────────────

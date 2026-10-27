@@ -94,13 +94,13 @@ test('constructor: rejects a missing encryption key, the identity never stands i
   t.exception.all(() => new Database({ store, identity, spec }), /encryptionKey is required/)
 })
 
-test('constructor: refuses the identity keypair as the writer', async (t) => {
+test('constructor: refuses the device keypair as the writer', async (t) => {
   const { store } = await makeStore(t)
   const identity = await Identity.create()
-  const keyPair = { publicKey: identity.publicKey, secretKey: identity.secretKey }
+  const keyPair = identity.device
   t.exception.all(
     () => new Database({ store, identity, spec, keyPair, encryptionKey: Identity.randomBytes(32) }),
-    /device keypair/
+    /never a writer/
   )
 })
 
@@ -669,16 +669,15 @@ test('call: an action hook cannot raise its caller’s role, ctx writes run the 
   t.is((await db.get('members', identity.id)).data.role, 'member', 'the role did not land')
 })
 
-test('addWriter admits another device of this identity', async (t) => {
+test('add-writer: a device seats only itself, one appended for another core is ignored', async (t) => {
   const { db, store } = await bootstrapped(t)
   const stranger = Identity.randomKeyPair()
   const core = Hypercore.key({
     version: store.manifestVersion,
     signers: [{ publicKey: stranger.publicKey }]
   })
-  await db.addWriter(stranger.publicKey)
-  const { data: device } = await db.get('devices', hid.encode(core))
-  t.is(device.memberId, db.identity.id, 'bound to the admitting identity')
+  await db.call('add-writer', db._admission(core))
+  t.absent((await db.get('devices', hid.encode(core))).data, 'no row for a core the signer is not')
 })
 
 test('call: an action hook that throws refuses the action', async (t) => {
@@ -1131,14 +1130,12 @@ test('bootstrap: names the owner device via set-device', async (t) => {
 
 test('add-writer: creates a bare device — never bakes in a name', async (t) => {
   const { db, identity } = await bootstrapped(t)
-  const fresh = b4a.alloc(32)
-  for (let i = 0; i < 32; i++) fresh[i] = i + 7
-  await db.addWriter(fresh)
   const { data: devices } = await db.get('devices', {})
-  const added = devices.find((d) => d.name == null)
-  t.ok(added, 'the add-writer device has no name')
-  t.absent(added.isMobile, 'and no isMobile')
-  t.is(added.memberId, identity.id, 'but it still backlinks to the member identity')
+  t.is(devices.length, 1)
+  const [added] = devices
+  t.is(added.name, 'first', 'set-device named it after the seat')
+  t.alike(added.key, identity.device.publicKey, 'the seat kept the device key through set-device')
+  t.is(added.memberId, identity.id, 'and it backlinks to the member identity')
   t.ok(added.createdAt, 'and has a createdAt')
 })
 
@@ -1243,20 +1240,6 @@ test('put on a collection stamps memberId from the writer→member backlink', as
 })
 
 // ─── addWriter / removeWriter ─────────────────────────────────────────────
-
-test('addWriter: signed add-writer reaches devices collection', async (t) => {
-  const { db } = await bootstrapped(t)
-  const fresh = b4a.alloc(32)
-  for (let i = 0; i < 32; i++) fresh[i] = i + 1
-  await db.addWriter(fresh)
-  const { data } = await db.get('devices', {})
-  t.ok(data.length >= 2)
-})
-
-test('addWriter: rejects non-buffer pk', async (t) => {
-  const { db } = await bootstrapped(t)
-  await t.exception.all(() => db.addWriter('not-a-buffer'), /publicKey/)
-})
 
 test('removeWriter: rejects non-buffer pk', async (t) => {
   const { db } = await bootstrapped(t)
@@ -1728,8 +1711,8 @@ test('replication: concurrent puts from two writers — both rows visible to bot
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  // A admits B as a writer.
-  await a.db.addWriter(b.db.keyPair.publicKey)
+  // B joins A's database as a member.
+  await admit(a.db, b.db)
 
   // Wait for B to become writable.
   await waitFor(() => b.db.writable)
@@ -1777,9 +1760,9 @@ test('replication: addWriter promotes B → B can put → A sees', async (t) => 
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  t.is(b.db.writable, false, 'b is not writable before addWriter')
+  t.is(b.db.writable, false, 'b is not writable before its join')
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
+  await admit(a.db, b.db)
   await waitFor(() => b.db.writable)
   t.ok(b.db.writable, 'b became writable after admission')
 
@@ -1811,9 +1794,9 @@ test('replication: removeWriter — B can no longer write', async (t) => {
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
+  await admit(a.db, b.db)
   await waitFor(() => b.db.writable)
-  t.ok(b.db.writable, 'b writable after add')
+  t.ok(b.db.writable, 'b writable after its join')
 
   // B writes once successfully so we have a baseline.
   const { data: r1 } = await b.db.put('messages', { text: 'still-allowed' })
@@ -2106,8 +2089,8 @@ test('replication: three-peer — A puts, both B and C receive', async (t) => {
   await waitForConnection(b.network)
   await waitForConnection(c.network)
 
-  await a.db.addWriter(b.db.keyPair.publicKey)
-  await a.db.addWriter(c.db.keyPair.publicKey)
+  await admit(a.db, b.db)
+  await admit(a.db, c.db)
   await waitFor(() => b.db.writable)
   await waitFor(() => c.db.writable)
 
@@ -2403,7 +2386,7 @@ test('whenWritable: resolves when bee becomes writable via add-writer', async (t
   const testnet = await makeTestnet(t)
   const { a, b, idB } = await pairOnTestnet(t, testnet)
   t.absent(b.db.writable, 'b not yet writable')
-  await a.db.addWriter(b.db.keyPair.publicKey)
+  await admit(a.db, b.db)
   await b.db.whenWritable({ timeout: 15000 })
   t.ok(b.db.writable, 'b became writable')
 })
@@ -2603,12 +2586,12 @@ test('apply: claim-path device timestamps are deterministic across peers', async
   const a = await makePeer(t, testnet, { identity, topic })
   await a.db.bootstrap({ name: 'a' })
 
+  const phone = Identity.randomKeyPair()
   const b = await makePeer(t, testnet, {
-    identity,
+    identity: Identity.from({ ...identity, device: phone, proof: identity.link(phone.publicKey) }),
     topic,
     key: a.db.key,
-    encryptionKey: a.db.encryptionKey,
-    keyPair: Identity.randomKeyPair()
+    encryptionKey: a.db.encryptionKey
   })
   await waitForConnection(a.network)
   await waitForConnection(b.network)
@@ -2622,16 +2605,18 @@ test('apply: claim-path device timestamps are deterministic across peers', async
   t.ok(onB.createdAt > 0, 'claim stamped a real timestamp')
   t.is(onA.createdAt, onB.createdAt, 'claim createdAt identical on both peers')
   t.is(onA.updatedAt, onB.updatedAt, 'claim updatedAt identical on both peers')
+  t.alike(onA.key, phone.publicKey, 'the seat carries the device key the chain ends at')
+  t.is(onA.name, null, 'and no name: a device names itself after')
 })
 
 test('apply: an add-writer without ts falls back to 0 — identical everywhere', async (t) => {
-  const { db, identity } = await bootstrapped(t)
-  const writer = Identity.randomKeyPair().publicKey
+  const { db, identity } = await makeDb(t)
+  const writer = db.writerKey
 
   await db.call('add-writer', {
     master: identity.publicKey,
     writer,
-    sig: identity.sign(admission(db.key, writer, db.writerKey))
+    proof: identity.sign(admission(db.key, writer, writer))
   })
 
   const { data: row } = await db.get('devices', z32.encode(writer))

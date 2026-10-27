@@ -1,5 +1,6 @@
 import AbortController from 'bare-abort-controller'
 import b4a from 'b4a'
+import c from 'compact-encoding'
 import { discoveryKey } from 'hypercore-crypto'
 import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
@@ -8,7 +9,7 @@ import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
-import { blobEpochKey } from '@cero-base/core/database/encryption'
+import { blobEpochKey, epochEntries } from '@cero-base/core/database/encryption'
 import { Pairing } from '@cero-base/core/pairing'
 import { verify } from '@cero-base/core/push'
 import { Invite } from '@cero-base/core/invite'
@@ -734,7 +735,7 @@ export class Handle extends ReadyResource {
         await tx.call('add-writer', {
           master: this.identity.publicKey,
           writer: writerKey,
-          sig: this.identity.sign(admission(child.store.key, writerKey, child.store.writerKey)),
+          proof: this.identity.sign(admission(child.store.key, writerKey, child.store.writerKey)),
           ts
         })
         await tx.call('add-member', {
@@ -880,6 +881,7 @@ export class Handle extends ReadyResource {
         type,
         key: child.store.key,
         encryptionKey: child.store.encryptionKey,
+        epochs: c.encode(epochEntries, child.store.keyring.all()),
         name: null,
         createdAt: ts,
         updatedAt: ts
@@ -961,6 +963,7 @@ export class Handle extends ReadyResource {
       namespace: `${NS}/handle/${type}/${id}`,
       key: data.key,
       encryptionKey: data.encryptionKey,
+      epochs: data.epochs ? c.decode(epochEntries, data.epochs) : undefined,
       keyPair: /** @type {KeyPair} */ (writer)
     })
     try {
@@ -1010,7 +1013,37 @@ export class Handle extends ReadyResource {
     this._pending.delete(child)
     this.children.add(child)
     this._serve(child)
+    this._carry(child)
     this.emit('handle', child, info)
+  }
+
+  // a handle's epochs ride in its root row, which only the identity's devices read: one that
+  // opens the handle later reads history with them, since envelopes in the log address a device
+  /** @private */
+  _carry(child) {
+    const save = async () => {
+      const epochs = c.encode(epochEntries, child.store.keyring.all())
+      const { data: row } = await this.store.get('handles', child.id)
+      if (!row || b4a.equals(row.epochs || b4a.alloc(0), epochs)) return
+      await this.store.set('handles', { id: row.id, epochs })
+    }
+    // read when the row changes, and when an announcement applies: it is learned only after that
+    const read = async () => {
+      const { data: row } = await this.store.get('handles', child.id)
+      if (row?.epochs) await child.store.learn(c.decode(epochEntries, row.epochs))
+    }
+    const touches = (name) => (touched) => touched.has('*') || touched.has(name)
+    const onepoch = () => save().catch(this._onerror)
+    const onroot = (touched) => touches('handles')(touched) && read().catch(this._onerror)
+    const onchild = (touched) => touches('epochs')(touched) && read().catch(this._onerror)
+    child.store.on('epoch', onepoch)
+    child.store.on('update', onchild)
+    this.store.on('update', onroot)
+    child.once('close', () => {
+      child.store.off('epoch', onepoch)
+      child.store.off('update', onchild)
+      this.store.off('update', onroot)
+    })
   }
 
   // before(me.room.notes, fn): on every handle open now and every one opened later

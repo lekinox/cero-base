@@ -63,9 +63,9 @@ An invite made with `confirm: true` pauses at step 3: the join waits in `room.re
 
 ## Your devices and recovery
 
-A phrase is the user, and every device of yours holds it. Each device writes only its own log, in the root and in every handle, so no two devices write over each other.
+A phrase is the user. Its key attests a device once, when the phrase is typed on it, and is then dropped: the device signs everything after with a key of its own, under that proof. Each device writes only its own log, in the root and in every handle, so no two devices write over each other.
 
-The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with the phrase's signature. Each handle is a row in the root with its keys, so the device takes a seat in a handle the same way when it opens it.
+The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with its proof. Each handle is a row in the root with its keys, so the device takes a seat in a handle the same way when it opens it.
 
 Removing a device takes its log out, but the device still holds the seed and can admit a fresh log like any new device. Removing retires a device; it does not lock out whoever holds it. `storageKey` keeps the seed encrypted on disk.
 
@@ -73,7 +73,7 @@ Removing a device takes its log out, but the device still holds the seed and can
 
 Each handle has its own key, made at creation, kept in your root and handed to joiners at step 4; the root's key comes from the phrase. Mirrors, and peers without the key, see only ciphertext.
 
-A removal takes the member's logs out at once, but their key would still read what comes next. So the handle re-keys: a new secret, sealed to each remaining member and announced in its log, for every row and file written after.
+A removal takes the member's logs out at once, but their key would still read what comes next. So the handle re-keys: a new secret, sealed to each remaining device and announced in its log, for every row and file written after. A device of yours that opens the handle later reads with the keys its root carries, and is sealed to from then on.
 
 - Half a second after a removal lands, a device of an admin or the owner with the handle open re-keys it, or the next one to come online. `cero.rotate(room)` re-keys at once and resolves when the key is in place: await it before writing what the removed member must not read.
 - Once a handle has re-keyed, any change of members re-keys it again, joins included.

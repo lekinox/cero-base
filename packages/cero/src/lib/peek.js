@@ -10,11 +10,11 @@ import { Local } from '../local/index.js'
 
 /**
  * Quickly check whether the on-disk directory at `dir` already holds an initialised cero
- * identity (i.e. a stored master seed).
+ * identity (i.e. a stored device key with its proof).
  *
  * @param {string} dir   Cero data directory.
  * @param {import('./spec.js').Spec} spec  Built spec, the value passed to `cero(dir, spec)`.
- * @returns {Promise<boolean>}  `true` if a master seed exists on disk.
+ * @returns {Promise<boolean>}  `true` if a device of an identity exists on disk.
  */
 export async function peek(dir, spec) {
   if (typeof dir !== 'string' || !dir) throw CeroError.INVALID('dir must be a non-empty string')
@@ -28,8 +28,8 @@ export async function peek(dir, spec) {
     await root.ready()
     await store.ready()
     await local.ready()
-    const { data } = await local.store.get('master')
-    return !!data?.seed
+    const { data } = await local.store.get('device')
+    return !!data
   } finally {
     await local.close().catch(safetyCatch)
     await store.close().catch(safetyCatch)

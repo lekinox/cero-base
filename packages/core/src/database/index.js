@@ -119,8 +119,8 @@ export class Database extends ReadyResource {
     /** @private */
     this._pushes = pushes(this.refs)
     this.keyPair = opts.keyPair || Identity.randomKeyPair()
-    if (b4a.equals(this.keyPair.publicKey, this.identity.publicKey)) {
-      throw CeroError.INVALID('the identity keypair is never a writer — use a device keypair')
+    if (b4a.equals(this.keyPair.publicKey, this.identity.device.publicKey)) {
+      throw CeroError.INVALID('the device keypair is never a writer — mint one')
     }
 
     /** @private */
@@ -656,13 +656,25 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Admit another device of this identity as a writer. Another member's device seats itself.
+   * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
+   * once its announcement applied here and the secret meets the commitment it carries: hand them
+   * over again when an announcement applies.
    *
-   * @param {Uint8Array} publicKey
+   * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
    * @returns {Promise<void>}
    */
-  async addWriter(publicKey) {
-    return this._admit('add-writer', publicKey)
+  async learn(epochs) {
+    this.guard()
+    const rows = await this.rotation._epochs()
+    let added = false
+    for (const e of epochs) {
+      if (this.keyring.entropy(e.stamp)) continue
+      const row = rows.find((r) => r.stamp === e.stamp)
+      if (!row?.commit || !b4a.equals(crypto.hash(e.entropy), row.commit)) continue
+      this.keyring.add(e.stamp, e.entropy, e.epoch)
+      added = true
+    }
+    if (added) await this.rotation._save()
   }
 
   /**
@@ -1059,11 +1071,11 @@ export class Database extends ReadyResource {
     })
   }
 
-  // the add-writer row for `writer`, appended by this device and signed by the identity
+  // the add-writer row for `writer`, appended by this device and proven by its device key
   /** @private */
   _admission(writer, ts = Date.now()) {
-    const sig = this.identity.sign(admission(this.key, writer, this.writerKey))
-    return { master: this.identity.publicKey, writer, sig, ts }
+    const proof = this.identity.sign(admission(this.key, writer, this.writerKey))
+    return { master: this.identity.publicKey, writer, proof, ts }
   }
 
   /** @private */

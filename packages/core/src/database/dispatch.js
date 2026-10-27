@@ -39,7 +39,6 @@ const Join = getEncoding('@cero/join')
 
 // wire fields are variable-length: reject wrong sizes before sodium and hid throw on them
 const isKey = (b) => b?.byteLength === 32
-const isSig = (b) => b?.byteLength === 64
 
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
@@ -211,8 +210,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     return hooked(fns, meta, ctx, (r) => insert(ctx.view, name, r))
   }
 
-  function seat(ctx, writer, memberId, ts) {
-    const row = { id: hid.encode(writer), memberId, createdAt: ts, updatedAt: ts }
+  function seat(ctx, writer, memberId, ts, key) {
+    const row = { id: hid.encode(writer), memberId, createdAt: ts, updatedAt: ts, key }
     return save(ctx, 'put', 'devices', row)
   }
 
@@ -336,9 +335,13 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       for (const run of later) await run()
     })
 
+  // a device seats only itself: the row's device key is the one its own proof ends at, and a
+  // rotation seals to it
   add('add-writer', async (op, ctx) => {
-    if (!isKey(op.master) || !isKey(op.writer) || !isSig(op.sig)) return
-    if (!Identity.verify(op.master, admission(ctx.dbKey, op.writer, ctx.key), op.sig)) return
+    if (!isKey(op.master) || !isKey(op.writer) || !ctx.key) return
+    if (!b4a.equals(op.writer, ctx.key)) return
+    const signed = Identity.verify(op.proof, admission(ctx.dbKey, op.writer, ctx.key), op.master)
+    if (!signed) return
     const { genesis } = ctx.host
     const inviter = await getRole(ctx.view, op.master)
     if (!genesis && !can(inviter, INVITE)) throw CeroError.REFUSED('invite')
@@ -349,7 +352,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (op.memberId && op.memberId !== memberId) throw CeroError.REFUSED('member')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
     await ctx.host.addWriter(op.writer, { isIndexer: true })
-    await seat(ctx, op.writer, memberId, op.ts || 0)
+    await seat(ctx, op.writer, memberId, op.ts || 0, signed.device)
   })
 
   add('del-writer', async (op, ctx) => {
@@ -477,6 +480,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       commit: op.commit
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
+    touch(EPOCHS)
     // never in a dry run: the announcement itself is appended under the old epoch
     if (!ctx.dryRun) {
       try {
@@ -510,9 +514,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   const selfOnly = (op, ctx) => {
     if (!ctx.key || op.id !== hid.encode(ctx.key)) throw CeroError.REFUSED('device')
   }
+  // the device key stays what the admission proved, never what the row says
   add('add-device', async (op, ctx) => {
     selfOnly(op, ctx)
-    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx) })
+    const existing = await getDevice(ctx.view, op.id)
+    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), key: existing?.key })
   })
   add('set-device', async (op, ctx) => {
     selfOnly(op, ctx)
@@ -522,6 +528,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     await save(ctx, 'set', 'devices', {
       ...op,
       memberId,
+      key: existing?.key,
       createdAt: existing?.createdAt || op.createdAt || ts,
       updatedAt: ts
     })
@@ -581,7 +588,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
 
   // the member, when new, and its device, seated when the member writes; its request stays until
   // a member delivered the keys. The invite is spent unless it is reusable
-  async function admit(ctx, { invite, identity, writer, reply, role, ts }) {
+  async function admit(ctx, { invite, identity, key, writer, reply, role, ts }) {
     const memberId = hid.encode(identity)
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
     const member =
@@ -594,19 +601,20 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         updatedAt: ts
       }))
     if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
-    await seat(ctx, writer, memberId, ts)
+    await seat(ctx, writer, memberId, ts, key)
     await save(ctx, 'put', 'requests', {
-      ...request(invite, identity, writer, reply, ts),
+      ...request(invite, identity, key, writer, reply, ts),
       role,
       admitted: true
     })
     if (!invite.reuse) await spend(ctx, invite, 'spent')
   }
 
-  function request(invite, identity, writer, reply, ts) {
+  function request(invite, identity, key, writer, reply, ts) {
     const expires = invite.expires || 0
     const id = hid.encode(writer)
-    return { id, identity, invite: invite.id, role: invite.role, reply, expires, createdAt: ts }
+    const { role } = invite
+    return { id, identity, key, invite: invite.id, role, reply, expires, createdAt: ts }
   }
 
   // null when it does not open: anyone may append a join
@@ -621,13 +629,15 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     }
   }
 
-  // the joiner's own core asks in: the invite proves it may, its identity signs where the keys go
+  // the joiner's own core asks in: the invite proves it may, its device signs where the keys go
+  // and the proof's chain says whose device it is
   add('join', async (op, ctx) => {
     const join = open(op.box)
     if (!join || !ctx.key) return
-    if (!Invite.proven(join.invite, ctx.key, join.proof)) return
-    const signed = joining(ctx.dbKey, join.invite, ctx.key, join.reply)
-    if (!Identity.verify(join.identity, signed, join.signature)) return
+    if (!Invite.proven(join.invite, ctx.key, join.signature)) return
+    const signed = Identity.verify(join.proof, joining(ctx.dbKey, join.invite, ctx.key, join.reply))
+    if (!signed) return
+    join.identity = signed.identity
     const id = hid.encode(ctx.key)
     const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
     if (!invite) {
@@ -645,12 +655,13 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     }
     await ctx.view.delete(refusals, { id })
     if (invite.confirm && !known) {
-      const waiting = request(invite, join.identity, ctx.key, join.reply, ts)
+      const waiting = request(invite, join.identity, signed.device, ctx.key, join.reply, ts)
       return save(ctx, 'put', 'requests', waiting)
     }
     await admit(ctx, {
       invite,
       identity: join.identity,
+      key: signed.device,
       writer: ctx.key,
       reply: join.reply,
       role: invite.role,
@@ -667,8 +678,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {
       throw CeroError.REFUSED('invite')
     }
-    const { identity, reply, createdAt: ts = 0 } = waiting
-    await admit(ctx, { invite, identity, writer: hid.decode(op.id), reply, role, ts })
+    const { identity, key, reply, createdAt: ts = 0 } = waiting
+    await admit(ctx, { invite, identity, key, writer: hid.decode(op.id), reply, role, ts })
   })
   // answered through the log like every refusal; a deny that lost the race to an accept is nothing
   add('deny', async (op, ctx) => {

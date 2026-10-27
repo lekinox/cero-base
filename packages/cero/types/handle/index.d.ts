@@ -416,6 +416,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _adopt;
     /** @private */
+    private _carry;
+    /** @private */
     private _hookType;
     /** @private */
     private _serve;

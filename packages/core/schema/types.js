@@ -27,17 +27,16 @@ export const types = [
       { name: 'data', type: 'buffer', required: false }
     ]
   },
-  // Pairing join — sealed to the room's address, in the joiner's own writer core. `proof` is the
-  // invite's signature over that writer, `signature` the joiner identity's over the join.
+  // Pairing join — sealed to the room's address, in the joiner's own writer core. `signature` is
+  // the invite's over that writer, `proof` the joiner device's over the join, chained to its identity.
   {
     name: 'join',
     compact: false,
     fields: [
       { name: 'invite', type: 'fixed32', required: true },
       { name: 'reply', type: 'fixed32', required: true },
-      { name: 'proof', type: 'fixed64', required: true },
-      { name: 'identity', type: 'fixed32', required: true },
       { name: 'signature', type: 'fixed64', required: true },
+      { name: 'proof', type: 'buffer', required: true },
       { name: 'ts', type: 'uint', required: false }
     ]
   },

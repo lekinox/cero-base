@@ -290,6 +290,7 @@ test('rotate: an offline member catches up across multiple missed epochs', async
 
   await a.db.put('messages', { text: 'e0' })
   await waitFor(async () => (await texts(b.db)).includes('e0'))
+  const keyPair = b.db.keyPair
   await b.db.close()
 
   await a.db.rotate()
@@ -298,7 +299,7 @@ test('rotate: an offline member catches up across multiple missed epochs', async
   await a.db.put('messages', { text: 'e2' })
   t.is(a.db.keyring.seq, 2)
 
-  // the member returns: same store + identity, walks the chain forward by
+  // the member returns: same store, identity and writer, walks the chain forward by
   // opening each announcement's envelope in log order
   const back = new Database({
     store: b.store,
@@ -306,6 +307,7 @@ test('rotate: an offline member catches up across multiple missed epochs', async
     network: b.network,
     spec,
     key: a.db.key,
+    keyPair,
     encryptionKey
   })
   await back.ready()
@@ -418,7 +420,7 @@ test('rotate: a post-rotation joiner reads full history from delivered epochs', 
 
 // ─── production scenarios: recovery, devices, roles, mirrors, stress ───────
 
-test('rotate: seed-phrase recovery re-derives everything — reads, claims, writes', async (t) => {
+test('rotate: a recovered device reads with the epochs its root hands it, then is sealed to', async (t) => {
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
   await a.db.put('messages', { text: 'pre' })
   await a.db.rotate()
@@ -426,37 +428,54 @@ test('rotate: seed-phrase recovery re-derives everything — reads, claims, writ
   await a.db.rotate()
   await a.db.put('messages', { text: 'post' })
 
-  // a fresh device with nothing but the seed: identity re-derived, own device
-  // writer (as the cero layer always mints), no userData, no delivered
-  // epochs — the log replay alone must hydrate keys
+  // a fresh device with nothing but the seed: the identity re-derived under a new device key,
+  // which no envelope in the log is sealed to
   const recoveredId = await Identity.create({ seed: a.identity.seed })
-  const rec = await makePeer(t, testnet, {
+  const blind = await makePeer(t, testnet, {
     topic,
     identity: recoveredId,
-    keyPair: Identity.randomKeyPair(),
     encryptionKey,
     key: a.db.key
   })
-  await waitFor(async () => (await texts(rec.db)).length === 3)
-  t.alike(await texts(rec.db), ['mid', 'post', 'pre'], 'full history from the log alone')
-  t.is(rec.db.keyring.seq, 2, 'both epochs recovered via envelopes in the log')
+  await waitFor(async () => (await texts(blind.db)).includes('pre'))
+  await new Promise((r) => setTimeout(r, 1000))
+  t.alike(await texts(blind.db), ['pre'], 'the log alone yields the base era only')
+  t.is(blind.db.keyring.seq, 0, 'no envelope opens for a device nobody sealed to')
+  // an epoch is learned once its announcement applied here and the secret meets its commitment:
+  // the second's announcement sits under the first epoch, unreadable until that one is known
+  const [first, second] = a.db.keyring.all()
+  await blind.db.learn([first, second].map((e) => ({ ...e, entropy: Identity.randomBytes(32) })))
+  t.is(blind.db.keyring.seq, 0, 'wrong secrets are refused against the announcement')
+  await blind.db.learn(a.db.keyring.all())
+  t.ok(blind.db.keyring.entropy(first.stamp), 'the announced one is kept')
+  t.is(blind.db.keyring.entropy(second.stamp), null, 'the other waits for its announcement')
+  await waitFor(async () => (await texts(blind.db)).includes('mid'))
+  await blind.db.learn(a.db.keyring.all())
+  await waitFor(async () => (await texts(blind.db)).length === 3)
+  t.is(blind.db.keyring.seq, 2, 'handed over again once it applied, the history is complete')
+  await blind.db.close()
 
-  // once admitted, the recovered device writes at the current epoch and the
-  // original device decrypts it
-  const sig = a.identity.sign(admission(a.db.key, rec.db.writerKey, a.db.writerKey))
-  await a.db.call('add-writer', {
-    master: a.identity.publicKey,
-    writer: rec.db.writerKey,
-    sig,
-    ts: Date.now()
+  // the epochs its root carries make the history readable
+  const rec = await makePeer(t, testnet, {
+    topic,
+    identity: recoveredId,
+    encryptionKey,
+    key: a.db.key,
+    epochs: a.db.keyring.all()
   })
-  await waitFor(async () => rec.db.writable)
+  await waitFor(async () => (await texts(rec.db)).length === 3)
+  t.alike(await texts(rec.db), ['mid', 'post', 'pre'], 'full history from the delivered epochs')
+
+  // seated by its own claim, the recovered device writes at the current epoch, the original
+  // device decrypts it, and the next rotation seals to the new device row
+  await rec.db.claim()
   await rec.db.put('messages', { text: 'recovered' })
   await waitFor(async () => (await texts(a.db)).includes('recovered'))
-  t.pass('recovered device writes, original device decrypts at the latest epoch')
+  await waitFor(() => rec.db.keyring.seq >= 3, { timeout: 30000 })
+  t.pass('healed: the recovered device opens the envelope of the epoch sealed to it')
 })
 
-test('rotate: reader-role member (no writer) follows rotations on every device', async (t) => {
+test('rotate: a reader follows rotations on the device that joined; another needs its root', async (t) => {
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
   const readerId = await Identity.create()
   const phone = await makePeer(t, testnet, {
@@ -474,15 +493,17 @@ test('rotate: reader-role member (no writer) follows rotations on every device',
   await waitFor(async () => (await texts(phone.db)).includes('post'))
   t.is(phone.db.keyring.seq, 1, 'reader unsealed its envelope without being a writer')
 
-  // second device, same reader identity, joining after the rotation
+  // second device, same reader identity, with the epochs the root hands it
+  const key = Identity.randomKeyPair()
   const laptop = await makePeer(t, testnet, {
     topic,
-    identity: await Identity.create({ seed: readerId.seed }),
+    identity: Identity.from({ ...readerId, device: key, proof: readerId.link(key.publicKey) }),
     encryptionKey,
-    key: a.db.key
+    key: a.db.key,
+    epochs: phone.db.keyring.all()
   })
   await waitFor(async () => (await texts(laptop.db)).length === 2)
-  t.is(laptop.db.keyring.seq, 1, 'every device of the member is covered by one envelope')
+  t.is(laptop.db.keyring.seq, 1, 'reads what its sibling device read')
 })
 
 test('rotate: a member syncs a rotated room through a blind mirror, writer offline', async (t) => {
@@ -514,6 +535,7 @@ test('rotate: a member syncs a rotated room through a blind mirror, writer offli
   const first = await makePeer(t, testnet, opts)
   await admit(a, first.db, 'reader')
   await waitForMirrored(first.db)
+  const keyPair = first.db.keyPair
   await first.db.close()
   await a.put('messages', { text: 'pre' })
   await a.rotate()
@@ -523,12 +545,13 @@ test('rotate: a member syncs a rotated room through a blind mirror, writer offli
   await a.close()
   await aNet.close().catch(() => {})
 
-  // B has only the mirror — ciphertext relay — as a path to the data
+  // B, the same device, has only the mirror — ciphertext relay — as a path to the data
   const b = await makePeer(t, testnet, {
     topic,
     identity: bId,
     encryptionKey,
     key: aKey,
+    keyPair,
     mirrors: [mirror]
   })
   await waitFor(async () => {
@@ -583,10 +606,10 @@ test('rotate: an envelope failing its commitment is rejected, not adopted', asyn
   // a malicious/buggy rotator: envelopes carry one secret, the commitment
   // another — every honest member must refuse the epoch
   const sealed = Identity.randomBytes(32)
-  const wrapped = [
-    { id: a.identity.id, box: Identity.seal(a.identity.publicKey, sealed) },
-    { id: b.identity.id, box: Identity.seal(b.identity.publicKey, sealed) }
-  ]
+  const wrapped = [a, b].map(({ db, identity }) => ({
+    id: hid.encode(db.writerKey),
+    box: Identity.seal(identity.device.publicKey, sealed)
+  }))
   await a.db.call('rotate-key', {
     epoch: 0,
     stamp: 12345,
@@ -612,9 +635,9 @@ test('rotate: an admin sealing the owner out is healed', async (t) => {
   // every envelope fails the commitment, the admin's own too: one it could open would switch it
   // to the epoch at apply, before its announcement flushed, and nobody could read that block
   const commit = crypto.hash(Identity.randomBytes(32))
-  const wrapped = [a, b].map(({ identity }) => ({
-    id: identity.id,
-    box: Identity.seal(identity.publicKey, Identity.randomBytes(32))
+  const wrapped = [a, b].map(({ db, identity }) => ({
+    id: hid.encode(db.writerKey),
+    box: Identity.seal(identity.device.publicKey, Identity.randomBytes(32))
   }))
   await b.db.call('rotate-key', {
     epoch: 0,
@@ -808,6 +831,7 @@ test('rotate: divergent offline removals converge — no data loss, both targets
   // B drops offline (same store, no network) and, unaware of anything A does,
   // removes D and rotates
   const bKeyPair = b.db.keyPair
+  const bWriter = hid.encode(b.db.writerKey)
   await b.db.close()
   await b.network.close().catch(() => {})
   const bOff = new Database({
@@ -864,14 +888,14 @@ test('rotate: divergent offline removals converge — no data loss, both targets
   t.alike(await texts(bBack), ['a-post', 'b-post', 'pre'], 'B reads every tail')
 
   // convergence: the healer rotates until the current epoch's recipients
-  // equal canonical membership {A, B}
+  // equal the devices of the canonical membership {A, B}
   const cleanCurrent = async (db) => {
     const rows = await db.view.find('@cero/epochs', {}).toArray()
     if (!rows.length) return false
     const top = rows.reduce((x, y) => (y.epoch > x.epoch ? y : x))
     if (db.keyring.current !== top.stamp || !db.keyring.entropy(top.stamp)) return false
     const recipients = c.decode(wraps, top.wrapped).map((w) => w.id)
-    const expect = [a.identity.id, b.identity.id].sort()
+    const expect = [hid.encode(a.db.writerKey), bWriter].sort()
     return (
       recipients.length === 2 &&
       recipients
@@ -923,7 +947,7 @@ test('rotate: a member leaving on its own is re-keyed out', async (t) => {
   await waitFor(() => a.db.keyring.seq === 1, { timeout: 30000 })
   const [epoch] = await a.db.view.find('@cero/epochs', {}).toArray()
   const sealed = c.decode(wraps, epoch.wrapped).map((w) => w.id)
-  t.alike(sealed, [a.identity.id], 'the owner re-keyed to who stayed')
+  t.alike(sealed, [hid.encode(a.db.writerKey)], 'the owner re-keyed to the devices that stayed')
 })
 
 test('rotate: a stamp collision is rejected deterministically', async (t) => {
@@ -938,7 +962,7 @@ test('rotate: a stamp collision is rejected deterministically', async (t) => {
     epoch: 0,
     stamp: taken, // collides with the existing epoch's stamp
     wrapped: c.encode(wraps, [
-      { id: a.identity.id, box: Identity.seal(a.identity.publicKey, entropy) }
+      { id: hid.encode(a.db.writerKey), box: Identity.seal(a.identity.device.publicKey, entropy) }
     ]),
     createdAt: Date.now(),
     commit: crypto.hash(entropy)
@@ -950,25 +974,22 @@ test('rotate: a stamp collision is rejected deterministically', async (t) => {
   t.is(a.db.keyring.seq, 1, 'keyring unchanged')
 })
 
-test('rotate: device-level removal does NOT revoke reads — identity envelopes reach all devices', async (t) => {
-  // Pins a documented limitation: epoch envelopes are sealed to the member's
-  // IDENTITY key, which every device of that member holds. del-device revokes
-  // write access only; a removed (e.g. stolen) device still unseals future
-  // epochs. Cutting a device off requires excluding its identity entirely.
+test('rotate: a removed device of a member reads nothing written after the rotation', async (t) => {
+  // envelopes are sealed to device keys: a lost phone keeps what it had and nothing more, while
+  // the member's other device reads on
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
 
   const memberId = await Identity.create()
+  const phone = Identity.randomKeyPair()
   const dev1 = await makePeer(t, testnet, {
     topic,
     identity: memberId,
-    keyPair: Identity.randomKeyPair(),
     encryptionKey,
     key: a.db.key
   })
   const dev2 = await makePeer(t, testnet, {
     topic,
-    identity: memberId,
-    keyPair: Identity.randomKeyPair(),
+    identity: Identity.from({ ...memberId, device: phone, proof: memberId.link(phone.publicKey) }),
     encryptionKey,
     key: a.db.key
   })
@@ -987,10 +1008,7 @@ test('rotate: device-level removal does NOT revoke reads — identity envelopes 
   await waitFor(async () => (await texts(dev1.db)).includes('post'))
   t.is(dev1.db.keyring.seq, 1, 'surviving device follows the rotation')
 
-  await waitFor(async () => (await texts(dev2.db)).includes('post'))
-  t.is(
-    dev2.db.keyring.seq,
-    1,
-    'REMOVED device still unseals the epoch — identity envelopes cannot exclude one device'
-  )
+  await new Promise((r) => setTimeout(r, 1500))
+  t.alike(await texts(dev2.db), ['pre'], 'the removed device is frozen at the cut')
+  t.is(dev2.db.keyring.seq, 0, 'no envelope was sealed to it')
 })

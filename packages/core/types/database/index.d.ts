@@ -468,12 +468,18 @@ export declare class Database extends ReadyResource {
         timeout?: number;
     }): Promise<void>;
     /**
-     * Admit another device of this identity as a writer. Another member's device seats itself.
+     * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
+     * once its announcement applied here and the secret meets the commitment it carries: hand them
+     * over again when an announcement applies.
      *
-     * @param {Uint8Array} publicKey
+     * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
      * @returns {Promise<void>}
      */
-    addWriter(publicKey: Uint8Array): Promise<void>;
+    learn(epochs: Array<{
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }>): Promise<void>;
     /**
      * Remove a peer's writer key from the indexer set.
      *

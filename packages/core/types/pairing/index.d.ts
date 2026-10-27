@@ -212,7 +212,8 @@ export declare class Pairing extends ReadyResource {
 }
 /**
  * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ * by the invite over the writer; signed by the joiner's device, under its chain to the identity,
+ * for this writer and reply address.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
