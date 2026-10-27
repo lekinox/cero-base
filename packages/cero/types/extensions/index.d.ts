@@ -72,15 +72,15 @@ export declare const cero: {
         file: import("@cero-base/core").Prim;
         required: (marker: import("@cero-base/core").Prim) => import("@cero-base/core").Prim;
         single(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
-            push?: string;
+            push?: boolean;
         }): import("@cero-base/core").TypeDef;
         collection(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
             indexes?: Record<string, string[]>;
             own?: boolean;
-            push?: string;
+            push?: boolean;
         }): import("@cero-base/core").TypeDef;
         action(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
-            push?: string;
+            push?: boolean;
         }): import("@cero-base/core").TypeDef;
         extend(fields: Record<string, import("@cero-base/core").Prim>): {
             kind: 'extend';
