@@ -34,17 +34,18 @@ function Screens({ onSwitch }) {
       .catch((err) => setError(err.message || String(err)))
       .finally(() => setRequest(null))
 
-  // a device invite can arrive as a link too, scanned or tapped: <scheme>://link?invite=<invite>
+  // a device invite can arrive as a link too, scanned or tapped: <scheme>://link?invite=<invite>.
+  // It only fills the field: linking replaces this device's identity, so the user taps for it
+  const [fromLink, setFromLink] = useState('')
   useEffect(() => {
-    if (profile?.name) return
     const onUrl = ({ url }) => {
       const invite = /[?&]invite=([a-z0-9]+)/.exec(url)?.[1]
-      if (invite) link(invite)
+      if (invite) setFromLink(invite)
     }
     Linking.getInitialURL().then((url) => url && onUrl({ url }))
     const sub = Linking.addEventListener('url', onUrl)
     return () => sub.remove()
-  }, [profile?.name]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
   if (!profile?.name) {
     if (request) {
@@ -71,6 +72,7 @@ function Screens({ onSwitch }) {
         onCreate={(name) => cero.set(me.profile, { name })}
         onRecover={(phrase) => cero.restore(me, phrase).then(onSwitch)}
         onLink={link}
+        invite={fromLink}
         error={error}
       />
     )
