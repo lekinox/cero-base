@@ -425,6 +425,28 @@ export async function restore(me, phrase) {
 }
 
 /**
+ * Link the app to the identity behind a device invite, as `cero.link` does in the worker: the
+ * client is then that identity. `onrequest` gets the request's id as it is sent.
+ *
+ * @param {Client} me
+ * @param {string} invite
+ * @param {{ onrequest?: (id: string) => void }} [opts]
+ * @returns {Promise<Client>}
+ */
+export function link(me, invite, { onrequest } = {}) {
+  return new Promise((resolve, reject) => {
+    const wire = me.rpc.link({ invite })
+    wire.on('data', (frame) => {
+      if (frame.request) onrequest?.(frame.request)
+      else me._identify(frame)
+    })
+    wire.on('error', reject)
+    wire.on('end', () => resolve(me))
+    wire.on('close', () => reject(CeroError.INVALID('link: the worker closed the stream')))
+  })
+}
+
+/**
  * Per-device `local`-namespace surface on a Client.
  */
 class LocalRefs {
@@ -636,8 +658,8 @@ function start(ipc, spec, opts) {
   return /** @type {Promise<Context>} */ (connect(ipc, spec, opts))
 }
 
-/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, t: typeof t, schema: typeof schema }} */
-export const cero = Object.assign(start, remote, { connect, restore, t, schema })
+/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, link: typeof link, t: typeof t, schema: typeof schema }} */
+export const cero = Object.assign(start, remote, { connect, restore, link, t, schema })
 
 // the same shape a local root has
 function device({ deviceId, deviceName }) {

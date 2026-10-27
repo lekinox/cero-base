@@ -905,6 +905,8 @@ export class Handle extends ReadyResource {
   /** @private */
   async _carryOn() {
     for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
+      // the root's own device link row has no handle type: the launch resumes that one
+      if (!this.spec.handles?.[type]) continue
       if (await this._joined(type, Invite.parse(invite).discoveryKey)) {
         await this.local.store.del('joins', id)
         continue

@@ -23,7 +23,7 @@ import {
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect, restore } from '../../src/rpc/client.js'
+import { connect, restore, link } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -1042,4 +1042,35 @@ test('rpc: open by id refuses a handle of another type, as in process', async (t
   const expo = await open(client.expo, { name: 'fair' })
   await t.exception(open(client.group, { id: expo.id }), /INVALID/, 'another type is refused')
   t.is((await open(client.expo, { id: expo.id })).type, 'expo', 'its own type opens')
+})
+
+test('rpc: a client links the app to another identity by invite, the request id on both sides', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+
+  let code = null
+  const linking = link(client, await cero.invite(other), { onrequest: (id) => (code = id) })
+  linking.catch(() => {})
+  const request = await nextRequest(other)
+  t.is(request.id, code, 'the same id on both screens')
+  await cero.accept(other, request)
+  await linking
+  t.is(client.id, other.id, 'the UI is the linked identity')
+  await t.exception(cero.phrase(client), /no phrase on this device/, 'no phrase on a linked device')
+  const { data: file } = await put(client.files, {
+    data: b4a.from('linked'),
+    name: 'l.txt',
+    type: 'text/plain'
+  })
+  t.is((await fetch(file.url)).status, 200, 'the new root serves files')
+})
+
+test('rpc: a denied link rejects DENIED on the client', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+  const linking = link(client, await cero.invite(other))
+  await cero.deny(other, await nextRequest(other), 'not mine')
+  await t.exception(linking, /DENIED/)
 })

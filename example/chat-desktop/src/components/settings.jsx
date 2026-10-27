@@ -12,9 +12,11 @@ export function Settings() {
   const me = useCero()
   const { data: profile } = useQuery(me.profile)
   const { data: devices } = useQuery(me.devices)
+  const { data: requests } = useQuery(me.requests, { admitted: false })
   const { theme, toggle } = useTheme()
   const toast = useToast()
   const [seed, setSeed] = useState(null)
+  const [invite, setInvite] = useState(null)
 
   const reveal = async () => {
     try {
@@ -88,6 +90,40 @@ export function Settings() {
             Show Seed
           </Button>
         )}
+      </Section>
+
+      <Section title='Link a Device'>
+        {invite ? (
+          <>
+            <div className='p-2 bg-input border border-border rounded text-xs font-mono break-all'>
+              {invite}
+            </div>
+            <div className='flex gap-2'>
+              <Button onClick={() => copy(invite)}>Copy</Button>
+              <Button onClick={() => setInvite(null)} variant='secondary'>
+                Hide
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Button onClick={async () => setInvite(await cero.invite(me))} className='w-full'>
+            Show Device Invite
+          </Button>
+        )}
+        {requests.map((r) => (
+          <Card key={r.id}>
+            <div className='text-xs text-muted'>
+              A device asks to be yours. Approve it only if it shows this id:
+            </div>
+            <div className='text-xs font-mono text-card-foreground break-all my-1'>{r.id}</div>
+            <div className='flex gap-2'>
+              <Button onClick={() => cero.accept(me, r)}>Approve</Button>
+              <Button onClick={() => cero.deny(me, r, 'denied')} variant='secondary'>
+                Deny
+              </Button>
+            </div>
+          </Card>
+        ))}
       </Section>
 
       <Section title='Devices'>

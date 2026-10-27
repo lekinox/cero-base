@@ -13,11 +13,13 @@ Usage:
   chat-terminal [--storage <dir>] [--name <name>]                   create a room (host)
   chat-terminal --join <invite> [--storage <dir>] [--name <name>]   join a room
   chat-terminal --phrase "<words>" --storage <dir>                    recover your identity on this machine
+  chat-terminal --link <invite> --storage <dir>                       link this machine as a device of yours
   chat-terminal --help
 
 Options:
   --join <invite>     join an existing room (default: create a new one)
   --phrase <words>    the phrase printed on your first run; makes this machine your device too
+  --link <invite>     a device invite from /link on a machine of yours; same, with no phrase here
   --name <name>       display name (default: hostname)
   --storage <dir>     storage directory (default: a tmp dir)
   --bootstrap <h:p>   DHT bootstrap node, for a local testnet (or CERO_BOOTSTRAP)
@@ -40,13 +42,16 @@ async function main() {
   const storage = opts.storage || mkdtempSync(join(os.tmpdir(), 'chat-terminal-'))
   const bootstrap = parseBootstrap(opts.bootstrap || process.env.CERO_BOOTSTRAP)
 
-  const fresh = !opts.phrase && !(await isInitialized(storage))
+  const fresh = !opts.phrase && !opts.link && !(await isInitialized(storage))
   const me = await cero(storage, spec, {
     name,
     bootstrap,
-    phrase: opts.phrase
+    phrase: opts.phrase,
+    invite: opts.link,
+    onrequest: (id) => console.log(`# device request ${id}: /approve it on your other machine`)
   })
-  await cero.set(me.profile, { name })
+  // a recovered or linked identity keeps its name unless one is given
+  if (fresh || opts.name) await cero.set(me.profile, { name })
 
   const room = opts.join ? await cero.open(me.room, { invite: opts.join }) : await ownRoom(me, name)
 
@@ -61,7 +66,20 @@ async function main() {
     console.log(`# invite (share to add peers):`)
     console.log(inv)
   }
-  console.log(`# type a message and hit enter; /invite for another invite; /quit to exit`)
+  console.log(
+    `# type a message and hit enter; /invite for another invite; /link to add a device of yours; /quit to exit`
+  )
+
+  // a device of yours asking in: approve it once the id matches the one it shows
+  const requestStream = cero.watch(me.requests, { admitted: false })
+  const announced = new Set()
+  requestStream.on('data', (event) => {
+    for (const r of event.data) {
+      if (announced.has(r.id)) continue
+      announced.add(r.id)
+      console.log(`# device request ${r.id}: /approve ${r.id} or /deny ${r.id}`)
+    }
+  })
 
   const names = new Map()
   const learn = (rows) => {
@@ -96,6 +114,21 @@ async function main() {
       console.log(await cero.invite(room))
       return
     }
+    if (text === '/link') {
+      console.log(`# device invite (use it with --link on your other machine):`)
+      console.log(await cero.invite(me))
+      return
+    }
+    const [command, id] = text.split(/\s+/)
+    if (command === '/approve' || command === '/deny') {
+      const { data } = await cero.get(me.requests, { admitted: false })
+      const request = data.find((r) => r.id === id)
+      if (!request) return console.error(`! no pending device request ${id}`)
+      if (command === '/approve') await cero.accept(me, request)
+      else await cero.deny(me, request, 'denied')
+      console.log(`# device request ${id} ${command === '/approve' ? 'approved' : 'denied'}`)
+      return
+    }
     try {
       await cero.put(room.messages, { text })
     } catch (err) {
@@ -110,6 +143,7 @@ async function main() {
     if (closing) return
     closing = true
     memberStream.destroy()
+    requestStream.destroy()
     stream.destroy()
     try {
       await cero.close(me)
@@ -141,6 +175,7 @@ function parseArgs(argv) {
     else if (a === '--create') out.create = true
     else if (a === '--join') out.join = argv[++i]
     else if (a === '--phrase') out.phrase = argv[++i]
+    else if (a === '--link') out.link = argv[++i]
     else if (a === '--name') out.name = argv[++i]
     else if (a === '--storage') out.storage = argv[++i]
     else if (a === '--bootstrap') out.bootstrap = argv[++i]

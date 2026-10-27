@@ -3,9 +3,10 @@ import { Text, View, TextInput } from 'react-native'
 import { Button, Input, Page, ErrorBox } from './ui'
 import { styles, colors } from '../styles'
 
-export function Setup({ onCreate, onRecover }) {
+export function Setup({ onCreate, onRecover, onLink, error: failed = null }) {
   const [name, setName] = useState('')
   const [phrase, setPhrase] = useState('')
+  const [invite, setInvite] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -21,7 +22,7 @@ export function Setup({ onCreate, onRecover }) {
     <Page>
       <Text style={styles.title}>Cero Chat</Text>
 
-      <ErrorBox message={error} />
+      <ErrorBox message={error || failed} />
 
       <Input placeholder='Your name' value={name} onChangeText={setName} autoFocus />
       <Button
@@ -56,6 +57,23 @@ export function Setup({ onCreate, onRecover }) {
           variant='secondary'
           onPress={() => run(() => onRecover(phrase.trim().replace(/\s+/g, ' ')))}
           disabled={!phrase.trim() || busy}
+        />
+      </View>
+
+      <View style={{ borderTopColor: colors.border, borderTopWidth: 1, paddingTop: 12, gap: 8 }}>
+        <Text style={styles.muted}>Or link this device from one you have</Text>
+        <Input
+          placeholder='Device invite from your other device'
+          value={invite}
+          onChangeText={setInvite}
+          autoCapitalize='none'
+          autoCorrect={false}
+        />
+        <Button
+          title={busy ? '…' : 'Link Device'}
+          variant='secondary'
+          onPress={() => run(() => onLink(invite.trim()))}
+          disabled={!invite.trim() || busy}
         />
       </View>
     </Page>

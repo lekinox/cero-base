@@ -132,6 +132,11 @@ export declare class Server extends RPCServer {
      */
     private _wireRestore;
     /**
+     * Wire the `link` handler: a stream, the request's id as it is sent, the identity once linked.
+     * @private
+     */
+    private _wireLink;
+    /**
      * Register the row-level RPC handlers (put/set/get/del/watch/call).
      * @private
      */

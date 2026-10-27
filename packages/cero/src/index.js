@@ -102,9 +102,6 @@ async function start(dir, spec, opts = {}) {
     // a device invite, this launch's or the one a killed launch was waiting on
     const pending = done || opts.phrase ? null : await pendingLink(local)
     const linking = !done && !opts.phrase && !!(opts.invite || pending)
-    if (device?.setup === 'link' && !linking && !opts.phrase) {
-      throw CeroError.REQUIRED('invite: this dir waits for a device invite, or a phrase')
-    }
     const resolved = linking ? null : await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
     const creating =
@@ -144,7 +141,7 @@ async function start(dir, spec, opts = {}) {
     await network.ready()
     // the link first: who this device is comes with the reply
     const linked = linking
-      ? await link(local, network, spec, { ...opts, writer: keyPair, timeout }, pending)
+      ? await ask(local, network, spec, { ...opts, writer: keyPair, timeout }, pending)
       : null
     const identity = linked ? linked.identity : resolved.identity
     const fresh = resolved?.fresh === true
@@ -251,9 +248,31 @@ export async function restore(me, phrase) {
   return start(dir, spec, { ...opts, phrase })
 }
 
+/**
+ * Link this device to the identity behind a device invite: closes `me`, deletes `dir/main` and
+ * opens the directory with `invite`, as a new device of that identity, with no phrase on it.
+ *
+ * @param {Context} me  The root to replace.
+ * @param {string} invite  A device invite, as `cero.invite(me)` gives it on a device of that identity.
+ * @param {{ onrequest?: (id: string) => void }} [opts]  `onrequest`: the request's id as it is sent, the one the accepting device sees in `me.requests`.
+ * @returns {Promise<Handle>}  The linked root handle.
+ */
+export async function link(me, invite, { onrequest } = {}) {
+  if (!me?._dir) throw CeroError.INVALID('me must be a cero instance')
+  if (!invite) throw CeroError.REQUIRED('invite')
+
+  const { _dir: dir, spec, _opts: opts } = me
+
+  await me.close()
+  await fs.promises.rm(`${dir}/main`, { recursive: true, force: true })
+
+  // the other device is in someone's other hand: the wait is the invite's lifetime, deny ends it
+  return start(dir, spec, { ...opts, phrase: undefined, invite, onrequest, recoveryTimeout: 0 })
+}
+
 // the facade: cero.put and import { put } are the same function
-/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore }} */
-export const cero = Object.assign(start, verbs, { t, schema, peek, restore })
+/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, link: typeof link }} */
+export const cero = Object.assign(start, verbs, { t, schema, peek, restore, link })
 
 function pointerManifest(store, identity) {
   return { version: store.manifestVersion, signers: [{ publicKey: identity.publicKey }] }
@@ -293,7 +312,7 @@ async function pendingLink(local) {
 
 // the root's join: this device, bare, knocks with the invite and waits for a device of the identity
 // to let it in. What it learns is kept in its joins row, so a killed launch resumes it
-async function link(local, network, spec, { invite, writer, onrequest, timeout }, pending) {
+async function ask(local, network, spec, { invite, writer, onrequest, timeout }, pending) {
   const parsed = Invite.parse(invite ?? pending.invite)
   if (parsed.data?.byteLength !== 32) throw CeroError.INVALID_INVITE('not a device invite')
   const secret = pending?.device ?? Identity.randomKeyPair().secretKey

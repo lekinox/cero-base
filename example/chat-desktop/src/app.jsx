@@ -8,7 +8,7 @@ import { Router } from './components/router'
 import { Setup } from './components/setup'
 
 function App() {
-  const { status, me, error, init } = useChat()
+  const { status, me, error, request, init } = useChat()
 
   if (status === 'error') {
     return (
@@ -18,7 +18,21 @@ function App() {
     )
   }
   if (status === 'setup') {
-    return <Setup onCreate={(name) => init({ name })} onRecover={(phrase) => init({ phrase })} />
+    return (
+      <Setup
+        onCreate={(name) => init({ name })}
+        onRecover={(phrase) => init({ phrase })}
+        onLink={(invite) => init({ invite })}
+      />
+    )
+  }
+  if (status === 'linking') {
+    return (
+      <div className='h-screen bg-background flex flex-col items-center justify-center gap-2 text-muted p-8'>
+        <div>Approve this device on your other device</div>
+        <div className='text-xs font-mono text-foreground break-all text-center'>{request}</div>
+      </div>
+    )
   }
   if (status !== 'ready') {
     return (

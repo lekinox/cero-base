@@ -239,6 +239,9 @@ export const rpc = {
   'req-restore': {
     phrase: required(string)
   },
+  'req-link': {
+    invite: required(string)
+  },
   'req-row': {
     handle: required(string),
     ref: required(string),
@@ -312,6 +315,15 @@ export const rpc = {
     fileBase: string,
     fileToken: string,
     deviceName: string
+  },
+  // a link's frames: the request's id as it is sent, then the identity once linked
+  'res-link': {
+    request: string,
+    id: string,
+    deviceId: string,
+    deviceName: string,
+    fileBase: string,
+    fileToken: string
   },
   'res-ok': {
     ok: bool

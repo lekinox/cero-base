@@ -127,10 +127,23 @@ declare function start(dir: string, spec: import('./lib/spec.js').Spec, opts?: C
  * @returns {Promise<Handle>}  Freshly restored root handle.
  */
 export declare function restore(me: Context, phrase: string): Promise<Handle>;
-/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore }} */
+/**
+ * Link this device to the identity behind a device invite: closes `me`, deletes `dir/main` and
+ * opens the directory with `invite`, as a new device of that identity, with no phrase on it.
+ *
+ * @param {Context} me  The root to replace.
+ * @param {string} invite  A device invite, as `cero.invite(me)` gives it on a device of that identity.
+ * @param {{ onrequest?: (id: string) => void }} [opts]  `onrequest`: the request's id as it is sent, the one the accepting device sees in `me.requests`.
+ * @returns {Promise<Handle>}  The linked root handle.
+ */
+export declare function link(me: Context, invite: string, { onrequest }?: {
+    onrequest?: (id: string) => void;
+}): Promise<Handle>;
+/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, link: typeof link }} */
 export declare const cero: typeof start & typeof verbs & {
     t: typeof t;
     schema: typeof schema;
     peek: typeof peek;
     restore: typeof restore;
+    link: typeof link;
 };

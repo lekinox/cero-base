@@ -1764,3 +1764,59 @@ test('extensions: the bundled two run when nothing is named', async (t) => {
   await waitUntil(async () => (await get(me.handles, team.id)).data?.name === 'squad')
   t.pass('handleSync ran')
 })
+
+test('link: cero.link switches a set-up app to the identity behind an invite, as a device of it', async (t) => {
+  const a = await ceroOpen(t)
+  const errors = []
+  const b = await ceroOpen(t, { testnet: a.testnet, onerror: (err) => errors.push(err) })
+  t.not(b.me.id, a.me.id, 'two identities to start')
+  const invite = await cero.invite(a.me)
+  let code = null
+  const linking = cero.link(b.me, invite, { onrequest: (id) => (code = id) })
+  linking.catch(() => {})
+  const request = await asked(a.me)
+  t.is(request.id, code, 'both screens show the request id')
+  await cero.accept(a.me, request)
+  const linked = await linking
+  t.teardown(() => linked.close().catch(() => {}), { order: 1 })
+  t.is(linked.id, a.me.id, 'the same identity')
+  t.not(linked.device.id, a.me.device.id, 'a device of its own')
+  await t.exception(cero.phrase(linked), /no phrase on this device/, 'and no phrase')
+  await devices(a.me, 2)
+  t.alike(errors, [], 'nothing reported on the linked device')
+})
+
+test('link: a denied cero.link rejects DENIED', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet })
+  const linking = cero.link(b.me, await cero.invite(a.me))
+  await cero.deny(a.me, await asked(a.me), 'not mine')
+  await t.exception(linking, /DENIED/)
+})
+
+test('link: cero.link waits for the accept as long as the invite lasts, whatever the recovery timeout', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet, recoveryTimeout: 1 })
+  const linking = cero.link(b.me, await cero.invite(a.me))
+  linking.catch(() => {})
+  await cero.accept(a.me, await asked(a.me))
+  const linked = await linking
+  t.teardown(() => linked.close().catch(() => {}), { order: 1 })
+  t.is(linked.id, a.me.id, 'linked, not timed out')
+})
+
+test('link: a denied launch opens as a new identity the next time, nothing left to resume', async (t) => {
+  const a = await ceroOpen(t)
+  const dir = await t.tmp()
+  const refused = cero(dir, spec, {
+    bootstrap: a.testnet.bootstrap,
+    invite: await cero.invite(a.me)
+  })
+  refused.catch(() => {})
+  await cero.deny(a.me, await asked(a.me), 'not mine')
+  await t.exception(refused, /DENIED/)
+  const fresh = await cero(dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => fresh.close().catch(() => {}), { order: 1 })
+  t.ok(fresh.id, 'opens')
+  t.not(fresh.id, a.me.id, 'as an identity of its own')
+})

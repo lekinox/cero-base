@@ -4,7 +4,7 @@ import safetyCatch from 'safety-catch'
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
 
-import { cero, restore } from '../index.js'
+import { cero, restore, link } from '../index.js'
 import {
   put,
   set,
@@ -139,6 +139,7 @@ export class Server extends RPCServer {
     this._wireHandles()
     this._wireVerbs()
     this._wireRestore()
+    this._wireLink()
   }
 
   /** @private */
@@ -203,6 +204,30 @@ export class Server extends RPCServer {
       this.me = await restore(this.me, phrase)
       this.handles = new Map([[this.me.id, this.me]])
       return this._identity()
+    })
+  }
+
+  /**
+   * Wire the `link` handler: a stream, the request's id as it is sent, the identity once linked.
+   * @private
+   */
+  _wireLink() {
+    this.rpc.onLink((stream) => {
+      stream.on('error', safetyCatch)
+      const run = async () => {
+        if (!this.me) throw CeroError.NOT_READY('Server', 'server')
+        this.me = await link(this.me, stream.data.invite, {
+          onrequest: (id) => stream.write({ request: id })
+        })
+        this.handles = new Map([[this.me.id, this.me]])
+        stream.write({ request: '', ...this._identity() })
+        stream.end()
+      }
+      run().catch((err) => {
+        stream.once('error', () => {})
+        stream.writeStream.destroy(err)
+        stream.destroy()
+      })
     })
   }
 

@@ -74,7 +74,8 @@ both screens: an intercepted invite can ask in, but only the request you compare
 
 `cero()` waits `recoveryTimeout` (30 s by default, `0` for as long as the invite lasts) for the
 accept and rejects `TIMEOUT`, keeping the request: the next `cero(dir, spec)`, with no invite,
-resumes it. A denied request rejects `DENIED`.
+resumes it. A denied request rejects `DENIED`, and leaves nothing to resume: the next
+`cero(dir, spec)` starts fresh, as a new identity.
 
 ## Recover from the phrase
 
@@ -127,6 +128,17 @@ reject `TIMEOUT` after the delete; the new identity is stored by then, so retry 
 Another phrase in `cero()` on a used directory is `INVALID`: switching goes through `cero.restore`.
 
 A phrase that is already `me`'s returns `me` unchanged. A client makes the same call.
+
+```js
+// or link it as a device of the identity behind an invite from another device
+const linked = await cero.link(me, invite, { onrequest: (id) => show(id) })
+```
+
+`cero.link` is the same switch by a device invite: `me` closes, the directory's data goes, and it
+opens linking, as `cero()` with `invite` does. It waits for the accept as long as the invite lasts,
+since the other device is in the user's other hand; `DENIED` ends it.
+An app whose worker opens cero before the user chooses, as one driven over RPC does, offers all
+three ways in from one screen with `cero.restore` and `cero.link`.
 
 ## Remove a device
 
