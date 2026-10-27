@@ -194,7 +194,8 @@ const COMMANDS = [
   ['close-handle', 'req-handle', 'res-ok'],
   // not a verb: it ends the handle on both sides
   ['leave', 'req-handle', 'res-ok'],
-  ['verb', 'req-verb', 'res-data']
+  ['verb', 'req-verb', 'res-data'],
+  ['link', 'req-link', 'res-link', true]
 ]
 
 /**

@@ -77,6 +77,18 @@ export type Context = (Client | Handle) & Record<string, Ref>;
  */
 export declare function restore(me: Client, phrase: string): Promise<Client>;
 /**
+ * Link the app to the identity behind a device invite, as `cero.link` does in the worker: the
+ * client is then that identity. `onrequest` gets the request's id as it is sent.
+ *
+ * @param {Client} me
+ * @param {string} invite
+ * @param {{ onrequest?: (id: string) => void }} [opts]
+ * @returns {Promise<Client>}
+ */
+export declare function link(me: Client, invite: string, { onrequest }?: {
+    onrequest?: (id: string) => void;
+}): Promise<Client>;
+/**
  * Per-device `local`-namespace surface on a Client.
  */
 declare class LocalRefs {
@@ -213,10 +225,11 @@ declare function start(ipc: import('streamx').Duplex, spec: Spec, opts?: {
     onerror?: (err: Error) => void;
     push?: import('./push.js').Messaging;
 }): Promise<Context>;
-/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, t: typeof t, schema: typeof schema }} */
+/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, link: typeof link, t: typeof t, schema: typeof schema }} */
 export declare const cero: typeof start & typeof remote & {
     connect: typeof connect;
     restore: typeof restore;
+    link: typeof link;
     t: typeof t;
     schema: typeof schema;
 };

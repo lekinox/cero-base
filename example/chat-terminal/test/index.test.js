@@ -49,6 +49,40 @@ test('two terminal instances pair + exchange messages', { timeout: 120000 }, asy
   t.pass('host saw guest message')
 })
 
+test(
+  'a second machine links as a device of the first, by invite, approved there',
+  { timeout: 120000 },
+  async (t) => {
+    const net = await createTestnet(3)
+    t.teardown(() => net.destroy(), { order: 100 })
+    const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+    const host = launch(t, ['--name', 'host', '--storage', tmp(), '--bootstrap', bootstrap])
+    const you = await waitFor(host, (line) => line.startsWith('# you:'))
+    const roomInvite = await waitFor(host, (line) => /^[a-z0-9]{60,}$/.test(line))
+    host.stdin.write('/link\n')
+    const invite = await waitFor(
+      host,
+      (line) => /^[a-z0-9]{60,}$/.test(line) && line !== roomInvite
+    )
+
+    const device = launch(t, ['--link', invite, '--storage', tmp(), '--bootstrap', bootstrap])
+    const asked = await waitFor(device, (line) => line.startsWith('# device request '))
+    const id = asked.split(' ')[3].replace(':', '')
+    await waitFor(host, (line) => line.startsWith(`# device request ${id}:`))
+    t.pass('the host shows the same request id')
+
+    host.stdin.write(`/approve ${id}\n`)
+    await waitFor(host, (line) => line === `# device request ${id} approved`)
+    const linked = await waitFor(device, (line) => line.startsWith('# you:'))
+    t.is(
+      linked.slice(linked.indexOf('(')),
+      you.slice(you.indexOf('(')),
+      'the same identity on both machines'
+    )
+  }
+)
+
 function tmp() {
   return mkdtempSync(join(tmpdir(), 'chat-terminal-test-'))
 }

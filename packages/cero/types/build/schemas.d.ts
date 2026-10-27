@@ -199,6 +199,9 @@ export declare const rpc: {
     'req-restore': {
         phrase: import("@cero-base/core").Prim;
     };
+    'req-link': {
+        invite: import("@cero-base/core").Prim;
+    };
     'req-row': {
         handle: import("@cero-base/core").Prim;
         ref: import("@cero-base/core").Prim;
@@ -273,6 +276,14 @@ export declare const rpc: {
         fileBase: import("@cero-base/core").Prim;
         fileToken: import("@cero-base/core").Prim;
         deviceName: import("@cero-base/core").Prim;
+    };
+    'res-link': {
+        request: import("@cero-base/core").Prim;
+        id: import("@cero-base/core").Prim;
+        deviceId: import("@cero-base/core").Prim;
+        deviceName: import("@cero-base/core").Prim;
+        fileBase: import("@cero-base/core").Prim;
+        fileToken: import("@cero-base/core").Prim;
     };
     'res-ok': {
         ok: import("@cero-base/core").Prim;

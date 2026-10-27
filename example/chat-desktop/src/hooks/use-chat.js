@@ -20,7 +20,11 @@ export function useChat() {
       setState({ status: 'connecting' })
       ipc = getIPC('/workers/main.js')
       try {
-        const me = await connect(ipc, opts)
+        const me = await connect(ipc, {
+          ...opts,
+          // the id the other device shows in its requests: the user compares them before approving
+          onrequest: (request) => !gone && setState({ status: 'linking', request })
+        })
         if (!gone) setState({ status: 'ready', me })
       } catch (err) {
         if (!gone) setState({ status: 'error', error: err.message || String(err) })
