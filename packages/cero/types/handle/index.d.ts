@@ -280,8 +280,6 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _tx;
     /** @private */
-    private _pairing;
-    /** @private */
     private _leave;
     /** @private */
     private _suspend;
@@ -415,6 +413,10 @@ export declare class Handle extends ReadyResource {
     private _wake;
     /** @private */
     private _adopt;
+    /** @private */
+    private _prune;
+    /** @private */
+    private _pruneAll;
     /** @private */
     private _carry;
     /** @private */

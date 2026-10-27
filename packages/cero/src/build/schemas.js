@@ -40,7 +40,9 @@ export const main = {
     updatedAt: int,
     index: uint,
     // the device key its admission proved: rotation seals to it
-    key: bytes
+    key: bytes,
+    // the chain to the identity, when a device of the member linked it here
+    proof: bytes
   },
   invite: {
     id: required(string),
@@ -88,7 +90,9 @@ export const main = {
   },
   accept: {
     id: required(string),
-    role: string
+    role: string,
+    // the accepter's own device attests the joiner's: a device of the member, not a member
+    proof: bytes
   },
   // a join from its arrival until the joiner has its keys: waiting for a member on a confirm
   // invite, then admitted and owed its reply. `id` is the joiner's writer
@@ -202,7 +206,10 @@ export const local = {
     // the reply, once it landed: the join then opens the handle without joining again
     key: bytes,
     encryptionKey: bytes,
-    epochs: bytes
+    epochs: bytes,
+    // the root's join: this device's secret key, bare until the reply brings its proof
+    device: bytes,
+    proof: bytes
   },
   // mail the device's mailbox keeps: received until handled, sent until read. `mirrors` are
   // 32-byte keys back to back

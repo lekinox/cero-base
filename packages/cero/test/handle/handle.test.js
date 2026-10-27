@@ -90,7 +90,7 @@ test('Handle: a root rejects missing local', async (t) => {
 test('Handle: opens and closes', async (t) => {
   const { me } = await openHandle(t)
   t.is(me.opened, true)
-  t.absent(me._pair, 'a root pairs nothing: its handles do')
+  t.ok(me._pair, 'the root pairs too: its own devices')
   await me.close()
   t.is(me.closed, true)
 })

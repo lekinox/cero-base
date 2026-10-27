@@ -1,10 +1,14 @@
 import sodium from 'sodium-universal'
 import IdentityKey from 'keet-identity-key'
+import encoding from 'keet-identity-key/lib/encoding.js'
 import bip39 from 'bip39-mnemonic'
 import b4a from 'b4a'
+import c from 'compact-encoding'
 import hid from 'hypercore-id-encoding'
 
 import { CeroError } from '../lib/errors.js'
+
+const { ProofEncoding } = encoding
 
 const DERIVE_PATH = ['SLIP-0021', 'cero', 'v1', 'identity']
 
@@ -90,6 +94,33 @@ export class Identity {
    */
   link(publicKey) {
     return IdentityKey.attestDevice(publicKey, this.device, this.proof)
+  }
+
+  /**
+   * A device with no identity yet: it signs as itself, its own key standing for the identity,
+   * until one attests it.
+   *
+   * @param {KeyPair} [device]  A fresh keypair by default.
+   * @returns {Promise<Identity>}
+   */
+  static async bare(device = Identity.randomKeyPair()) {
+    const proof = await IdentityKey.bootstrap({ identity: device }, device.publicKey)
+    return new Identity({ publicKey: device.publicKey, encryptionKey: null, device, proof })
+  }
+
+  /**
+   * The keys a proof chains through: the identity, then each device down to the signer.
+   *
+   * @param {Uint8Array} proof
+   * @returns {Uint8Array[]}  Empty when it is not a proof.
+   */
+  static chain(proof) {
+    try {
+      const { identity, chain } = c.decode(ProofEncoding, proof)
+      return [identity, ...chain.map((link) => link.publicKey)]
+    } catch {
+      return []
+    }
   }
 
   /**

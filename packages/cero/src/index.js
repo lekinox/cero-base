@@ -4,14 +4,19 @@ import Corestore from 'corestore'
 import safetyCatch from 'safety-catch'
 import c from 'compact-encoding'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import fs from 'fs'
 
 import { Identity } from '@cero-base/core/identity'
 import { Network } from '@cero-base/core/network'
+import { Mailbox } from '@cero-base/core/mailbox'
+import { Pairing } from '@cero-base/core/pairing'
+import { Invite } from '@cero-base/core/invite'
+import { epochEntries } from '@cero-base/core/database/encryption'
 import { CeroError } from '@cero-base/core/errors'
 
 import { Handle, Ref } from './handle/index.js'
-import { Local } from './local/index.js'
+import { Local, box } from './local/index.js'
 import { Bluetooth } from './lib/bluetooth.js'
 import * as verbs from './lib/operators.js'
 import { peek } from './lib/peek.js'
@@ -30,6 +35,8 @@ export { t, schema } from './lib/spec.js'
 /**
  * @typedef {object} CeroOpts
  * @property {string} [phrase]                         The identity's BIP-39 phrase, as `cero.phrase(me)` gives it: on a new `dir` it recovers that identity.
+ * @property {string} [invite]                         A device invite, as `cero.invite(me)` gives it on another device of yours: on a new `dir` this device joins that identity once a device of it accepts, with no phrase.
+ * @property {(id: string) => void} [onrequest]         With `invite`: called with the request's id as it is sent, the same id `me.requests` shows on the accepting device.
  * @property {12 | 24} [words]                         Mnemonic length when generating a fresh identity.
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.
@@ -89,11 +96,21 @@ async function start(dir, spec, opts = {}) {
 
     const device = (await local.store.get('keypair')).data
     const done = !!device && !device.setup
-    const { identity, fresh, minted } = await resolveIdentity(opts, local, done)
+    if (done && opts.invite) {
+      throw CeroError.INVALID('dir holds an identity: a device invite needs a fresh one')
+    }
+    // a device invite, this launch's or the one a killed launch was waiting on
+    const pending = done || opts.phrase ? null : await pendingLink(local)
+    const linking = !done && !opts.phrase && !!(opts.invite || pending)
+    if (device?.setup === 'link' && !linking && !opts.phrase) {
+      throw CeroError.REQUIRED('invite: this dir waits for a device invite, or a phrase')
+    }
+    const resolved = linking ? null : await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
-    const creating = !done && !opts.phrase && (fresh || device?.setup === 'create')
-    const recovering = !done && !creating
-    const setup = done ? null : creating ? 'create' : 'recover'
+    const creating =
+      !done && !linking && !opts.phrase && (resolved.fresh || device?.setup === 'create')
+    const recovering = !done && !linking && !creating
+    const setup = done ? null : linking ? 'link' : creating ? 'create' : 'recover'
     const keyPair =
       done || device?.setup === setup
         ? { publicKey: device.publicKey, secretKey: device.secretKey }
@@ -102,11 +119,11 @@ async function start(dir, spec, opts = {}) {
     if (!done && device?.setup !== setup) {
       await local.store.set('keypair', { ...keyPair, setup })
     }
-    if (minted) {
-      await local.store.set('master', { seed: identity.seed })
-      await local.store.set('device', pack(identity))
+    if (resolved?.minted) {
+      await local.store.set('master', { seed: resolved.identity.seed })
+      await local.store.set('device', pack(resolved.identity))
     }
-    const timeout = opts.recoveryTimeout || TIMEOUT
+    const timeout = opts.recoveryTimeout ?? TIMEOUT
 
     // a storage remembers its channel; reopening under another would silently rejoin the global network
     const stored = (await local.store.get('environment')).data?.channel ?? null
@@ -125,6 +142,12 @@ async function start(dir, spec, opts = {}) {
       onerror
     })
     await network.ready()
+    // the link first: who this device is comes with the reply
+    const linked = linking
+      ? await link(local, network, spec, { ...opts, writer: keyPair, timeout }, pending)
+      : null
+    const identity = linked ? linked.identity : resolved.identity
+    const fresh = resolved?.fresh === true
     // the radio before the pointer read: a phrase recovers from a device in range, no internet
     bluetooth = new Bluetooth(network, { ...bt, identity, keyPair })
     await bluetooth.ready()
@@ -142,7 +165,7 @@ async function start(dir, spec, opts = {}) {
     await pointer.ready()
     network.attach(pointer)
 
-    const key = recovering ? await readPointer(pointer, timeout) : undefined
+    const key = recovering ? await readPointer(pointer, timeout) : linked?.key
 
     me = new Handle({
       storage,
@@ -156,10 +179,16 @@ async function start(dir, spec, opts = {}) {
       dir,
       key,
       keyPair,
+      epochs: linked?.epochs,
       bluetooth,
       bootstrap: done
         ? null
-        : { name: opts.name || null, isMobile: opts.isMobile === true, recovering, timeout }
+        : {
+            name: opts.name || null,
+            isMobile: opts.isMobile === true,
+            recovering: recovering || linking,
+            timeout
+          }
     })
     // an extension's hooks see every op the root applies; what else it calls waits for the open
     const setups = Promise.all(me.extensions.map(async (ext) => ext.setup?.(me)))
@@ -170,6 +199,10 @@ async function start(dir, spec, opts = {}) {
     if (!done) {
       if (creating && pointer.length === 0) {
         await pointer.append(c.encode(c.fixed32, me.store.key))
+      }
+      if (linked) {
+        await local.store.set('device', pack(identity))
+        await local.store.del('joins', linked.id)
       }
       await local.store.set('keypair', { setup: null })
     }
@@ -248,6 +281,66 @@ async function resolveIdentity(opts, local, done) {
   if (row && same) return { identity: unpack(row, seed), fresh: false, minted: false }
   const identity = await Identity.create({ seed: provided, words: opts.words })
   return { identity, fresh: !provided, minted: true }
+}
+
+// the root's own join in the joins rows
+const LINK = 'root'
+
+async function pendingLink(local) {
+  const { data: rows } = await local.store.get('joins')
+  return rows.find((row) => row.type === LINK) ?? null
+}
+
+// the root's join: this device, bare, knocks with the invite and waits for a device of the identity
+// to let it in. What it learns is kept in its joins row, so a killed launch resumes it
+async function link(local, network, spec, { invite, writer, onrequest, timeout }, pending) {
+  const parsed = Invite.parse(invite ?? pending.invite)
+  if (parsed.data?.byteLength !== 32) throw CeroError.INVALID_INVITE('not a device invite')
+  const secret = pending?.device ?? Identity.randomKeyPair().secretKey
+  const device = { publicKey: secret.subarray(32), secretKey: secret }
+  const row = {
+    ...pending,
+    id: b4a.toHex(parsed.discoveryKey),
+    type: LINK,
+    invite: invite ?? pending.invite,
+    publicKey: writer.publicKey,
+    secretKey: writer.secretKey,
+    device: secret
+  }
+  await local.store.put('joins', row)
+  let reply = row.key
+    ? { ...row, epochs: row.epochs ? c.decode(epochEntries, row.epochs) : [] }
+    : null
+  if (!reply) {
+    const { store } = network
+    const inbox = box(local.store, 'inbox')
+    const outbox = box(local.store, 'outbox')
+    const mailbox = new Mailbox(network, { inbox, outbox })
+    await mailbox.ready()
+    try {
+      const signers = [{ publicKey: writer.publicKey }]
+      onrequest?.(hid.encode(Hypercore.key({ version: store.manifestVersion, signers })))
+      // the reply is kept before the join settles, a denial forgets the join
+      const keep = async (answer) => {
+        if (answer instanceof Error) return local.store.del('joins', row.id)
+        const { key, encryptionKey, epochs, proof } = answer
+        const kept = { ...row, key, encryptionKey, epochs: c.encode(epochEntries, epochs), proof }
+        await local.store.put('joins', kept)
+      }
+      const identity = await Identity.bare(device)
+      reply = await Pairing.join(mailbox, row.invite, { identity, spec, writer, timeout, keep })
+    } finally {
+      await mailbox.close()
+    }
+  }
+  // the chain the accepting device wrote ends at this device, under the identity the invite named
+  const chained = Identity.verify(reply.proof, null, parsed.data)
+  if (!chained || !b4a.equals(chained.device, device.publicKey)) {
+    throw CeroError.INVALID('the reply does not link this device to the identity of the invite')
+  }
+  const { encryptionKey, proof } = reply
+  const identity = Identity.from({ publicKey: parsed.data, encryptionKey, device, proof })
+  return { identity, key: reply.key, epochs: reply.epochs, id: row.id }
 }
 
 function pack({ device, proof, publicKey, encryptionKey }) {

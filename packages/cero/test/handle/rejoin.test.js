@@ -3,6 +3,8 @@ import b4a from 'b4a'
 
 import hid from 'hypercore-id-encoding'
 
+import { Identity } from '@cero-base/core/identity'
+
 import { put, get, del, open } from '../../src/lib/operators.js'
 import { cero } from '../../src/index.js'
 import {
@@ -101,7 +103,7 @@ test('rejoin: a member let back in after a re-key reopens the room and reads its
   t.pass('and writes')
 })
 
-test('rejoin: a revoked device re-joins with a fresh writer', async (t) => {
+test('rejoin: a revoked device never re-joins; a new device of the member does', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
 
@@ -113,26 +115,33 @@ test('rejoin: a revoked device re-joins with a fresh writer', async (t) => {
 
   // the owner revokes the device once its claim reached it
   await waitUntil(async () => (await get(clinic.devices, hid.encode(k1))).data || null)
-  // only this DEVICE is revoked, so b's member row survives — the stored
-  // keypair still looks reusable while its writer core is frozen for good
+  // only this DEVICE is revoked, so b's member row survives: its key is kept out for good
   await del(clinic.devices, hid.encode(k1))
   await waitUntil(async () => {
     const { data } = await get(joined.devices, hid.encode(k1))
     return data ? null : true
   })
-  await joined.close() // app restart — the re-join reaches for the stored keypair
+  await joined.close() // app restart — the re-join reaches for a fresh writer, the same key
 
-  const back = await open(b.me.team, await cero.invite(clinic))
+  const err = await open(b.me.team, await cero.invite(clinic)).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'the revoked device key is turned away')
+  t.is(err?.reason, 'removed')
+
+  // the member comes back on a new device: here one the phrase attests
+  const recovered = await Identity.create({ seed: b.identity.seed })
+  const c = await openHandle(t, { testnet, identity: recovered })
+  await c.me.store.bootstrap({ name: 'new-device-root' })
+  const back = await open(c.me.team, await cero.invite(clinic))
   t.teardown(() => back.close().catch(() => {}))
-  t.absent(b4a.equals(k1, back.store.writerKey), 're-joined on a fresh writer')
-  t.ok(back.store.writable, 'writable again')
+  t.ok(back.store.writable, 'writable as a new device of the same member')
+  t.is((await get(back.members)).data.length, 2, 'the member row stayed')
 
   await put(back.messages, { text: 'back' })
   await waitUntil(async () => {
     const { data } = await get(clinic.messages)
     return data.some((m) => m.text === 'back') || null
   })
-  t.pass('the host sees a row from the fresh writer')
+  t.pass('the host sees a row from the new device')
 })
 
 test('rejoin: after leave() then re-join with a fresh invite', async (t) => {
