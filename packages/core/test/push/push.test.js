@@ -5,7 +5,7 @@ import HypercoreStorage from 'hypercore-storage'
 import { encode } from 'blind-push'
 import crypto from 'hypercore-crypto'
 
-import { receive } from '../../src/push/index.js'
+import { verify } from '../../src/push/index.js'
 import {
   makeTestnet,
   makeGateway,
@@ -56,13 +56,14 @@ test('push: a write reaches the gateway, the reader verifies it as newer, then a
   t.is(gateway.sent.at(-1).topic, b4a.toHex(a.db.discoveryKey), 'sent to the handle topic')
   const payload = last(gateway)
 
-  const hit = await receive(b.store.storage, payload, [handle(a.db)])
+  const hit = await verify(b.store.storage, payload, [handle(a.db)])
   t.is(hit.id, 'room')
   t.ok(hit.newer, 'the reader is behind')
+  t.is(hit.ref, 'messages', 'the push names the ref')
 
   await b.network.resume()
   await waitFor(async () => (await b.db.get('messages')).data.length === 1)
-  const again = await receive(b.store.storage, payload, [handle(a.db)])
+  const again = await verify(b.store.storage, payload, [handle(a.db)])
   t.absent(again.newer, 'a replay proves nothing new')
 })
 
@@ -81,7 +82,7 @@ test('push: a closed device verifies from its storage opened read-only', async (
   await storage.ready()
   t.teardown(() => storage.close(), { order: 4 })
 
-  const hit = await receive(storage, payload, [handle(a.db)])
+  const hit = await verify(storage, payload, [handle(a.db)])
   t.ok(hit?.newer, 'verified cold')
 })
 
@@ -92,18 +93,18 @@ test('push: an unknown handle, a tampered payload and garbage all read as nothin
   await waitFor(() => gateway.sent.length === gateway.before + 1)
   const payload = last(gateway)
 
-  t.is(await receive(b.store.storage, payload, []), null, 'not a handle of this device')
+  t.is(await verify(b.store.storage, payload, []), null, 'not a handle of this device')
   const tampered = b4a.from(payload)
   tampered[tampered.length - 1] ^= 1
-  t.is(await receive(b.store.storage, tampered, [handle(a.db)]), null, 'tampered')
-  t.is(await receive(b.store.storage, b4a.from('garbage'), [handle(a.db)]), null, 'garbage')
+  t.is(await verify(b.store.storage, tampered, [handle(a.db)]), null, 'tampered')
+  t.is(await verify(b.store.storage, b4a.from('garbage'), [handle(a.db)]), null, 'garbage')
   const short = encode({
     discoveryKey: crypto.discoveryKey(a.db.key),
     payload: b4a.alloc(3),
     version: 3
   })
   t.is(
-    await receive(b.store.storage, short, [handle(a.db)]),
+    await verify(b.store.storage, short, [handle(a.db)]),
     null,
     'a payload too short to hold a proof'
   )
@@ -139,6 +140,19 @@ test('push: a push attempt outlives its database without a crash', async (t) => 
   await db.close()
   await waitFor(() => !db.pushing, { timeout: 20000 })
   t.pass('the retry found a closed database and stopped')
+})
+
+test('push: a write to a ref that declares no push sends nothing', async (t) => {
+  const { gateway, a } = await pair(t)
+  await a.db.put('tasks', { title: 'quiet' })
+  t.absent(a.db.pushing, 'tasks declares no push')
+  const pushed = await waitFor(() => gateway.sent.length > gateway.before, { timeout: 2000 }).catch(
+    () => false
+  )
+  t.absent(pushed, 'nothing sent')
+  await a.db.put('messages', { text: 'loud' })
+  await waitFor(() => gateway.sent.length === gateway.before + 1)
+  t.pass('a ref that declares push still does')
 })
 
 test('push: nothing without mirrors, nothing from a database that does not push', async (t) => {

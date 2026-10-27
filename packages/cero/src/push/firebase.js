@@ -1,11 +1,11 @@
 import b4a from 'b4a'
 
 /**
- * `@react-native-firebase/messaging` as a push backend: pass `messaging()`. Pushes to the app in
+ * `@react-native-firebase/messaging` as the messaging service `connect` takes for push: pass `messaging()`. Pushes to the app in
  * front; the push worklet answers the ones the OS delivers while it is not.
  *
  * @param {{ subscribeToTopic: (topic: string) => Promise<void>, unsubscribeFromTopic: (topic: string) => Promise<void>, onMessage: (fn: (message: object) => void) => () => void }} messaging
- * @returns {import('../rpc/push.js').Backend}
+ * @returns {import('../rpc/push.js').Messaging}
  */
 export function firebase(messaging) {
   const payload = (message) => message?.data?.payload && b4a.from(message.data.payload, 'base64')

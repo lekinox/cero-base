@@ -18,9 +18,12 @@ export default schema({
   members: t.extend({ avatar: t.bytes }),
 
   team: {
-    messages: t.collection({
-      text: t.string
-    }),
+    messages: t.collection(
+      {
+        text: t.string
+      },
+      { push: true }
+    ),
     notes: t.collection({
       text: t.string
     }),

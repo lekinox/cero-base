@@ -185,6 +185,7 @@ function register(name, node, ctx) {
     ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.dispatches.push({ name, requestType: fqn })
     ctx.meta.refs[name] = { kind: 'action', path: [name], schema: fqn }
+    if (node.push) ctx.meta.refs[name].push = true
     return
   }
   if (node.kind === 'single') {
@@ -196,6 +197,7 @@ function register(name, node, ctx) {
       { kind: 'single', path: [name], schema: fqn },
       node.fields
     )
+    if (node.push) ctx.meta.refs[name].push = true
     return
   }
   if (node.kind === 'collection') {
@@ -220,6 +222,7 @@ function register(name, node, ctx) {
       node.fields
     )
     if (node.own) refEntry.own = true
+    if (node.push) refEntry.push = true
     ctx.meta.refs[name] = refEntry
     if (node.indexes) {
       for (const [idx, fields] of Object.entries(node.indexes)) {
