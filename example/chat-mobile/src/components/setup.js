@@ -1,12 +1,21 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Text, View, TextInput } from 'react-native'
 import { Button, Input, Page, ErrorBox } from './ui'
 import { styles, colors } from '../styles'
 
-export function Setup({ onCreate, onRecover, onLink, error: failed = null }) {
+export function Setup({
+  onCreate,
+  onRecover,
+  onLink,
+  invite: fromLink = '',
+  error: failed = null
+}) {
   const [name, setName] = useState('')
   const [phrase, setPhrase] = useState('')
-  const [invite, setInvite] = useState('')
+  const [invite, setInvite] = useState(fromLink)
+  useEffect(() => {
+    if (fromLink) setInvite(fromLink)
+  }, [fromLink])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
