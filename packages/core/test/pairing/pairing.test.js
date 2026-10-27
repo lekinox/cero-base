@@ -387,6 +387,54 @@ test('confirm: a join waits as a request until a member accepts it', async (t) =
   t.pass('the request settles once the joiner read its keys')
 })
 
+test('link: a bare device joins, the accepter attests it, and the reply carries its chain', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
+  const { mailbox, net } = await makeMailbox(t, testnet)
+  const device = Identity.randomKeyPair()
+  const bare = await Identity.bare(device)
+  const invite = await host.pairing.invite({ role: 'owner', confirm: true, ttl: '2h' })
+  const joining = Pairing.join(mailbox, invite, { identity: bare, spec })
+
+  const request = await asked(host.db)
+  t.alike(request.key, device.publicKey, 'the request names the device key')
+  await host.pairing.accept(request.id, { proof: host.identity.link(request.key) })
+
+  const reply = await joining
+  t.alike(reply.key, host.db.key)
+  const linked = Identity.verify(reply.proof, null, host.identity.publicKey)
+  t.alike(
+    linked?.device,
+    device.publicKey,
+    'the chain ends at this device, under the host identity'
+  )
+  const me = Identity.from({
+    publicKey: host.identity.publicKey,
+    encryptionKey: reply.encryptionKey,
+    device,
+    proof: reply.proof
+  })
+  const db = new Database({
+    store: net.store,
+    identity: me,
+    network: net,
+    spec,
+    key: reply.key,
+    encryptionKey: reply.encryptionKey,
+    epochs: reply.epochs,
+    keyPair: reply.writer
+  })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 1 })
+  await waitFor(() => db.writable)
+  t.is(
+    (await db.get('devices', hid.encode(db.writerKey))).data?.memberId,
+    host.identity.id,
+    'a device of the host, writing'
+  )
+  t.is((await db.get('members')).data.length, 1, 'no member was added')
+})
+
 test('confirm: only a waiting join is answered, any other id is UNKNOWN', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)

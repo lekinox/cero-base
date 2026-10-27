@@ -65,9 +65,11 @@ An invite made with `confirm: true` pauses at step 3: the join waits in `room.re
 
 A phrase is the user. Its key attests a device once, when the phrase is typed on it, and is then dropped: the device signs everything after with a key of its own, under that proof. Each device writes only its own log, in the root and in every handle, so no two devices write over each other.
 
-The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with its proof. Each handle is a row in the root with its keys, so the device takes a seat in a handle the same way when it opens it.
+A new device is linked like a member joins a handle, with the root as the handle: a device of yours mints an invite, the new one asks in with a key of its own, the request waits in `me.requests`, and the device that accepts it signs the new key into the chain and sends the root's keys. The new device then holds the identity with no phrase on it, and seats itself in each handle it opens with its proof, as a recovered device does.
 
-Removing a device takes its log out, but the device still holds the seed and can admit a fresh log like any new device. Removing retires a device; it does not lock out whoever holds it. `storageKey` keeps the seed encrypted on disk.
+When no device of yours is around, the phrase is the way in. The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with the proof the phrase gave its key. Each handle is a row in the root with its keys, so the device takes a seat in a handle the same way when it opens it.
+
+Removing a device takes its logs out: from the root, and from every handle, by whichever device of yours has them open. The root re-keys, and the removed key is kept beside the removed members, so it seats no new log anywhere, nor does a device it links after. `storageKey` keeps the keys encrypted on disk.
 
 ## Encryption and re-keying
 

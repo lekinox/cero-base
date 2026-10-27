@@ -14,6 +14,14 @@ export type CeroOpts = {
      */
     phrase?: string;
     /**
+     * A device invite, as `cero.invite(me)` gives it on another device of yours: on a new `dir` this device joins that identity once a device of it accepts, with no phrase.
+     */
+    invite?: string;
+    /**
+     * With `invite`: called with the request's id as it is sent, the same id `me.requests` shows on the accepting device.
+     */
+    onrequest?: (id: string) => void;
+    /**
      * Mnemonic length when generating a fresh identity.
      */
     words?: 12 | 24;
@@ -86,6 +94,8 @@ export type CeroOpts = {
 /**
  * @typedef {object} CeroOpts
  * @property {string} [phrase]                         The identity's BIP-39 phrase, as `cero.phrase(me)` gives it: on a new `dir` it recovers that identity.
+ * @property {string} [invite]                         A device invite, as `cero.invite(me)` gives it on another device of yours: on a new `dir` this device joins that identity once a device of it accepts, with no phrase.
+ * @property {(id: string) => void} [onrequest]         With `invite`: called with the request's id as it is sent, the same id `me.requests` shows on the accepting device.
  * @property {12 | 24} [words]                         Mnemonic length when generating a fresh identity.
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.

@@ -209,9 +209,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     return hooked(fns, meta, ctx, (r) => insert(ctx.view, name, r))
   }
 
-  function seat(ctx, writer, memberId, ts, key) {
-    const row = { id: hid.encode(writer), memberId, createdAt: ts, updatedAt: ts, key }
-    return save(ctx, 'put', 'devices', row)
+  // a seat taken again, as a linked device's own claim does, keeps the chain its link wrote
+  async function seat(ctx, writer, memberId, ts, key, proof = null) {
+    const id = hid.encode(writer)
+    proof ??= (await getDevice(ctx.view, id))?.proof ?? null
+    return save(ctx, 'put', 'devices', { id, memberId, createdAt: ts, updatedAt: ts, key, proof })
   }
 
   // deleting a row that is not there changes nothing, and fires nothing
@@ -296,6 +298,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!b4a.equals(op.writer, ctx.key)) return
     const signed = Identity.verify(op.proof, admission(ctx.dbKey, op.writer, ctx.key), op.master)
     if (!signed) return
+    if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
     const { genesis } = ctx.host
     const inviter = await getRole(ctx.view, op.master)
     if (!genesis && !can(inviter, INVITE)) throw CeroError.REFUSED('invite')
@@ -318,8 +321,25 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       }
     }
     await ctx.host.removeWriter(op.writer)
+    await revoke(ctx, target)
     await drop(ctx, 'devices', hid.encode(op.writer))
   })
+
+  // a removed device's key, and any device it attests after, stays out: its chain is static, so
+  // the removal is kept here, beside the members'
+  async function revoke(ctx, device) {
+    if (!device?.key) return
+    const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
+    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted })
+  }
+  // the devices of the chain, not the identity it starts with: a member's removal is ordered by
+  // its invites, a device's is for good
+  async function revoked(view, proof) {
+    for (const key of Identity.chain(proof).slice(1)) {
+      if (await view.get(removals, { id: hid.encode(key) })) return true
+    }
+    return false
+  }
 
   // the genesis batch names the creator; everyone after comes in through a signed join
   add('add-member', async (op, ctx) => {
@@ -427,6 +447,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       }
     }
     await ctx.host.removeWriter(hid.decode(existing.id))
+    await revoke(ctx, existing)
     await drop(ctx, 'devices', op.id)
   })
 
@@ -537,6 +558,21 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (!invite.reuse) await spend(ctx, invite, 'spent')
   }
 
+  // a device of a member, linked by one of its devices: no member row, a seat under theirs with
+  // the chain the linking device wrote
+  async function admitDevice(ctx, { invite, memberId, key, proof, writer, reply, ts }) {
+    if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
+    const member = await getMember(ctx.view, memberId)
+    if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
+    await seat(ctx, writer, memberId, ts, key, proof)
+    await save(ctx, 'put', 'requests', {
+      ...request(invite, hid.decode(memberId), key, writer, reply, ts),
+      role: member.role,
+      admitted: true
+    })
+    if (!invite.reuse) await spend(ctx, invite, 'spent')
+  }
+
   function request(invite, identity, key, writer, reply, ts) {
     const expires = invite.expires || 0
     const id = hid.encode(writer)
@@ -577,9 +613,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const memberId = hid.encode(join.identity)
     const known = await getMember(ctx.view, memberId)
     const removal = known ? null : await ctx.view.get(removals, { id: memberId })
-    if (removal && (invite.index ?? 0) <= removal.index) {
-      return refuse(ctx, { id, reply: join.reply, expires: invite.expires || 0 }, 'removed')
-    }
+    const out =
+      (removal && (invite.index ?? 0) <= removal.index) || (await revoked(ctx.view, join.proof))
+    if (out) return refuse(ctx, { id, reply: join.reply, expires: invite.expires || 0 }, 'removed')
     await ctx.view.delete(refusals, { id })
     if (invite.confirm && !known) {
       const waiting = request(invite, join.identity, signed.device, ctx.key, join.reply, ts)
@@ -595,7 +631,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       ts
     })
   })
-  // a waiting join, admitted at a role within the invite's and the accepter's
+  // a waiting join, admitted at a role within the invite's and the accepter's; with a proof, as a
+  // device of the accepter's own identity, which its device attested
   add('accept', async (op, ctx) => {
     const waiting = await ctx.view.get(requests, { id: op.id })
     if (!waiting || waiting.admitted) return
@@ -606,7 +643,15 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       throw CeroError.REFUSED('invite')
     }
     const { identity, key, reply, createdAt: ts = 0 } = waiting
-    await admit(ctx, { invite, identity, key, writer: hid.decode(op.id), reply, role, ts })
+    const writer = hid.decode(op.id)
+    if (op.proof) {
+      const memberId = await getSignerMember(ctx.view, ctx.key)
+      const linked = Identity.verify(op.proof, null, hid.decode(memberId))
+      if (!linked || !b4a.equals(linked.device, key)) throw CeroError.REFUSED('device')
+      if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
+      return admitDevice(ctx, { invite, memberId, key, proof: op.proof, writer, reply, ts })
+    }
+    await admit(ctx, { invite, identity, key, writer, reply, role, ts })
   })
   // answered through the log like every refusal; a deny that lost the race to an accept is nothing
   add('deny', async (op, ctx) => {

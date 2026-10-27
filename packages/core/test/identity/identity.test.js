@@ -132,6 +132,34 @@ test('link: a device attests another, which signs for the identity and links fur
   t.alike(Identity.verify(c.sign(msg), msg, a.publicKey)?.device, phone.publicKey, 'depth 3')
 })
 
+test('bare: a device with no identity yet signs as itself, until one attests it', async (t) => {
+  const device = Identity.randomKeyPair()
+  const bare = await Identity.bare(device)
+  t.alike(bare.publicKey, device.publicKey, 'its own key stands for the identity')
+  t.is(bare.seed, null)
+  const msg = b4a.from('knock')
+  t.alike(Identity.verify(bare.sign(msg), msg), {
+    identity: device.publicKey,
+    device: device.publicKey
+  })
+  const a = await Identity.create()
+  const proof = a.link(device.publicKey)
+  const linked = Identity.from({ publicKey: a.publicKey, encryptionKey: null, device, proof })
+  t.is(linked.id, a.id, 'attested, the same device is hers')
+})
+
+test('chain: the keys a proof chains through, the identity first', async (t) => {
+  const a = await Identity.create()
+  const laptop = Identity.randomKeyPair()
+  const b = Identity.from({ ...a, seed: null, device: laptop, proof: a.link(laptop.publicKey) })
+  const phone = Identity.randomKeyPair()
+  const c = Identity.from({ ...b, device: phone, proof: b.link(phone.publicKey) })
+  const keys = [a.publicKey, a.device.publicKey, laptop.publicKey, phone.publicKey]
+  t.alike(Identity.chain(c.proof), keys)
+  t.alike(Identity.chain(c.sign(b4a.from('x'))), keys, 'a data proof carries the same chain')
+  t.alike(Identity.chain(b4a.from('garbage')), [], 'not a proof, no throw')
+})
+
 test('from: the proof must end at the device and at the identity', async (t) => {
   const a = await Identity.create()
   const other = await Identity.create()

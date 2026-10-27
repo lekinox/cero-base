@@ -59,7 +59,9 @@ export const types = [
       { name: 'reason', type: 'string', required: false },
       { name: 'key', type: 'fixed32', required: false },
       { name: 'encryptionKey', type: 'buffer', required: false },
-      { name: 'epochs', type: '@cero/epoch', required: false, array: true }
+      { name: 'epochs', type: '@cero/epoch', required: false, array: true },
+      // a device admitted under a member: its chain to the identity, as the accepter wrote it
+      { name: 'proof', type: 'buffer', required: false }
     ]
   },
 
