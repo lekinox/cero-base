@@ -600,7 +600,7 @@ test('a connection the remote never answers on is dropped within seconds', async
   const opened = new Promise((resolve) => {
     net.once('connection', (conn) => {
       process.kill(peer.pid, 'SIGSTOP')
-      t.is(conn.rawStream.packetsReceived, 0, 'the remote said nothing before the freeze')
+      t.is(conn.rawStream.bytesReceived, 0, 'the remote said nothing before the freeze')
       resolve(conn)
     })
   })
