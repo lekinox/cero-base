@@ -1,12 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-function toBuffer(data) {
-  if (Buffer.isBuffer(data)) return data
-  if (data instanceof Uint8Array) return Buffer.from(data)
-  if (data instanceof ArrayBuffer) return Buffer.from(new Uint8Array(data))
-  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-  if (typeof data === 'string') return Buffer.from(data)
-  return Buffer.alloc(0)
+// a sandboxed preload has no Buffer: bytes cross as Uint8Array
+const decoder = new TextDecoder()
+
+function toBytes(data) {
+  if (data instanceof Uint8Array) return data
+  if (data instanceof ArrayBuffer) return new Uint8Array(data)
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+  if (typeof data === 'string') return new TextEncoder().encode(data)
+  return new Uint8Array(0)
 }
 
 contextBridge.exposeInMainWorld('bridge', {
@@ -19,7 +21,7 @@ contextBridge.exposeInMainWorld('bridge', {
   writeWorkerIPC: (specifier, data) =>
     ipcRenderer.invoke('pear:worker:writeIPC:' + specifier, data),
   onWorkerIPC: (specifier, listener) => {
-    const wrap = (evt, data) => listener(toBuffer(data))
+    const wrap = (evt, data) => listener(toBytes(data))
     ipcRenderer.on('pear:worker:ipc:' + specifier, wrap)
     return () => ipcRenderer.removeListener('pear:worker:ipc:' + specifier, wrap)
   },
@@ -29,12 +31,12 @@ contextBridge.exposeInMainWorld('bridge', {
     return () => ipcRenderer.removeListener('pear:worker:exit:' + specifier, wrap)
   },
   onWorkerStdout: (specifier, listener) => {
-    const wrap = (evt, data) => listener(toBuffer(data).toString('utf8'))
+    const wrap = (evt, data) => listener(decoder.decode(toBytes(data)))
     ipcRenderer.on('pear:worker:stdout:' + specifier, wrap)
     return () => ipcRenderer.removeListener('pear:worker:stdout:' + specifier, wrap)
   },
   onWorkerStderr: (specifier, listener) => {
-    const wrap = (evt, data) => listener(toBuffer(data).toString('utf8'))
+    const wrap = (evt, data) => listener(decoder.decode(toBytes(data)))
     ipcRenderer.on('pear:worker:stderr:' + specifier, wrap)
     return () => ipcRenderer.removeListener('pear:worker:stderr:' + specifier, wrap)
   }
