@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.7.0 (2026-10-27)
+
+### Other
+
+- 🚀 identity: cero.link(me, invite), a device links from an app already open; the examples offer it (#19)
+- 🚀 deps: the examples on current releases (#16)
+- 🚀 build: a field keeps the slot its spec gave it, so a new one never shifts an extension's (#17)
+
 ## 2.6.0 (2026-10-27)
 
 ### Bug Fixes
