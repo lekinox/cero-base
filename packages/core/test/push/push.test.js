@@ -5,7 +5,7 @@ import HypercoreStorage from 'hypercore-storage'
 import { encode } from 'blind-push'
 import crypto from 'hypercore-crypto'
 
-import { verify } from '../../src/push/index.js'
+import { verify, decrypt } from '../../src/push/index.js'
 import {
   makeTestnet,
   makeGateway,
@@ -169,4 +169,43 @@ test('push: nothing without mirrors, nothing from a database that does not push'
     () => false
   )
   t.absent(pushed, 'push off, nothing sent')
+})
+
+test('push: the block rides when it fits and decrypts to the op for a holder of the keys, each epoch', async (t) => {
+  const { gateway, a, b } = await pair(t)
+  const keys = () => ({ encryptionKey: a.db.encryptionKey, epochs: a.db.keyring.all() })
+  const op = async (payload, k = keys()) => {
+    const hit = await verify(b.store.storage, payload, [handle(a.db)])
+    const body = await decrypt(b.store.storage, hit, k)
+    return body && a.db.spec.dispatch.decode(body)
+  }
+
+  await a.db.put('messages', { text: 'hi' })
+  await waitFor(() => gateway.sent.length === gateway.before + 1)
+  const first = await verify(b.store.storage, last(gateway), [handle(a.db)])
+  t.is(first.block?.index, a.db.bee.local.length - 1, 'the block rode along, at its index')
+  const decoded = await op(last(gateway))
+  t.ok(decoded.name.endsWith('/add-messages'), 'the op')
+  t.is(decoded.value.text, 'hi', 'with the row')
+  t.is(
+    await decrypt(b.store.storage, first, { encryptionKey: b4a.alloc(32) }),
+    null,
+    'not with another key'
+  )
+
+  await a.db.rotate()
+  await a.db.put('messages', { text: 'after' })
+  await waitFor(() => gateway.sent.length === gateway.before + 2)
+  t.is((await op(last(gateway))).value.text, 'after', 'a rotated epoch decrypts with its entropy')
+  t.is(
+    await op(last(gateway), { encryptionKey: a.db.encryptionKey, epochs: [] }),
+    null,
+    'not without it'
+  )
+
+  await a.db.put('messages', { text: 'x'.repeat(8000) })
+  await waitFor(() => gateway.sent.length === gateway.before + 3)
+  const big = await verify(b.store.storage, last(gateway), [handle(a.db)])
+  t.is(big.block, null, 'a block that does not fit stays behind')
+  t.is(await decrypt(b.store.storage, big, keys()), null, 'nothing to open then')
 })
