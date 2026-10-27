@@ -1,5 +1,5 @@
 import { join, resolve } from 'path'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync, readFileSync } from 'fs'
 import { pathToFileURL } from 'url'
 
 import b4a from 'b4a'
@@ -273,9 +273,10 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  for (const desc of internal.types('main', extend)) sns.register(desc)
-  for (const desc of types) sns.register(desc)
-  if (rpc) for (const desc of internal.types('rpc')) sns.register(desc)
+  const keep = slots(schemaDir, ns)
+  for (const desc of internal.types('main', extend)) sns.register(keep(desc))
+  for (const desc of types) sns.register(keep(desc))
+  if (rpc) for (const desc of internal.types('rpc')) sns.register(keep(desc))
   Hyperschema.toDisk(s, schemaDir, { esm: true })
 
   const db = HyperdbBuilder.from(schemaDir, dbDir)
@@ -305,8 +306,9 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  for (const desc of internal.types('local')) sns.register(desc)
-  for (const desc of types) sns.register(desc)
+  const keep = slots(schemaDir, ns)
+  for (const desc of internal.types('local')) sns.register(keep(desc))
+  for (const desc of types) sns.register(keep(desc))
   Hyperschema.toDisk(s, schemaDir, { esm: true })
 
   const db = HyperdbBuilder.from(schemaDir, dbDir)
@@ -315,6 +317,25 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
   for (const desc of collections) dns.collections.register(desc)
   for (const desc of indexes) dns.indexes.register(desc)
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })
+}
+
+// a field keeps the slot the built spec gave it, whichever schema declares it: hyperschema stores
+// a row by position, and a type's fields are cero's, then its extensions', then the app's, so one
+// more of cero's would take an extension's slot. A field the spec lacks goes after the ones it has
+function slots(schemaDir, ns) {
+  const file = join(schemaDir, 'schema.json')
+  const built = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')).schema : []
+  const had = new Map(
+    built
+      .filter((x) => x.namespace === ns && x.fields)
+      .map((x) => [x.name, x.fields.map((f) => f.name)])
+  )
+  return (desc) => {
+    const names = had.get(desc.name)
+    if (!names || !desc.fields) return desc
+    const at = (f) => (names.includes(f.name) ? names.indexOf(f.name) : names.length)
+    return { ...desc, fields: desc.fields.toSorted((a, b) => at(a) - at(b)) }
+  }
 }
 
 const IMPORTS = {

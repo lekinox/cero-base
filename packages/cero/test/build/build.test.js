@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
+import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
 import { rpc } from '../../src/build/schemas.js'
 import { makeTestnet } from '../helpers/index.js'
@@ -224,6 +225,22 @@ test('build: incremental rebuild over an existing spec stays loadable', async (t
   const router = new spec.dispatch.Router()
   router.add('@cero/rotate-key', async () => {})
   t.pass('rebuild loads and rotate-key routes')
+})
+
+// a field keeps the slot a built spec gave it: one more on a builtin goes after the fields it
+// already has, whichever schema adds it, so an app's stored rows still read
+const noted = schema({ handles: t.extend({ note: t.string }) })
+const pinned = { name: 'pin', schema: { handles: t.extend({ pin: t.string }) } }
+
+test('build: a field added to a builtin goes after the ones a built spec has', async (a) => {
+  const specDir = await buildInto(a, 'field-order', noted)
+  await build(specDir, noted, { extensions: [...bundled, pinned] })
+  const { schema: types } = JSON.parse(
+    await fs.readFile(join(specDir, 'main/schema/schema.json'), 'utf-8')
+  )
+  const names = types.find((x) => x.name === 'handle').fields.map((f) => f.name)
+  a.alike(names.slice(-2), ['note', 'pin'], 'the stored field first, the new one after')
+  await importSpec(specDir)
 })
 
 // a built spec keeps its route numbers, so the routes cero registers ahead of the app's are
