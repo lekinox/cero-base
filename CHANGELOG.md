@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.6.0 (2026-10-27)
+
+### Bug Fixes
+
+- a silent peer is one that sent no data, so an ack alone does not keep its connection (#11)
+
+### Other
+
+- 🚀 identity: link a device by invite, no phrase; a removed device key stays out (#15)
+- identity: device keys (#12)
+- database: an app's rule may decide who removes a member or changes her rank (#14)
+- 🚀 push: a flag on the ref; the app's worklet says what to show (#10)
+
 ## 2.5.0 (2026-10-25)
 
 ### Bug Fixes
