@@ -465,12 +465,12 @@ export class Client extends RPCClient {
   /**
    * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
    * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-   * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
+   * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]  Where the worker's background errors go, the console without one; `push`: the platform's messaging service, to follow the handles' push topics.
    */
   constructor(ipc, spec, { onerror, push } = {}) {
     super(ipc, spec)
     /** @private */
-    this._push = push?.backend || null
+    this._push = push || null
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     Object.assign(this, operators)
     /** @private */
@@ -614,7 +614,7 @@ class Handle {
  *
  * @param {import('streamx').Duplex} ipc
  * @param {Spec} spec
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
  * @returns {Promise<Client>}
  */
 export async function connect(ipc, spec, opts) {
@@ -629,7 +629,7 @@ export async function connect(ipc, spec, opts) {
  *
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
  * @returns {Promise<Context>}
  */
 function start(ipc, spec, opts) {

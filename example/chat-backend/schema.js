@@ -8,7 +8,7 @@ export const schema = cero.schema({
 
   room: {
     profile: t.single({ name: t.string }),
-    messages: t.collection({ text: t.string }, { push: 'New message' })
+    messages: t.collection({ text: t.string }, { push: true })
   },
 
   local: {

@@ -293,10 +293,10 @@ database key, that a mirror built and the platform delivered. Verified against t
 storage, so it holds only for a writer the device already stores.
 
 ```js
-import { receive } from '@cero-base/core/push'
+import { verify } from '@cero-base/core/push'
 
 // storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key }]
-const hit = await receive(storage, payload, handles) // { id, key, length, newer, ref } or null
+const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref } or null
 ```
 
 `newer` is whether the device is behind the proved length, `ref` the ref the write was on, as the

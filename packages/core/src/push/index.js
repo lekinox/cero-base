@@ -16,7 +16,7 @@ import b4a from 'b4a'
  * @param {Handle[]} handles
  * @returns {Promise<Hit | null>}
  */
-export async function receive(storage, payload, handles) {
+export async function verify(storage, payload, handles) {
   let push
   try {
     push = decode(payload)

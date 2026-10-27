@@ -1,7 +1,7 @@
 import { watch, get, open, activate, receive } from '../lib/operators.js'
 
 /**
- * @typedef {object} Backend  The platform's push service, as `connect` takes it.
+ * @typedef {object} Messaging  The platform's messaging service, as `connect` takes it for push.
  * @property {(topic: string) => Promise<void>} subscribe
  * @property {(topic: string) => Promise<void>} unsubscribe
  * @property {(event: 'push', fn: (payload: Uint8Array) => void) => (() => void) | void} on
@@ -12,10 +12,10 @@ import { watch, get, open, activate, receive } from '../lib/operators.js'
  * leaves; and act on a push: the handle it is about ranks first on the swarm.
  *
  * @param {import('./client.js').Client} me
- * @param {Backend} backend
+ * @param {Messaging} messaging
  * @returns {() => void}
  */
-export function follow(me, backend) {
+export function follow(me, messaging) {
   const topics = new Set()
   const stream = watch(me.topics)
   let closed = false
@@ -26,7 +26,7 @@ export function follow(me, backend) {
       for (const topic of wanted) {
         if (topics.has(topic)) continue
         try {
-          await backend.subscribe(topic)
+          await messaging.subscribe(topic)
           topics.add(topic)
         } catch (err) {
           me._onerror(err)
@@ -35,12 +35,12 @@ export function follow(me, backend) {
       for (const topic of topics) {
         if (wanted.has(topic)) continue
         topics.delete(topic)
-        await backend.unsubscribe(topic).catch(me._onerror)
+        await messaging.unsubscribe(topic).catch(me._onerror)
       }
     }
   }
   sync().catch((err) => closed || me._onerror(err))
-  const off = backend.on('push', (payload) => wake(me, payload).catch(me._onerror))
+  const off = messaging.on('push', (payload) => wake(me, payload).catch(me._onerror))
   return () => {
     closed = true
     stream.destroy()

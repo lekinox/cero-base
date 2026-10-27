@@ -101,7 +101,7 @@ key: `services/mirror` ships both. Then hand `connect` the platform's messaging 
 import messaging from '@react-native-firebase/messaging'
 import { firebase } from '@cero-base/cero/push/firebase'
 
-const me = await connect(ipc, spec, { push: { backend: firebase(messaging()) } })
+const me = await connect(ipc, spec, { push: firebase(messaging()) })
 ```
 
 That is the app's whole part while it runs. Cero subscribes the device to one topic per handle it
@@ -117,14 +117,19 @@ For a push that arrives while the app is dead, the OS runs a small worklet inste
 import { push } from '@cero-base/cero/push'
 import { spec } from './spec.js'
 
-push(spec)
+push(spec, ({ name, ref }) => ({
+  title: name,
+  body: ref === 'messages' ? 'New message' : 'New activity'
+}))
 ```
 
-It opens the storage read-only, verifies the push and answers with the notification to show,
-`{ title: <the handle's name>, body: <the text its ref declares> }`, `'New activity'` when this
-device's schema declares none, or nothing for a push that is forged, stale or about no handle on
-this device. The request the OS hands it carries `storage`, `payload` and,
-when the app encrypts its local store, `storageKey`, in base64.
+It opens the storage read-only, verifies the push and, for one about new data on a handle this
+device holds, hands `show` what `cero.receive` would give the app, `{ id, type, name, newer, ref }`,
+and answers the OS with what it returns, `{ title, body }`, or nothing. A forged or stale push, or
+one about no handle here, never reaches `show`. Cero carries and verifies pushes; the app says what
+a notification looks like, so its strings live with the app's other strings and translate with
+them. The request the OS hands it carries `storage`, `payload` and, when the app encrypts its local
+store, `storageKey`, in base64.
 
 What each party sees: the mirror builds the proof from blocks it already holds encrypted; the
 gateway and the push service see a topic name and ciphertext; only a member device reads it, and
@@ -134,7 +139,7 @@ writes only once it has synced that member's admission.
 The pieces, for a flow of your own: `status.topic` on a handle is the string to subscribe,
 `me.topics` lists them all, `cero.receive(me, payload)` verifies bytes into
 `{ id, type, name, newer, ref }` or `null`, and `receive(dir, spec, payload)` from `@cero-base/cero/push`
-does the same from a closed app's storage. A backend is any object with `subscribe(topic)`,
+does the same from a closed app's storage. A messaging service is any object with `subscribe(topic)`,
 `unsubscribe(topic)` and `on('push', fn)`.
 
 ## Many handles

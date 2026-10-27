@@ -261,7 +261,7 @@ export declare class Database extends ReadyResource {
     /** @private */
     _pushed;
     /** @private */
-    _pushTag;
+    _pushRef;
     /** @private */
     _onResume;
     /** @private */
@@ -395,7 +395,7 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _push;
     /** @private */
-    private _tag;
+    private _ref;
     /** @private */
     private _send;
     /**

@@ -350,11 +350,11 @@ import { push, receive } from '@cero-base/cero/push'
 import { firebase } from '@cero-base/cero/push/firebase'
 ```
 
-| Export                                        | What it is                                                                                                                                                                                                                                                  |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `push(spec)`                                  | The bare-kit push entry: registers the handler that verifies each push the OS hands the worklet and answers with the notification to show, `{ title, body }`, or nothing.                                                                                   |
-| `receive(dir, spec, payload, { storageKey })` | What `cero.receive` does, from the storage of an app that is not running, opened read-only. `storageKey` as `cero()` took it.                                                                                                                               |
-| `firebase(messaging)`                         | `@react-native-firebase/messaging` as a push backend for `connect`: pass `messaging()`. It hands over the pushes the app receives in front; the push worklet answers the rest. A backend is any `{ subscribe(topic), unsubscribe(topic), on('push', fn) }`. |
+| Export                                        | What it is                                                                                                                                                                                                                                                                            |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `push(spec, show)`                            | The bare-kit push entry: registers the handler that verifies each push the OS hands the worklet and, for one about new data, answers with what `show(push)` returns, the notification `{ title, body }`, or nothing. `push` is what `cero.receive` gives. `INVALID` without `show`.   |
+| `receive(dir, spec, payload, { storageKey })` | What `cero.receive` does, from the storage of an app that is not running, opened read-only. `storageKey` as `cero()` took it.                                                                                                                                                         |
+| `firebase(messaging)`                         | `@react-native-firebase/messaging` as the messaging service for `connect`'s `push`: pass `messaging()`. It hands over the pushes the app receives in front; the push worklet answers the rest. A messaging service is any `{ subscribe(topic), unsubscribe(topic), on('push', fn) }`. |
 
 See [Push while the app is dead](network.md#push-while-the-app-is-dead).
 

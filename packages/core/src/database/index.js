@@ -138,12 +138,12 @@ export class Database extends ReadyResource {
     /** @private */
     this._pushed = -1
     /** @private */
-    this._pushTag = null
+    this._pushRef = null
     /** @private */
     this._onResume = () => {
       if (!this._pushAgain) return
       this._pushAgain = false
-      this._push(this._pushTag)
+      this._push(this._pushRef)
     }
     /** @private */
     this._txChain = null
@@ -439,8 +439,8 @@ export class Database extends ReadyResource {
       if (this.closing || this.closed) throw CeroError.CLOSED('Database')
       throw err
     }
-    const tag = this.push ? this._tag(ops) : null
-    if (tag) this._push(tag)
+    const ref = this.push ? this._ref(ops) : null
+    if (ref) this._push(ref)
   }
 
   /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
@@ -448,11 +448,10 @@ export class Database extends ReadyResource {
     return this._pushing !== null
   }
 
-  // one in flight, then once more at the latest block: a burst of writes is at most two pushes;
-  // one due while the network sleeps goes at resume
+  // one in flight, then once more at the latest block; one due while the network sleeps goes at resume
   /** @private */
-  _push(tag) {
-    this._pushTag = tag
+  _push(ref) {
+    this._pushRef = ref
     if (!this.network?.mirrors.length || this.closing) return
     if (this._pushing || this.network.suspended) {
       this._pushAgain = true
@@ -462,13 +461,13 @@ export class Database extends ReadyResource {
       this._pushing = null
       if (!this._pushAgain) return
       this._pushAgain = false
-      this._push(this._pushTag)
+      this._push(this._pushRef)
     })
   }
 
   // the first op on a ref that declares push names the notification; a burst keeps the latest
   /** @private */
-  _tag(ops) {
+  _ref(ops) {
     for (const [op] of ops) {
       const name = this._pushes.get(op.replace(/^(add|set|del)-/, ''))
       if (name) return name
@@ -493,7 +492,7 @@ export class Database extends ReadyResource {
           roomKey: this.key,
           index,
           target: this.key,
-          extra: b4a.from(this._pushTag)
+          extra: b4a.from(this._pushRef)
         })
         this._pushed = index
         return

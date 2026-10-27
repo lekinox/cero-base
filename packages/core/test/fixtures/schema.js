@@ -11,7 +11,7 @@ export default schema({
       text: t.string,
       attachment: t.bytes
     },
-    { indexes: { 'by-text': ['text'] }, push: 'New message' }
+    { indexes: { 'by-text': ['text'] }, push: true }
   ),
 
   records: t.collection({ text: t.string }, { own: true }),

@@ -3,7 +3,8 @@ import Corestore from 'corestore'
 import b4a from 'b4a'
 import safetyCatch from 'safety-catch'
 
-import { receive as verify } from '@cero-base/core/push'
+import { verify } from '@cero-base/core/push'
+import { CeroError } from '@cero-base/core/errors'
 
 import { Local } from '../local/index.js'
 
@@ -42,28 +43,29 @@ export async function receive(dir, spec, payload, { storageKey } = {}) {
 }
 
 /**
- * The bare-kit push entry: on each push the OS hands this worklet, verify it and answer with the
- * notification to show, or nothing: the handle's name as the title, the text its ref declares as
- * the body. The request carries `storage`, `payload` (base64) and, when the app encrypts its local
- * store, `storageKey` (base64).
+ * The bare-kit push entry: on each push the OS hands this worklet, verify it and, for one about
+ * new data on a handle this device holds, answer with what `show` returns: the notification,
+ * `{ title, body }`, or nothing. The request carries `storage`, `payload` (base64) and, when the
+ * app encrypts its local store, `storageKey` (base64).
  *
  * @param {import('../lib/spec.js').Spec} spec
+ * @param {(push: { id: string, type: string, name: string | null, newer: boolean, ref: string | null }) => { title: string, body: string } | null | undefined | Promise<{ title: string, body: string } | null | undefined>} show  What to show for a verified push, as `cero.receive` would give it to the app.
  * @returns {void}
  */
-export function push(spec) {
+export function push(spec, show) {
+  if (typeof show !== 'function') throw CeroError.INVALID('push: show(push) says what to show')
   globalThis.BareKit.on('push', async (json, reply) => {
-    let hit = null
+    let shown = null
     try {
       const { storage, storageKey, payload } = JSON.parse(json)
-      hit = await receive(storage, spec, b4a.from(payload, 'base64'), {
+      const hit = await receive(storage, spec, b4a.from(payload, 'base64'), {
         storageKey: storageKey ? b4a.from(storageKey, 'base64') : undefined
       })
+      if (hit?.newer) shown = await show(hit)
     } catch {
       // the OS waits for an answer: whatever went wrong, no notification
-      hit = null
+      shown = null
     }
-    const text = hit && spec.meta.handles?.[hit.type]?.refs?.[hit.ref]?.push
-    const shown = hit?.newer ? { title: hit.name || hit.type, body: text || 'New activity' } : null
-    reply(null, shown && JSON.stringify(shown))
+    reply(null, shown ? JSON.stringify(shown) : null)
   })
 }

@@ -284,10 +284,10 @@ const quiet = schema({
   team: { messages: t.collection({ text: t.string }), ping: t.action({ x: t.string }) }
 })
 const pushed = schema({
-  notes: t.collection({ text: t.string }, { push: 'New note' }),
+  notes: t.collection({ text: t.string }, { push: true }),
   team: {
-    messages: t.collection({ text: t.string }, { push: 'New message' }),
-    ping: t.action({ x: t.string }, { push: 'Ping' })
+    messages: t.collection({ text: t.string }, { push: true }),
+    ping: t.action({ x: t.string }, { push: true })
   }
 })
 
@@ -295,9 +295,9 @@ test('build: push on a ref lands in its meta and keeps the contract', async (t) 
   const dir = await rebuilt(t, 'contract-push', quiet)
   await build(dir, pushed, { extensions: [] })
   const { spec } = await importSpec(dir)
-  t.is(spec.meta.refs.notes.push, 'New note', 'a root collection')
-  t.is(spec.meta.handles.team.refs.messages.push, 'New message', 'a collection in a handle type')
-  t.is(spec.meta.handles.team.refs.ping.push, 'Ping', 'an action')
+  t.is(spec.meta.refs.notes.push, true, 'a root collection')
+  t.is(spec.meta.handles.team.refs.messages.push, true, 'a collection in a handle type')
+  t.is(spec.meta.handles.team.refs.ping.push, true, 'an action')
   t.is(spec.meta.version, 1, 'the contract is unchanged: nothing stored changed')
 })
 

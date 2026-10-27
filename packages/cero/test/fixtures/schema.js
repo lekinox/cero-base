@@ -22,7 +22,7 @@ export default schema({
       {
         text: t.string
       },
-      { push: 'New message' }
+      { push: true }
     ),
     notes: t.collection({
       text: t.string

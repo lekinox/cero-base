@@ -105,16 +105,15 @@ every row. [Sharing](handles.md) explains roles.
 
 ```js
 const schema = cero.schema({
-  room: { messages: t.collection({ text: t.string }, { push: 'New message' }) }
+  room: { messages: t.collection({ text: t.string }, { push: true }) }
 })
 ```
 
 With `push`, a write to the collection, single or action pushes a notification to the other
-members' devices through the handle's mirror, with this text as its body and the handle's name as
-its title, while their app is dead too. Refs without it never push. The text is settled here, at
-build time: a push proves a block the device does not hold yet, so nothing in the row can be shown.
-[Network](network.md#push-while-the-app-is-dead) has the setup. Declaring `push` changes nothing
-stored, so the contract stays.
+members' devices through the handle's mirror, while their app is dead too. Refs without it never
+push. The schema says only which refs push: what a notification says is the app's, in its push
+worklet, where its other strings live. [Network](network.md#push-while-the-app-is-dead) has the
+setup. Declaring `push` changes nothing stored, so the contract stays.
 
 ## Look rows up by a field
 

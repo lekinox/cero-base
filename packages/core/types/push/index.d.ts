@@ -20,4 +20,4 @@ export type Hit = Handle & {
  * @param {Handle[]} handles
  * @returns {Promise<Hit | null>}
  */
-export declare function receive(storage: import('hypercore-storage'), payload: Uint8Array, handles: Handle[]): Promise<Hit | null>;
+export declare function verify(storage: import('hypercore-storage'), payload: Uint8Array, handles: Handle[]): Promise<Hit | null>;
