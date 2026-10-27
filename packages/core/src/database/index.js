@@ -68,6 +68,7 @@ import { keyPair } from '../mailbox/inbox.js'
  * @property {string | null} id                         The row id for a `del`.
  * @property {string | null} memberId                   The writer's member id, null for a core no member owns yet (a join, a claim, genesis).
  * @property {string | null} role                       The writer's role, null likewise.
+ * @property {boolean} [ranked]                        On removing a member or changing her rank: whether the writer's rank alone allows it. A rule answers `'grant'` to allow what rank refuses, `false` to refuse.
  * @property {(ref: string | { name: string }, query?: string | Record<string, unknown>) => Promise<{ data: unknown }>} get
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} put
  * @property {(ref: string | { name: string }, row: Record<string, unknown>) => Promise<void>} set

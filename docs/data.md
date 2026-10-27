@@ -164,6 +164,27 @@ not make refuses the whole write: a hook that writes on every join checks `ctx.r
 reader's join is refused. A hook reads only ctx, never a clock, random numbers or local state, or
 devices store different rows; the writing device runs it twice, to check the write and to store it.
 
+### Who may remove a member, or change her rank
+
+By default the rank decides: a writer removes or re-ranks only someone she outranks, and an owner is
+above all. An app whose own records say who may act (a team list, an admin chosen by role) decides
+in a rule on `members` instead: on a `del`, or a `set` that changes `role`, `ctx.ranked` says
+whether rank alone allows it. Return `'grant'` to allow it anyway, or `false` to refuse it. A bare
+`true` grants nothing, since every rule returns it for "no objection", and one rule refusing wins
+over another granting. It is decided before anything moves, so a refused removal leaves the member,
+her devices and her seat as they were. A grant counts only for a member who writes, never a reader,
+and a rank must be one cero names. The last owner is never removed nor demoted, whatever a rule
+grants.
+
+```js
+cero.before(me.room.members, async ({ op, row, existing, ranked, memberId, get }) => {
+  if (op !== 'del' && row?.role === existing?.role) return // a name, a profile: not this rule's
+  const { data: team } = await get(me.room.team, memberId)
+  if (team?.role === 'admin') return 'grant' // an admin by the app's own record
+  if (!ranked) return false
+})
+```
+
 ## Batch writes
 
 ```js

@@ -38,23 +38,24 @@ export function can(role, perm) {
   if (!PERMS.has(perm)) {
     throw CeroError.INVALID(`'${perm}' is not a permission: write, invite, assign or remove`)
   }
-  const perms = ROLE_PERMS[role]
+  // an own key only: a role named after an object's own keys (constructor, __proto__) is none
+  const perms = Object.hasOwn(ROLE_PERMS, role) ? ROLE_PERMS[role] : null
   return !!perms && (perms.includes('*') || perms.includes(perm))
 }
 
 // an unknown role grants nothing; callers taking a role from an app must check it
 /** @type {(role: string) => boolean} */
 export function isRank(role) {
-  return RANK[role] != null
+  return typeof role === 'string' && Object.hasOwn(RANK, role)
 }
 
 /** @type {(a: string, b: string) => boolean} */
 export function grants(a, b) {
-  return RANK[a] != null && RANK[b] != null && RANK[a] >= RANK[b]
+  return isRank(a) && isRank(b) && RANK[a] >= RANK[b]
 }
 /** @type {(a: string, b: string) => boolean} */
 export function outranks(a, b) {
-  return RANK[a] != null && RANK[b] != null && RANK[a] > RANK[b]
+  return isRank(a) && isRank(b) && RANK[a] > RANK[b]
 }
 
 /**
