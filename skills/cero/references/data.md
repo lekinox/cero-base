@@ -65,14 +65,14 @@ await cero.get(me.todos, { search: 'milk', fields: ['text'] })
 
 Any key not in this table is an equality filter on that field.
 
-| Key                      | Does                                                                                         |
-| ------------------------ | -------------------------------------------------------------------------------------------- |
-| `limit`                  | At most this many rows.                                                                      |
-| `reverse`                | The other way round: newest first on a plain list.                                           |
-| `total`                  | `true` counts every match even when `limit` filled the page.                                 |
-| `search`                 | Case and accent insensitive; every word must appear in a string field other than `memberId`. |
-| `fields`                 | The string fields `search` looks at.                                                         |
-| `gt`, `gte`, `lt`, `lte` | Bounds on `id`, compared as strings.                                                         |
+| Key                      | Does                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `limit`                  | At most this many rows.                                                                               |
+| `reverse`                | The other way round: newest first on a plain list.                                                    |
+| `total`                  | `true` counts every match even when `limit` filled the page.                                          |
+| `search`                 | Case and accent insensitive; every word must appear in a string field other than `id` and `memberId`. |
+| `fields`                 | The string fields `search` looks at.                                                                  |
+| `gt`, `gte`, `lt`, `lte` | Bounds on `id`, compared as strings.                                                                  |
 
 `total` is how many rows matched and `size` how many came back. When `limit` filled the page,
 `total` can be `null`; ask with `total: true` to count. There is no sort and no range on fields
