@@ -49,9 +49,10 @@ gateway per app: it carries the app's Firebase project and iOS bundle id.
 
 1. In Firebase, create a service account key for the app's project and enable APNs for iOS.
 2. Copy `gateway/config.example.json` to `gateway/config.json`, set `apnsTopic` to the iOS bundle
-   id and the notification title and body, and put the key at `gateway/service-account.json`.
+   id and the title and body iOS falls back to when the worklet does not answer in time, and put
+   the key at `gateway/service-account.json`.
 3. Deploy. In the gateway's logs, copy its public key into the mirror's `PUSH_GATEWAY_KEY` and
    redeploy the mirror. Without the key the mirror forwards nothing.
 
-The app side is `connect(ipc, spec, { push: { backend } })` and the push worklet: see
+The app side is `connect(ipc, spec, { push: firebase(messaging()) })` and the push worklet: see
 [Push while the app is dead](../../docs/network.md#push-while-the-app-is-dead).
