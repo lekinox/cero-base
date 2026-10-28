@@ -97,15 +97,15 @@ Each row of your own collections carries `id`, `memberId` (its author), `index` 
 
 ### status
 
-| Field       | Value                                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------------------- |
-| `role`      | Your role here, `null` when you are not a member.                                                             |
-| `writable`  | `true` once this device can write here.                                                                       |
-| `epoch`     | The key in use, by number: `0` before the first re-key.                                                       |
-| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                      |
-| `behind`    | `0`, or the version of a newer app some peer writes with: this device skips those writes until it updates.    |
-| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                   |
-| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it. |
+| Field       | Value                                                                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`      | Your role here, `null` when you are not a member.                                                                                       |
+| `writable`  | `true` once this device can write here.                                                                                                 |
+| `epoch`     | The key in use, by number: `0` before the first re-key.                                                                                 |
+| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                                                |
+| `behind`    | `0`, or the version of a newer app some peer writes with: this device skips those writes, and its own throw `BEHIND`, until it updates. |
+| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                                             |
+| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it.                           |
 
 ## Data
 

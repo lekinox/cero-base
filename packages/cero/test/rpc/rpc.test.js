@@ -1074,3 +1074,17 @@ test('rpc: a denied link rejects DENIED on the client', async (t) => {
   await cero.deny(other, await nextRequest(other), 'not mine')
   await t.exception(linking, /DENIED/)
 })
+
+test('rpc: a client gets BEHIND on a write while the worker is behind, and still reads', async (t) => {
+  const { me, client } = await openPair(t)
+  const { data: mine } = await put(client.messages, { text: 'mine' })
+  const { wrap } = await import('../../../core/src/database/envelope.js')
+  const { genId } = await import('../../../core/src/lib/ids.js')
+  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await me.store.bee.append(wrap(me.store.version + 1, op))
+  await waitUntil(async () => (await get(client.status)).data.behind === me.store.version + 1)
+
+  const err = await put(client.messages, { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'the code crosses the wire')
+  t.is((await get(client.messages, mine.id)).data?.text, 'mine', 'reads go on')
+})

@@ -2727,8 +2727,8 @@ test('gate: ops from a future contract version are skipped, surfaced, and surviv
   await db.bee.update()
   t.is(behindEvents, 1, 'not re-emitted per op')
 
-  const { data: row } = await db.put('messages', { text: 'present' })
-  t.ok((await db.get('messages', row.id)).data, 'current-version ops still apply')
+  const err = await db.put('messages', { text: 'present' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'and this device does not write until it updates')
 })
 
 test('gate: an op with no envelope is skipped, and the ones after it apply', async (t) => {
@@ -2789,18 +2789,20 @@ test('gate: behind survives reopen', async (t) => {
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
   t.is(again.behind, future, 'behind reloaded from the local core')
+  const err = await again.put('messages', { text: 'x' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'and so is the freeze')
 })
 
 test('gate: upgrading past skipped ops rebuilds the view and applies them', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
   const { wrap } = await import('../../src/database/envelope.js')
 
+  const { data: present } = await db.put('messages', { text: 'present' })
   const futureId = genId()
   const future = db.version + 1
   await db.bee.append(
     wrap(future, spec.dispatch.encode('@cero/add-messages', { id: futureId, text: 'future' }))
   )
-  const { data: present } = await db.put('messages', { text: 'present' })
   await db.bee.update()
   t.is(db.behind, future, 'future op skipped')
   t.absent((await db.get('messages', futureId)).data, 'not applied pre-upgrade')
@@ -2819,6 +2821,8 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
     (await again.get('messages', present.id)).data,
     'previously-applied rows survived the rebuild'
   )
+  const { data: after } = await again.put('messages', { text: 'after' })
+  t.ok((await again.get('messages', after.id)).data, 'and the device writes again')
 })
 
 test('gate: a database rebuilt past skipped ops still leaves its topic on close', async (t) => {
@@ -3011,12 +3015,12 @@ test('changes: an upgrade rebuild mid-stream re-emits a reset batch', async (t) 
   const { db, store, identity } = await bootstrapped(t)
   const { wrap } = await import('../../src/database/envelope.js')
 
+  const { data: kept } = await db.put('messages', { text: 'kept' })
   const futureId = genId()
   const future = db.version + 1
   await db.bee.append(
     wrap(future, spec.dispatch.encode('@cero/add-messages', { id: futureId, text: 'future' }))
   )
-  const { data: kept } = await db.put('messages', { text: 'kept' })
   await db.bee.update()
   const { key, keyPair, encryptionKey } = db
   await db.close()
@@ -3059,4 +3063,145 @@ test('write: sets racing close reject cleanly instead of crashing', async (t) =>
     }
   }
   t.pass('every racing write settled with a clean cero error or success')
+})
+
+// a device behind merges a set from a view that lacks the newer writes and appends the whole row:
+// every device would then take its stale copy. So a device behind reads, syncs and leaves, but
+// does not write
+test('gate: a device behind a newer version reads but does not write', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { data: row } = await db.put('messages', { text: 'mine' })
+
+  const future = db.version + 1
+  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await db.bee.append(wrap(future, newer))
+  await db.bee.update()
+  t.is(db.behind, future, 'behind')
+
+  const writes = {
+    put: () => db.put('messages', { text: 'x' }),
+    set: () => db.set('messages', { id: row.id, text: 'stale' }),
+    del: () => db.del('messages', row.id)
+  }
+  for (const [name, write] of Object.entries(writes)) {
+    const err = await write().catch((e) => e)
+    t.is(err?.code, 'BEHIND', `${name} throws BEHIND`)
+  }
+  t.is((await db.get('messages', row.id)).data?.text, 'mine', 'reads go on')
+})
+
+test('gate: a stale set from a device behind never lands on the newer row', async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.create()
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { identity, topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    identity: await Identity.create(),
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+
+  const { data: row } = await a.db.put('messages', { text: 'first' })
+  await waitFor(async () => (await b.db.get('messages', row.id)).data)
+
+  // b updates its app: its writes now carry the next contract
+  b.db.version = spec.meta.version + 1
+  await b.db.set('messages', { id: row.id, text: 'newer' })
+  await waitFor(() => a.db.behind === b.db.version)
+
+  const err = await a.db.set('messages', { id: row.id, text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'the stale write is refused')
+  await a.db.bee.update()
+  t.is((await b.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
+})
+
+test('gate: behind, a batch, an invite and a rotation wait too, and nothing reaches the log', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { data: row } = await db.put('messages', { text: 'mine' })
+  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await db.bee.append(wrap(db.version + 1, newer))
+  await db.bee.update()
+  const length = db.bee.local.length
+
+  const attempts = {
+    batch: () =>
+      db.tx(async (tx) => {
+        await tx.put('messages', { text: 'a' })
+        await tx.set('messages', { id: row.id, text: 'b' })
+      }),
+    invite: () => db.call('add-invite', { id: 'x', role: 'member', createdAt: Date.now() }),
+    rotation: () => db.rotate()
+  }
+  for (const [name, attempt] of Object.entries(attempts)) {
+    const err = await attempt().catch((e) => e)
+    t.is(err?.code, 'BEHIND', `${name} throws BEHIND`)
+  }
+  t.is(db.bee.local.length, length, 'nothing reached the log')
+  t.is((await db.get('messages', row.id)).data?.text, 'mine', 'the row is as it was')
+})
+
+test('gate: a member behind can still leave, and the others apply it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+
+  const { wrap } = await import('../../src/database/envelope.js')
+  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await b.db.bee.append(wrap(b.db.version + 1, newer))
+  await waitFor(() => b.db.behind !== null && a.db.behind !== null)
+
+  await b.db.del('members', b.identity.id)
+  await waitFor(async () => !(await a.db.get('members', b.identity.id)).data)
+  t.pass('the owner, behind as well, applied the leave')
+})
+
+test('gate: a removal applied while behind is not re-keyed by this device, nor an error', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+
+  let audits = 0
+  const audit = a.db.rotation._audit.bind(a.db.rotation)
+  a.db.rotation._audit = () => audit().finally(() => audits++)
+  const { wrap } = await import('../../src/database/envelope.js')
+  await a.db.removeWriter(b.db.keyPair.publicKey)
+  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await a.db.bee.append(wrap(a.db.version + 1, newer))
+  await a.db.bee.update()
+  t.is(a.db.behind, a.db.version + 1, 'behind before the audit ran')
+
+  await waitFor(() => audits >= 1)
+  t.absent(
+    a.errors.find((e) => e.code === 'BEHIND'),
+    'the audit did not try to write'
+  )
+  t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no re-key')
 })

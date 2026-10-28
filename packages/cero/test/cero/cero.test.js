@@ -1820,3 +1820,66 @@ test('link: a denied launch opens as a new identity the next time, nothing left 
   t.ok(fresh.id, 'opens')
   t.not(fresh.id, a.me.id, 'as an identity of its own')
 })
+
+test('status: a context behind a newer app reads but does not write until the update', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const { data: mine } = await put(room.messages, { text: 'mine' })
+  const { wrap } = await import('../../../core/src/database/envelope.js')
+  const { genId } = await import('../../../core/src/lib/ids.js')
+  const op = spec.handles.team.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await room.store.bee.append(wrap(room.store.version + 1, op))
+  await waitUntil(async () => (await get(room.status)).data.behind === room.store.version + 1)
+  const err = await put(room.messages, { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'the write waits for the update')
+  t.is((await get(room.messages, mine.id)).data?.text, 'mine', 'reads go on')
+})
+
+test('status: behind is per context: the root, a room and the local store go on apart', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const { wrap } = await import('../../../core/src/database/envelope.js')
+  const { genId } = await import('../../../core/src/lib/ids.js')
+  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await me.store.bee.append(wrap(me.store.version + 1, op))
+  await waitUntil(async () => (await get(me.status)).data.behind === me.store.version + 1)
+
+  const err = await put(me.messages, { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'the root does not write')
+  t.ok(
+    (await put(me.local.drafts, { text: 'draft' })).data.id,
+    'the local store does: this device alone'
+  )
+  t.ok((await put(room.messages, { text: 'room' })).data.id, 'a room that is current does')
+  t.is((await get(room.status)).data.behind, 0, 'behind is the root alone')
+})
+
+test('status: behind, invite, rotate and tx wait for the update, and a member can still leave', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  const joined = await open(joiner.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
+
+  const { wrap } = await import('../../../core/src/database/envelope.js')
+  const { genId } = await import('../../../core/src/lib/ids.js')
+  const op = spec.handles.team.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
+  await joined.store.bee.append(wrap(joined.store.version + 1, op))
+  await waitUntil(async () => (await get(room.status)).data.behind === room.store.version + 1)
+
+  const attempts = {
+    invite: () => cero.invite(room),
+    rotate: () => rotate(room),
+    tx: () => cero.tx(room, async (ctx) => put(ctx.messages, { text: 'a' }))
+  }
+  for (const [name, attempt] of Object.entries(attempts)) {
+    const err = await attempt().catch((e) => e)
+    t.is(err?.code, 'BEHIND', `${name} throws BEHIND`)
+  }
+
+  await cero.leave(joined)
+  t.is((await get(joiner.me.team)).data.length, 0, 'the member left while behind')
+  await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
+  t.pass('and the owner, behind too, applied it')
+})
