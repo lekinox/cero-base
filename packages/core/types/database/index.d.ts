@@ -234,6 +234,7 @@ export declare class Database extends ReadyResource {
     /** @type {number | null} */
     behind: number | null;
     namespace: string;
+    _writable: boolean;
     encryptionKey: Uint8Array<ArrayBufferLike>;
     keyring: Keyring;
     /** @private */
@@ -467,6 +468,8 @@ export declare class Database extends ReadyResource {
     whenWritable({ timeout }?: {
         timeout?: number;
     }): Promise<void>;
+    /** @private */
+    private _onwritable;
     /**
      * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
      * once its announcement applied here and the secret meets the commitment it carries: hand them

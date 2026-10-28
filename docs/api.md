@@ -102,7 +102,7 @@ Each row of your own collections carries `id`, `memberId` (its author), `index` 
 | Field       | Value                                                                                                         |
 | ----------- | ------------------------------------------------------------------------------------------------------------- |
 | `role`      | Your role here, `null` when you are not a member.                                                             |
-| `writable`  | `true` once this device can write here.                                                                       |
+| `writable`  | `true` once this device can write here: its admission is in the view, so its own row reads back.              |
 | `epoch`     | The key in use, by number: `0` before the first re-key.                                                       |
 | `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                      |
 | `behind`    | `0`, or the version of a newer app some peer writes with: this device skips those writes until it updates.    |
