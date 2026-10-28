@@ -157,13 +157,13 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view`, `behind` and `pushing`, and emits:
 
-| Event                    | Carries                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------- |
-| `update`                 | A `Set` of the ref names a batch touched, `'*'` for any.                      |
-| `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated. |
-| `writable`, `unwritable` | This device gained or lost write.                                             |
-| `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.           |
-| `behind`                 | The version of a newer app whose op was skipped.                              |
+| Event                    | Carries                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `update`                 | A `Set` of the ref names a batch touched, `'*'` for any.                                                                      |
+| `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated.                                                 |
+| `writable`, `unwritable` | This device gained or lost write. `writable` fires once the view holds its admission, so a read on it sees this device's row. |
+| `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.                                                           |
+| `behind`                 | The version of a newer app whose op was skipped.                                                                              |
 
 Who writes:
 

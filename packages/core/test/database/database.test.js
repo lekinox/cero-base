@@ -2382,6 +2382,21 @@ test('whenWritable: rejects on close', async (t) => {
   await t.exception.all(() => promise, /closed/i)
 })
 
+test('writable: flips once the view holds this device, so a read on the event sees its row', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { a, b } = await pairOnTestnet(t, testnet)
+  const seen = new Promise((resolve) => {
+    b.db.once('writable', async () => {
+      const { data } = await b.db.get('devices', hid.encode(b.db.writerKey))
+      resolve({ writable: b.db.writable, memberId: data?.memberId ?? null })
+    })
+  })
+  await admit(a.db, b.db)
+  const { writable, memberId } = await seen
+  t.ok(writable, 'writable on the event')
+  t.is(memberId, b.identity.id, 'and the device row is there to read')
+})
+
 test('whenWritable: resolves when bee becomes writable via add-writer', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b, idB } = await pairOnTestnet(t, testnet)

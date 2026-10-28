@@ -107,6 +107,7 @@ export class Database extends ReadyResource {
     /** @type {number | null} */
     this.behind = null
     this.namespace = opts.namespace || NAMESPACE
+    this._writable = false
     this.encryptionKey = opts.encryptionKey
     this.keyring = new Keyring()
     if (opts.epochs) for (const e of opts.epochs) this.keyring.add(e.stamp, e.entropy, e.epoch)
@@ -186,7 +187,7 @@ export class Database extends ReadyResource {
 
   /** @returns {boolean} whether the bee accepts local writes */
   get writable() {
-    return this.bee?.writable === true
+    return this._writable
   }
 
   /** @returns {number} number of ops in the local writer */
@@ -228,9 +229,13 @@ export class Database extends ReadyResource {
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())
-    this.bee.on('writable', () => this.emit('writable'))
+    this._writable = this.bee.writable
+    this.bee.on('writable', () => this._onwritable())
     // falling edge: apps freeze the UI the moment access ends
-    this.bee.on('unwritable', () => this.emit('unwritable'))
+    this.bee.on('unwritable', () => {
+      this._writable = false
+      this.emit('unwritable')
+    })
     // without a listener autobee escalates apply/view errors to a process crash
     this.bee.on('error', this._onerror)
 
@@ -637,12 +642,11 @@ export class Database extends ReadyResource {
    */
   async whenWritable({ timeout = 30000 } = {}) {
     this.guard()
-    const { bee } = this
-    if (bee.writable) return
+    if (this.writable) return
     return new Promise((resolve, reject) => {
       const done = (err) => {
         clearTimeout(timer)
-        bee.off('writable', done)
+        this.off('writable', done)
         this.off('close', onclose)
         if (err) reject(err)
         else resolve()
@@ -650,9 +654,23 @@ export class Database extends ReadyResource {
       const onclose = () => done(CeroError.CLOSED('Database'))
       const timer =
         timeout > 0 ? setTimeout(() => done(CeroError.TIMEOUT('whenWritable')), timeout) : null
-      bee.once('writable', done)
+      this.once('writable', done)
       this.once('close', onclose)
     })
+  }
+
+  // the bee flips writable inside the apply that admits this device, before that apply's view
+  // flush lands its row: writable here means the row is there to read
+  /** @private */
+  async _onwritable() {
+    try {
+      await this.bee.updated()
+    } catch {
+      return
+    }
+    if (this._writable || !this.bee.writable || this.closing || this.closed) return
+    this._writable = true
+    this.emit('writable')
   }
 
   /**
