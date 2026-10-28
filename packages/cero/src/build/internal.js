@@ -3,6 +3,8 @@ import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT } from '../lib/constants.js
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
+export const { contract } = schemas
+
 export const defs = {
   main: {
     members: { type: 'member' },

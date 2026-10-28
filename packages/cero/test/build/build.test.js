@@ -8,7 +8,7 @@ import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
-import { rpc } from '../../src/build/schemas.js'
+import { rpc, contract } from '../../src/build/schemas.js'
 import { makeTestnet } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -341,4 +341,19 @@ test('fields: bytes is a buffer column, file an id string, the rest map to thems
       { name: 'n', type: 'uint', required: true }
     ]
   )
+})
+
+test('build: a Cero release that changes what a write means raises the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-cero', plain)
+  const was = contract.version
+  contract.version = was + 1
+  t.teardown(() => {
+    contract.version = was
+  })
+  await build(dir, plain, { extensions: [] })
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.version, 2, 'nothing stored changed, the release did')
+  await build(dir, plain, { extensions: [] })
+  const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
+  t.is(kept.version, 2, 'and the next build holds it')
 })

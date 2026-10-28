@@ -239,12 +239,12 @@ function register(name, node, ctx) {
 }
 
 // one contract for the app, kept in contract.json: it rises once per build that changes what is
-// stored, at the root or in any handle type, never for RPC alone. A spec without one starts from
-// its builders' versions, so a shipped app's number never goes down
+// stored, at the root or in any handle type, or what a write means to Cero, never for RPC alone.
+// A spec without one starts from its builders' versions, so a shipped app's number never goes down
 async function contract(specDir, dirs) {
   const file = join(specDir, 'contract.json')
   const shapes = await Promise.all(dirs.map((dir) => shapeOf(join(specDir, dir))))
-  const json = JSON.stringify(shapes.map((s) => s.stored))
+  const json = JSON.stringify([internal.contract.version, ...shapes.map((s) => s.stored)])
   const shape = b4a.toString(crypto.hash(b4a.from(json)), 'hex')
   const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
   const version = kept
