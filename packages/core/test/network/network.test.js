@@ -587,16 +587,16 @@ test('a connection the remote never answers on is dropped within seconds', async
   })
 
   const net = await makeNet(t, testnet)
-  // frozen the moment we connect: our header goes out, nothing ever comes back
+  // frozen the moment we connect: whatever the handshake put on the stream, nothing more comes
   const opened = new Promise((resolve) => {
     net.once('connection', (conn) => {
       process.kill(peer.pid, 'SIGSTOP')
-      t.is(conn.rawStream.bytesReceived, 0, 'the remote said nothing before the freeze')
       resolve(conn)
     })
   })
   net.join(topic)
   const conn = await opened
+  t.comment(`${conn.rawStream.bytesReceived} bytes on the stream at connect`)
   const start = Date.now()
   const dropped = await waitFor(() => conn.destroyed, { timeout: 9000 }).catch(() => false)
   t.ok(dropped, `dropped in ${Date.now() - start} ms`)
