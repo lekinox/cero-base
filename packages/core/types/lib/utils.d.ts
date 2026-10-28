@@ -31,8 +31,7 @@ export declare function subscribe<T>({ get, watch }: {
     get: () => Promise<T> | T;
     watch: (fn: () => void) => (() => void) | void;
 }): import('streamx').Readable<T>;
-/** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
-export declare function searchHit(row: Record<string, unknown>, term: string, fields?: string[]): boolean;
+export declare function searchHit(row: any, term: any, fields: any): boolean;
 /**
  * The in-memory query grammar over rows: equality on any non-reserved field,
  * id ranges, `search`, then `reverse` and `limit`.

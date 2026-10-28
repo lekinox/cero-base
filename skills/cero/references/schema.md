@@ -232,8 +232,9 @@ it on its writes, the root's and every handle's. It rises by one in a build that
 stored, a type, a collection or an action, at the root or in any handle type, and never goes down.
 A build that changes nothing stored keeps it, and so does an upgrade of Cero that changes only how a
 UI talks to its worker. An upgrade of Cero that changes what a write means raises it on the next
-build, as a stored change does. A device on an older build skips writes from a newer one until it updates,
-and `status.behind` says so.
+build, as a stored change does. A device on an older build skips writes from a newer one until it
+updates, and `status.behind` says so. An index added by a rebuild fills on the next open: the rows
+written before it are found through it.
 
 ## Next
 

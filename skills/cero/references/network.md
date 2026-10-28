@@ -92,8 +92,34 @@ window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : c
 A member's phone learns of new data while the app is not running, through the platform's push
 service, without any server reading the data.
 
-Run a push gateway next to the mirror, with the app's Firebase credentials, and give the mirror its
-key: `services/mirror` ships both. Then hand `connect` the platform's messaging service:
+Declare `push` on the refs that should notify, in the
+[schema](schema.md#push-a-notification-on-a-write):
+
+```js
+const schema = cero.schema({
+  room: {
+    profile: t.single({ name: t.string }),
+    messages: t.collection({ text: t.string }, { push: true })
+  }
+})
+```
+
+Every write to such a ref pushes to every member's device, with their app running or dead:
+
+```js
+await cero.put(room.messages, { text: 'dinner at 8?' })
+```
+
+### What to run
+
+Next to the mirror, run the push gateway with the app's Firebase credentials: `services/mirror`
+ships both, and its README has the setup. The mirror tells the gateway a handle has new data and
+the gateway asks Firebase to wake the members' devices. Neither reads the data: they hold it
+encrypted, and Firebase only sees which devices listen for which handle.
+
+### The app while it runs
+
+Hand `connect` the platform's messaging service:
 
 ```js
 import messaging from '@react-native-firebase/messaging'
@@ -102,49 +128,46 @@ import { firebase } from '@cero-base/cero/push/firebase'
 const me = await connect(ipc, spec, { push: firebase(messaging()) })
 ```
 
-That is the app's whole part while it runs. Cero subscribes the device to one topic per handle it
-belongs to, drops the topic when the handle is left, and when a push arrives verifies it and ranks
-the handle first, so it syncs now. A write to a ref that declares `push` in the
-[schema](schema.md#push-a-notification-on-a-write) pushes once the handle's mirror holds it; a burst
-of writes is one push, or two, and one cut off by the app going to the background goes at resume.
+That is the app's whole part while it runs. Cero subscribes the device to pushes for each handle it
+belongs to, stops when the handle is left, and when a push arrives syncs that handle first. Many
+writes in a row are one push.
 
-For a push that arrives while the app is dead, the OS runs a small worklet instead. Its whole code:
+### The app while it is dead: the show handler
+
+While the app is dead the OS runs a small worklet instead. Cero verifies the push and opens the row
+it carries; the show handler, the function the app gives `push`, says what the notification reads.
+The worklet's whole code:
 
 ```js
 // worklets/push.js, the bare-kit push entry; spec as the worker imports it
 import { push } from '@cero-base/cero/push'
 import { spec } from './spec.js'
 
-push(spec, ({ name, ref, row }) => ({
-  title: name,
-  body: row?.text ?? (ref === 'messages' ? 'New message' : 'New activity')
-}))
+push(spec, ({ name, ref, row }) => {
+  if (ref !== 'messages') return // only messages notify
+  return { title: name, body: row?.text ?? 'New message' }
+})
 ```
 
-It opens the storage read-only, verifies the push and, for one about new data on a handle this
-device holds, hands `show` what `cero.receive` would give the app, `{ id, type, name, newer, ref, row }`,
-and answers the OS with what it returns, `{ title, body }`, or nothing. A forged or stale push, or
-one about no handle here, never reaches `show`. `row` is the row the write put: the push carries the
-block when it fits the platform's payload, and the device opens it with the handle's keys it holds,
-so the notification can say what was written; it is `null` when the block stayed behind, and the
-ref's generic text is the fallback. The row is the writer's claim, decoded before this device applies
-it: the trust is the push's own, a writer this device stores, and what the handle's rules make of
-the write shows once the app syncs. Cero carries and verifies pushes; the app says what
-a notification looks like, so its strings live with the app's other strings and translate with
-them. The request the OS hands it carries `storage`, `payload` and, when the app encrypts its local
-store, `storageKey`, in base64.
+The show handler gets `{ id, type, name, newer, ref, row }`, what `cero.receive` gives the running
+app: the handle, its name, the ref the write hit and `row`, the row the write put, `null` when it
+was too big to ride along. It answers one of three ways:
 
-What each party sees: the mirror builds the proof from blocks it already holds encrypted; the
-gateway and the push service see a topic name and ciphertext, the block among it; only a member
-device opens it, and
-trusts it only after checking it against cores it already has. A device learns of a new member's
-writes only once it has synced that member's admission.
+| It returns        | The device              |
+| ----------------- | ----------------------- |
+| `{ title, body }` | shows that notification |
+| nothing           | shows nothing           |
+| throws            | shows nothing           |
 
-The pieces, for a flow of your own: `status.topic` on a handle is the string to subscribe,
-`me.topics` lists them all, `cero.receive(me, payload)` verifies bytes into
-`{ id, type, name, newer, ref }` or `null`, and `receive(dir, spec, payload)` from `@cero-base/cero/push`
-does the same from a closed app's storage. A messaging service is any object with `subscribe(topic)`,
-`unsubscribe(topic)` and `on('push', fn)`.
+A forged push, or one about a handle this device is not in, never reaches the handler. The handler
+is the app's: its strings live with the app's other strings and translate with them. Without a
+handler `push` throws `INVALID`.
+
+For a push flow of your own: `status.topic` on a handle is the string to subscribe, `me.topics`
+lists them all, `cero.receive(me, payload)` verifies a push's bytes into
+`{ id, type, name, newer, ref, row }` or `null`, and `receive(dir, spec, payload)` from
+`@cero-base/cero/push` does the same from a closed app's storage. A messaging service is any object
+with `subscribe(topic)`, `unsubscribe(topic)` and `on('push', fn)`.
 
 ## Many handles
 

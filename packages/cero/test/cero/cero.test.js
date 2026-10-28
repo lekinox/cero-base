@@ -305,6 +305,15 @@ function nowhere(opts) {
   return Invite.create({ key: random(), address: random(), link, ...opts }).toString()
 }
 
+test('invites: an invite nothing can be sealed to is refused before a join is written', async (t) => {
+  const { me } = await ceroOpen(t)
+  const fields = Invite.parse(nowhere())
+  const bad = new Invite({ ...fields, _str: null, address: b4a.alloc(32) }).toString()
+  const err = await open(me.team, bad).catch((e) => e)
+  t.is(err?.code, 'INVALID_INVITE')
+  t.alike((await get(me.joins)).data, [], 'no join waits on it')
+})
+
 test('invites: an owner back online answers its invites without opening the room', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
@@ -338,6 +347,26 @@ test('invites: a confirm invite reopened at boot still waits for the app', async
   t.is((await get(served.members)).data.length, 1, 'waiting for the app, not admitted')
   await accept(served, request)
   t.ok(await joined(joiner.me, id))
+})
+
+test('invites: cero.invite resolves once the row that reopens the handle at boot is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  // a loaded runner: the local store answers its reads late, so a close right after the invite
+  // would slice between the row's read and its write
+  const store = owner.me.local.store
+  const read = store._read.bind(store)
+  store._read = async (ref, id) => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    return read(ref, id)
+  }
+  await cero.invite(room)
+  await owner.me.close()
+
+  const back = await reopen(t, owner.dir, testnet)
+  await waitUntil(() => [...back.children].find((c) => c.id === room.id) || null)
+  t.pass('the room with a live invite reopened at boot')
 })
 
 test('invites: a room with no invite left is not reopened at boot', async (t) => {
