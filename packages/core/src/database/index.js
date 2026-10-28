@@ -763,14 +763,22 @@ export class Database extends ReadyResource {
     await bee.update()
   }
 
-  // ops skipped as too new apply once this version caught up: wipe the boot record and reboot
+  // ops skipped as too new apply once this version caught up, and a view whose definition grew
+  // since it was built (an index added by a rebuild) fills from the log: wipe the boot record and
+  // reboot
   /** @private */
   async _replay() {
-    const behind = await this.bee.local.getUserData('cero/behind')
+    const local = this.bee.local
+    const behind = await local.getUserData('cero/behind')
     this.behind = behind ? c.decode(c.uint, behind) : null
-    if (this.behind === null || this.behind > this.version) return false
-    await this.bee.local.setUserData('autobee/head', null)
-    await this.bee.local.setUserData('cero/behind', null)
+    const caught = this.behind !== null && this.behind <= this.version
+    const built = await local.getUserData('cero/view')
+    const { db } = this.spec.database.versions
+    const grown = !!built && c.decode(c.uint, built) < db
+    if (!built || grown) await local.setUserData('cero/view', c.encode(c.uint, db))
+    if (!caught && !grown) return false
+    await local.setUserData('autobee/head', null)
+    await local.setUserData('cero/behind', null)
     await this.bee.close()
     this.behind = null
     return true
