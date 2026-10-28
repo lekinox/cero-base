@@ -3,10 +3,46 @@ import Corestore from 'corestore'
 import b4a from 'b4a'
 import safetyCatch from 'safety-catch'
 
-import { verify } from '@cero-base/core/push'
+import c from 'compact-encoding'
+import { verify, decrypt } from '@cero-base/core/push'
 import { CeroError } from '@cero-base/core/errors'
+import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { Local } from '../local/index.js'
+
+/**
+ * A push verified against the handles the topics rows name, with the row it wrote when the block
+ * rode along and this device holds the handle's keys.
+ *
+ * @param {import('hypercore-storage')} storage
+ * @param {import('../lib/spec.js').Spec} spec
+ * @param {Uint8Array} payload
+ * @param {Array<{ id: string, handle: string, type: string, key: Uint8Array, name: string | null, encryptionKey?: Uint8Array | null, epochs?: Uint8Array | null }>} rows  The root's `topics` rows.
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
+ */
+export async function read(storage, spec, payload, rows) {
+  const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
+  const hit = await verify(storage, payload, handles)
+  if (!hit) return null
+  const keys = rows.find((r) => r.handle === hit.id)
+  const row = await rowOf(storage, spec, hit, keys)
+  return { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer, ref: hit.ref, row }
+}
+
+// the row a push's block holds: null when none rode along, or it does not decode with what we hold
+async function rowOf(storage, spec, hit, { encryptionKey, epochs }) {
+  if (!hit.block || !encryptionKey) return null
+  try {
+    const body = await decrypt(storage, hit, {
+      encryptionKey,
+      epochs: epochs ? c.decode(epochEntries, epochs) : []
+    })
+    return body ? (spec.handles[hit.type].dispatch.decode(body).value ?? null) : null
+  } catch (err) {
+    safetyCatch(err)
+    return null
+  }
+}
 
 /**
  * A push the platform delivered while the app is dead, verified from its storage opened
@@ -17,7 +53,7 @@ import { Local } from '../local/index.js'
  * @param {import('../lib/spec.js').Spec} spec
  * @param {Uint8Array} payload
  * @param {{ storageKey?: Uint8Array }} [opts]  The key `cero()` encrypts the local store with, if any.
- * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null } | null>}
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export async function receive(dir, spec, payload, { storageKey } = {}) {
   const storage = new HypercoreStorage(`${dir}/main`, { readOnly: true })
@@ -29,9 +65,7 @@ export async function receive(dir, spec, payload, { storageKey } = {}) {
     local = new Local(null, spec, { store, storageKey })
     await local.ready()
     const { data: rows } = await local.store.get('topics')
-    const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
-    const hit = await verify(storage, payload, handles)
-    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer, ref: hit.ref }
+    return await read(storage, spec, payload, rows)
   } catch (err) {
     safetyCatch(err)
     return null
@@ -49,7 +83,7 @@ export async function receive(dir, spec, payload, { storageKey } = {}) {
  * app encrypts its local store, `storageKey` (base64).
  *
  * @param {import('../lib/spec.js').Spec} spec
- * @param {(push: { id: string, type: string, name: string | null, newer: boolean, ref: string | null }) => { title: string, body: string } | null | undefined | Promise<{ title: string, body: string } | null | undefined>} show  What to show for a verified push, as `cero.receive` would give it to the app.
+ * @param {(push: { id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null }) => { title: string, body: string } | null | undefined | Promise<{ title: string, body: string } | null | undefined>} show  What to show for a verified push, as `cero.receive` would give it to the app.
  * @returns {void}
  */
 export function push(spec, show) {

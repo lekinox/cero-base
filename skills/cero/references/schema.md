@@ -110,7 +110,8 @@ const schema = cero.schema({
 With `push`, a write to the collection, single or action pushes a notification to the other
 members' devices through the handle's mirror, while their app is dead too. Refs without it never
 push. The schema says only which refs push: what a notification says is the app's, in its push
-worklet, where its other strings live. [Network](network.md#push-while-the-app-is-dead) has the
+worklet, where its other strings live; the written row rides along when it fits the push, so the
+worklet can show it. [Network](network.md#push-while-the-app-is-dead) has the
 setup. Declaring `push` changes nothing stored, so the contract stays.
 
 ## Look rows up by a field

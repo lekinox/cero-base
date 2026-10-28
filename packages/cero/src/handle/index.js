@@ -11,7 +11,7 @@ import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
 import { blobEpochKey, epochEntries } from '@cero-base/core/database/encryption'
 import { Pairing } from '@cero-base/core/pairing'
-import { verify } from '@cero-base/core/push'
+import { read } from '../push/index.js'
 import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
@@ -566,7 +566,15 @@ export class Handle extends ReadyResource {
       if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
     }
     for (const [id, h] of wanted) {
-      const row = { id, handle: h.id, type: h.type, key: h.key, name: h.name ?? null }
+      const row = {
+        id,
+        handle: h.id,
+        type: h.type,
+        key: h.key,
+        name: h.name ?? null,
+        encryptionKey: h.encryptionKey ?? null,
+        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null
+      }
       if (same(have.get(id), row)) continue
       await this.local.store.put('topics', row)
     }
@@ -578,9 +586,7 @@ export class Handle extends ReadyResource {
     // a suspended storage answers no read: the cold entry serves a push while the app sleeps
     if (this._sus.suspended) throw CeroError.INVALID('receive: the app is suspended')
     const { data: rows } = await this.local.store.get('topics')
-    const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
-    const hit = await verify(this.store.store.storage, payload, handles)
-    return hit && { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer, ref: hit.ref }
+    return read(this.store.store.storage, this.spec, payload, rows)
   }
 
   /** @private */
@@ -1190,8 +1196,14 @@ function same(row, next) {
     row.handle === next.handle &&
     row.type === next.type &&
     (row.name ?? null) === next.name &&
-    b4a.equals(row.key, next.key)
+    b4a.equals(row.key, next.key) &&
+    sameBytes(row.encryptionKey, next.encryptionKey) &&
+    sameBytes(row.epochs, next.epochs)
   )
+}
+
+function sameBytes(a, b) {
+  return a && b ? b4a.equals(a, b) : (a ?? null) === (b ?? null)
 }
 
 // run every teardown step, then surface the first failure: a bug must not leak the storage lock

@@ -140,7 +140,9 @@ test('receive: a push about a joined room verifies as newer, on the worker and o
 
   const hit = await receive(b.me, payload)
   // a joined handle's row carries no name until the app sets one
-  t.alike(hit, { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' })
+  t.is(hit.row?.text, 'hi', 'the row rode along and this device opened it')
+  const { row, ...rest } = hit
+  t.alike(rest, { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' })
   t.alike(await receive(b.client, payload), hit, 'the same over RPC')
   t.is(await receive(b.me, b4a.from('garbage')), null)
   await t.exception(receive(b.joined, payload), /on me/, "a push is the app's, not a handle's")
@@ -159,10 +161,16 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   const payload = payloadOf(gateway.sent.at(-1))
 
   const expected = { id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' }
-  t.alike(await cold(b.dir, spec, payload), expected, 'read-only beside the live app')
+  const seen = await cold(b.dir, spec, payload)
+  t.is(seen.row?.text, 'while b sleeps', 'the row, from the keys the topics rows keep')
+  t.alike(
+    { ...seen, row: undefined },
+    { ...expected, row: undefined },
+    'read-only beside the live app'
+  )
   await b.client.close()
   await b.me.close()
-  t.alike(await cold(b.dir, spec, payload), expected, 'and from a closed app')
+  t.is((await cold(b.dir, spec, payload))?.row?.text, 'while b sleeps', 'and from a closed app')
   const storage = new HypercoreStorage(`${b.dir}/main`)
   await storage.ready()
   await storage.close()
@@ -203,7 +211,11 @@ test('push: the bare-kit entry hands a verified push to show and answers what it
     return { title: hit.name || 'Equipo', body: `Nuevo: ${hit.ref}` }
   })
   t.alike(await ask(), [[null, JSON.stringify({ title: 'Equipo', body: 'Nuevo: messages' })]])
-  t.alike(seen, [{ id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' }])
+  t.is(seen[0]?.row?.text, 'ping', 'show gets the row')
+  t.alike(
+    seen.map(({ row, ...s }) => s),
+    [{ id: b.joined.id, type: 'team', name: null, newer: true, ref: 'messages' }]
+  )
 
   entry(spec, () => undefined)
   t.alike(await ask(), [[null, null]], 'nothing returned, nothing shown')
@@ -280,4 +292,18 @@ test('push: the messaging service follows the topics, and a push activates the h
   await leave(reopened)
   await waitUntil(() => messaging.topics.size === 0)
   t.pass('unsubscribed on leave')
+})
+
+test('receive: a rotated room still opens its pushes, with the epochs the root carries', async (t) => {
+  const { gateway, room, b } = await scene(t)
+  await cero.rotate(room)
+  // b learns the epoch through its root before the next push lands
+  const served = [...b.me.children].find((c) => c.id === b.joined.id)
+  await waitUntil(() => served.store.keyring.seq === 1 || null)
+  await b.me.network.suspend()
+  await put(room.messages, { text: 'after the key turned' })
+  await waitUntil(() => gateway.sent.length === gateway.before + 1)
+  const hit = await receive(b.me, payloadOf(gateway.sent.at(-1)))
+  t.is(hit.row?.text, 'after the key turned')
+  await b.me.network.resume()
 })

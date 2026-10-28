@@ -496,7 +496,7 @@ export async function deactivate(ctx) {
  *
  * @param {Context} me
  * @param {Uint8Array} payload
- * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null } | null>}
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export async function receive(me, payload) {
   if (me.parent) throw CeroError.INVALID("receive is the app's, on me")

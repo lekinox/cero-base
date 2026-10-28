@@ -55,6 +55,7 @@ export declare const cero: {
         name: string | null;
         newer: boolean;
         ref: string | null;
+        row: object | null;
     } | null>;
     phrase(me: operators.Context): Promise<string>;
     nearby(ctx: operators.Context, on: boolean, opts?: {

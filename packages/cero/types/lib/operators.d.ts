@@ -235,7 +235,7 @@ export declare function deactivate(ctx: Context): Promise<void>;
  *
  * @param {Context} me
  * @param {Uint8Array} payload
- * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null } | null>}
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export declare function receive(me: Context, payload: Uint8Array): Promise<{
     id: string;
@@ -243,6 +243,7 @@ export declare function receive(me: Context, payload: Uint8Array): Promise<{
     name: string | null;
     newer: boolean;
     ref: string | null;
+    row: object | null;
 } | null>;
 /**
  * Reveal the recovery phrase.

@@ -222,13 +222,16 @@ export const local = {
   environment: {
     channel: required(string)
   },
-  // the handles rows a cold push process can read without the root: topic → handle and its key
+  // the handles rows a cold push process can read without the root: topic → handle, its keys and
+  // the epochs it learned, so a push's block opens there too
   subscription: {
     id: required(string),
     handle: required(string),
     type: required(string),
     key: required(bytes),
-    name: string
+    name: string,
+    encryptionKey: bytes,
+    epochs: bytes
   }
 }
 

@@ -115,22 +115,28 @@ For a push that arrives while the app is dead, the OS runs a small worklet inste
 import { push } from '@cero-base/cero/push'
 import { spec } from './spec.js'
 
-push(spec, ({ name, ref }) => ({
+push(spec, ({ name, ref, row }) => ({
   title: name,
-  body: ref === 'messages' ? 'New message' : 'New activity'
+  body: row?.text ?? (ref === 'messages' ? 'New message' : 'New activity')
 }))
 ```
 
 It opens the storage read-only, verifies the push and, for one about new data on a handle this
-device holds, hands `show` what `cero.receive` would give the app, `{ id, type, name, newer, ref }`,
+device holds, hands `show` what `cero.receive` would give the app, `{ id, type, name, newer, ref, row }`,
 and answers the OS with what it returns, `{ title, body }`, or nothing. A forged or stale push, or
-one about no handle here, never reaches `show`. Cero carries and verifies pushes; the app says what
+one about no handle here, never reaches `show`. `row` is the row the write put: the push carries the
+block when it fits the platform's payload, and the device opens it with the handle's keys it holds,
+so the notification can say what was written; it is `null` when the block stayed behind, and the
+ref's generic text is the fallback. The row is the writer's claim, decoded before this device applies
+it: the trust is the push's own, a writer this device stores, and what the handle's rules make of
+the write shows once the app syncs. Cero carries and verifies pushes; the app says what
 a notification looks like, so its strings live with the app's other strings and translate with
 them. The request the OS hands it carries `storage`, `payload` and, when the app encrypts its local
 store, `storageKey`, in base64.
 
 What each party sees: the mirror builds the proof from blocks it already holds encrypted; the
-gateway and the push service see a topic name and ciphertext; only a member device reads it, and
+gateway and the push service see a topic name and ciphertext, the block among it; only a member
+device opens it, and
 trusts it only after checking it against cores it already has. A device learns of a new member's
 writes only once it has synced that member's admission.
 

@@ -190,6 +190,8 @@ export declare const local: {
         type: import("@cero-base/core").Prim;
         key: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
+        encryptionKey: import("@cero-base/core").Prim;
+        epochs: import("@cero-base/core").Prim;
     };
 };
 export declare const rpc: {
