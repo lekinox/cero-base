@@ -47,12 +47,12 @@ export declare function receive(dir: string, spec: import('../lib/spec.js').Spec
 } | null>;
 /**
  * The bare-kit push entry: on each push the OS hands this worklet, verify it and, for one about
- * new data on a handle this device holds, answer with what `show` returns: the notification,
- * `{ title, body }`, or nothing. The request carries `storage`, `payload` (base64) and, when the
+ * new data on a handle this device holds, answer with what the show handler returns: the
+ * notification, `{ title, body }`, or nothing. The request carries `storage`, `payload` (base64) and, when the
  * app encrypts its local store, `storageKey` (base64).
  *
  * @param {import('../lib/spec.js').Spec} spec
- * @param {(push: { id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null }) => { title: string, body: string } | null | undefined | Promise<{ title: string, body: string } | null | undefined>} show  What to show for a verified push, as `cero.receive` would give it to the app.
+ * @param {(push: { id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null }) => { title: string, body: string } | null | undefined | Promise<{ title: string, body: string } | null | undefined>} show  The show handler: what to show for a verified push, as `cero.receive` would give it to the app.
  * @returns {void}
  */
 export declare function push(spec: import('../lib/spec.js').Spec, show: (push: {
