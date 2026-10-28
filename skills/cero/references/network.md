@@ -92,16 +92,12 @@ window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : c
 A member's phone learns of new data while the app is not running, through the platform's push
 service, without any server reading the data.
 
-Nobody sends a push. A write to a ref that declares `push` in the
-[schema](schema.md#push-a-notification-on-a-write) is the send:
+A write to a ref that declares `push` in the [schema](schema.md#push-a-notification-on-a-write)
+pushes to every member's device, with their app running or dead:
 
 ```js
 await cero.put(room.messages, { text: 'dinner at 8?' })
 ```
-
-Every member's device gets a push about it, with the app running or dead. There is no
-`cero.push`: a push is a side effect of writing data members opted to be woken for, never a
-message one person types for another. Nothing but a write pushes.
 
 ### The pieces and who runs them
 
@@ -118,9 +114,8 @@ the mirror          cores,       credentials                          holds, che
 
 The mirror and the gateway are yours to run: `services/mirror` ships both, a blind peer and a
 `blind-push` gateway. Give the gateway the app's Firebase credentials and the mirror the gateway's
-key. Each sees one thing. The mirror sees encrypted blocks and that one is new; the gateway sees
-an opaque payload and a topic name; Firebase sees which device tokens subscribe to which topic. No
-party on the path holds a row in the clear, so no party can write what a notification says.
+key. The mirror sees encrypted blocks and that one is new; the gateway sees an opaque payload and
+a topic name; Firebase sees which device tokens subscribe to which topic.
 
 ### The app while it runs
 
@@ -140,12 +135,10 @@ writes is one push, or two, and one cut off by the app going to the background g
 
 ### The app while it is dead: the show handler
 
-A push that arrives while the app is dead cannot run the app. The OS runs a small worklet
-instead, the bare-kit push entry, and the worklet has to answer with a notification or with
-nothing. Cero does the mechanical part: it opens the storage read-only, verifies the push, opens the
-block with the handle's keys and decodes the row with the schema. What it cannot do is say what the
-notification reads, in which language, or whether this write deserves one at all. That is the show
-handler, the function the app gives `push`. Its whole code:
+While the app is dead the OS runs a small worklet instead, the bare-kit push entry. Cero opens
+the storage read-only, verifies the push, opens the block with the handle's keys and decodes the row
+with the schema. The show handler, the function the app gives `push`, says what the notification
+reads. The worklet's whole code:
 
 ```js
 // worklets/push.js, the bare-kit push entry; spec as the worker imports it
@@ -153,7 +146,7 @@ import { push } from '@cero-base/cero/push'
 import { spec } from './spec.js'
 
 push(spec, ({ name, ref, row }) => {
-  if (ref !== 'messages') return // a profile edit wakes nobody
+  if (ref !== 'messages') return // only messages notify
   return { title: name, body: row?.text ?? 'New message' }
 })
 ```
@@ -162,16 +155,15 @@ The show handler gets what `cero.receive` would give the running app,
 `{ id, type, name, newer, ref, row }`: the handle, its name, the ref the write hit and `row`, the row
 the write put. It answers one of three ways:
 
-| It returns        | The device                                                           |
-| ----------------- | -------------------------------------------------------------------- |
-| `{ title, body }` | shows that notification                                              |
-| nothing           | shows nothing: the push was real, the app chose silence              |
-| throws            | shows nothing, the same as returning nothing; the OS gets its answer |
+| It returns        | The device              |
+| ----------------- | ----------------------- |
+| `{ title, body }` | shows that notification |
+| nothing           | shows nothing           |
+| throws            | shows nothing           |
 
-A forged or stale push, or one about no handle here, never reaches the handler: it only ever
-decides what to say about something true and new. The handler is the app's: its strings live with
-the app's other strings and translate with them, and cero ships no text, not even a default. Without
-a handler `push` throws `INVALID`.
+A forged or stale push, or one about no handle here, never reaches the handler. The handler is the
+app's: its strings live with the app's other strings and translate with them. Without a handler
+`push` throws `INVALID`.
 
 `row` is `null` when the block did not fit the push, the platform's payload limit, and the handler
 falls back to the ref's generic text. The row is the writer's claim, decoded before this device
