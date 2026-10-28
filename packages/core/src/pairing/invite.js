@@ -101,6 +101,7 @@ export class Invite {
   static create({ ttl = 0, key, address, link = null, data = null }) {
     if (key?.byteLength !== 32) throw CeroError.INVALID('key must be a 32-byte buffer')
     if (address?.byteLength !== 32) throw CeroError.INVALID('address must be a 32-byte buffer')
+    if (!sealable(address)) throw CeroError.INVALID('address cannot be sealed to')
     const expires = ttl ? Date.now() + toMs(ttl) : 0
     if (data !== null && !b4a.isBuffer(data)) throw CeroError.INVALID('data must be a buffer')
     return new Invite({
@@ -128,9 +129,23 @@ export class Invite {
       throw CeroError.INVALID_INVITE('not an invite')
     }
     if (fields.version !== VERSION) throw CeroError.INVALID_INVITE('unknown invite version')
+    if (!sealable(fields.address)) throw CeroError.INVALID_INVITE('address cannot be sealed to')
     return new Invite({ ...fields, _str: str })
   }
 }
+
+// a join is sealed to the address: a point nothing seals to (all zeros, a low-order one) would
+// fail every join as a network error
+function sealable(address) {
+  try {
+    crypto.encrypt(EMPTY, address)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const EMPTY = b4a.alloc(0)
 
 // ms, or a duration like '12h' or '2d'
 function toMs(ttl) {
