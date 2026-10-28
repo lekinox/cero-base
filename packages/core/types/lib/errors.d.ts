@@ -74,6 +74,12 @@ export declare class CeroError extends Error {
      */
     static NOT_WRITABLE(resource: string): CeroError;
     /**
+     * This device skipped writes from a newer app version: it reads, but writes wait for the update.
+     *
+     * @param {number} version
+     */
+    static BEHIND(version: number): CeroError;
+    /**
      * Async operation exceeded its deadline.
      *
      * @param {string} what

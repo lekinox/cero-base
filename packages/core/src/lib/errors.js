@@ -103,6 +103,14 @@ export class CeroError extends Error {
     return new CeroError('NOT_WRITABLE', `${resource} is not writable`)
   }
   /**
+   * This device skipped writes from a newer app version: it reads, but writes wait for the update.
+   *
+   * @param {number} version
+   */
+  static BEHIND(version) {
+    return new CeroError('BEHIND', `behind app version ${version}: update to write`)
+  }
+  /**
    * Async operation exceeded its deadline.
    *
    * @param {string} what

@@ -248,6 +248,7 @@ try {
 | Code           | When                                                                    | Do                                                                                   |
 | -------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the handle read-only; `room.status` has `writable`.                             |
+| `BEHIND`       | A peer writes with a newer version of the app than this one.            | Ask for the update; `room.status` has `behind`. Reads go on.                         |
 | `REFUSED`      | Your role, `own`, or a `before` hook said no.                           | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
 | `INVALID`      | An unknown field, a missing required one, or a bad value.               | Fix the call.                                                                        |
 | `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                   | Read the list again.                                                                 |

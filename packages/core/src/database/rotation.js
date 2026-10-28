@@ -204,7 +204,8 @@ export class Rotation {
   /** @private */
   async _audit() {
     const db = this.db
-    if (db.closing || db.closed || !db.writable || this.current) return
+    // behind, the membership this device sees is stale: the devices that read everything re-key
+    if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return
     const { data: device } = await db.get('devices', hid.encode(db.writerKey))
     const me = device?.memberId ? (await db.get('members', device.memberId)).data : null
     if (!can(me?.role, REMOVE)) return

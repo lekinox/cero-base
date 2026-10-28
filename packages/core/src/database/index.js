@@ -422,6 +422,9 @@ export class Database extends ReadyResource {
    * @returns {Promise<void>}
    */
   async write(ops) {
+    // behind, a set merges from a view missing the newer writes and every device takes the stale
+    // row: no writes until the update, but leaving, which touches nothing else
+    if (this.behind !== null && !leaving(ops, this.identity.id)) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
       for (const op of ops) this.txQueue.push(op)
       return
