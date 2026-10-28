@@ -8,9 +8,12 @@ import createTestnet from '@hyperswarm/testnet'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const CLI = join(here, '..', 'index.js')
+// hyperdht's NAT check samples 3 nodes before a same-host connect; a peer of a 3-node testnet
+// knows 2, the check fails and the host drops the connection the LAN shortcut already won
+const NODES = 4
 
 test('two terminal instances pair + exchange messages', { timeout: 120000 }, async (t) => {
-  const net = await createTestnet(3)
+  const net = await createTestnet(NODES)
   t.teardown(() => net.destroy(), { order: 100 })
   const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
 
@@ -53,7 +56,7 @@ test(
   'a second machine links as a device of the first, by invite, approved there',
   { timeout: 120000 },
   async (t) => {
-    const net = await createTestnet(3)
+    const net = await createTestnet(NODES)
     t.teardown(() => net.destroy(), { order: 100 })
     const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
 
