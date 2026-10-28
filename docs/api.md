@@ -375,6 +375,24 @@ import { push, receive } from '@cero-base/cero/push'
 import { firebase } from '@cero-base/cero/push/firebase'
 ```
 
+The three parts of a push, in the order they are written:
+
+```js
+// the schema: which refs notify
+const schema = cero.schema({
+  room: { messages: t.collection({ text: t.string }, { push: true }) }
+})
+
+// the app: the platform's messaging service
+const me = await connect(ipc, spec, { push: firebase(messaging()) })
+
+// worklets/push.js: the show handler says what a notification reads
+push(spec, ({ name, ref, row }) => {
+  if (ref !== 'messages') return
+  return { title: name, body: row?.text ?? 'New message' }
+})
+```
+
 | Export                                        | What it is                                                                                                                                                                                                                                                                                  |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `push(spec, show)`                            | The bare-kit push entry: verifies each push the OS hands the worklet and, for one about new data, answers with what the show handler returns, the notification `{ title, body }`, or nothing. The handler gets what `cero.receive` gives, `row` included. `INVALID` without a show handler. |

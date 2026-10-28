@@ -94,8 +94,19 @@ window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : c
 A member's phone learns of new data while the app is not running, through the platform's push
 service, without any server reading the data.
 
-A write to a ref that declares `push` in the [schema](schema.md#push-a-notification-on-a-write)
-pushes to every member's device, with their app running or dead:
+Declare `push` on the refs that should notify, in the
+[schema](schema.md#push-a-notification-on-a-write):
+
+```js
+const schema = cero.schema({
+  room: {
+    profile: t.single({ name: t.string }),
+    messages: t.collection({ text: t.string }, { push: true })
+  }
+})
+```
+
+Every write to such a ref pushes to every member's device, with their app running or dead:
 
 ```js
 await cero.put(room.messages, { text: 'dinner at 8?' })
