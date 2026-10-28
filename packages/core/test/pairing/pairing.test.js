@@ -426,12 +426,12 @@ test('link: a bare device joins, the accepter attests it, and the reply carries 
   })
   await db.ready()
   t.teardown(() => db.close().catch(() => {}), { order: 1 })
-  await waitFor(() => db.writable)
-  t.is(
-    (await db.get('devices', hid.encode(db.writerKey))).data?.memberId,
-    host.identity.id,
-    'a device of the host, writing'
+  // writable flips inside the apply that admits the device, before the view flush lands its row
+  const memberId = await waitFor(
+    async () => (await db.get('devices', hid.encode(db.writerKey))).data?.memberId || null
   )
+  t.is(memberId, host.identity.id, 'a device of the host')
+  t.ok(db.writable, 'writing')
   t.is((await db.get('members')).data.length, 1, 'no member was added')
 })
 
