@@ -103,7 +103,7 @@
     }
   },
   "scripts": {
-    "build:test": "rm -rf test/fixtures/spec && node test/fixtures/build.js",
+    "build:test": "rm -rf test/fixtures/spec && node test/fixtures/build.js && node test/fixtures/compat.js",
     "build:types": "rm -rf types && tsc -p .",
     "pretest": "npm run build:test",
     "prepublishOnly": "npm run build:types",

@@ -7,7 +7,7 @@
     },
     "build:test": {
       "dependsOn": ["build"],
-      "outputs": ["test/fixtures/spec/**"]
+      "outputs": ["test/fixtures/spec/**", "test/fixtures/.compat/previous.json"]
     },
     "test": {
       "dependsOn": ["build:test"]
