@@ -859,13 +859,15 @@ test('get search: case-insensitive substring across string fields', async (t) =>
   t.is(r.total, 2, 'total counts the matches')
 })
 
-test('get search: matches any string field (e.g. id/code)', async (t) => {
+test('get search: skips ids unless fields names them, an id that is a code', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { id: 'abc-1', text: 'x' })
   await db.put('messages', { id: 'abc-2', text: 'y' })
   await db.put('messages', { id: 'zzz-1', text: 'z' })
   const r = await db.get('messages', { search: 'abc' })
-  t.alike(r.data.map((m) => m.id).sort(), ['abc-1', 'abc-2'])
+  t.alike(r.data, [], 'a generated id is random: no term may hit it by default')
+  const byId = await db.get('messages', { search: 'abc', fields: ['id'] })
+  t.alike(byId.data.map((m) => m.id).sort(), ['abc-1', 'abc-2'], 'named, ids are searched')
 })
 
 test('get search: composes with limit (pagination)', async (t) => {
