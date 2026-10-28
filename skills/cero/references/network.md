@@ -99,23 +99,12 @@ pushes to every member's device, with their app running or dead:
 await cero.put(room.messages, { text: 'dinner at 8?' })
 ```
 
-### The pieces and who runs them
+### What to run
 
-```text
-writer's device ──► mirror ──► push gateway ──► Firebase / APNs ──► member's device
-writes the block    holds the    holds the        delivers to the     opens the block with
-replicates it to    handle's     app's Firebase   handle's topic      the handle's keys it
-the mirror          cores,       credentials                          holds, checks the proof
-                    encrypted    wraps the proof                      against its own cores,
-                    builds a     in a push to                         decides what to show
-                    proof of     topic = the
-                    the block    handle's topic
-```
-
-The mirror and the gateway are yours to run: `services/mirror` ships both, a blind peer and a
-`blind-push` gateway. Give the gateway the app's Firebase credentials and the mirror the gateway's
-key. The mirror sees encrypted blocks and that one is new; the gateway sees an opaque payload and
-a topic name; Firebase sees which device tokens subscribe to which topic.
+Next to the mirror, run the push gateway with the app's Firebase credentials: `services/mirror`
+ships both, and its README has the setup. The mirror tells the gateway a handle has new data and
+the gateway asks Firebase to wake the members' devices. Neither reads the data: they hold it
+encrypted, and Firebase only sees which devices listen for which handle.
 
 ### The app while it runs
 
@@ -128,17 +117,15 @@ import { firebase } from '@cero-base/cero/push/firebase'
 const me = await connect(ipc, spec, { push: firebase(messaging()) })
 ```
 
-That is the app's whole part while it runs. Cero subscribes the device to one topic per handle it
-belongs to, drops the topic when the handle is left, and when a push arrives verifies it and ranks
-the handle first, so it syncs now. A write pushes once the handle's mirror holds it; a burst of
-writes is one push, or two, and one cut off by the app going to the background goes at resume.
+That is the app's whole part while it runs. Cero subscribes the device to pushes for each handle it
+belongs to, stops when the handle is left, and when a push arrives syncs that handle first. Many
+writes in a row are one push.
 
 ### The app while it is dead: the show handler
 
-While the app is dead the OS runs a small worklet instead, the bare-kit push entry. Cero opens
-the storage read-only, verifies the push, opens the block with the handle's keys and decodes the row
-with the schema. The show handler, the function the app gives `push`, says what the notification
-reads. The worklet's whole code:
+While the app is dead the OS runs a small worklet instead. Cero verifies the push and opens the row
+it carries; the show handler, the function the app gives `push`, says what the notification reads.
+The worklet's whole code:
 
 ```js
 // worklets/push.js, the bare-kit push entry; spec as the worker imports it
@@ -151,9 +138,9 @@ push(spec, ({ name, ref, row }) => {
 })
 ```
 
-The show handler gets what `cero.receive` would give the running app,
-`{ id, type, name, newer, ref, row }`: the handle, its name, the ref the write hit and `row`, the row
-the write put. It answers one of three ways:
+The show handler gets `{ id, type, name, newer, ref, row }`, what `cero.receive` gives the running
+app: the handle, its name, the ref the write hit and `row`, the row the write put, `null` when it
+was too big to ride along. It answers one of three ways:
 
 | It returns        | The device              |
 | ----------------- | ----------------------- |
@@ -161,25 +148,15 @@ the write put. It answers one of three ways:
 | nothing           | shows nothing           |
 | throws            | shows nothing           |
 
-A forged or stale push, or one about no handle here, never reaches the handler. The handler is the
-app's: its strings live with the app's other strings and translate with them. Without a handler
-`push` throws `INVALID`.
+A forged push, or one about a handle this device is not in, never reaches the handler. The handler
+is the app's: its strings live with the app's other strings and translate with them. Without a
+handler `push` throws `INVALID`.
 
-`row` is `null` when the block did not fit the push, the platform's payload limit, and the handler
-falls back to the ref's generic text. The row is the writer's claim, decoded before this device
-applies it: the trust is the push's own, a writer this device stores, and what the handle's rules
-make of the write shows once the app syncs. The request the OS hands the worklet carries
-`storage`, `payload` and, when the app encrypts its local store, `storageKey`, in base64.
-
-A device learns of a new member's writes only once it has synced that member's admission.
-
-### The pieces, for a flow of your own
-
-`status.topic` on a handle is the string to subscribe, `me.topics` lists them all,
-`cero.receive(me, payload)` verifies bytes into `{ id, type, name, newer, ref, row }` or `null`, and
-`receive(dir, spec, payload)` from `@cero-base/cero/push` does the same from a closed app's storage.
-A messaging service is any object with `subscribe(topic)`, `unsubscribe(topic)` and
-`on('push', fn)`.
+For a push flow of your own: `status.topic` on a handle is the string to subscribe, `me.topics`
+lists them all, `cero.receive(me, payload)` verifies a push's bytes into
+`{ id, type, name, newer, ref, row }` or `null`, and `receive(dir, spec, payload)` from
+`@cero-base/cero/push` does the same from a closed app's storage. A messaging service is any object
+with `subscribe(topic)`, `unsubscribe(topic)` and `on('push', fn)`.
 
 ## Many handles
 
