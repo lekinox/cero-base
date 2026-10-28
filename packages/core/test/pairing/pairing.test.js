@@ -567,10 +567,17 @@ test('join: needs a mailbox, an identity and a spec; a writer, if given, is a ke
   await t.exception(Pairing.join(mailbox, invite, { identity, spec, writer }), /writer/)
 })
 
+test('Invite: an address nothing can be sealed to is no invite', (t) => {
+  const zero = b4a.alloc(32)
+  t.exception(() => Invite.create({ ...sample(), address: zero }), /sealed/)
+  t.exception(() => Invite.parse(unsealable()), /sealed/)
+})
+
 test('join: invalid invite → INVALID_INVITE, expired → EXPIRED', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
   t.is((await joiner.join('not-an-invite').catch((e) => e)).code, 'INVALID_INVITE')
+  t.is((await joiner.join(unsealable()).catch((e) => e)).code, 'INVALID_INVITE')
   const invite = await host.pairing.invite({ ttl: -1000 })
   t.is((await joiner.join(invite).catch((e) => e)).code, 'EXPIRED')
 })
@@ -854,3 +861,9 @@ test('CeroError pairing factories have stable codes and inherit from Error', (t)
   t.is(d.code, 'DENIED')
   t.is(d.reason, 'foo')
 })
+
+// an invite whose address is all zeros: nothing can be sealed to it
+function unsealable() {
+  const fields = Invite.parse(Invite.create(sample()).toString())
+  return new Invite({ ...fields, _str: null, address: b4a.alloc(32) }).toString()
+}

@@ -305,6 +305,15 @@ function nowhere(opts) {
   return Invite.create({ key: random(), address: random(), link, ...opts }).toString()
 }
 
+test('invites: an invite nothing can be sealed to is refused before a join is written', async (t) => {
+  const { me } = await ceroOpen(t)
+  const fields = Invite.parse(nowhere())
+  const bad = new Invite({ ...fields, _str: null, address: b4a.alloc(32) }).toString()
+  const err = await open(me.team, bad).catch((e) => e)
+  t.is(err?.code, 'INVALID_INVITE')
+  t.alike((await get(me.joins)).data, [], 'no join waits on it')
+})
+
 test('invites: an owner back online answers its invites without opening the room', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
