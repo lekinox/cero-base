@@ -340,6 +340,26 @@ test('invites: a confirm invite reopened at boot still waits for the app', async
   t.ok(await joined(joiner.me, id))
 })
 
+test('invites: cero.invite resolves once the row that reopens the handle at boot is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  // a loaded runner: the local store answers its reads late, so a close right after the invite
+  // would slice between the row's read and its write
+  const store = owner.me.local.store
+  const read = store._read.bind(store)
+  store._read = async (ref, id) => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    return read(ref, id)
+  }
+  await cero.invite(room)
+  await owner.me.close()
+
+  const back = await reopen(t, owner.dir, testnet)
+  await waitUntil(() => [...back.children].find((c) => c.id === room.id) || null)
+  t.pass('the room with a live invite reopened at boot')
+})
+
 test('invites: a room with no invite left is not reopened at boot', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
