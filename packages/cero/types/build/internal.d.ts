@@ -1,3 +1,6 @@
+export declare const contract: {
+    version: number;
+};
 export declare const defs: {
     main: {
         members: {

@@ -194,6 +194,9 @@ export declare const local: {
         epochs: import("@cero-base/core").Prim;
     };
 };
+export declare const contract: {
+    version: number;
+};
 export declare const rpc: {
     'req-empty': {
         ok: import("@cero-base/core").Prim;
