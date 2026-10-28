@@ -102,7 +102,7 @@ Each row of your own collections carries `id`, `memberId` (its author), `index` 
 | Field       | Value                                                                                                                                   |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `role`      | Your role here, `null` when you are not a member.                                                                                       |
-| `writable`  | `true` once this device can write here.                                                                                                 |
+| `writable`  | `true` once this device can write here: its admission is in the view, so its own row reads back.                                        |
 | `epoch`     | The key in use, by number: `0` before the first re-key.                                                                                 |
 | `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                                                |
 | `behind`    | `0`, or the version of a newer app some peer writes with: this device skips those writes, and its own throw `BEHIND`, until it updates. |
@@ -375,11 +375,29 @@ import { push, receive } from '@cero-base/cero/push'
 import { firebase } from '@cero-base/cero/push/firebase'
 ```
 
-| Export                                        | What it is                                                                                                                                                                                                                                                                                          |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `push(spec, show)`                            | The bare-kit push entry: registers the handler that verifies each push the OS hands the worklet and, for one about new data, answers with what `show(push)` returns, the notification `{ title, body }`, or nothing. `push` is what `cero.receive` gives, `row` included. `INVALID` without `show`. |
-| `receive(dir, spec, payload, { storageKey })` | What `cero.receive` does, from the storage of an app that is not running, opened read-only. `storageKey` as `cero()` took it.                                                                                                                                                                       |
-| `firebase(messaging)`                         | `@react-native-firebase/messaging` as the messaging service for `connect`'s `push`: pass `messaging()`. It hands over the pushes the app receives in front; the push worklet answers the rest. A messaging service is any `{ subscribe(topic), unsubscribe(topic), on('push', fn) }`.               |
+The three parts of a push, in the order they are written:
+
+```js
+// the schema: which refs notify
+const schema = cero.schema({
+  room: { messages: t.collection({ text: t.string }, { push: true }) }
+})
+
+// the app: the platform's messaging service
+const me = await connect(ipc, spec, { push: firebase(messaging()) })
+
+// worklets/push.js: the show handler says what a notification reads
+push(spec, ({ name, ref, row }) => {
+  if (ref !== 'messages') return
+  return { title: name, body: row?.text ?? 'New message' }
+})
+```
+
+| Export                                        | What it is                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `push(spec, show)`                            | The bare-kit push entry: verifies each push the OS hands the worklet and, for one about new data, answers with what the show handler returns, the notification `{ title, body }`, or nothing. The handler gets what `cero.receive` gives, `row` included. `INVALID` without a show handler. |
+| `receive(dir, spec, payload, { storageKey })` | What `cero.receive` does, from the storage of an app that is not running, opened read-only. `storageKey` as `cero()` took it.                                                                                                                                                               |
+| `firebase(messaging)`                         | `@react-native-firebase/messaging` as the messaging service for `connect`'s `push`: pass `messaging()`. It hands over the pushes the app receives in front; the push worklet answers the rest. A messaging service is any `{ subscribe(topic), unsubscribe(topic), on('push', fn) }`.       |
 
 See [Push while the app is dead](network.md#push-while-the-app-is-dead).
 

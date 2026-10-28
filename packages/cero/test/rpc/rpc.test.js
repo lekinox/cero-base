@@ -7,6 +7,7 @@ import { Duplex } from 'streamx'
 import c from 'compact-encoding'
 import { decodeId } from '@cero-base/core/blobs'
 import { Invite } from '@cero-base/core/invite'
+import { Identity } from '@cero-base/core/identity'
 
 import {
   cero,
@@ -752,7 +753,7 @@ test('rpc: a denial after the join stopped waiting reaches onerror with the reas
 
 test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const { client } = await openPair(t)
-  const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
+  const random = () => Identity.randomBytes(32)
   const link = { key: random(), length: 1 }
   const invite = Invite.create({ key: random(), address: random(), link }).toString()
   const joining = open(client.team, invite).catch((e) => e)

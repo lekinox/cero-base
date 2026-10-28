@@ -122,10 +122,12 @@ const fold = (s) =>
 
 // every term must be a substring of a searched field
 /** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
+const IDS = new Set(['id', 'memberId'])
+
 export function searchHit(row, term, fields) {
   const terms = String(term).split(/\s+/).map(fold).filter(Boolean)
-  // memberId is a random z32, it would produce spurious hits
-  const keys = fields && fields.length ? fields : Object.keys(row).filter((k) => k !== 'memberId')
+  // ids are random z32: any term can occur in one
+  const keys = fields && fields.length ? fields : Object.keys(row).filter((k) => !IDS.has(k))
   const hay = keys.map((k) => (typeof row[k] === 'string' ? fold(row[k]) : '')).join(' ')
   return terms.every((t) => hay.includes(t))
 }

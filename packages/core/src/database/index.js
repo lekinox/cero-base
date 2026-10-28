@@ -107,6 +107,7 @@ export class Database extends ReadyResource {
     /** @type {number | null} */
     this.behind = null
     this.namespace = opts.namespace || NAMESPACE
+    this._writable = false
     this.encryptionKey = opts.encryptionKey
     this.keyring = new Keyring()
     if (opts.epochs) for (const e of opts.epochs) this.keyring.add(e.stamp, e.entropy, e.epoch)
@@ -186,7 +187,7 @@ export class Database extends ReadyResource {
 
   /** @returns {boolean} whether the bee accepts local writes */
   get writable() {
-    return this.bee?.writable === true
+    return this._writable
   }
 
   /** @returns {number} number of ops in the local writer */
@@ -228,9 +229,13 @@ export class Database extends ReadyResource {
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())
-    this.bee.on('writable', () => this.emit('writable'))
+    this._writable = this.bee.writable
+    this.bee.on('writable', () => this._onwritable())
     // falling edge: apps freeze the UI the moment access ends
-    this.bee.on('unwritable', () => this.emit('unwritable'))
+    this.bee.on('unwritable', () => {
+      this._writable = false
+      this.emit('unwritable')
+    })
     // without a listener autobee escalates apply/view errors to a process crash
     this.bee.on('error', this._onerror)
 
@@ -640,12 +645,11 @@ export class Database extends ReadyResource {
    */
   async whenWritable({ timeout = 30000 } = {}) {
     this.guard()
-    const { bee } = this
-    if (bee.writable) return
+    if (this.writable) return
     return new Promise((resolve, reject) => {
       const done = (err) => {
         clearTimeout(timer)
-        bee.off('writable', done)
+        this.off('writable', done)
         this.off('close', onclose)
         if (err) reject(err)
         else resolve()
@@ -653,9 +657,23 @@ export class Database extends ReadyResource {
       const onclose = () => done(CeroError.CLOSED('Database'))
       const timer =
         timeout > 0 ? setTimeout(() => done(CeroError.TIMEOUT('whenWritable')), timeout) : null
-      bee.once('writable', done)
+      this.once('writable', done)
       this.once('close', onclose)
     })
+  }
+
+  // the bee flips writable inside the apply that admits this device, before that apply's view
+  // flush lands its row: writable here means the row is there to read
+  /** @private */
+  async _onwritable() {
+    try {
+      await this.bee.updated()
+    } catch {
+      return
+    }
+    if (this._writable || !this.bee.writable || this.closing || this.closed) return
+    this._writable = true
+    this.emit('writable')
   }
 
   /**
@@ -766,14 +784,22 @@ export class Database extends ReadyResource {
     await bee.update()
   }
 
-  // ops skipped as too new apply once this version caught up: wipe the boot record and reboot
+  // ops skipped as too new apply once this version caught up, and a view whose definition grew
+  // since it was built (an index added by a rebuild) fills from the log: wipe the boot record and
+  // reboot
   /** @private */
   async _replay() {
-    const behind = await this.bee.local.getUserData('cero/behind')
+    const local = this.bee.local
+    const behind = await local.getUserData('cero/behind')
     this.behind = behind ? c.decode(c.uint, behind) : null
-    if (this.behind === null || this.behind > this.version) return false
-    await this.bee.local.setUserData('autobee/head', null)
-    await this.bee.local.setUserData('cero/behind', null)
+    const caught = this.behind !== null && this.behind <= this.version
+    const built = await local.getUserData('cero/view')
+    const { db } = this.spec.database.versions
+    const grown = !!built && c.decode(c.uint, built) < db
+    if (!built || grown) await local.setUserData('cero/view', c.encode(c.uint, db))
+    if (!caught && !grown) return false
+    await local.setUserData('autobee/head', null)
+    await local.setUserData('cero/behind', null)
     await this.bee.close()
     this.behind = null
     return true

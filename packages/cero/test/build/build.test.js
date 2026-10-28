@@ -8,7 +8,7 @@ import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
-import { rpc } from '../../src/build/schemas.js'
+import { rpc, contract } from '../../src/build/schemas.js'
 import { makeTestnet } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -340,5 +340,55 @@ test('fields: bytes is a buffer column, file an id string, the rest map to thems
       { name: 'avatar', type: 'string', required: false },
       { name: 'n', type: 'uint', required: true }
     ]
+  )
+})
+
+test('build: a Cero release that changes what a write means raises the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-cero', plain)
+  const was = contract.version
+  contract.version = was + 1
+  t.teardown(() => {
+    contract.version = was
+  })
+  await build(dir, plain, { extensions: [] })
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.version, 2, 'nothing stored changed, the release did')
+  await build(dir, plain, { extensions: [] })
+  const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
+  t.is(kept.version, 2, 'and the next build holds it')
+})
+
+// an index added by a rebuild: the rows written before it must be found through it, so a reopen
+// over a store the old build wrote fills the index
+const flat = schema({ notes: t.collection({ text: t.string, done: t.bool }) })
+const byDone = schema({
+  notes: t.collection({ text: t.string, done: t.bool }, { indexes: { 'by-done': ['done'] } })
+})
+
+test('build: an index added by a rebuild finds the rows written before it', async (t) => {
+  const v1 = await rebuilt(t, 'replay-v1', flat)
+  const v2 = await rebuilt(t, 'replay-v2', flat, byDone)
+  const { spec: before } = await importSpec(v1)
+  const { spec: after } = await importSpec(v2)
+  t.is(after.meta.version, 2, 'the index raised the contract')
+
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const me = await cero(dir, before, { bootstrap: testnet.bootstrap, extensions: [] })
+  await put(me.notes, { text: 'open', done: false })
+  await put(me.notes, { text: 'closed', done: true })
+  await me.close()
+
+  const again = await cero(dir, after, { bootstrap: testnet.bootstrap, extensions: [] })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const { data } = await get(again.notes, { done: true })
+  t.is(data.length, 1, 'the old row is found through the new index')
+  t.is(data[0]?.text, 'closed')
+  const { data: written } = await put(again.notes, { text: 'later', done: true })
+  const { data: both } = await get(again.notes, { done: true })
+  t.alike(
+    both.map((r) => r.id).sort(),
+    [data[0]?.id, written.id].sort(),
+    'and a row written after it too'
   )
 })

@@ -44,8 +44,10 @@ A single file: `cd packages/core && npx brittle-bare test/database/database.test
 - No compatibility or legacy code. There is no production app yet; fix the root cause and delete the old path.
 - Nothing in this repo mentions keet. The `keet-identity-key` dependency name is the one exception.
 - Tests live under `test/<module>/` mirroring `src/`, one file per module with unit and RPC cases together. Helpers in `test/helpers/index.js`, fixtures in `test/fixtures/`.
+- `npm test` installs the previous published release once into `packages/cero/test/fixtures/.compat/` for `test/compat`, which opens a store it wrote and shares a room with it. A change that breaks either fails the suite, and the release.
 - Wait on conditions with `waitFor` / `waitUntil`, never a bare sleep. Every peer gets `bootstrap: testnet.bootstrap`, never the live DHT.
 - Red-check every guard you add: delete it, watch its test fail, restore it.
+- A change to what a write means in apply, with nothing stored changed, bumps `contract.version` in `packages/cero/src/build/schemas.js`: the app's next build raises its contract and devices on the old release skip the new writes.
 - The `types/` folders and `skills/cero/references` (except `testing.md`) are generated. Never edit them by hand; CI diffs them.
 - Release order is commit, bump, publish. Never publish uncommitted source. No co-author trailers in commits.
 - Example apps' dependencies are hands-off: report drift, do not upgrade them.

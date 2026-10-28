@@ -235,6 +235,10 @@ export const local = {
   }
 }
 
+// what a write means to apply. A release that changes it without changing what is stored bumps
+// this, so an app's next build raises its contract and devices on the old release skip the new writes
+export const contract = { version: 1 }
+
 export const rpc = {
   'req-empty': {
     ok: bool

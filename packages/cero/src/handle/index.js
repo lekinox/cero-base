@@ -366,7 +366,12 @@ export class Handle extends ReadyResource {
   // device checks its chain against
   /** @private */
   async _invite(opts = {}) {
-    if (this.parent) return this._pair.invite(opts)
+    if (this.parent) {
+      const invite = await this._pair.invite(opts)
+      // a close right after the invite must not drop the row that reopens this handle at boot
+      await this._saved
+      return invite
+    }
     const { ttl = '2h' } = opts
     return this._pair.invite({ role: 'owner', confirm: true, ttl, data: this.identity.publicKey })
   }
@@ -1110,8 +1115,12 @@ export class Handle extends ReadyResource {
       if (!serving) return this.local.store.del('serving', child.id)
       await this.local.store.put('serving', { id: child.id, type: child.type })
     }
-    child._pair.on('serving', () => save().catch(this._onerror))
-    save().catch(this._onerror)
+    // one at a time, so an invite can wait for its row
+    const queue = () => {
+      child._saved = (child._saved || Promise.resolve()).then(save).catch(this._onerror)
+    }
+    child._pair.on('serving', queue)
+    queue()
   }
 
   /** @private */

@@ -98,7 +98,7 @@ cero.watch(room.notes).on('data', ({ data }) => render(data)) // render: your UI
 
 `cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses: the worker runs the same operator on the same context, so it returns and refuses as it does there, and it runs nothing else the UI names.
 
-`connect(ipc, spec, { push: messaging })` keeps the device on its handles' push topics and acts on each push, with the platform's messaging service: see [Push while the app is dead](network.md#push-while-the-app-is-dead).
+`connect(ipc, spec, { push: firebase(messaging()) })` subscribes the device to pushes for its handles and acts on each push, with the platform's messaging service: see [Push while the app is dead](network.md#push-while-the-app-is-dead).
 
 Each watch item is a full result, and with `changes: true` the client diffs them itself, so a slow link skips items, never changes. A reloaded UI is a new client on the same worker: its old streams end.
 
