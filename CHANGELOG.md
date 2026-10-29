@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.8.0 (2026-10-29)
+
+### Documentation
+
+- the show handler, who sends a push and who runs what (#23)
+
+### Other
+
+- 🚀 network: a connection is silent when nothing arrived since it was added, not since zero (#34)
+- 🚀 database: a device behind a newer app reads but does not write, so a stale set never overwrites what it never saw (#27)
+- 🚀 build: a release that changes what a write means raises the app's contract on its next build (#25)
+- 🚀 invite: an address nothing can be sealed to is refused at create and parse, before any join is written (#33)
+- query: search never looks at ids (#32)
+- 🚀 handle: cero.invite resolves once the row that reopens the handle at boot is written (#31)
+- 🚀 test: chat-terminal pairs over a 4-node testnet, the size hyperdht's NAT check needs (#30)
+- 🚀 test: this release opens a store the previous published one wrote and shares a room with it (#26)
+- 🚀 database: a view whose definition grew since it was built fills from the log on open (#24)
+- 🚀 database: writable flips once the view holds this device, not inside the apply that admits it (#29)
+- 🚀 push: the worklet opens the block a push carries and hands show the row (#22)
+- 🚀 chat-mobile: a device invite from a link fills the field; linking replaces the identity, so the user taps for it (#21)
+- 🚀 test: the removal's own re-key is epoch 1; a rotation of ours raced it on slow runners (#20)
+
 ## 2.7.0 (2026-10-27)
 
 ### Other
