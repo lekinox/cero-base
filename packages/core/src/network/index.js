@@ -362,9 +362,12 @@ export class Network extends ReadyResource {
 }
 
 // data, not packets: a peer that acked our opener and froze has answered nothing
+// silent since we got it: a direct connection carries its handshake on the stream, so the count
+// starts above zero
 function dropIfSilent(conn) {
+  const seen = conn.rawStream.bytesReceived
   const timer = setTimeout(() => {
-    if (conn.rawStream.bytesReceived === 0) conn.destroy()
+    if (conn.rawStream.bytesReceived === seen) conn.destroy()
   }, SILENT_TIMEOUT)
   timer.unref()
   conn.once('close', () => clearTimeout(timer))
