@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.9.0 (2026-10-30)
+
+### Other
+
+- 🚀 mail: cero.send and cero.inbox, a value signed for an address; keep false erases a message on both ends once it is done with (#36)
+- 🚀 deps: every package and example on the latest releases (#35)
+
 ## 2.8.0 (2026-10-29)
 
 ### Documentation
