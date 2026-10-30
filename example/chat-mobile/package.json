@@ -33,11 +33,11 @@
     "bare-os": "^3.9.3",
     "bare-path": "^3.1.2",
     "chat-backend": "*",
-    "expo": "~58.0.19",
+    "expo": "~58.0.21",
     "expo-clipboard": "~58.0.4",
-    "expo-file-system": "~58.0.11",
-    "react": "19.3.0",
-    "react-native": "0.88.0",
+    "expo-file-system": "~58.0.13",
+    "react": "19.3.1",
+    "react-native": "0.88.1",
     "react-native-bare-kit": "^0.16.0"
   },
   "devDependencies": {
