@@ -8,12 +8,18 @@ import { Readable } from 'streamx'
 import b4a from 'b4a'
 
 import { Ref } from '../../src/handle/index.js'
-import { put, set, get, del, watch, call, open } from '../../src/lib/operators.js'
+import { put, set, get, del, watch, call, open, send, inbox } from '../../src/lib/operators.js'
 import { onAbort } from '@cero-base/core/utils'
 import { cero } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { spec } from '../fixtures/spec/index.js'
-import { FakeStore, makeTestnet, waitUntil } from '../helpers/index.js'
+import { FakeStore, makeTestnet, waitUntil, ceroOpen } from '../helpers/index.js'
+import { Identity } from '@cero-base/core/identity'
+import { Mailbox } from '@cero-base/core/mailbox'
+import hid from 'hypercore-id-encoding'
+import crypto from 'hypercore-crypto'
+import c from 'compact-encoding'
+import { seal, unseal } from '../../src/lib/mail.js'
 
 test.configure({ timeout: 30000 })
 
@@ -255,4 +261,205 @@ test('open: an argument it does not know is INVALID, never a new handle', async 
   t.ok((await open(me.team, { name: 'real' })).id, '{ name } creates')
   t.ok((await open(me.team)).id, 'no argument creates too')
   t.is((await get(me.team)).data.length, 2)
+})
+
+// two devices of two people on one testnet, and an address only the second can open
+async function mailPair(t) {
+  const { me: a, testnet, dir: dirA } = await ceroOpen(t)
+  const { me: b, dir: dirB } = await ceroOpen(t, { testnet })
+  const secret = Identity.randomBytes(32)
+  return { a, b, secret, address: cero.address(secret), testnet, dir: { a: dirA, b: dirB } }
+}
+
+function holds(me, key) {
+  return me.network.store.storage.hasCore(crypto.discoveryKey(key))
+}
+
+test('cero.address: one secret, one address, as a string', (t) => {
+  const secret = Identity.randomBytes(32)
+  t.is(typeof cero.address(secret), 'string')
+  t.is(cero.address(secret), cero.address(secret))
+  t.is(cero.address(secret), hid.encode(Mailbox.getAddress(secret)))
+  t.not(cero.address(Identity.randomBytes(32)), cero.address(secret))
+})
+
+test('send → inbox: any value arrives with its verified sender', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const got = []
+  const stop = inbox(b, secret, (data, sender) => got.push({ data, sender }))
+  t.teardown(stop)
+
+  await send(a, address, { kind: 'pass', unit: 5, at: [1, 2] })
+
+  await waitUntil(() => got.length > 0)
+  t.alike(got[0].data, { kind: 'pass', unit: 5, at: [1, 2] })
+  t.is(got[0].sender.from, a.identity.id, 'from is the sender identity')
+  t.is(got[0].sender.device, a.identity.device.id, 'device is the sending device')
+  t.is(got[0].sender.id.length, 32, 'the message has an id')
+})
+
+test('seal: a message carries an id of its own, under the signature', async (t) => {
+  const identity = await Identity.create()
+  const to = Mailbox.getAddress(Identity.randomBytes(32))
+  const bytes = seal(identity, to, 'hi')
+  t.is(unseal(to, bytes).id, unseal(to, bytes).id, 'the same message, the same id')
+  t.not(unseal(to, seal(identity, to, 'hi')).id, unseal(to, bytes).id, 'sent again, another id')
+  const { id, data, proof } = c.decode(c.any, bytes)
+  t.is(id.byteLength, 16)
+  const swapped = c.encode(c.any, { id: Identity.randomBytes(16), data, proof })
+  t.is(unseal(to, swapped), null, 'an id swapped under the proof is dropped')
+})
+
+test('inbox: a message signed for another address is dropped', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+
+  // a valid envelope, but sealed for somewhere else and redirected here
+  const elsewhere = Mailbox.getAddress(Identity.randomBytes(32))
+  await a.mailbox.send(hid.decode(address), seal(a.identity, elsewhere, 'redirected'))
+  await send(a, address, 'meant')
+
+  await waitUntil(() => got.length > 0)
+  t.alike(got, ['meant'])
+})
+
+test('inbox: bytes that are no envelope are dropped', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+
+  await a.mailbox.send(hid.decode(address), b4a.from('not an envelope'))
+  await send(a, address, 'signed')
+
+  await waitUntil(() => got.length > 0)
+  t.alike(got, ['signed'])
+  await waitUntil(async () => (await b.mailbox.inbox.list()).length === 0)
+  t.pass('nothing kept to hand over again')
+})
+
+test('inbox: a tampered message is dropped', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+
+  // the same proof over different data
+  const to = hid.decode(address)
+  const { proof } = c.decode(c.any, seal(a.identity, to, 'original'))
+  const forged = c.encode(c.any, { data: c.encode(c.any, 'forged'), proof })
+  await a.mailbox.send(to, forged)
+  await send(a, address, 'intact')
+
+  await waitUntil(() => got.length > 0)
+  t.alike(got, ['intact'])
+})
+
+test('inbox: what was sent while nobody listened arrives once it starts', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const stop = inbox(b, secret, () => {})
+  await stop()
+
+  await send(a, address, 'waited')
+  const got = await new Promise((resolve) => {
+    t.teardown(inbox(b, secret, resolve))
+  })
+  t.is(got, 'waited')
+})
+
+test('send and inbox pass keep on to the mailbox', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const seen = []
+  const receive = b.mailbox.receive.bind(b.mailbox)
+  b.mailbox.receive = (s, fn, opts) => seen.push(['receive', opts]) && receive(s, fn, opts)
+  const post = a.mailbox.send.bind(a.mailbox)
+  a.mailbox.send = (to, m, opts) => seen.push(['send', opts]) && post(to, m, opts)
+
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data), { keep: false }))
+  await send(a, address, 'x', { keep: false })
+  await waitUntil(() => got.length > 0)
+  t.alike(seen, [
+    ['receive', { keep: false }],
+    ['send', { keep: false }]
+  ])
+})
+
+test('send and inbox keep by default', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const seen = []
+  const receive = b.mailbox.receive.bind(b.mailbox)
+  b.mailbox.receive = (s, fn, opts) => seen.push(opts.keep) && receive(s, fn, opts)
+  const post = a.mailbox.send.bind(a.mailbox)
+  a.mailbox.send = (to, m, opts) => seen.push(opts.keep) && post(to, m, opts)
+
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+  await send(a, address, 'x')
+  await waitUntil(() => got.length > 0)
+  t.alike(seen, [true, true])
+})
+
+test('send: an address that is not one is INVALID', async (t) => {
+  const { a } = await mailPair(t)
+  await t.exception(send(a, 'nope', 'x'), /INVALID/)
+})
+
+test('unseal: an id of another length is dropped, however it was signed', async (t) => {
+  const identity = await Identity.create()
+  const to = Mailbox.getAddress(Identity.randomBytes(32))
+  const id = Identity.randomBytes(15)
+  const data = c.encode(c.any, 'shifted')
+  const proof = identity.sign(b4a.concat([b4a.from('cero/mail'), to, id, data]))
+  t.is(unseal(to, c.encode(c.any, { id, data, proof })), null)
+})
+
+test('inbox: keep false outlives a restart', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+
+  // a message b starts handling and never finishes before it closes
+  const arrived = new Promise((resolve) => {
+    const never = () => {
+      resolve()
+      return new Promise(() => {})
+    }
+    inbox(b, secret, never, { keep: false })
+  })
+  await send(a, address, 'again')
+  await arrived
+  const [{ id }] = await b.mailbox.inbox.list()
+  const key = b4a.from(id, 'hex')
+  await b.close()
+
+  const again = await cero(dir.b, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  t.ok(await holds(again, key), 'held while unhandled')
+  const got = await new Promise((resolve) => {
+    t.teardown(inbox(again, secret, resolve, { keep: false }))
+  })
+  t.is(got, 'again')
+  await waitUntil(async () => !(await holds(again, key)))
+  t.pass('erased once handled, after the restart')
+})
+
+test('send: a message sent before a restart goes once, on its core, erased once read', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+
+  await send(a, address, 'later', { keep: false }) // nobody listens yet
+  const [{ name }] = await a.mailbox.outbox.list()
+  const core = a.network.store.get({ name })
+  await core.ready()
+  const { key } = core
+  await core.close()
+  t.ok(await holds(a, key), 'held until someone reads it')
+  await a.close()
+
+  const again = await cero(dir.a, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+  await waitUntil(() => got.length > 0)
+  await waitUntil(async () => (await again.mailbox.outbox.list()).length === 0)
+  t.alike(got, ['later'], 'once')
+  await waitUntil(async () => !(await holds(again, key)))
+  t.pass('its core erased once read')
 })

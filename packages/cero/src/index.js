@@ -20,12 +20,14 @@ import { Local, box } from './local/index.js'
 import { Bluetooth } from './lib/bluetooth.js'
 import * as verbs from './lib/operators.js'
 import { peek } from './lib/peek.js'
+import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
 import { FLUSH, TIMEOUT } from './lib/constants.js'
 
 export { Handle, Ref, Local }
 export * from './lib/operators.js'
 export { peek } from './lib/peek.js'
+export { address } from './lib/mail.js'
 export { t, schema } from './lib/spec.js'
 
 /**
@@ -272,7 +274,7 @@ export async function link(me, invite, { onrequest } = {}) {
 
 // the facade: cero.put and import { put } are the same function
 /** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, link: typeof link }} */
-export const cero = Object.assign(start, verbs, { t, schema, peek, restore, link })
+export const cero = Object.assign(start, verbs, { t, schema, peek, restore, link, address })
 
 function pointerManifest(store, identity) {
   return { version: store.manifestVersion, signers: [{ publicKey: identity.publicKey }] }

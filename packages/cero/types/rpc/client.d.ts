@@ -49,6 +49,16 @@ declare const remote: {
         ref: string | null;
         row: object | null;
     } | null>;
+    send(me: verbs.Context, address: string, data: unknown, opts?: {
+        keep?: boolean;
+    }): Promise<void>;
+    inbox(me: verbs.Context, secret: Uint8Array, fn: (data: unknown, mail: {
+        id: string;
+        from: string;
+        device: string;
+    }) => unknown, opts?: {
+        keep?: boolean;
+    }): () => Promise<void>;
     phrase(me: verbs.Context): Promise<string>;
     nearby(ctx: verbs.Context, on: boolean, opts?: {
         topic?: string;

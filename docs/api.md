@@ -207,6 +207,31 @@ Set a role with `cero.set(room.members, { id, role })`: you need to be an admin 
 | `cero.nearby(me, on, { topic })` | `undefined`          | The radio on (`true`) or off (`false`), on `topic` or else the default topic: the one `cero()` started with, or the channel's own. Anything else is `INVALID`. On, it links with the devices in range on the same channel and topic, and joins and sync run over those links as over the internet. Nothing is stored.                     |
 | `cero.receive(me, payload)`      | the handle or `null` | A push's bytes, verified against this device's data: `{ id, type, name, newer, ref, row }`, or `null` for a forged one or one about no handle here. `row` is what the write put, opened here with the handle's keys; `null` when the block did not fit the push. `INVALID` on a handle, and while suspended: the push worklet reads then. |
 
+## Mail
+
+Messages to an address, between any two devices, members of nothing in common. An address is a string to share; only whoever holds its secret receives what is sent to it.
+
+```js
+// the receiver, where cero runs: a secret of its own, and the address it shares
+const secret = crypto.randomBytes(32)
+const address = cero.address(secret)
+const stop = cero.inbox(me, secret, async (data, { id, from, device }) => {
+  // id: this message's, from: the sender's identity id, device: its device id, both verified
+})
+
+// the sender, given the address
+await cero.send(me, address, { text: 'hi' })
+```
+
+| Call                                     | Resolves        | Notes                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cero.address(secret)`                   | the address     | Synchronous. One secret, one address.                                                                                                                                                                                                                                                                                   |
+| `cero.send(me, address, data, { keep })` | `undefined`     | Any value, signed by this identity for that address. Resolves once the outbox keeps it; it is delivered in the background, sent again after a restart until someone read it, and waits on a mirror for an owner who is offline. Not an address: `INVALID`.                                                              |
+| `cero.inbox(me, secret, fn, { keep })`   | a stop function | `fn(data, { id, from, device })` for each message. A message stays until `fn` resolves; one it did not finish comes again on the next start, so one may arrive twice, never not at all, under the same `id`. Anything unsigned, tampered or signed for another address is dropped. The worker's: `INVALID` on a client. |
+
+- **Kept by default.** Each message travels in a core of its own, kept on both ends. `keep: false` on `send` erases the sender's copy once someone read it; on `inbox`, it erases each message from this device once `fn` resolved. A mirror keeps its copy either way.
+- **One address, many devices.** Every device holding the secret receives. With `keep: false` on the sender, a device that comes late may find the message already erased: let the first one that handles it write what the others need into a handle they share.
+
 ## tx
 
 ```js
@@ -348,7 +373,7 @@ const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
 `cero(ipc, spec, { onerror })`, also `cero.connect`, resolves a client root with the same refs as `me`, so app code runs on either side. The facade carries every operator but `before`, `after` and `tx`, plus `t`, `schema`, `connect` and `restore(me, phrase)`. The operators are named exports too, with `Client`.
 
 - A client root has `id`, `device`, its refs and `local`. A handle has `id`, `type`, `name` and its refs.
-- `before`, `after`, `tx` and `peek` stay in the worker. `status`, `joins`, `nearby`, `requests` and `cero.phrase(me)` read as in process.
+- `before`, `after`, `tx`, `peek` and `inbox` stay in the worker. `status`, `joins`, `nearby`, `requests` and `cero.phrase(me)` read as in process.
 - Every other verb runs in the worker as the same operator, on the context it is given: the same result, the same refusal. The worker runs only the operators, so nothing else on a context is reachable from the UI.
 - An error crosses with its `code` and `message`, and a denied join with its `reason`: match `err.code`, `err.rule` stays in the worker. The worker's background errors reach `onerror` with `code`, `message`, `stack` and `reason`.
 - Opening or joining a handle from inside a handle is `UNSUPPORTED`.

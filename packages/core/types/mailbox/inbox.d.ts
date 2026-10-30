@@ -10,8 +10,19 @@ export declare function keyPair(secret: Uint8Array): {
     secretKey: Uint8Array;
 };
 /**
+ * Erase the core a message travelled in. Corestore leaves a core that still has a session open,
+ * and that is an error here, not silence.
+ *
+ * @param {import('corestore')} store
+ * @param {Uint8Array} key
+ * @returns {Promise<void>}
+ */
+export declare function erase(store: import('corestore'), key: Uint8Array): Promise<void>;
+/**
  * Receives at the address a secret owns, direct from the sender or from a mirror. A message
  * that does not open is dropped; one that opens is kept in `box` until `onmessage` resolves.
+ * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
+ * device held already is left alone.
  */
 export declare class Inbox extends ReadyResource {
     network: import("../index.js").Network;
@@ -23,6 +34,7 @@ export declare class Inbox extends ReadyResource {
     box: import("./index.js").Box;
     onmessage: (message: Uint8Array) => unknown;
     onerror: (err: Error) => void;
+    keep: boolean;
     /** @private */
     _seen;
     /** @private */
@@ -32,12 +44,13 @@ export declare class Inbox extends ReadyResource {
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} secret
-     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void }} opts
+     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean }} opts
      */
-    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror }: {
+    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep }: {
         box: import('./index.js').Box;
         onmessage: (message: Uint8Array) => unknown;
         onerror: (err: Error) => void;
+        keep?: boolean;
     });
     /** @private */
     private _open;

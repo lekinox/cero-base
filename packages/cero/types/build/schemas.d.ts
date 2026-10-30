@@ -180,6 +180,9 @@ export declare const local: {
         address: import("@cero-base/core").Prim;
         message: import("@cero-base/core").Prim;
         mirrors: import("@cero-base/core").Prim;
+        name: import("@cero-base/core").Prim;
+        erase: import("@cero-base/core").Prim;
+        fetched: import("@cero-base/core").Prim;
     };
     environment: {
         channel: import("@cero-base/core").Prim;

@@ -79,13 +79,18 @@ export class Local extends ReadyResource {
 export function box(store, name) {
   return {
     list: async () => (await store.get(name)).data.map(unpack),
-    put: (mail) => store.put(name, { ...mail, mirrors: b4a.concat(mail.mirrors || []) }),
+    put: (mail) => store.put(name, pack(mail)),
     del: (id) => store.del(name, id)
   }
 }
 
-function unpack({ id, address, message, mirrors }) {
+// the row says erase, so one without it, or from before it, is kept
+function pack({ mirrors = [], keep = true, ...mail }) {
+  return { ...mail, mirrors: b4a.concat(mirrors), erase: !keep }
+}
+
+function unpack({ id, address, message, mirrors, name, erase, fetched }) {
   const keys = []
   for (let i = 0; i < (mirrors?.byteLength || 0); i += 32) keys.push(mirrors.subarray(i, i + 32))
-  return { id, address, message, mirrors: keys }
+  return { id, address, message, mirrors: keys, name, keep: !erase, fetched }
 }

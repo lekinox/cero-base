@@ -246,6 +246,39 @@ export declare function receive(me: Context, payload: Uint8Array): Promise<{
     row: object | null;
 } | null>;
 /**
+ * Send a value to an address, signed by this identity. Resolves once the outbox keeps it; it is
+ * delivered in the background, from a mirror too when the owner is offline. `keep: false` erases
+ * this device's copy once someone read it.
+ *
+ * @param {Context} me
+ * @param {string} address  As `cero.address(secret)` gives it.
+ * @param {unknown} data
+ * @param {{ keep?: boolean }} [opts]
+ * @returns {Promise<void>}
+ */
+export declare function send(me: Context, address: string, data: unknown, opts?: {
+    keep?: boolean;
+}): Promise<void>;
+/**
+ * Receive what is sent to the address `secret` owns, with its id and who sent it. A message stays
+ * until `fn` resolves, and one it did not finish comes again on the next start, under the same id;
+ * anything unsigned or signed for another address is dropped. `keep: false` erases each message
+ * from this device once handled. Where cero runs only, not over RPC.
+ *
+ * @param {Context} me
+ * @param {Uint8Array} secret
+ * @param {(data: unknown, mail: { id: string, from: string, device: string }) => unknown} fn
+ * @param {{ keep?: boolean }} [opts]
+ * @returns {() => Promise<void>}  Stops receiving.
+ */
+export declare function inbox(me: Context, secret: Uint8Array, fn: (data: unknown, mail: {
+    id: string;
+    from: string;
+    device: string;
+}) => unknown, opts?: {
+    keep?: boolean;
+}): () => Promise<void>;
+/**
  * Reveal the recovery phrase.
  *
  * @param {Context} me

@@ -5,6 +5,10 @@ export type Mail = {
      */
     id: string;
     /**
+     * The core it travels in, so a restart sends it on the same core.
+     */
+    name?: string;
+    /**
      * Where it goes, or where it arrived.
      */
     address: Uint8Array;
@@ -13,6 +17,14 @@ export type Mail = {
      * Where a sent message waits for an owner who is offline.
      */
     mirrors?: Uint8Array[];
+    /**
+     * False erases the sender's copy once someone read it.
+     */
+    keep?: boolean;
+    /**
+     * The inbox fetched the core it arrived in, so it may erase it.
+     */
+    fetched?: boolean;
 };
 export type Box = {
     list: () => Promise<Mail[]>;
@@ -36,9 +48,12 @@ export type MailboxOpts = {
 /**
  * @typedef {object} Mail
  * @property {string} id                 Unique per message, hex.
+ * @property {string} [name]             The core it travels in, so a restart sends it on the same core.
  * @property {Uint8Array} address        Where it goes, or where it arrived.
  * @property {Uint8Array} message
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
+ * @property {boolean} [keep]            False erases the sender's copy once someone read it.
+ * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it.
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
@@ -87,9 +102,12 @@ export declare class Mailbox extends ReadyResource {
      *
      * @param {Uint8Array} secret
      * @param {(message: Uint8Array) => unknown} onmessage
+     * @param {{ keep?: boolean }} [opts]  False erases each message from this device once handled.
      * @returns {{ close: () => Promise<void> }}
      */
-    receive(secret: Uint8Array, onmessage: (message: Uint8Array) => unknown): {
+    receive(secret: Uint8Array, onmessage: (message: Uint8Array) => unknown, { keep }?: {
+        keep?: boolean;
+    }): {
         close: () => Promise<void>;
     };
     /**
@@ -98,11 +116,12 @@ export declare class Mailbox extends ReadyResource {
      *
      * @param {Uint8Array} address
      * @param {Uint8Array} message
-     * @param {{ mirrors?: Uint8Array[] }} [opts]  Where it waits for an owner who is offline; the network's by default.
+     * @param {{ mirrors?: Uint8Array[], keep?: boolean }} [opts]  `mirrors`: where it waits for an owner who is offline, the network's by default. `keep`: false erases it from this device once someone read it.
      * @returns {Promise<void>}
      */
-    send(address: Uint8Array, message: Uint8Array, { mirrors }?: {
+    send(address: Uint8Array, message: Uint8Array, { mirrors, keep }?: {
         mirrors?: Uint8Array[];
+        keep?: boolean;
     }): Promise<void>;
     /** @private */
     private _deliver;

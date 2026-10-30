@@ -20,7 +20,9 @@ import {
   open,
   rotate,
   accept,
-  deny
+  deny,
+  send,
+  inbox
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
@@ -1088,4 +1090,35 @@ test('rpc: a client gets BEHIND on a write while the worker is behind, and still
   const err = await put(client.messages, { text: 'stale' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', 'the code crosses the wire')
   t.is((await get(client.messages, mine.id)).data?.text, 'mine', 'reads go on')
+})
+
+test('rpc: send from a client reaches an inbox, signed by the worker identity', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const dir = await t.tmp()
+  const other = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close(), { order: 4 })
+  const secret = Identity.randomBytes(32)
+  const got = []
+  t.teardown(inbox(other, secret, (data, sender) => got.push({ data, sender })))
+
+  await send(client, cero.address(secret), { kind: 'pass', unit: 5 })
+
+  await waitUntil(() => got.length > 0)
+  t.alike(got[0].data, { kind: 'pass', unit: 5 })
+  t.is(got[0].sender.from, me.identity.id)
+})
+
+test('rpc: send passes keep on to the worker', async (t) => {
+  const { me, client } = await openPair(t)
+  const seen = []
+  const post = me.mailbox.send.bind(me.mailbox)
+  me.mailbox.send = (to, m, opts) => seen.push(opts.keep) && post(to, m, opts)
+
+  await send(client, cero.address(Identity.randomBytes(32)), 'x', { keep: false })
+  t.alike(seen, [false])
+})
+
+test("rpc: inbox is the worker's, INVALID on a client", async (t) => {
+  const { client } = await openPair(t)
+  t.exception(() => inbox(client, Identity.randomBytes(32), () => {}), /INVALID/)
 })

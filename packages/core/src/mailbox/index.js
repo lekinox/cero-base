@@ -3,16 +3,19 @@ import safetyCatch from 'safety-catch'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 
-import { Inbox, keyPair } from './inbox.js'
+import { Inbox, keyPair, erase } from './inbox.js'
 import { Post } from './post.js'
 import { CeroError } from '../lib/errors.js'
 
 /**
  * @typedef {object} Mail
  * @property {string} id                 Unique per message, hex.
+ * @property {string} [name]             The core it travels in, so a restart sends it on the same core.
  * @property {Uint8Array} address        Where it goes, or where it arrived.
  * @property {Uint8Array} message
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
+ * @property {boolean} [keep]            False erases the sender's copy once someone read it.
+ * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it.
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
@@ -81,13 +84,15 @@ export class Mailbox extends ReadyResource {
    *
    * @param {Uint8Array} secret
    * @param {(message: Uint8Array) => unknown} onmessage
+   * @param {{ keep?: boolean }} [opts]  False erases each message from this device once handled.
    * @returns {{ close: () => Promise<void> }}
    */
-  receive(secret, onmessage) {
+  receive(secret, onmessage, { keep = true } = {}) {
     const inbox = new Inbox(this.network, secret, {
       box: this.inbox,
       onmessage,
-      onerror: this.onerror
+      onerror: this.onerror,
+      keep
     })
     this._track(inbox)
     inbox.ready().catch(this.onerror)
@@ -100,21 +105,24 @@ export class Mailbox extends ReadyResource {
    *
    * @param {Uint8Array} address
    * @param {Uint8Array} message
-   * @param {{ mirrors?: Uint8Array[] }} [opts]  Where it waits for an owner who is offline; the network's by default.
+   * @param {{ mirrors?: Uint8Array[], keep?: boolean }} [opts]  `mirrors`: where it waits for an owner who is offline, the network's by default. `keep`: false erases it from this device once someone read it.
    * @returns {Promise<void>}
    */
-  async send(address, message, { mirrors = this.network.mirrors } = {}) {
+  async send(address, message, { mirrors = this.network.mirrors, keep = true } = {}) {
     if (!this.opened) await this.ready()
-    const mail = { id: b4a.toHex(crypto.randomBytes(16)), address, message, mirrors }
+    const name = b4a.toHex(crypto.randomBytes(32))
+    const mail = { id: b4a.toHex(crypto.randomBytes(16)), name, address, message, mirrors, keep }
     await this.outbox.put(mail)
     this._deliver(mail)
   }
 
   /** @private */
-  _deliver({ id, address, message, mirrors }) {
-    const post = new Post(this.network, address, message, { mirrors })
+  _deliver({ id, name, address, message, mirrors, keep = true }) {
+    const post = new Post(this.network, address, message, { mirrors, name })
     this._track(post)
-    deliver(post, () => this.outbox.del(id)).catch(safetyCatch)
+    deliver(post, () => this.outbox.del(id))
+      .then(() => keep || erase(this.network.store, post.key).catch(this.onerror))
+      .catch(safetyCatch)
   }
 
   /** @private */

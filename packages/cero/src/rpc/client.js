@@ -401,6 +401,16 @@ const operators = {
   },
 
   /** @private */
+  _send(address, data, opts) {
+    return this._verb('send', address, data, opts)
+  },
+
+  /** @private */
+  _inbox() {
+    throw CeroError.INVALID('inbox runs where cero runs, not over RPC')
+  },
+
+  /** @private */
   async _verb(verb, ...args) {
     const { data } = await this.rpc.verb({
       handle: this.id,

@@ -317,6 +317,10 @@ export declare class Handle extends ReadyResource {
     private _receive;
     /** @private */
     private _phrase;
+    /** @private */
+    private _send;
+    /** @private */
+    private _inbox;
     /**
      * @param {Uint8Array} coreKey
      * @param {object} info
