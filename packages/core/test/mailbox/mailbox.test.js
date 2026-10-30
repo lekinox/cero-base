@@ -720,3 +720,57 @@ test('Mailbox: keep false reports a message it could not erase once read', async
   t.is(errors[0].code, 'CONFLICT')
   t.ok(await holds(a.network, key), 'still held')
 })
+
+test('Inbox: a core this device already holds is not erased when it does not open', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const b = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const address = Mailbox.getAddress(secret)
+  const got = []
+  b.receive(secret, (m) => got.push(b4a.toString(m)))
+
+  // a core of b's own, announced at b's address by someone who knows its key
+  const own = b.network.store.get({ name: 'own' })
+  await own.ready()
+  await own.append(b4a.from('precious'))
+  const key = own.key
+  await own.close()
+  const post = new Post(a, address, null, { core: a.store.get({ key }) })
+  t.teardown(() => post.close())
+  await post.ready()
+
+  // a real one after it, so we know the announced one was processed first
+  const sender = new Mailbox(a)
+  t.teardown(() => sender.close())
+  await sender.send(address, b4a.from('real'))
+  await waitFor(() => got.length > 0, { timeout: 30000 })
+  t.alike(got, ['real'])
+  t.ok(await holds(b.network, key), 'still held')
+})
+
+test('Inbox: keep false erases only what the inbox fetched', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const b = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const address = Mailbox.getAddress(secret)
+
+  // a core of b's own whose first block happens to open as mail for b
+  const own = b.network.store.get({ name: 'own' })
+  await own.ready()
+  await own.append(crypto.encrypt(b4a.from('looks like mail'), address))
+  const key = own.key
+  await own.close()
+
+  const got = []
+  b.receive(secret, (m) => got.push(b4a.toString(m)), { keep: false })
+  const post = new Post(a, address, null, { core: a.store.get({ key }) })
+  t.teardown(() => post.close())
+  await post.ready()
+
+  await waitFor(() => got.length > 0, { timeout: 30000 })
+  t.alike(got, ['looks like mail'])
+  await waitFor(async () => (await b.inbox.list()).length === 0)
+  t.ok(await holds(b.network, key), 'handled, not erased')
+})

@@ -11,7 +11,8 @@ export declare function address(secret: Uint8Array): string;
  */
 export declare function decodeAddress(address: string): Uint8Array;
 /**
- * A value signed by `identity` for the address `to`, so it cannot be redirected elsewhere.
+ * A value signed by `identity` for the address `to`, so it cannot be redirected elsewhere, with
+ * an id of its own under the signature, so a message that arrives twice is known as one.
  *
  * @param {import('@cero-base/core/identity').Identity} identity
  * @param {Uint8Array} to
@@ -20,14 +21,16 @@ export declare function decodeAddress(address: string): Uint8Array;
  */
 export declare function seal(identity: import('@cero-base/core/identity').Identity, to: Uint8Array, value: unknown): Uint8Array;
 /**
- * The value and who sent it, or null for anything unsigned, tampered or signed for another address.
+ * The value, its id and who sent it, or null for anything unsigned, tampered or signed for
+ * another address.
  *
  * @param {Uint8Array} to
  * @param {Uint8Array} bytes
- * @returns {{ value: unknown, from: string, device: string } | null}
+ * @returns {{ value: unknown, id: string, from: string, device: string } | null}
  */
 export declare function unseal(to: Uint8Array, bytes: Uint8Array): {
     value: unknown;
+    id: string;
     from: string;
     device: string;
 } | null;

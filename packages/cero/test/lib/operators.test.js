@@ -18,7 +18,7 @@ import { Identity } from '@cero-base/core/identity'
 import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
 import c from 'compact-encoding'
-import { seal } from '../../src/lib/mail.js'
+import { seal, unseal } from '../../src/lib/mail.js'
 
 test.configure({ timeout: 30000 })
 
@@ -290,6 +290,19 @@ test('send → inbox: any value arrives with its verified sender', async (t) => 
   t.alike(got[0].data, { kind: 'pass', unit: 5, at: [1, 2] })
   t.is(got[0].sender.from, a.identity.id, 'from is the sender identity')
   t.is(got[0].sender.device, a.identity.device.id, 'device is the sending device')
+  t.is(got[0].sender.id.length, 32, 'the message has an id')
+})
+
+test('seal: a message carries an id of its own, under the signature', async (t) => {
+  const identity = await Identity.create()
+  const to = Mailbox.getAddress(Identity.randomBytes(32))
+  const bytes = seal(identity, to, 'hi')
+  t.is(unseal(to, bytes).id, unseal(to, bytes).id, 'the same message, the same id')
+  t.not(unseal(to, seal(identity, to, 'hi')).id, unseal(to, bytes).id, 'sent again, another id')
+  const { id, data, proof } = c.decode(c.any, bytes)
+  t.is(id.byteLength, 16)
+  const swapped = c.encode(c.any, { id: Identity.randomBytes(16), data, proof })
+  t.is(unseal(to, swapped), null, 'an id swapped under the proof is dropped')
 })
 
 test('inbox: a message signed for another address is dropped', async (t) => {

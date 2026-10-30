@@ -60,7 +60,8 @@ export declare const cero: {
     send(me: operators.Context, address: string, data: unknown, opts?: {
         keep?: boolean;
     }): Promise<void>;
-    inbox(me: operators.Context, secret: Uint8Array, fn: (data: unknown, sender: {
+    inbox(me: operators.Context, secret: Uint8Array, fn: (data: unknown, mail: {
+        id: string;
         from: string;
         device: string;
     }) => unknown, opts?: {

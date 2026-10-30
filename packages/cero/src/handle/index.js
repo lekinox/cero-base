@@ -611,7 +611,7 @@ export class Handle extends ReadyResource {
     const to = Mailbox.getAddress(secret)
     const onmessage = async (bytes) => {
       const mail = unseal(to, bytes)
-      if (mail) await fn(mail.value, { from: mail.from, device: mail.device })
+      if (mail) await fn(mail.value, { id: mail.id, from: mail.from, device: mail.device })
     }
     const inbox = this.root.mailbox.receive(secret, onmessage, { keep })
     return () => inbox.close()

@@ -20,9 +20,9 @@ export declare function keyPair(secret: Uint8Array): {
 export declare function erase(store: import('corestore'), key: Uint8Array): Promise<void>;
 /**
  * Receives at the address a secret owns, direct from the sender or from a mirror. A message
- * that does not open is dropped and its core erased; one that opens is kept in `box` until
- * `onmessage` resolves.
- * With `keep` false, the core it came in is then erased from this device.
+ * that does not open is dropped; one that opens is kept in `box` until `onmessage` resolves.
+ * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
+ * device held already is left alone.
  */
 export declare class Inbox extends ReadyResource {
     network: import("../index.js").Network;

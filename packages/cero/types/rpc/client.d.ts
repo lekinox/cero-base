@@ -52,7 +52,8 @@ declare const remote: {
     send(me: verbs.Context, address: string, data: unknown, opts?: {
         keep?: boolean;
     }): Promise<void>;
-    inbox(me: verbs.Context, secret: Uint8Array, fn: (data: unknown, sender: {
+    inbox(me: verbs.Context, secret: Uint8Array, fn: (data: unknown, mail: {
+        id: string;
         from: string;
         device: string;
     }) => unknown, opts?: {

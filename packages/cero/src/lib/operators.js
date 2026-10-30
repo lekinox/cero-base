@@ -519,14 +519,14 @@ export function send(me, address, data, opts) {
 }
 
 /**
- * Receive what is sent to the address `secret` owns, with who sent it. A message stays until `fn`
- * resolves, and one it did not finish comes again on the next start; anything unsigned or signed
- * for another address is dropped. `keep: false` erases each message from this device once handled.
- * Where cero runs only, not over RPC.
+ * Receive what is sent to the address `secret` owns, with its id and who sent it. A message stays
+ * until `fn` resolves, and one it did not finish comes again on the next start, under the same id;
+ * anything unsigned or signed for another address is dropped. `keep: false` erases each message
+ * from this device once handled. Where cero runs only, not over RPC.
  *
  * @param {Context} me
  * @param {Uint8Array} secret
- * @param {(data: unknown, sender: { from: string, device: string }) => unknown} fn
+ * @param {(data: unknown, mail: { id: string, from: string, device: string }) => unknown} fn
  * @param {{ keep?: boolean }} [opts]
  * @returns {() => Promise<void>}  Stops receiving.
  */

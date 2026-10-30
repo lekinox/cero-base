@@ -15,6 +15,7 @@ import { CeroError } from '../lib/errors.js'
  * @property {Uint8Array} message
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
  * @property {boolean} [keep]            False erases the sender's copy once someone read it.
+ * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it.
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list

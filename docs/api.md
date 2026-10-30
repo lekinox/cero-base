@@ -215,19 +215,19 @@ Messages to an address, between any two devices, members of nothing in common. A
 // the receiver, where cero runs: a secret of its own, and the address it shares
 const secret = crypto.randomBytes(32)
 const address = cero.address(secret)
-const stop = cero.inbox(me, secret, async (data, { from, device }) => {
-  // from: the sender's identity id, device: its device id, both verified
+const stop = cero.inbox(me, secret, async (data, { id, from, device }) => {
+  // id: this message's, from: the sender's identity id, device: its device id, both verified
 })
 
 // the sender, given the address
 await cero.send(me, address, { text: 'hi' })
 ```
 
-| Call                                     | Resolves        | Notes                                                                                                                                                                                                                                                                                          |
-| ---------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cero.address(secret)`                   | the address     | Synchronous. One secret, one address.                                                                                                                                                                                                                                                          |
-| `cero.send(me, address, data, { keep })` | `undefined`     | Any value, signed by this identity for that address. Resolves once the outbox keeps it; it is delivered in the background, sent again after a restart until someone read it, and waits on a mirror for an owner who is offline. Not an address: `INVALID`.                                     |
-| `cero.inbox(me, secret, fn, { keep })`   | a stop function | `fn(data, { from, device })` for each message. A message stays until `fn` resolves; one it did not finish comes again on the next start, so one may arrive twice, never not at all. Anything unsigned, tampered or signed for another address is dropped. The worker's: `INVALID` on a client. |
+| Call                                     | Resolves        | Notes                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cero.address(secret)`                   | the address     | Synchronous. One secret, one address.                                                                                                                                                                                                                                                                                   |
+| `cero.send(me, address, data, { keep })` | `undefined`     | Any value, signed by this identity for that address. Resolves once the outbox keeps it; it is delivered in the background, sent again after a restart until someone read it, and waits on a mirror for an owner who is offline. Not an address: `INVALID`.                                                              |
+| `cero.inbox(me, secret, fn, { keep })`   | a stop function | `fn(data, { id, from, device })` for each message. A message stays until `fn` resolves; one it did not finish comes again on the next start, so one may arrive twice, never not at all, under the same `id`. Anything unsigned, tampered or signed for another address is dropped. The worker's: `INVALID` on a client. |
 
 - **Kept by default.** Each message travels in a core of its own, kept on both ends. `keep: false` on `send` erases the sender's copy once someone read it; on `inbox`, it erases each message from this device once `fn` resolved. A mirror keeps its copy either way.
 - **One address, many devices.** Every device holding the secret receives. With `keep: false` on the sender, a device that comes late may find the message already erased: let the first one that handles it write what the others need into a handle they share.
