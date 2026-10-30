@@ -17,6 +17,7 @@ import { FakeStore, makeTestnet, waitUntil, ceroOpen } from '../helpers/index.js
 import { Identity } from '@cero-base/core/identity'
 import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
+import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 import { seal, unseal } from '../../src/lib/mail.js'
 
@@ -264,10 +265,14 @@ test('open: an argument it does not know is INVALID, never a new handle', async 
 
 // two devices of two people on one testnet, and an address only the second can open
 async function mailPair(t) {
-  const { me: a, testnet } = await ceroOpen(t)
-  const { me: b } = await ceroOpen(t, { testnet })
+  const { me: a, testnet, dir: dirA } = await ceroOpen(t)
+  const { me: b, dir: dirB } = await ceroOpen(t, { testnet })
   const secret = Identity.randomBytes(32)
-  return { a, b, secret, address: cero.address(secret) }
+  return { a, b, secret, address: cero.address(secret), testnet, dir: { a: dirA, b: dirB } }
+}
+
+function holds(me, key) {
+  return me.network.store.storage.hasCore(crypto.discoveryKey(key))
 }
 
 test('cero.address: one secret, one address, as a string', (t) => {
@@ -397,4 +402,64 @@ test('send and inbox keep by default', async (t) => {
 test('send: an address that is not one is INVALID', async (t) => {
   const { a } = await mailPair(t)
   await t.exception(send(a, 'nope', 'x'), /INVALID/)
+})
+
+test('unseal: an id of another length is dropped, however it was signed', async (t) => {
+  const identity = await Identity.create()
+  const to = Mailbox.getAddress(Identity.randomBytes(32))
+  const id = Identity.randomBytes(15)
+  const data = c.encode(c.any, 'shifted')
+  const proof = identity.sign(b4a.concat([b4a.from('cero/mail'), to, id, data]))
+  t.is(unseal(to, c.encode(c.any, { id, data, proof })), null)
+})
+
+test('inbox: keep false outlives a restart', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+
+  // a message b starts handling and never finishes before it closes
+  const arrived = new Promise((resolve) => {
+    const never = () => {
+      resolve()
+      return new Promise(() => {})
+    }
+    inbox(b, secret, never, { keep: false })
+  })
+  await send(a, address, 'again')
+  await arrived
+  const [{ id }] = await b.mailbox.inbox.list()
+  const key = b4a.from(id, 'hex')
+  await b.close()
+
+  const again = await cero(dir.b, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  t.ok(await holds(again, key), 'held while unhandled')
+  const got = await new Promise((resolve) => {
+    t.teardown(inbox(again, secret, resolve, { keep: false }))
+  })
+  t.is(got, 'again')
+  await waitUntil(async () => !(await holds(again, key)))
+  t.pass('erased once handled, after the restart')
+})
+
+test('send: a message sent before a restart goes once, on its core, erased once read', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+
+  await send(a, address, 'later', { keep: false }) // nobody listens yet
+  const [{ name }] = await a.mailbox.outbox.list()
+  const core = a.network.store.get({ name })
+  await core.ready()
+  const { key } = core
+  await core.close()
+  t.ok(await holds(a, key), 'held until someone reads it')
+  await a.close()
+
+  const again = await cero(dir.a, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+  await waitUntil(() => got.length > 0)
+  await waitUntil(async () => (await again.mailbox.outbox.list()).length === 0)
+  t.alike(got, ['later'], 'once')
+  await waitUntil(async () => !(await holds(again, key)))
+  t.pass('its core erased once read')
 })

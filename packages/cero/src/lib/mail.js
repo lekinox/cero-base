@@ -56,6 +56,8 @@ export function seal(identity, to, value) {
 export function unseal(to, bytes) {
   try {
     const { id, data, proof } = c.decode(c.any, bytes)
+    // fixed sizes ahead of the data, so the signed bytes split one way only
+    if (id?.byteLength !== 16) return null
     const who = Identity.verify(proof, signed(to, id, data))
     if (!who) return null
     return {

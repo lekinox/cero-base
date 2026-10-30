@@ -217,7 +217,12 @@ export const local = {
     id: required(string),
     address: required(bytes),
     message: required(bytes),
-    mirrors: bytes
+    mirrors: bytes,
+    // sent: the core it travels in, and whether it goes once someone read it
+    name: string,
+    erase: bool,
+    // received: the inbox fetched the core, so it may erase it once handled
+    fetched: bool
   },
   environment: {
     channel: required(string)
