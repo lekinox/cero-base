@@ -201,6 +201,7 @@ await inbox.close() // stop receiving
 - **Nothing is lost.** The outbox keeps a message until someone reads it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, put, del }`, keep that across a restart. A message may arrive twice, never not at all.
 - **A throwing `onmessage`** keeps the message and reports to `onerror`, the constructor option.
 - **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default.
+- **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once someone read it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A mirror keeps its copy either way.
 - **Anonymous.** A message carries no sender. One that needs a sender signs itself.
 
 ## Pairing

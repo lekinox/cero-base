@@ -1,6 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import crypto from 'hypercore-crypto'
+import Hypercore from 'hypercore'
 
 import { Network } from '../../src/network/index.js'
 import { Mailbox } from '../../src/mailbox/index.js'
@@ -352,4 +353,370 @@ test('Inbox: a message sealed to another address is dropped', async (t) => {
   t.alike(got, [b4a.from('yours')])
   t.is(box.mail.size, 0, 'nothing kept')
   await forged.close()
+})
+
+function holds(net, key) {
+  return net.store.storage.hasCore(crypto.discoveryKey(key))
+}
+
+// a kept box that also lists the cores its mail arrived in
+function watched() {
+  const box = kept()
+  box.keys = []
+  const put = box.put
+  box.put = async (m) => {
+    box.keys.push(b4a.from(m.id, 'hex'))
+    return put(m)
+  }
+  return box
+}
+
+// the key of the core a mail travels in, without opening it: an open session would stop the erase
+async function sentKey(net, mail) {
+  const { publicKey } = await net.store.createKeyPair(mail.name)
+  return Hypercore.key({ version: net.store.manifestVersion, signers: [{ publicKey }] })
+}
+
+test('Mailbox: keep false erases a message on both ends once read', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const inbox = watched()
+  const b = await mailbox(t, testnet, { inbox })
+  const secret = crypto.randomBytes(32)
+
+  b.receive(secret, () => {}, { keep: false })
+  await a.send(Mailbox.getAddress(secret), b4a.from('gone'), { keep: false })
+
+  await waitFor(() => inbox.keys.length > 0, { timeout: 30000 })
+  const [key] = inbox.keys
+  await waitFor(async () => !(await holds(b.network, key)))
+  t.pass('erased by the receiver once handled')
+  await waitFor(async () => !(await holds(a.network, key)))
+  t.pass('erased by the sender once read')
+})
+
+test('Mailbox: a message is kept on both ends by default', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const inbox = watched()
+  const b = await mailbox(t, testnet, { inbox })
+  const secret = crypto.randomBytes(32)
+
+  b.receive(secret, () => {})
+  await a.send(Mailbox.getAddress(secret), b4a.from('kept'))
+
+  await waitFor(() => inbox.keys.length > 0 && inbox.mail.size === 0, { timeout: 30000 })
+  await waitFor(async () => (await a.outbox.list()).length === 0)
+  const [key] = inbox.keys
+  t.ok(await holds(b.network, key), 'the receiver keeps it')
+  t.ok(await holds(a.network, key), 'the sender keeps it')
+})
+
+test('Mailbox: a restart sends again on the same core, written once', async (t) => {
+  const testnet = await makeTestnet(t)
+  const net = await peer(t, testnet)
+  const outbox = kept()
+  const secret = crypto.randomBytes(32)
+
+  const before = new Mailbox(net, { outbox })
+  await before.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await before.close()
+  const [mail] = outbox.mail.values()
+
+  const inbox = watched()
+  const owner = await mailbox(t, testnet, { inbox })
+  owner.receive(secret, () => {})
+  const after = new Mailbox(net, { outbox })
+  t.teardown(() => after.close())
+  await after.ready()
+  await waitFor(() => inbox.keys.length > 0 && outbox.mail.size === 0, { timeout: 30000 })
+
+  const core = net.store.get({ name: mail.name })
+  await core.ready()
+  t.teardown(() => core.close())
+  t.alike(inbox.keys, [core.key], 'the same core, not a second one')
+  t.is(core.length, 1, 'written once, not again on the restart')
+})
+
+test('Mailbox: keep false still reaches an offline owner through a mirror', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const secret = crypto.randomBytes(32)
+
+  const sender = new Mailbox(await peer(t, testnet, { mirrors: [mirror] }))
+  await sender.send(Mailbox.getAddress(secret), b4a.from('held'), { keep: false })
+  const [mail] = await sender.outbox.list()
+  await waitFor(async () => (await sender.outbox.list()).length === 0, { timeout: 30000 })
+  const key = await sentKey(sender.network, mail)
+  await waitFor(async () => !(await holds(sender.network, key)))
+  t.pass('erased by the sender once the mirror read it')
+  await sender.close()
+  await sender.network.close()
+
+  const net = await peer(t, testnet, { mirrors: [mirror] })
+  const room = net.store.get({ name: 'room' })
+  await room.ready()
+  await room.append(b4a.from('x'))
+  net.attach(room)
+  t.teardown(() => room.close())
+  const owner = new Mailbox(net)
+  t.teardown(() => owner.close())
+  const got = await new Promise((resolve) => owner.receive(secret, resolve, { keep: false }))
+  t.alike(b4a.toString(got), 'held')
+  await waitFor(async () => !(await holds(net, key)))
+  t.pass('erased by the owner once handled')
+})
+
+test('Mailbox: keep false on the sender alone leaves the receiver its copy', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const inbox = watched()
+  const b = await mailbox(t, testnet, { inbox })
+  const secret = crypto.randomBytes(32)
+
+  b.receive(secret, () => {})
+  await a.send(Mailbox.getAddress(secret), b4a.from('mine'), { keep: false })
+
+  await waitFor(() => inbox.keys.length > 0 && inbox.mail.size === 0, { timeout: 30000 })
+  const [key] = inbox.keys
+  await waitFor(async () => !(await holds(a.network, key)))
+  t.pass('the sender erased it')
+  t.ok(await holds(b.network, key), 'the receiver keeps it')
+})
+
+test('Mailbox: keep false on the receiver alone leaves the sender its copy', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const inbox = watched()
+  const b = await mailbox(t, testnet, { inbox })
+  const secret = crypto.randomBytes(32)
+
+  b.receive(secret, () => {}, { keep: false })
+  await a.send(Mailbox.getAddress(secret), b4a.from('yours'))
+
+  await waitFor(() => inbox.keys.length > 0, { timeout: 30000 })
+  const [key] = inbox.keys
+  await waitFor(async () => !(await holds(b.network, key)))
+  t.pass('the receiver erased it')
+  await waitFor(async () => (await a.outbox.list()).length === 0)
+  t.ok(await holds(a.network, key), 'the sender keeps it')
+})
+
+test('Mailbox: keep false erases nothing before someone read it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+
+  await a.send(Mailbox.getAddress(secret), b4a.from('waiting'), { keep: false })
+  const [mail] = await a.outbox.list()
+  const key = await sentKey(a.network, mail)
+  await waitFor(async () => await holds(a.network, key))
+
+  t.ok(await holds(a.network, key), 'still held while nobody read it')
+  t.is((await a.outbox.list()).length, 1, 'still in the outbox')
+  t.is(mail.keep, false, 'the outbox remembers to erase it')
+})
+
+test('Mailbox: keep false erases nothing an onmessage throws on', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const inbox = watched()
+  const errors = []
+  const b = await mailbox(t, testnet, { inbox, onerror: (err) => errors.push(err) })
+  const secret = crypto.randomBytes(32)
+
+  b.receive(
+    secret,
+    () => {
+      throw new Error('not now')
+    },
+    { keep: false }
+  )
+  await a.send(Mailbox.getAddress(secret), b4a.from('retry me'))
+
+  await waitFor(() => errors.length > 0, { timeout: 30000 })
+  const [key] = inbox.keys
+  t.ok(await holds(b.network, key), 'the core stays for the next try')
+  t.is(inbox.mail.size, 1, 'and so does the mail')
+})
+
+test('Mailbox: keep false erases every one of several messages', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const inbox = watched()
+  const b = await mailbox(t, testnet, { inbox })
+  const secret = crypto.randomBytes(32)
+  const address = Mailbox.getAddress(secret)
+
+  const got = []
+  b.receive(secret, (message) => got.push(b4a.toString(message)), { keep: false })
+  for (const word of ['one', 'two', 'three']) {
+    await a.send(address, b4a.from(word), { keep: false })
+  }
+
+  await waitFor(() => got.length === 3, { timeout: 30000 })
+  t.alike(got.sort(), ['one', 'three', 'two'])
+  t.is(new Set(inbox.keys.map((k) => b4a.toHex(k))).size, 3, 'one core each')
+  for (const key of inbox.keys) {
+    await waitFor(async () => !(await holds(a.network, key)) && !(await holds(b.network, key)))
+  }
+  t.pass('all erased on both ends')
+})
+
+test('Mailbox: keep false outlives a sender restart', async (t) => {
+  const testnet = await makeTestnet(t)
+  const net = await peer(t, testnet)
+  const outbox = kept()
+  const secret = crypto.randomBytes(32)
+
+  const before = new Mailbox(net, { outbox })
+  await before.send(Mailbox.getAddress(secret), b4a.from('later'), { keep: false })
+  await before.close()
+  const [mail] = outbox.mail.values()
+  const key = await sentKey(net, mail)
+
+  const owner = await mailbox(t, testnet)
+  const got = []
+  owner.receive(secret, (message) => got.push(b4a.toString(message)))
+  const after = new Mailbox(net, { outbox })
+  t.teardown(() => after.close())
+  await after.ready()
+
+  await waitFor(() => got.length > 0, { timeout: 30000 })
+  t.alike(got, ['later'])
+  await waitFor(async () => !(await holds(net, key)))
+  t.pass('erased once read after the restart')
+})
+
+test('Mailbox: keep false erases mail handed over again after a receiver restart', async (t) => {
+  const testnet = await makeTestnet(t)
+  const inbox = watched()
+  const secret = crypto.randomBytes(32)
+  const sender = await mailbox(t, testnet)
+  const net = await peer(t, testnet)
+
+  const before = new Mailbox(net, { inbox })
+  const arrived = new Promise((resolve) => {
+    before.receive(secret, () => {
+      resolve()
+      return new Promise(() => {}) // stops before it is handled
+    })
+  })
+  await sender.send(Mailbox.getAddress(secret), b4a.from('again'))
+  await arrived
+  await before.close()
+  const [key] = inbox.keys
+  t.ok(await holds(net, key), 'held while unhandled')
+
+  const after = new Mailbox(net, { inbox })
+  t.teardown(() => after.close())
+  const got = await new Promise((resolve) => after.receive(secret, resolve, { keep: false }))
+  t.alike(b4a.toString(got), 'again')
+  await waitFor(async () => !(await holds(net, key)))
+  t.pass('erased once handled')
+})
+
+test('Post: given a name, it travels in the store core of that name', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const name = b4a.toHex(crypto.randomBytes(32))
+  const address = Mailbox.getAddress(crypto.randomBytes(32))
+
+  const post = new Post(a, address, b4a.from('named'), { name })
+  await post.ready()
+  t.alike(post.key, await sentKey(a, { name }))
+  await post.close()
+
+  const again = new Post(a, address, b4a.from('named'), { name })
+  await again.ready()
+  t.alike(again.key, post.key, 'the same core again')
+  const core = a.store.get({ key: again.key })
+  await core.ready()
+  t.is(core.length, 1, 'the message is not written twice')
+  await core.close()
+  await again.close()
+})
+
+test('Post: key is null until opened', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const post = new Post(a, Mailbox.getAddress(crypto.randomBytes(32)), b4a.from('x'))
+  t.is(post.key, null)
+  await post.ready()
+  t.is(post.key.byteLength, 32)
+  await post.close()
+})
+
+test('Inbox: a message that does not open leaves no core behind', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const box = kept()
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  const got = []
+  b.receive(secret, (m) => got.push(m))
+
+  // announced at our address, sealed to someone else's
+  const forged = a.store.get({ name: 'forged' })
+  await forged.ready()
+  await forged.append(
+    crypto.encrypt(b4a.from('not yours'), Mailbox.getAddress(crypto.randomBytes(32)))
+  )
+  const post = new Post(a, Mailbox.getAddress(secret), null, { core: forged })
+  t.teardown(() => post.close())
+  await post.ready()
+  await post.delivered
+
+  await waitFor(async () => !(await holds(b.network, forged.key)))
+  t.pass('the core it came in is gone')
+  t.is(got.length, 0, 'nothing handed over')
+  t.is(box.mail.size, 0, 'nothing kept')
+})
+
+test('Inbox: keep false reports a message it could not erase', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  const errors = []
+  const b = await mailbox(t, testnet, { inbox: box, onerror: (err) => errors.push(err) })
+  const secret = crypto.randomBytes(32)
+
+  // the app holds a session on the core the message came in
+  const held = []
+  const put = box.put
+  box.put = async (m) => {
+    const core = b.network.store.get({ key: b4a.from(m.id, 'hex') })
+    await core.ready()
+    held.push(core)
+    return put(m)
+  }
+  t.teardown(() => Promise.all(held.map((core) => core.close())))
+
+  b.receive(secret, () => {}, { keep: false })
+  await a.send(Mailbox.getAddress(secret), b4a.from('held open'))
+
+  await waitFor(() => errors.length > 0, { timeout: 30000 })
+  t.is(errors[0].code, 'CONFLICT')
+  t.ok(await holds(b.network, held[0].key), 'still held')
+})
+
+test('Mailbox: keep false reports a message it could not erase once read', async (t) => {
+  const testnet = await makeTestnet(t)
+  const errors = []
+  const a = await mailbox(t, testnet, { onerror: (err) => errors.push(err) })
+  const b = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+
+  await a.send(Mailbox.getAddress(secret), b4a.from('held open'), { keep: false })
+  const [mail] = await a.outbox.list()
+  const key = await sentKey(a.network, mail)
+  // the app holds a session on the core the message travels in
+  const open = a.network.store.get({ name: mail.name })
+  await open.ready()
+  t.teardown(() => open.close())
+
+  b.receive(secret, () => {})
+  await waitFor(() => errors.length > 0, { timeout: 30000 })
+  t.is(errors[0].code, 'CONFLICT')
+  t.ok(await holds(a.network, key), 'still held')
 })

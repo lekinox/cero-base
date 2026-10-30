@@ -57,6 +57,15 @@ export declare const cero: {
         ref: string | null;
         row: object | null;
     } | null>;
+    send(me: operators.Context, address: string, data: unknown, opts?: {
+        keep?: boolean;
+    }): Promise<void>;
+    inbox(me: operators.Context, secret: Uint8Array, fn: (data: unknown, sender: {
+        from: string;
+        device: string;
+    }) => unknown, opts?: {
+        keep?: boolean;
+    }): () => Promise<void>;
     phrase(me: operators.Context): Promise<string>;
     nearby(ctx: operators.Context, on: boolean, opts?: {
         topic?: string;

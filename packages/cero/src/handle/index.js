@@ -14,6 +14,7 @@ import { Pairing } from '@cero-base/core/pairing'
 import { read } from '../push/index.js'
 import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
+import { seal, unseal, decodeAddress } from '../lib/mail.js'
 import hid from 'hypercore-id-encoding'
 import { admission, onAbort, filter } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
@@ -597,6 +598,23 @@ export class Handle extends ReadyResource {
   /** @private */
   async _phrase() {
     return this.identity.toPhrase()
+  }
+
+  /** @private */
+  async _send(address, value, { keep = true } = {}) {
+    const to = decodeAddress(address)
+    await this.root.mailbox.send(to, seal(this.identity, to, value), { keep })
+  }
+
+  /** @private */
+  _inbox(secret, fn, { keep = true } = {}) {
+    const to = Mailbox.getAddress(secret)
+    const onmessage = async (bytes) => {
+      const mail = unseal(to, bytes)
+      if (mail) await fn(mail.value, { from: mail.from, device: mail.device })
+    }
+    const inbox = this.root.mailbox.receive(secret, onmessage, { keep })
+    return () => inbox.close()
   }
 
   /**

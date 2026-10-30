@@ -6,6 +6,7 @@ import { t, schema } from './lib/spec.js';
 export { Handle, Ref, Local };
 export * from './lib/operators.js';
 export { peek } from './lib/peek.js';
+export { address } from './lib/mail.js';
 export { t, schema } from './lib/spec.js';
 export type Context = import('./handle/index.js').Context;
 export type CeroOpts = {
