@@ -36,6 +36,10 @@ import { makeChanges } from './changes.js'
 import { makeDispatcher, BESPOKE } from './dispatch.js'
 import { keyPair } from '../mailbox/inbox.js'
 
+// autobee remaps an older store once a recovery peer, a mirror, serves it; unset, it closes the store
+const recovery = []
+Hypercore.setRecoveryPeers(recovery)
+
 /**
  * @typedef {object} DatabaseOpts
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
@@ -99,6 +103,9 @@ export class Database extends ReadyResource {
     this.store = opts.store
     this.identity = opts.identity
     this.network = opts.network || null
+    for (const key of this.network?.mirrors || []) {
+      if (!recovery.some((k) => b4a.equals(k, key))) recovery.push(key)
+    }
     this.spec = opts.spec
     this.meta = opts.spec.meta || { ns: NAMESPACE, refs: {} }
     this.ns = this.meta.ns || NAMESPACE

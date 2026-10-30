@@ -1,11 +1,12 @@
 import test from 'brittle'
+import b4a from 'b4a'
 import { promises as fs } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, open, put, set, get, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { makeTestnet, waitUntil } from '../helpers/index.js'
+import { makeMirror, makeTestnet, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 120000 })
 
@@ -64,6 +65,24 @@ test('compat: a store the previous release wrote opens, reads and writes on this
   await put(room.messages, { text: 'second' })
   t.is((await get(room.messages)).data.length, 2, 'and it takes a write')
   t.is((await get(room.status)).data.behind, 0, 'nothing skipped')
+})
+
+test('compat: a store the previous release wrote moves onto current cores once its mirror serves it', async (t) => {
+  const { version, old, before, now } = await previous()
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const opts = { bootstrap: testnet.bootstrap, mirrors: [b4a.toHex(mirror.publicKey)] }
+  const dir = await t.tmp()
+
+  const was = await old.cero(dir, before, opts)
+  await old.set(was.profile, { name: 'from ' + version })
+  await was.close()
+
+  const me = await cero(dir, now, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await waitUntil(() => !me.store.bee.remapping, 60000)
+  t.pass('the mirror served it')
+  t.is((await get(me.profile)).data.name, 'from ' + version, 'and it reads the same')
 })
 
 test('compat: this release and the previous one write to one room, then one upgrades', async (t) => {
