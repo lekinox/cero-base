@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.10.0 (2026-11-02)
+
+### Features
+
+- the address key pair
+- blind relays only when needed
+
 ## 2.9.0 (2026-10-30)
 
 ### Other
