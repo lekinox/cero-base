@@ -42,6 +42,14 @@ export type CeroOpts = {
         port: number;
     }>;
     /**
+     * Blind relay public keys. Two devices that cannot connect direct, as on mobile carriers, connect through one; the relay forwards encrypted bytes and reads nothing. Direct connections stay direct.
+     */
+    relayThrough?: Array<string | Uint8Array>;
+    /**
+     * Incoming-connection filter: `true` refuses the connection.
+     */
+    firewall?: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
+    /**
      * Swarm reconnect backoff tiers in ms (testing/tuning).
      */
     backoffs?: number[];
@@ -101,6 +109,8 @@ export type CeroOpts = {
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.
  * @property {Array<{ host: string, port: number }>} [bootstrap]  Custom DHT bootstrap nodes.
+ * @property {Array<string | Uint8Array>} [relayThrough]  Blind relay public keys. Two devices that cannot connect direct, as on mobile carriers, connect through one; the relay forwards encrypted bytes and reads nothing. Direct connections stay direct.
+ * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter: `true` refuses the connection.
  * @property {number[]} [backoffs]                     Swarm reconnect backoff tiers in ms (testing/tuning).
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.

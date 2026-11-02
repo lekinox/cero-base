@@ -69,7 +69,7 @@ net.attach(core) // keep it on the mirrors too
 | `bootstrap`    | `[{ host, port }]` DHT nodes.                                                              |
 | `backoffs`     | Reconnect backoff steps in ms.                                                             |
 | `firewall`     | `(remotePublicKey, payload) => boolean`: `true` refuses the connection.                    |
-| `relayThrough` | Relay keys to tunnel through.                                                              |
+| `relayThrough` | Blind relay keys, strings or bytes: a connection uses one only when a direct one fails.    |
 | `presence`     | `{ active, announced, idle }`, the swarm budget for attached databases: 8, 8 and 30000 ms. |
 | `onerror`      | Background errors. The console without one.                                                |
 

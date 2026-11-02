@@ -19,6 +19,10 @@ import { Presence } from './presence.js'
 const SILENT_TIMEOUT = 3000
 const RELOOKUPS = [5000, 20000, 60000]
 
+function toKey(k) {
+  return typeof k === 'string' ? decodeKey(k) : k
+}
+
 /** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
 export function channelTopic(topic, channel) {
   return channel ? hash([topic, b4a.from(channel)]) : topic
@@ -28,7 +32,7 @@ export function channelTopic(topic, channel) {
  * @typedef {object} NetworkOpts
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
- * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
+ * @property {Array<string | Uint8Array>} [relayThrough]           Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
@@ -58,13 +62,13 @@ export class Network extends ReadyResource {
     if (!store) throw CeroError.REQUIRED('store')
     this.bootstrap = bootstrap || null
     this.firewall = firewall || null
-    this.relayThrough = relayThrough || null
+    this.relayThrough = relayThrough?.map(toKey) || null
     this.backoffs = backoffs || null
     this.channel = channel || null
     /** @type {import('corestore')} */
     this.store = store
     /** @type {Uint8Array[]} */
-    this.mirrors = (mirrors || []).map((k) => (typeof k === 'string' ? decodeKey(k) : k))
+    this.mirrors = (mirrors || []).map(toKey)
 
     /** @private */
     this._swarm = null

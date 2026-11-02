@@ -16,9 +16,9 @@ export type NetworkOpts = {
      */
     firewall?: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     /**
-     * Relay public keys to tunnel through.
+     * Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
      */
-    relayThrough?: Uint8Array[];
+    relayThrough?: Array<string | Uint8Array>;
     /**
      * Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
      */
@@ -52,7 +52,7 @@ export type NetworkOpts = {
  * @typedef {object} NetworkOpts
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
- * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
+ * @property {Array<string | Uint8Array>} [relayThrough]           Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
  * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
@@ -70,7 +70,7 @@ export declare class Network extends ReadyResource {
         port: number;
     }[];
     firewall: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
-    relayThrough: Uint8Array<ArrayBufferLike>[];
+    relayThrough: any[];
     backoffs: number[];
     channel: string;
     /** @type {import('corestore')} */

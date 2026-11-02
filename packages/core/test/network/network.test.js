@@ -68,6 +68,21 @@ test('channel: different channels stay isolated on the same topic', async (t) =>
 
 // ─── lifecycle ────────────────────────────────────────────────────────────
 
+test('relayThrough: relays only when forced or behind a randomized NAT', async (t) => {
+  const testnet = await makeTestnet(t)
+  const key = b4a.alloc(32, 7)
+  const net = await makeNet(t, testnet, { relayThrough: [b4a.toHex(key)] })
+  const relay = net.swarm.relayThrough
+  t.is(relay(false, { dht: { randomized: false } }), null, 'a reachable peer connects direct')
+  t.alike(relay(true, { dht: { randomized: false } }), [key], 'a failed direct try relays')
+  t.alike(relay(false, { dht: { randomized: true } }), [key], 'a randomized NAT relays')
+})
+
+test('relayThrough: no keys, no relay', async (t) => {
+  const net = await makeNet(t, await makeTestnet(t))
+  t.is(net.swarm.relayThrough, null)
+})
+
 test('new Network: a store is required', (t) => {
   t.exception.all(() => new Network(), /store is required/)
   t.exception.all(() => new Network({ bootstrap: [] }), /store is required/)

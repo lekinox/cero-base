@@ -49,6 +49,14 @@ test('channel: opt threads to the network', async (t) => {
   t.is(me.network.channel, 'dev', 'channel reached Network')
 })
 
+test('relayThrough and firewall: opts thread to the network', async (t) => {
+  const firewall = () => false
+  const { me } = await ceroOpen(t, { relayThrough: [b4a.toHex(b4a.alloc(32, 7))], firewall })
+  t.alike(me.network.relayThrough, [b4a.alloc(32, 7)], 'relay key decoded from hex')
+  t.is(me.network.firewall, firewall, 'firewall reached Network')
+  t.is(typeof me.network.swarm.relayThrough, 'function', 'the swarm relays only when needed')
+})
+
 test('mirrors: opt threads to the network and survives restore', async (t) => {
   const key = b4a.toHex(b4a.alloc(32, 1))
   const { me } = await ceroOpen(t, { mirrors: [key] })

@@ -43,6 +43,8 @@ export { t, schema } from './lib/spec.js'
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.
  * @property {Array<{ host: string, port: number }>} [bootstrap]  Custom DHT bootstrap nodes.
+ * @property {Array<string | Uint8Array>} [relayThrough]  Blind relay public keys. Two devices that cannot connect direct, as on mobile carriers, connect through one; the relay forwards encrypted bytes and reads nothing. Direct connections stay direct.
+ * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter: `true` refuses the connection.
  * @property {number[]} [backoffs]                     Swarm reconnect backoff tiers in ms (testing/tuning).
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
@@ -133,6 +135,8 @@ async function start(dir, spec, opts = {}) {
 
     network = new Network({
       bootstrap: opts.bootstrap,
+      relayThrough: opts.relayThrough,
+      firewall: opts.firewall,
       backoffs: opts.backoffs,
       channel: opts.channel,
       store,
