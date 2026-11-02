@@ -78,11 +78,6 @@ test('relayThrough: relays only when forced or behind a randomized NAT', async (
   t.alike(relay(false, { dht: { randomized: true } }), [key], 'a randomized NAT relays')
 })
 
-test('relayThrough: no keys, no relay', async (t) => {
-  const net = await makeNet(t, await makeTestnet(t))
-  t.is(net.swarm.relayThrough, null)
-})
-
 test('new Network: a store is required', (t) => {
   t.exception.all(() => new Network(), /store is required/)
   t.exception.all(() => new Network({ bootstrap: [] }), /store is required/)

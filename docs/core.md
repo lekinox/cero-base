@@ -188,6 +188,7 @@ await mailbox.ready()
 
 const secret = Identity.randomBytes(32) // yours to keep: whoever holds it receives
 const address = Mailbox.getAddress(secret) // share this
+const pair = Mailbox.keyPair(secret) // { publicKey, secretKey }: open what was encrypted to the address
 
 const inbox = mailbox.receive(secret, (message) => {
   console.log(b4a.toString(message))

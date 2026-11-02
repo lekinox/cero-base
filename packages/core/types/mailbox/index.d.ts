@@ -91,6 +91,17 @@ export declare class Mailbox extends ReadyResource {
      * @returns {Uint8Array}
      */
     static getAddress(secret: Uint8Array): Uint8Array;
+    /**
+     * The key pair behind the address: seal to `publicKey` with `crypto.encrypt`, open with
+     * `crypto.decrypt(sealed, pair)`.
+     *
+     * @param {Uint8Array} secret
+     * @returns {{ publicKey: Uint8Array, secretKey: Uint8Array }}
+     */
+    static keyPair(secret: Uint8Array): {
+        publicKey: Uint8Array;
+        secretKey: Uint8Array;
+    };
     /** @private */
     private _open;
     /** @private */

@@ -41,6 +41,15 @@ test('Mailbox.getAddress: one secret, one address', (t) => {
   t.absent(b4a.equals(Mailbox.getAddress(crypto.randomBytes(32)), Mailbox.getAddress(secret)))
 })
 
+test('Mailbox.keyPair opens what was encrypted to the address', (t) => {
+  const secret = crypto.randomBytes(32)
+  const pair = Mailbox.keyPair(secret)
+  t.alike(pair.publicKey, Mailbox.getAddress(secret))
+  const sealed = crypto.encrypt(b4a.from('who'), Mailbox.getAddress(secret))
+  t.alike(crypto.decrypt(sealed, pair), b4a.from('who'))
+  t.is(crypto.decrypt(sealed, Mailbox.keyPair(crypto.randomBytes(32))), null)
+})
+
 test('Mailbox: requires a network', (t) => {
   t.exception(() => new Mailbox(), /network is required/)
 })

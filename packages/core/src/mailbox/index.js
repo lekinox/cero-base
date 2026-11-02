@@ -64,6 +64,17 @@ export class Mailbox extends ReadyResource {
     return keyPair(secret).publicKey
   }
 
+  /**
+   * The key pair behind the address: seal to `publicKey` with `crypto.encrypt`, open with
+   * `crypto.decrypt(sealed, pair)`.
+   *
+   * @param {Uint8Array} secret
+   * @returns {{ publicKey: Uint8Array, secretKey: Uint8Array }}
+   */
+  static keyPair(secret) {
+    return keyPair(secret)
+  }
+
   /** @private */
   async _open() {
     await this.network.ready()
