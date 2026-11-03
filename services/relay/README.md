@@ -39,9 +39,12 @@ The relay is open to any key (each device has its own), so abuse is bounded. Env
 set in the `Dockerfile` (positive integers; anything else refuses to start):
 
 - `MAX_PER_KEY` (8) open sessions per remote public key
-- `MAX_PER_IP` (256) per remote IP, since keys are free to mint; high because phones that need a relay sit behind carrier-grade NAT, where many users share one IP; tune per host
+- `MAX_PER_IP` (256) per remote IP (IPv6: per /64), since keys are free to mint; high because phones that need a relay sit behind carrier-grade NAT, where many users share one IP; tune per host
+- `MAX_UNPAIRED_PER_IP` (16) of those per IP that haven't paired yet, so a shared IP is fine but idle slots stay limited
 - `MAX_SESSIONS` (2000) in total
+- `MAX_LINKS_PER_SESSION` (16) pairings per session
 - `PAIR_TIMEOUT` (10000 ms) a session that hasn't paired by then is dropped
+- `IDLE_TIMEOUT` (60000 ms) a session with no live link for that long is closed
 
 A connection over a cap is closed at once; counts drop on close.
 

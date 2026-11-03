@@ -12,7 +12,8 @@ import { join } from 'path'
 import { fileURLToPath } from 'url'
 import DHT from 'hyperdht'
 import createTestnet from '@hyperswarm/testnet'
-import { start } from './relay.js'
+import BlindRelay from 'blind-relay'
+import { start, subnet } from './relay.js'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const keyFile = () => join(mkdtempSync(join(tmpdir(), 'relay-test-')), 'key')
@@ -100,6 +101,106 @@ async function unpaired(testnet) {
   await Promise.all([a.destroy(), relay.close()])
 }
 
+// a raw blind-relay client session; pairs by token without any real traffic
+async function session(node, relay) {
+  const socket = node.connect(relay.server.publicKey, { keyPair: DHT.keyPair() })
+  socket.on('error', () => {})
+  await new Promise((r) => socket.once('open', r))
+  const client = BlindRelay.Client.from(socket, { id: socket.publicKey })
+  const pair = (token, isInitiator) => {
+    const req = client.pair(isInitiator, token, node.createRawStream())
+    req.on('error', () => {}).resume()
+    return new Promise((r) => client.on('pair', (_, t) => t.equals(token) && r()))
+  }
+  return { socket, client, pair }
+}
+
+const token = () => DHT.keyPair().publicKey
+
+async function unpairedPerIp(testnet) {
+  const relay = await start({
+    keyFile: keyFile(),
+    bootstrap: testnet.bootstrap,
+    maxUnpairedPerIp: 2,
+    maxPerIp: 10,
+    pairTimeout: 60000
+  })
+  const a = testnet.createNode()
+  const [x, y] = [await session(a, relay), await session(a, relay)]
+  const t = token()
+  await Promise.all([x.pair(t, true), y.pair(t, false)])
+  check('unpaired per IP: paired sessions are accepted', relay.relay.stats.pairings.matched === 1)
+  const held = [await served(a, relay), await served(a, relay)]
+  check('unpaired per IP: unpaired sessions up to the cap are served', held.every(Boolean))
+  check(
+    'unpaired per IP: the next unpaired session from that IP is refused',
+    !(await served(a, relay))
+  )
+  check(
+    'unpaired per IP: paired sessions are untouched',
+    !x.socket.destroyed && !y.socket.destroyed && relay.relay.stats.sessions.active === 4
+  )
+  await Promise.all([a.destroy(), relay.close()])
+}
+
+function ipv6() {
+  check(
+    'IPv6 addresses in one /64 count together',
+    subnet('2001:db8::1') === subnet('2001:db8:0:0:ffff::2') &&
+      subnet('2001:db8:0:0:1::') === subnet('2001:DB8::abcd')
+  )
+  check(
+    'IPv6 addresses in different /64s, and IPv4, stay apart',
+    subnet('2001:db8:0:1::1') !== subnet('2001:db8::1') &&
+      subnet('1.2.3.4') === '1.2.3.4' &&
+      subnet('1.2.3.4') !== subnet('1.2.3.5')
+  )
+}
+
+async function maxLinks(testnet) {
+  const relay = await start({
+    keyFile: keyFile(),
+    bootstrap: testnet.bootstrap,
+    maxLinks: 2,
+    pairTimeout: 60000
+  })
+  const a = testnet.createNode()
+  const s = await session(a, relay)
+  s.pair(token(), true)
+  s.pair(token(), true)
+  await sleep(700)
+  check('links: pairings up to the cap are accepted', !s.socket.destroyed)
+  s.pair(token(), true)
+  await sleep(700)
+  check('links: the next pairing from that session destroys it', s.socket.destroyed)
+  await Promise.all([a.destroy(), relay.close()])
+}
+
+async function idle(testnet) {
+  const relay = await start({
+    keyFile: keyFile(),
+    bootstrap: testnet.bootstrap,
+    idleTimeout: 1500,
+    pairTimeout: 60000
+  })
+  const a = testnet.createNode()
+  const [x, y] = [await session(a, relay), await session(a, relay)]
+  const [t1, t2] = [token(), token()]
+  await Promise.all([x.pair(t1, true), y.pair(t1, false), x.pair(t2, true), y.pair(t2, false)])
+  x.client.unpair(t1)
+  y.client.unpair(t1)
+  await sleep(3000)
+  check('idle: a session with a live link stays open', !x.socket.destroyed && !y.socket.destroyed)
+  x.client.unpair(t2)
+  y.client.unpair(t2)
+  await sleep(3000)
+  check(
+    'idle: a session with every link closed is closed after the timeout',
+    x.socket.destroyed && y.socket.destroyed
+  )
+  await Promise.all([a.destroy(), relay.close()])
+}
+
 function badEnv() {
   const run = (env) =>
     spawnSync(process.execPath, [fileURLToPath(new URL('./relay.js', import.meta.url))], {
@@ -111,7 +212,10 @@ function badEnv() {
     ['MAX_PER_IP', 'abc'],
     ['MAX_SESSIONS', '1.5'],
     ['PAIR_TIMEOUT', '-1'],
-    ['MAX_PER_KEY', 'Infinity']
+    ['MAX_PER_KEY', 'Infinity'],
+    ['MAX_UNPAIRED_PER_IP', '0'],
+    ['MAX_LINKS_PER_SESSION', '0'],
+    ['IDLE_TIMEOUT', 'x']
   ]) {
     const { status, stderr } = run({ [name]: value })
     check(
@@ -127,6 +231,10 @@ async function main() {
   await perKey(testnet)
   await perIp(testnet)
   await unpaired(testnet)
+  await unpairedPerIp(testnet)
+  ipv6()
+  await maxLinks(testnet)
+  await idle(testnet)
   badEnv()
   await testnet.destroy()
   console.log(failed ? `\n❌ ${failed} check(s) failed` : '\n✅ relay ok')

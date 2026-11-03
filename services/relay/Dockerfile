@@ -17,12 +17,16 @@ USER app
 ENV KEY_FILE=/data/key
 # fixed UDP port, published unfirewalled so peers needn't holepunch
 ENV PORT=49738
-# abuse caps: open sessions per remote public key, per remote IP and in total;
-# a session that hasn't paired within PAIR_TIMEOUT ms is dropped
+# abuse caps: open sessions per remote public key, per remote IP (IPv6: per /64)
+# and in total; fewer per IP while unpaired; pairings per session; a session that
+# hasn't paired within PAIR_TIMEOUT ms, or has had no live link for IDLE_TIMEOUT ms, is dropped
 ENV MAX_PER_KEY=8
 ENV MAX_PER_IP=256
+ENV MAX_UNPAIRED_PER_IP=16
 ENV MAX_SESSIONS=2000
+ENV MAX_LINKS_PER_SESSION=16
 ENV PAIR_TIMEOUT=10000
+ENV IDLE_TIMEOUT=60000
 
 # healthy once the DHT has bound its UDP port (a crash exits the container)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
