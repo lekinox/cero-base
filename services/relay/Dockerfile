@@ -20,7 +20,7 @@ ENV PORT=49738
 # abuse caps: open sessions per remote public key, per remote IP and in total;
 # a session that hasn't paired within PAIR_TIMEOUT ms is dropped
 ENV MAX_PER_KEY=8
-ENV MAX_PER_IP=32
+ENV MAX_PER_IP=256
 ENV MAX_SESSIONS=2000
 ENV PAIR_TIMEOUT=10000
 

@@ -5,7 +5,7 @@ import DHT from 'hyperdht'
 import BlindRelay from 'blind-relay'
 import z32 from 'z32'
 
-const DEFAULTS = { maxPerKey: 8, maxPerIp: 32, maxSessions: 2000, pairTimeout: 10000 }
+const DEFAULTS = { maxPerKey: 8, maxPerIp: 256, maxSessions: 2000, pairTimeout: 10000 }
 
 // The keypair is a 32-byte seed in a file, so the public key survives restarts.
 function keyPair(file) {

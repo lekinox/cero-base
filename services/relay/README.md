@@ -39,7 +39,7 @@ The relay is open to any key (each device has its own), so abuse is bounded. Env
 set in the `Dockerfile` (positive integers; anything else refuses to start):
 
 - `MAX_PER_KEY` (8) open sessions per remote public key
-- `MAX_PER_IP` (32) per remote IP, since keys are free to mint; raise it for many users behind one NAT
+- `MAX_PER_IP` (256) per remote IP, since keys are free to mint; high because phones that need a relay sit behind carrier-grade NAT, where many users share one IP; tune per host
 - `MAX_SESSIONS` (2000) in total
 - `PAIR_TIMEOUT` (10000 ms) a session that hasn't paired by then is dropped
 
