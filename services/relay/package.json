@@ -1,0 +1,13 @@
+{
+  "name": "cero-relay",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Blind relay for cero apps",
+  "main": "relay.js",
+  "dependencies": {
+    "blind-relay": "1.6.1",
+    "hyperdht": "6.35.0",
+    "z32": "1.1.0"
+  }
+}

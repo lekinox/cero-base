@@ -7,6 +7,9 @@ services:
       MAX_STORAGE: 20000
       # the push gateway's public key, from its logs; leave empty without push
       PUSH_GATEWAY_KEY: ''
+    ports:
+      # unfirewalled UDP: peers reach the mirror directly, no holepunching
+      - '49737:49737/udp'
     volumes:
       # persistent — the mirror's public key is derived from data here.
       # never wipe this or the key (and every app's `mirrors` entry) changes.

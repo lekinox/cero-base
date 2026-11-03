@@ -26,7 +26,10 @@ npx blind-peer-cli --storage ./data --max-storage 20000
 1. In Coolify: **+ New → Resource → Docker Compose** (or **Private Repository**,
    build pack _Docker Compose_). Point it at this repo; set the base directory to
    `services/mirror` if deploying the whole monorepo.
-2. **No domain, no exposed port** — HyperDHT hole-punches through NAT. Leave ports unset.
+2. **No domain.** Publish the UDP port: keep the `ports` mapping `49737:49737/udp` from
+   `docker-compose.yml` (Coolify: _Ports Mappings_ `49737:49737/udp`), and open it in the
+   host firewall: `ufw allow 49737/udp`. An unfirewalled mirror means peers reach it
+   directly instead of holepunching.
 3. Keep the `blind-peer-data` volume **persistent**. The mirror's public key is derived
    from data there — wiping it changes the key (and every app's `mirrors` entry).
 4. Deploy, open **Logs**, copy `Listening at <z32-public-key>`. That's your mirror key.
@@ -38,8 +41,8 @@ past it, shared across every app the mirror holds. Default 20 GB.
 
 ## One mirror per box
 
-For redundancy run this on a **separate** machine and pass both keys to your apps. Don't
-run multiple copies on one server — they share a failure domain, so it adds no redundancy.
+For redundancy run this on a **separate** machine and pass both keys to your apps
+(`mirrors: [keyA, keyB]`). Don't run multiple copies on one server — they share a failure domain, so it adds no redundancy.
 
 ## Push notifications
 
