@@ -19,7 +19,7 @@ ENV KEY_FILE=/data/key
 ENV PORT=49738
 # abuse caps: open sessions per remote public key, per remote IP (IPv6: per /64)
 # and in total; fewer per IP while unpaired; pairings per session; a session that
-# hasn't paired within PAIR_TIMEOUT ms, or has had no live link for IDLE_TIMEOUT ms, is dropped
+# hasn't paired within PAIR_TIMEOUT ms, or whose links carry no traffic for IDLE_TIMEOUT ms, is dropped
 ENV MAX_PER_KEY=8
 ENV MAX_PER_IP=256
 ENV MAX_UNPAIRED_PER_IP=16

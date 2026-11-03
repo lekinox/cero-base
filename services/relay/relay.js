@@ -54,8 +54,9 @@ export function subnet(ip) {
 // Open by design (every device has its own key), so bound abuse: sessions are
 // capped per public key, per IP (keys are free to mint) and in total, with a
 // lower per-IP cap while unpaired. A session that never pairs is dropped, so is
-// one that holds no live link for idleTimeout, and one asking for more than
-// maxLinks pairings. (Reaches into blind-relay@1.6.1 session internals, hence the pin.)
+// one whose links carry no traffic for idleTimeout, one asking for more than
+// maxLinks pairings, and one pairing with itself.
+// (Reaches into blind-relay@1.6.1 session internals, hence the pin.)
 export async function start({ keyFile, port, bootstrap, ...opts }) {
   const cfg = { ...DEFAULTS, ...opts }
   for (const [name, n] of Object.entries(cfg)) {
@@ -78,45 +79,65 @@ export async function start({ keyFile, port, bootstrap, ...opts }) {
     }
 
     let waiting = true
-    let timer
-    const arm = (ms) => {
-      clearTimeout(timer)
-      timer = setTimeout(() => socket.destroy(), ms)
-    }
+    let limit = cfg.pairTimeout
+    let last = Date.now()
+    let seen = ''
     const paired = () => {
       if (!waiting) return
       waiting = false
       unpaired.drop(ip)
+      limit = cfg.idleTimeout
+      last = Date.now()
     }
+
+    // The session lives on real traffic only: bytes moving over its links (either
+    // end of each) or a link's stream connecting. Merely pairing doesn't reset the clock.
+    const session = relay.accept(socket, { id: socket.remotePublicKey })
+    const activity = () => {
+      let bytes = 0
+      let connected = 0
+      for (const link of session._links.values()) {
+        for (const s of [link.stream, link.remote?.stream]) {
+          if (!s) continue
+          bytes += s.bytesReceived + s.bytesTransmitted
+          connected += s.connected
+        }
+      }
+      return `${bytes}:${connected}`
+    }
+    const tick = Math.min(1000, Math.max(50, Math.min(cfg.pairTimeout, cfg.idleTimeout) / 4))
+    const watch = setInterval(() => {
+      const now = Date.now()
+      const a = activity()
+      if (a !== seen) {
+        seen = a
+        if (!waiting) last = now
+      }
+      if (now - last > limit) socket.destroy()
+    }, tick)
 
     byKey.add(key)
     byIp.add(ip)
     unpaired.add(ip)
     all.add('')
-    arm(cfg.pairTimeout)
     socket.on('close', () => {
-      clearTimeout(timer)
+      clearInterval(watch)
       byKey.drop(key)
       byIp.drop(ip)
       if (waiting) unpaired.drop(ip)
       all.drop('')
     })
 
-    const session = relay.accept(socket, { id: socket.remotePublicKey })
     session.on('error', () => {})
-
     const onpair = session._pair.onmessage
     session._pair.onmessage = (msg, s) => {
       if (session._pairing.size + session._links.size >= cfg.maxLinks) return socket.destroy()
+      // both ends of a pairing in one session would relay a peer to itself
+      const pending = relay._pairing.get(msg.token.toString('hex'))
+      if (pending?.links.some((l) => l?.session === session)) return socket.destroy()
       return onpair(msg, s)
     }
-    session.on('pair', (isInitiator, token, stream) => {
-      clearTimeout(timer)
-      paired()
-      stream.once('close', () => {
-        if (!session._links.size) arm(cfg.idleTimeout)
-      })
-    })
+    session.on('pair', paired)
   })
   await server.listen(keyPair(keyFile))
   return { dht, server, relay, close: () => server.close().then(() => dht.destroy()) }

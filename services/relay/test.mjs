@@ -107,11 +107,19 @@ async function session(node, relay) {
   socket.on('error', () => {})
   await new Promise((r) => socket.once('open', r))
   const client = BlindRelay.Client.from(socket, { id: socket.publicKey })
-  const pair = (token, isInitiator) => {
-    const req = client.pair(isInitiator, token, node.createRawStream())
-    req.on('error', () => {}).resume()
-    return new Promise((r) => client.on('pair', (_, t) => t.equals(token) && r()))
-  }
+  // resolves once paired; connect() then opens the raw stream through the relay so bytes can flow
+  const pair = (token, isInitiator) =>
+    new Promise((resolve) => {
+      const raw = node.createRawStream()
+      raw.on('error', () => {})
+      client
+        .pair(isInitiator, token, raw)
+        .on('error', () => {})
+        .on('data', (id) => {
+          const { socket: udp, remotePort, remoteHost } = socket.rawStream
+          resolve({ raw, connect: () => raw.connect(udp, id, remotePort, remoteHost) })
+        })
+    })
   return { socket, client, pair }
 }
 
@@ -184,19 +192,61 @@ async function idle(testnet) {
     pairTimeout: 60000
   })
   const a = testnet.createNode()
-  const [x, y] = [await session(a, relay), await session(a, relay)]
-  const [t1, t2] = [token(), token()]
-  await Promise.all([x.pair(t1, true), y.pair(t1, false), x.pair(t2, true), y.pair(t2, false)])
-  x.client.unpair(t1)
-  y.client.unpair(t1)
-  await sleep(3000)
-  check('idle: a session with a live link stays open', !x.socket.destroyed && !y.socket.destroyed)
-  x.client.unpair(t2)
-  y.client.unpair(t2)
+
+  // a pair that never carries data times out
+  let [x, y] = [await session(a, relay), await session(a, relay)]
+  let t = token()
+  await Promise.all([x.pair(t, true), y.pair(t, false)])
   await sleep(3000)
   check(
-    'idle: a session with every link closed is closed after the timeout',
+    'idle: a paired link that carries no bytes is closed',
     x.socket.destroyed && y.socket.destroyed
+  )
+
+  // one carrying data is kept, then closed once it goes quiet
+  ;[x, y] = [await session(a, relay), await session(a, relay)]
+  t = token()
+  const [px, py] = await Promise.all([x.pair(t, true), y.pair(t, false)])
+  px.connect()
+  py.connect()
+  // both ends talk, as a real handshake does: the relay only forwards once both link streams connected
+  px.raw.on('data', () => {})
+  py.raw.on('data', () => {})
+  const talk = setInterval(() => {
+    px.raw.write(Buffer.alloc(200))
+    py.raw.write(Buffer.alloc(20))
+  }, 300)
+  await sleep(4500)
+  check(
+    'idle: a link carrying data keeps both sessions open',
+    !x.socket.destroyed && !y.socket.destroyed
+  )
+  clearInterval(talk)
+  await sleep(3500)
+  check(
+    'idle: the sessions close once the link goes quiet',
+    x.socket.destroyed && y.socket.destroyed
+  )
+  await Promise.all([a.destroy(), relay.close()])
+}
+
+async function selfPair(testnet) {
+  const relay = await start({
+    keyFile: keyFile(),
+    bootstrap: testnet.bootstrap,
+    pairTimeout: 60000
+  })
+  const a = testnet.createNode()
+  const s = await session(a, relay)
+  const t = token()
+  s.pair(t, true)
+  await sleep(500)
+  check('self pairing: the first request is accepted', !s.socket.destroyed)
+  s.client._pair.send({ isInitiator: false, token: t, id: 1, seq: 0 })
+  await sleep(700)
+  check(
+    'self pairing: pairing with itself destroys the session',
+    s.socket.destroyed && relay.relay.stats.pairings.matched === 0
   )
   await Promise.all([a.destroy(), relay.close()])
 }
@@ -235,6 +285,7 @@ async function main() {
   ipv6()
   await maxLinks(testnet)
   await idle(testnet)
+  await selfPair(testnet)
   badEnv()
   await testnet.destroy()
   console.log(failed ? `\n❌ ${failed} check(s) failed` : '\n✅ relay ok')

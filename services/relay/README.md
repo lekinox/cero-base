@@ -44,7 +44,7 @@ set in the `Dockerfile` (positive integers; anything else refuses to start):
 - `MAX_SESSIONS` (2000) in total
 - `MAX_LINKS_PER_SESSION` (16) pairings per session
 - `PAIR_TIMEOUT` (10000 ms) a session that hasn't paired by then is dropped
-- `IDLE_TIMEOUT` (60000 ms) a session with no live link for that long is closed
+- `IDLE_TIMEOUT` (60000 ms) a session whose links carry no traffic for that long is closed (pairing alone does not count); a session pairing with itself is dropped at once
 
 A connection over a cap is closed at once; counts drop on close.
 
