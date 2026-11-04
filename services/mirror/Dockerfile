@@ -7,7 +7,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends libatomic1 iproute2 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g blind-peer-cli@^1.15
+RUN npm install -g blind-peer-cli@^1.16
 
 # storage dir lives on a persistent volume mounted at /data
 RUN useradd -m app && mkdir -p /data && chown app:app /data

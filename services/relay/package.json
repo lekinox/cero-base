@@ -7,7 +7,7 @@
   "main": "relay.js",
   "dependencies": {
     "blind-relay": "1.6.1",
-    "hyperdht": "6.35.0",
+    "hyperdht": "6.36.0",
     "z32": "1.1.0"
   }
 }

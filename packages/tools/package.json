@@ -89,7 +89,7 @@
     "bare-fetch": "^3.4.1",
     "bare-fs": "^4.8.4",
     "bare-path": "^3.1.2",
-    "bare-url": "^2.5.5",
+    "bare-url": "^2.5.6",
     "brittle": "^4.5.0",
     "typescript": "^7.0.2"
   },
