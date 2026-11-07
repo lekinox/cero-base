@@ -378,6 +378,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted })
   }
+  // a member who left, apart from one removed and from a revoked device: ids never hold ':'
+  function leftId(memberId) {
+    return `left:${memberId}`
+  }
+
   // the devices of the chain, not the identity it starts with: a member's removal is ordered by
   // its invites, a device's is for good
   async function revoked(view, proof) {
@@ -476,11 +481,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     } else {
       await drop(ctx, 'members', op.id)
     }
-    // an invite they could hold, or saw, does not bring them back. One who left keeps every code: index 0 turns none
-    // away (codes count from 1), yet the room still re-keys her out at its first removal (rotation.js)
-    const before = (await ctx.view.get(removals, { id: op.id }))?.index ?? 0
+    // an invite they could hold, or saw, does not bring them back on its own: after a removal it is turned away, after
+    // leaving it waits for a member to accept her again, so leaving first never dodges a removal. Either row re-keys
+    // the handle at its first removal (rotation.js)
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: op.id, index: leaving ? before : minted })
+    await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted })
   })
 
   add('rotate-key', async (op, ctx) => {
@@ -694,7 +699,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       (removal && (invite.index ?? 0) <= removal.index) || (await revoked(ctx.view, join.proof))
     if (out) return refuse(ctx, { id, reply: join.reply, expires: invite.expires || 0 }, 'removed')
     await ctx.view.delete(refusals, { id })
-    if (invite.confirm && !known) {
+    const gone = known ? null : await ctx.view.get(removals, { id: leftId(memberId) })
+    const older = gone && (invite.index ?? 0) <= gone.index
+    if ((invite.confirm || older) && !known) {
       const waiting = request(invite, join.identity, signed.device, ctx.key, join.reply, ts)
       return save(ctx, 'put', 'requests', waiting)
     }
