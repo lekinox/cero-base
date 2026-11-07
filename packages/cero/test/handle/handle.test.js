@@ -911,7 +911,7 @@ test('Handle: root getter — root returns self, child returns the root', async 
 })
 
 test('Handle: root owns the coreKey→encryptionKey registry', async (t) => {
-  const { me } = await openHandle(t)
+  const { me } = await openHandle(t, { opts: { linger: 0 } })
   await me.store.bootstrap({ name: 'desktop' })
   const child = await me._create('team', { name: 'T' })
 

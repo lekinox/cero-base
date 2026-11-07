@@ -340,7 +340,7 @@ test('before(ref): an operator called inside a hook throws INVALID', async (t) =
 // ─── me.on('handle') ────────────────────────────────────────────────────────
 
 test('me.on("handle"): fires on create and on re-open', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'handle-evt'))
+  const me = await openCero(t, await buildSpec(t, 'handle-evt'), { linger: 0 })
   const seen = []
   me.on('handle', (room) => seen.push(room))
 
@@ -373,7 +373,7 @@ test('me.on("handle"): re-loading an already-open handle is idempotent — no re
 })
 
 test('me.on("handle"): concurrent open() of the same id loads once', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'concurrent-open'))
+  const me = await openCero(t, await buildSpec(t, 'concurrent-open'), { linger: 0 })
   const room = await open(me.room)
   const { id } = room
   await room.close() // drop it from me.children so the reopen goes through _load

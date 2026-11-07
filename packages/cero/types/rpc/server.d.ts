@@ -88,6 +88,8 @@ export declare class Server extends RPCServer {
     handles: Map<string, Context>;
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     _watchStreams: Map<string, Set<object>>;
+    /** @type {Map<string, number>} handle id → the opens the page holds on it, let go when it reloads */
+    _held: Map<string, number>;
     /** @private */
     _booting;
     /**
@@ -146,6 +148,12 @@ export declare class Server extends RPCServer {
      * @private
      */
     private _wireHandles;
+    /** @private one open the page holds on `id` */
+    private _hold;
+    /** @private one of the page's opens on `id` let go: the handle drops off the wire once nobody here holds it */
+    private _release;
+    /** @private every open the page holds let go: a reload, whose old page closes nothing */
+    private _letGo;
     /**
      * Register the `verb` handler: the operator by its name, on the handle, as in the worker.
      * @private

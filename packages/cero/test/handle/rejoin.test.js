@@ -18,8 +18,9 @@ import {
 
 test.configure({ timeout: 90000 })
 
+// linger 0: the owner closing the room is the owner gone, nobody serving it
 async function room(t, testnet) {
-  const a = await openHandle(t, { testnet })
+  const a = await openHandle(t, { testnet, opts: { linger: 0 } })
   await a.me.store.bootstrap({ name: 'owner-root' })
   const clinic = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => clinic.close().catch(() => {}))
@@ -159,6 +160,54 @@ test('rejoin: after leave() then re-join with a fresh invite', async (t) => {
   const back = await open(b.me.team, await cero.invite(clinic))
   t.teardown(() => back.close().catch(() => {}))
   t.ok(back.id, 're-joined after leave without a pairing conflict')
+})
+
+// leaving is hers, not a removal: a code minted before she left still brings her back. Someone else taking her out is
+// what turns older codes away
+async function leaver(t, testnet, clinic, code) {
+  const b = await openHandle(t, { testnet })
+  await b.me.store.bootstrap({ name: 'peer-root' })
+  const joined = await open(b.me.team, code)
+  await waitUntil(async () => (await get(clinic.members, b.me.identity.id)).data)
+  return { b, joined }
+}
+
+test('rejoin: she leaves and comes back with a spare code minted before she left', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { clinic } = await room(t, testnet)
+  const spare = await cero.invite(clinic)
+  const { b, joined } = await leaver(t, testnet, clinic, await cero.invite(clinic))
+  await cero.leave(joined)
+  await waitUntil(async () => !(await get(clinic.members, b.me.identity.id)).data)
+  const back = await open(b.me.team, spare)
+  t.teardown(() => back.close().catch(() => {}))
+  t.ok(back.id, 'back in')
+  await waitUntil(async () => (await get(clinic.members, b.me.identity.id)).data)
+})
+
+test('rejoin: she leaves and comes back with the room’s reusable code', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { clinic } = await room(t, testnet)
+  const reusable = await cero.invite(clinic, { reuse: true })
+  const { b, joined } = await leaver(t, testnet, clinic, reusable)
+  await cero.leave(joined)
+  await waitUntil(async () => !(await get(clinic.members, b.me.identity.id)).data)
+  const back = await open(b.me.team, reusable)
+  t.teardown(() => back.close().catch(() => {}))
+  t.ok(back.id, 'back in with the same code')
+})
+
+test('rejoin: taken out by the owner, a code minted before is still turned away', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { clinic } = await room(t, testnet)
+  const spare = await cero.invite(clinic)
+  const { b, joined } = await leaver(t, testnet, clinic, await cero.invite(clinic))
+  await del(clinic.members, b.me.identity.id)
+  // her device learns it was taken out before she scans the older code
+  await waitUntil(async () => !(await get(joined.members, b.me.identity.id)).data)
+  const err = await open(b.me.team, spare).catch((e) => e)
+  t.is(err?.code, 'DENIED')
+  t.is(err?.reason, 'removed')
 })
 
 test('rejoin: two concurrent joins of the same room do not collide', async (t) => {

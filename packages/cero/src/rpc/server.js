@@ -101,6 +101,8 @@ export class Server extends RPCServer {
     this.handles = new Map()
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     this._watchStreams = new Map()
+    /** @type {Map<string, number>} handle id → the opens the page holds on it, let go when it reloads */
+    this._held = new Map()
     /** @private */
     this._booting = null
     this._wireInit()
@@ -190,8 +192,10 @@ export class Server extends RPCServer {
     })
     this.rpc.onInit(async () => {
       await this._booting
-      // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end
+      // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end, and every open the old
+      // page held is let go for it, as it never closes them
       for (const handle of this._watchStreams.keys()) this._endWatches(handle)
+      await this._letGo()
       return this._identity()
     })
   }
@@ -205,6 +209,7 @@ export class Server extends RPCServer {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
       this.me = await restore(this.me, phrase)
       this.handles = new Map([[this.me.id, this.me]])
+      this._held.clear()
       return this._identity()
     })
   }
@@ -222,6 +227,7 @@ export class Server extends RPCServer {
           onrequest: (id) => stream.write({ request: id })
         })
         this.handles = new Map([[this.me.id, this.me]])
+        this._held.clear()
         stream.write({ request: '', ...this._identity() })
         stream.end()
       }
@@ -339,7 +345,7 @@ export class Server extends RPCServer {
       const opts = { name: wire.name }
       const child = await this.me._create(ref, opts)
       const id = child.id
-      this.handles.set(id, child)
+      this._hold(id, child)
       return { id, type: ref, name: opts.name || '' }
     })
 
@@ -348,7 +354,7 @@ export class Server extends RPCServer {
       const { data } = await this.me.store.get('handles', row)
       if (!data) throw CeroError.UNKNOWN('handle', row)
       const child = await this.me._load(type, row)
-      this.handles.set(row, child)
+      this._hold(row, child)
       return { id: row, type: data.type, name: data.name || '' }
     })
 
@@ -362,25 +368,51 @@ export class Server extends RPCServer {
         return { id: '', type: ref, denied: true, reason: err.reason || '' }
       }
       const id = child.id
-      this.handles.set(id, child)
+      this._hold(id, child)
       return { id, type: ref, name: '' }
     })
 
     this.rpc.onCloseHandle(async ({ handle }) => {
       const h = this.handles.get(handle)
       if (!h || h === this.me) return {}
-      this._endWatches(handle)
-      this.handles.delete(handle)
-      await h.close()
+      await this._release(handle, h)
       return {}
     })
 
     this.rpc.onLeave(async ({ handle }) => {
       await leave(this._resolve(handle))
+      this._held.delete(handle)
       this._endWatches(handle)
       this.handles.delete(handle)
       return {}
     })
+  }
+
+  /** @private one open the page holds on `id` */
+  _hold(id, h) {
+    this.handles.set(id, h)
+    this._held.set(id, (this._held.get(id) ?? 0) + 1)
+  }
+
+  /** @private one of the page's opens on `id` let go: the handle drops off the wire once nobody here holds it */
+  async _release(id, h) {
+    const n = (this._held.get(id) ?? 1) - 1
+    if (n > 0) this._held.set(id, n)
+    else this._held.delete(id)
+    await h.close()
+    // another holder on this device keeps it, with its watches; a reopen while it lingers registers it again
+    if (h._refs > 0) return
+    this._endWatches(id)
+    this.handles.delete(id)
+  }
+
+  /** @private every open the page holds let go: a reload, whose old page closes nothing */
+  async _letGo() {
+    for (const [id, n] of [...this._held]) {
+      const h = this.handles.get(id)
+      for (let i = 0; i < n && h; i++) await this._release(id, h).catch(safetyCatch)
+    }
+    this._held.clear()
   }
 
   /**

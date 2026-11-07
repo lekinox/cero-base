@@ -120,10 +120,18 @@ export class Mailbox extends ReadyResource {
    * @returns {Promise<void>}
    */
   async send(address, message, { mirrors = this.network.mirrors, keep = true } = {}) {
+    // a send racing the close fails as the mailbox closing, never as the storage under it
+    if (this.closing) throw CeroError.CLOSED('Mailbox')
     if (!this.opened) await this.ready()
     const name = b4a.toHex(crypto.randomBytes(32))
     const mail = { id: b4a.toHex(crypto.randomBytes(16)), name, address, message, mirrors, keep }
-    await this.outbox.put(mail)
+    try {
+      await this.outbox.put(mail)
+    } catch (err) {
+      if (this.closing) throw CeroError.CLOSED('Mailbox')
+      throw err
+    }
+    if (this.closing) throw CeroError.CLOSED('Mailbox')
     this._deliver(mail)
   }
 

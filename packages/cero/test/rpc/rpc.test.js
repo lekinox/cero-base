@@ -439,6 +439,49 @@ test('rpc: a reloaded UI re-attaches, init answers again and the old watches end
   t.is((await get(client.messages)).data[0].text, 'still served', 'the worker keeps serving')
 })
 
+// a reloaded page never closes what the old one held: the worker lets go for it, one close per open the page made
+const openOn = (server, id) => [...server.me.children].some((c) => c.id === id && !c.closing)
+
+test('rpc: a reloaded UI lets go of every room the old page held, however many times it opened them', async (t) => {
+  const { server, client } = await openPair(t, { linger: 0 })
+  const made = await open(client.team, { name: 'clinic' })
+  await open(client.team, { id: made.id })
+  await client.rpc.init({})
+  t.absent(openOn(server, made.id), 'closed on the worker')
+  t.absent(server.handles.has(made.id), 'and dropped from its handles')
+})
+
+test('rpc: a room the worker holds itself stays open through a page reload', async (t) => {
+  const { server, client } = await openPair(t, { linger: 0 })
+  const made = await open(client.team, { name: 'clinic' })
+  const mine = await open(server.me.team, { id: made.id })
+  t.teardown(() => mine.close())
+  await client.rpc.init({})
+  t.ok(openOn(server, made.id), 'the worker’s own open keeps it')
+  await put(mine.messages, { text: 'still here' })
+  t.is((await get(mine.messages)).data.length, 1)
+})
+
+test('rpc: a room the old page already closed is not closed again on reload', async (t) => {
+  const { server, client } = await openPair(t, { linger: 0 })
+  const made = await open(client.team, { name: 'clinic' })
+  await made.close()
+  const mine = await open(server.me.team, { id: made.id })
+  t.teardown(() => mine.close())
+  await client.rpc.init({})
+  t.ok(openOn(server, made.id), 'the worker’s open is untouched')
+})
+
+test('rpc: the new page’s opens after a reload count from zero', async (t) => {
+  const { server, client } = await openPair(t, { linger: 0 })
+  const made = await open(client.team, { name: 'clinic' })
+  await client.rpc.init({})
+  const again = await open(client.team, { id: made.id })
+  await put(again.messages, { text: 'after reload' })
+  await again.close()
+  t.absent(openOn(server, made.id), 'one open, one close: closed')
+})
+
 test("rpc: the worker's background errors reach the client's onerror", async (t) => {
   let report
   const seen = new Promise((resolve) => (report = resolve))
@@ -523,6 +566,19 @@ test('rpc: child handle close is server-side teardown', async (t) => {
   await put(team.messages, { text: 'hi' })
   await team.close()
   t.pass('child close did not throw')
+})
+
+// a screen and a background task on one device hold the same room through the worker; one is done with it
+test('rpc: a room opened twice and closed once still works for the other holder', async (t) => {
+  const { client } = await openPair(t)
+  const made = await open(client.team, { name: 'clinic' })
+  const id = made.id
+  const screen = await open(client.team, { id })
+  await made.close()
+  await put(screen.messages, { text: 'still here' })
+  t.is((await get(screen.messages)).data.length, 1, 'the other holder still writes and reads')
+  await screen.close()
+  await t.exception(get(screen.messages), /UNKNOWN/, 'the last close closes it')
 })
 
 test('rpc: leave() over the wire drops the handle on the server', async (t) => {

@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, open, put, set, get, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
+import { contract } from '../../src/build/schemas.js'
 import { makeMirror, makeTestnet, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 120000 })
@@ -111,4 +112,32 @@ test('compat: this release and the previous one write to one room, then one upgr
   await put(room.messages, { text: 'after' })
   await waitUntil(async () => (await get(mine.messages)).data.length === 3)
   t.pass('and still syncs')
+})
+
+// a release that changes what a write means (leaving is no removal) raises a shipped app's contract on its next build:
+// devices still on the previous release skip its writes until they update, as the database gate does
+// the previous release's spec, contract.json and all, rebuilt by this one: an app that shipped and upgraded Cero
+async function shippedSpec() {
+  const { root } = JSON.parse(
+    await fs.readFile(join(fixtures, '.compat', 'previous.json'), 'utf-8')
+  )
+  const dir = join(fixtures, '.build-compat-shipped')
+  await fs.rm(dir, { recursive: true, force: true })
+  await fs.cp(join(root, 'spec'), dir, { recursive: true })
+  await build(dir, define({ schema, t }))
+  return (await import(pathToFileURL(join(dir, 'index.js')).href)).spec
+}
+
+test('compat: a shipped app rebuilt on this release raises its contract when what a write means changed', async (t) => {
+  const { before } = await previous()
+  const { root } = JSON.parse(
+    await fs.readFile(join(fixtures, '.compat', 'previous.json'), 'utf-8')
+  )
+  const schemas = join(root, 'node_modules', '@cero-base', 'cero', 'src', 'build', 'schemas.js')
+  const { contract: was } = await import(pathToFileURL(schemas).href)
+  const shipped = await shippedSpec()
+  const rose = contract.version > (was?.version ?? 1)
+  t.ok(
+    rose ? shipped.meta.version > before.meta.version : shipped.meta.version >= before.meta.version
+  )
 })

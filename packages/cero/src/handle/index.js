@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { NS, TIMEOUT } from '../lib/constants.js'
+import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { Join, wait } from './join.js'
@@ -146,6 +146,12 @@ export class Handle extends ReadyResource {
       : new Suspendify({ suspend: () => this._sleep(), resume: () => this._wake() })
     /** @private */
     this._owned = new Set()
+    // a child's holders: open hands every caller on this device the same handle, so each close lets one go and the
+    // last one lets it linger
+    /** @private */
+    this._refs = 0
+    /** @private */
+    this._idle = null
 
     this.store = new Database({
       store: store,
@@ -307,8 +313,8 @@ export class Handle extends ReadyResource {
       ...[...(this._joining?.values() || [])].map((join) => () => join.close()),
       () => this._blobs?.close(),
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
-      ...[...(this.children || [])].map((c) => () => c.close()),
-      ...[...(this._pending || [])].map((c) => () => c.close()),
+      ...[...(this.children || [])].map((c) => () => c._end()),
+      ...[...(this._pending || [])].map((c) => () => c._end()),
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -418,7 +424,45 @@ export class Handle extends ReadyResource {
     if (!this.parent) throw CeroError.INVALID('the root cannot be left')
     await this.store.del('members', this.identity.id)
     await this.parent.store.call('del-handle', { id: hid.encode(this.store.key) })
-    await this.close()
+    await this._end()
+  }
+
+  /**
+   * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
+   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+   * @returns {Promise<void>}
+   */
+  close() {
+    if (!this.parent) return this._end()
+    if (this._refs > 1) {
+      this._refs--
+      return Promise.resolve()
+    }
+    if (this._idle) return Promise.resolve()
+    const linger = this.root._opts.linger ?? LINGER
+    if (!linger || this._refs === 0) return this._end()
+    this._refs = 0
+    this._idle = setTimeout(() => this._end().catch(this._onerror), linger)
+    this._idle.unref?.()
+    return Promise.resolve()
+  }
+
+  /**
+   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+   * @private
+   */
+  /** @private one more holder: a lingering handle is kept */
+  _hold() {
+    clearTimeout(this._idle)
+    this._idle = null
+    this._refs++
+  }
+
+  _end() {
+    clearTimeout(this._idle)
+    this._idle = null
+    this._refs = 0
+    return super.close()
   }
 
   // the app going to the background and back: networking, storage and the radio together
@@ -602,6 +646,7 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _send(address, value, { keep = true } = {}) {
+    if (this.root.closing) throw CeroError.CLOSED('Mailbox')
     const to = decodeAddress(address)
     await this.root.mailbox.send(to, seal(this.identity, to, value), { keep })
   }
@@ -797,7 +842,7 @@ export class Handle extends ReadyResource {
       const reason = this.closing || this.closed ? CeroError.CLOSED('Handle') : err
       if (abort) abort(reason)
       if (inflightId) this._loading?.delete(inflightId)
-      await child.close().catch(safetyCatch)
+      await child._end().catch(safetyCatch)
       throw reason
     }
   }
@@ -820,7 +865,11 @@ export class Handle extends ReadyResource {
     const join = this._start(invite, type)
     join.waiting++
     try {
-      return await wait(join.done, timeout)
+      const child = await wait(join.done, timeout)
+      // every caller holds the room: the first takes the open the join made, each other one its own
+      if (join.claimed) child._hold()
+      join.claimed = true
+      return child
     } finally {
       join.waiting--
     }
@@ -864,7 +913,7 @@ export class Handle extends ReadyResource {
     const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
     // a reader never had a seat, a removed writer lost it
     if (me && (device || me.role === 'reader')) return known
-    await known.close().catch(safetyCatch)
+    await known._end().catch(safetyCatch)
     return null
   }
 
@@ -924,7 +973,7 @@ export class Handle extends ReadyResource {
     } catch (err) {
       if (abort) abort(err)
       if (inflightId) this._loading?.delete(inflightId)
-      await child.close().catch(safetyCatch)
+      await child._end().catch(safetyCatch)
       throw err
     }
   }
@@ -960,7 +1009,10 @@ export class Handle extends ReadyResource {
     if (open && open.type !== type) {
       throw CeroError.INVALID(`handle ${id} is type ${open.type}, not ${type}`)
     }
-    if (open) return open
+    if (open) {
+      open._hold()
+      return open
+    }
     const reopening = this._reopen(type, id)
     this._loading.set(id, reopening)
     try {
@@ -1007,7 +1059,7 @@ export class Handle extends ReadyResource {
       }
       this._adopt(child, {})
     } catch (err) {
-      await child.close().catch(safetyCatch)
+      await child._end().catch(safetyCatch)
       throw err
     }
     return child
@@ -1045,6 +1097,7 @@ export class Handle extends ReadyResource {
     if (this.closing || this.closed) throw CeroError.CLOSED('Handle')
     this._pending.delete(child)
     this.children.add(child)
+    child._refs = 1
     this._serve(child)
     this._carry(child)
     this._prune(child).catch(this._onerror)

@@ -200,8 +200,15 @@ await cero.leave(room) // out of its members, out of your list on every device, 
 
 `cero.leave` removes you from the handle's members, at any role, then the handle from your list. The
 last owner of a handle others are in gets `INVALID`: make another member an owner first, with
-`cero.set(room.members, { id, role: 'owner' })`. `cero.close(room)` stops a handle on this device and
-keeps it in your list, to reopen by id. `cero.close(me)` closes everything.
+`cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
+before you left, or the handle's reusable one, brings you back. The handle still re-keys you out.
+Removed by someone else, only a code minted after the removal does.
+
+`cero.close(room)` lets go of a handle on this device and keeps it in your list, to reopen by id.
+A device opens a handle once and counts who holds it: every `open`
+(by id, name or code) holds it once and every `cero.close` lets go once. After the last close it
+stays open for `linger` ms, so a quick reopen gets it as it is, then closes. Leaving, a removal and
+`cero.close(me)` close it at once. Over RPC, the page's holds end when it reloads.
 
 ## List your handles
 

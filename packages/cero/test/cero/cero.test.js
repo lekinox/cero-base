@@ -899,7 +899,7 @@ test('storageKey: master seed encrypted at rest, same key reopens', async (t) =>
 // a closed child's blob core keys must leave the root registry, or the file
 // server keeps serving them for the root's whole life
 test('closing a child prunes its blob core keys from the root', async (t) => {
-  const { me } = await ceroOpen(t)
+  const { me } = await ceroOpen(t, { linger: 0 })
   const room = await open(me.team, { name: 'blobby' })
 
   const { data: file } = await put(room.files, { data: b4a.from('x'), type: 'text/plain' })
@@ -1577,7 +1577,7 @@ test('cero(): a suspend() racing an in-flight resume() serializes — last call 
 
 test('cero(): a blob core resolving after close does not re-register its key', async (t) => {
   const { Blobs } = await import('@cero-base/core/blobs')
-  const { me } = await ceroOpen(t)
+  const { me } = await ceroOpen(t, { linger: 0 })
   const team = await open(me.team)
 
   let release

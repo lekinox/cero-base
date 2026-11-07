@@ -68,7 +68,12 @@ async function scene(t, { messaging, errors } = {}) {
 
   const dir = await t.tmp()
   const [serverStream, clientStream] = pair()
-  const server = await serve(serverStream, spec, { storage: dir, bootstrap: testnet.bootstrap })
+  // linger 0: a closed handle is closed, so a push is what opens it again
+  const server = await serve(serverStream, spec, {
+    storage: dir,
+    bootstrap: testnet.bootstrap,
+    linger: 0
+  })
   const client = await connect(clientStream, spec, {
     onerror: (err) => errors?.push(err),
     ...(messaging && { push: messaging })

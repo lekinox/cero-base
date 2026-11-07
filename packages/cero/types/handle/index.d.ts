@@ -198,6 +198,10 @@ export declare class Handle extends ReadyResource {
     _sus;
     /** @private */
     _owned;
+    /** @private */
+    _refs;
+    /** @private */
+    _idle;
     store: Database;
     /** @private */
     _pair;
@@ -281,6 +285,19 @@ export declare class Handle extends ReadyResource {
     private _tx;
     /** @private */
     private _leave;
+    /**
+     * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
+     * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+     * @returns {Promise<void>}
+     */
+    close(): Promise<void>;
+    /**
+     * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+     * @private
+     */
+    /** @private one more holder: a lingering handle is kept */
+    private _hold;
+    _end(): Promise<void>;
     /** @private */
     private _suspend;
     /** @private */

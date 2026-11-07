@@ -447,7 +447,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const existing = await getMember(ctx.view, op.id)
     if (!existing) return
     let decided = null
-    if (op.id !== (await getSignerMember(ctx.view, ctx.key))) {
+    // leaving is hers: only someone else taking her out turns her older codes away
+    const leaving = op.id === (await getSignerMember(ctx.view, ctx.key))
+    if (!leaving) {
       // the last owner stays, whatever a rule grants: without her nobody outranks the rest
       if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
         throw CeroError.INVALID(
@@ -474,9 +476,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     } else {
       await drop(ctx, 'members', op.id)
     }
-    // an invite they could hold, or saw, does not bring them back
+    // an invite they could hold, or saw, does not bring them back. One who left keeps every code: index 0 turns none
+    // away (codes count from 1), yet the room still re-keys her out at its first removal (rotation.js)
+    const before = (await ctx.view.get(removals, { id: op.id }))?.index ?? 0
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: op.id, index: minted })
+    await ctx.view.insert(removals, { id: op.id, index: leaving ? before : minted })
   })
 
   add('rotate-key', async (op, ctx) => {
