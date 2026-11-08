@@ -1292,6 +1292,61 @@ test('poison op: garbage bytes from an admitted writer are skipped on every peer
   t.ok(aErrs.length > 0, 'A surfaced the skip via onerror')
 })
 
+// a device's own writes to its member row (a name, an avatar) never carry its view of its rank: a rank change it has
+// not seen yet is never undone, and the write is never refused for it. Concurrent ops land in either order, so a
+// few rounds, promoting and demoting in turn
+test('set-member: an own-row write made before a rank change arrives keeps both', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+  const id = b.identity.id
+  const row = async (db) => (await db.get('members', id)).data
+  for (let round = 0; round < 4; round++) {
+    const role = round % 2 ? 'member' : 'admin'
+    const name = `b${round}`
+    await b.network.suspend()
+    await a.db.set('members', { id, role })
+    await b.db.set('members', { id, name })
+    await b.network.resume()
+    const both = await waitFor(
+      async () => {
+        const [onA, onB] = [await row(a.db), await row(b.db)]
+        const done = (r) => r?.role === role && r?.name === name
+        return done(onA) && done(onB) && [onA, onB]
+      },
+      { timeout: 20000 }
+    ).catch(async () => [await row(a.db), await row(b.db)])
+    t.alike(
+      both.map((r) => [r?.role, r?.name]),
+      [
+        [role, name],
+        [role, name]
+      ],
+      `round ${round}: ${role}, named ${name}, on both`
+    )
+  }
+})
+
+test('set: a member row sent without a role carries no rank change, and keeps the stored one', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const sent = []
+  const write = db.write.bind(db)
+  db.write = (ops) => {
+    sent.push(...ops)
+    return write(ops)
+  }
+  await db.set('members', { id: identity.id, name: 'renamed' })
+  t.is(sent[0][1].role, '', 'an empty rank on the wire: no change')
+  const { data } = await db.get('members', identity.id)
+  t.alike([data.role, data.name], ['owner', 'renamed'])
+})
+
 // a replicated action with no local hook must surface: silently skipping it
 // diverges this peer from everyone that ran it
 test('missing action hook: a replicated action surfaces via onerror, apply continues', async (t) => {

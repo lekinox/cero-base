@@ -22,6 +22,7 @@ import {
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { profileSync, handleSync, bundled } from '../../src/extensions/index.js'
+import { mirror } from '../../src/extensions/mirror.js'
 import { makeTestnet, waitUntil, waitForConnection, fetch } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -38,6 +39,12 @@ const base = schema({
     audits: t.collection({ text: t.string }),
     banned: t.collection({ reason: t.string })
   }
+})
+
+// an app's own profile with none of profileSync's fields: its avatar reads back undefined, the room's null
+const nameOnly = schema({
+  profile: t.single({ name: t.string }),
+  room: { messages: t.collection({ text: t.string }) }
 })
 
 // Defined at module level — inside a brittle `(t) =>` callback, `t` is the test
@@ -1046,6 +1053,20 @@ async function openManual(t, { spec, extensions }) {
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return me
 }
+
+// a field the profile never set reads back null from the room: the same profile again is no change, and writes
+// nothing, as every open and every replicated edit mirrors it
+test('profileSync: the same profile mirrored again writes nothing, a field it never set included', async (t) => {
+  const exts = [profileSync()]
+  const me = await openCero(t, await buildSpec(t, 'ps-same', nameOnly, exts))
+  await set(me.profile, { name: 'jb' })
+  const room = await open(me.room)
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data?.name === 'jb')
+  const { data: profile } = await get(me.profile)
+  const before = room.store.bee.local.length
+  await mirror(me.profile, profile, { avatar: t.string }, room.members, me.identity.id)
+  t.is(room.store.bee.local.length, before, 'no op appended')
+})
 
 test('profileSync: detaches its handle listener on close', async (t) => {
   const exts = [profileSync()]

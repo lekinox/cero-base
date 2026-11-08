@@ -25,7 +25,8 @@ export async function mirror(from, row, fields, to, id) {
     const prev = idOf(was[k])
     if (!file) {
       out[k] = row[k]
-      changed ||= was[k] !== row[k]
+      // a field the source never set is the null the row reads back
+      changed ||= (was[k] ?? null) !== (row[k] ?? null)
     } else if (prev && (await get(to.handle.files, prev)).data?.from === file) {
       out[k] = prev
     } else {

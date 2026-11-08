@@ -983,7 +983,15 @@ export class Database extends ReadyResource {
     checkRequired(name, this.refs[name], stored)
     if (ref.kind === COLLECTION && !stored.id) stored.id = genId()
     const insert = ref.kind === COLLECTION && upsert && !BESPOKE.has(ref.verb)
-    return this._append(stored, `${insert ? 'add' : 'set'}-${ref.verb}`)
+    const verb = `${insert ? 'add' : 'set'}-${ref.verb}`
+    // a member's rank travels only when the caller names one: this device's view of it may predate a change another
+    // device made, which a merged copy would undo or get refused for. An empty rank is no change, and apply keeps
+    // the stored one
+    if (ref.verb === 'member' && !('role' in row)) {
+      await this._append({ ...stored, role: '' }, verb)
+      return { row: stored }
+    }
+    return this._append(stored, verb)
   }
 
   /** @private */
