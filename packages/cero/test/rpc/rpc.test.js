@@ -482,6 +482,25 @@ test('rpc: the new page’s opens after a reload count from zero', async (t) => 
   t.absent(openOn(server, made.id), 'one open, one close: closed')
 })
 
+// a restore or link that fails over the wire leaves the worker serving the identity it had
+test('rpc: a restore no device answers keeps the worker serving this identity', async (t) => {
+  const { client } = await openPair(t, { recoveryTimeout: 1000 })
+  const id = client.id
+  await put(client.messages, { text: 'mine' })
+  const phrase = Identity.toPhrase(Identity.randomBytes(32))
+  await t.exception(restore(client, phrase), /TIMEOUT/)
+  t.is((await get(client.messages)).data[0]?.text, 'mine', 'still reads')
+  await put(client.messages, { text: 'and writes' })
+  t.is(client.id, id)
+})
+
+test('rpc: a mistyped link keeps the worker serving this identity', async (t) => {
+  const { client } = await openPair(t)
+  await put(client.messages, { text: 'mine' })
+  await t.exception(link(client, 'nothing like a code'), /INVALID_INVITE/)
+  t.is((await get(client.messages)).data[0]?.text, 'mine', 'still reads')
+})
+
 test("rpc: the worker's background errors reach the client's onerror", async (t) => {
   let report
   const seen = new Promise((resolve) => (report = resolve))

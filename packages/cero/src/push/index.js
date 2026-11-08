@@ -9,6 +9,7 @@ import { CeroError } from '@cero-base/core/errors'
 import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { Local } from '../local/index.js'
+import { current } from '../lib/swap.js'
 
 /**
  * A push verified against the handles the topics rows name, with the row it wrote when the block
@@ -56,7 +57,7 @@ async function rowOf(storage, spec, hit, { encryptionKey, epochs }) {
  * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export async function receive(dir, spec, payload, { storageKey } = {}) {
-  const storage = new HypercoreStorage(`${dir}/main`, { readOnly: true })
+  const storage = new HypercoreStorage(await current(dir), { readOnly: true })
   let store = null
   let local = null
   try {

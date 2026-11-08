@@ -122,10 +122,13 @@ you open each handle by id. The first open by id waits for a device already in t
 const restored = await cero.restore(me, phrase)
 ```
 
-`cero.restore` closes `me`, deletes the directory's data, then opens it with the phrase's identity and every
-other option `me` had, the channel and mirrors included. It recovers like a new device, so it can
-reject `TIMEOUT` after the delete; the new identity is stored by then, so retry with `cero(dir, spec)`.
-Another phrase in `cero()` on a used directory is `INVALID`: switching goes through `cero.restore`.
+`cero.restore` opens the phrase's identity beside `me`, with every other option `me` had, the
+channel and mirrors included, and recovers it like a new device. Only once it has opened does it
+close `me`, delete its data and resolve with the new one. Until then `me` stays open and untouched:
+`TIMEOUT` when no device of that identity answers, or a bad phrase, leaves this device as it was, so
+retry later. A swap that dies part way is finished or undone the next time `cero(dir, spec)` opens the
+directory. Another phrase in `cero()` on a used directory is `INVALID`: switching goes through
+`cero.restore`.
 
 A phrase that is already `me`'s returns `me` unchanged. A client makes the same call.
 
@@ -134,9 +137,11 @@ A phrase that is already `me`'s returns `me` unchanged. A client makes the same 
 const linked = await cero.link(me, invite, { onrequest: (id) => show(id) })
 ```
 
-`cero.link` is the same switch by a device invite: `me` closes, the directory's data goes, and it
-opens linking, as `cero()` with `invite` does. It waits for the accept as long as the invite lasts,
-since the other device is in the user's other hand; `DENIED` ends it.
+`cero.link` is the same switch by a device invite: it links beside `me`, as `cero()` with `invite`
+does, and replaces `me` only once accepted. It waits for the accept as long as the invite lasts,
+since the other device is in the user's other hand. A code that is no device invite
+(`INVALID_INVITE`), `DENIED`, or a newer `restore` or `link` (`CLOSED`) leaves `me` as it was; the
+other device keeps the request until the invite expires.
 An app whose worker opens cero before the user chooses, as one driven over RPC does, offers all
 three ways in from one screen with `cero.restore` and `cero.link`.
 

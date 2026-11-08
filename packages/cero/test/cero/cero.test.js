@@ -946,6 +946,7 @@ test('restore(): keeps channel isolation from peers on another channel', async (
     channel: 'channel-two',
     recoveryTimeout: 2000
   })
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
 
   await t.exception(
     () => restore(b, phrase),

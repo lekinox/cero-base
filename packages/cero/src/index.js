@@ -6,6 +6,7 @@ import c from 'compact-encoding'
 import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 import fs from 'fs'
+import AbortController from 'bare-abort-controller'
 
 import { Identity } from '@cero-base/core/identity'
 import { Network } from '@cero-base/core/network'
@@ -23,6 +24,7 @@ import { peek } from './lib/peek.js'
 import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
 import { FLUSH, TIMEOUT } from './lib/constants.js'
+import { commit, nextOf, settle, staging } from './lib/swap.js'
 
 export { Handle, Ref, Local }
 export * from './lib/operators.js'
@@ -73,6 +75,7 @@ async function start(dir, spec, opts = {}) {
     throw CeroError.INVALID('bluetooth takes { on, topic, pipe, maxOutbound, maxInbound }')
   }
 
+  await settle(dir)
   const storage = new HypercoreStorage(`${dir}/main`)
   let store = null
   let local = null
@@ -169,6 +172,8 @@ async function start(dir, spec, opts = {}) {
     await pointer.ready()
     network.attach(pointer)
 
+    // a swap replaced while it waits stops reading
+    opts.signal?.addEventListener('abort', () => pointer.close().catch(safetyCatch))
     const key = recovering ? await readPointer(pointer, timeout) : linked?.key
 
     me = new Handle({
@@ -245,14 +250,7 @@ export async function restore(me, phrase) {
 
   const current = await Identity.create({ seed: Identity.toSeed(phrase) })
   if (current.id === me.identity.id) return me
-
-  // everything carries over except the identity, the channel above all
-  const { _dir: dir, spec, _opts: opts } = me
-
-  await me.close()
-  await fs.promises.rm(`${dir}/main`, { recursive: true, force: true })
-
-  return start(dir, spec, { ...opts, phrase })
+  return swap(me, { phrase })
 }
 
 /**
@@ -267,14 +265,48 @@ export async function restore(me, phrase) {
 export async function link(me, invite, { onrequest } = {}) {
   if (!me?._dir) throw CeroError.INVALID('me must be a cero instance')
   if (!invite) throw CeroError.REQUIRED('invite')
-
-  const { _dir: dir, spec, _opts: opts } = me
-
-  await me.close()
-  await fs.promises.rm(`${dir}/main`, { recursive: true, force: true })
-
+  const device = Invite.parse(invite).data?.byteLength === 32
+  if (!device) throw CeroError.INVALID_INVITE('not a device invite')
   // the other device is in someone's other hand: the wait is the invite's lifetime, deny ends it
-  return start(dir, spec, { ...opts, phrase: undefined, invite, onrequest, recoveryTimeout: 0 })
+  return swap(me, { invite, onrequest, recoveryTimeout: 0 })
+}
+
+// Another identity comes in beside this one: `me` stays open and untouched until the new one has opened, so a
+// failed, denied or replaced restore or link leaves the device as it was. A newer swap replaces one still waiting
+async function swap(me, opts) {
+  await me._swap?.abort()
+  if (me.closing || me.closed) throw CeroError.CLOSED('Handle')
+  // everything carries over except the identity, the channel above all
+  const { _dir: dir, spec, _opts: was } = me
+  const carried = { ...was, phrase: undefined, invite: undefined, onrequest: undefined }
+  const ac = new AbortController()
+  let finished = () => {}
+  const done = new Promise((resolve) => (finished = resolve))
+  const running = { abort: () => (ac.abort(), done) }
+  me._swap = running
+  try {
+    // one radio: the incoming identity takes it while it opens, and gives it back if it does not
+    await me._bluetooth?.suspend()
+    await staging(dir, async () => {
+      let opened = null
+      try {
+        opened = await start(nextOf(dir), spec, { ...carried, ...opts, signal: ac.signal })
+        if (ac.signal.aborted) throw CeroError.CLOSED('Swap')
+        await opened.close()
+      } catch (err) {
+        await opened?.close().catch(safetyCatch)
+        await me._bluetooth?.resume().catch(safetyCatch)
+        throw ac.signal.aborted ? CeroError.CLOSED('Swap') : err
+      }
+      // past here the new identity is whole on disk: a failed rename leaves main.old for the next launch to settle
+      await me.close()
+      await commit(dir)
+    })
+    return await start(dir, spec, carried)
+  } finally {
+    if (me._swap === running) me._swap = null
+    finished()
+  }
 }
 
 // the facade: cero.put and import { put } are the same function
@@ -319,7 +351,7 @@ async function pendingLink(local) {
 
 // the root's join: this device, bare, knocks with the invite and waits for a device of the identity
 // to let it in. What it learns is kept in its joins row, so a killed launch resumes it
-async function ask(local, network, spec, { invite, writer, onrequest, timeout }, pending) {
+async function ask(local, network, spec, { invite, writer, onrequest, timeout, signal }, pending) {
   const parsed = Invite.parse(invite ?? pending.invite)
   if (parsed.data?.byteLength !== 32) throw CeroError.INVALID_INVITE('not a device invite')
   const secret = pending?.device ?? Identity.randomKeyPair().secretKey
@@ -354,7 +386,14 @@ async function ask(local, network, spec, { invite, writer, onrequest, timeout },
         await local.store.put('joins', kept)
       }
       const identity = await Identity.bare(device)
-      reply = await Pairing.join(mailbox, row.invite, { identity, spec, writer, timeout, keep })
+      reply = await Pairing.join(mailbox, row.invite, {
+        identity,
+        spec,
+        writer,
+        timeout,
+        keep,
+        signal
+      })
     } finally {
       await mailbox.close()
     }

@@ -5,6 +5,7 @@ import safetyCatch from 'safety-catch'
 import { CeroError } from '@cero-base/core/errors'
 
 import { Local } from '../local/index.js'
+import { current } from './swap.js'
 
 // outside operators.js so storage deps stay off the client's module graph
 
@@ -21,7 +22,8 @@ export async function peek(dir, spec) {
   if (!spec) throw CeroError.REQUIRED('spec')
 
   // construct first, ready inside the try: a corrupt dir must still close everything
-  const root = new HypercoreStorage(`${dir}/main`)
+  // a swap killed between its renames: the store a launch will open, never a new empty one
+  const root = new HypercoreStorage(await current(dir))
   const store = new Corestore(root, { manifestVersion: 2 })
   const local = new Local(null, spec, { store })
   try {
