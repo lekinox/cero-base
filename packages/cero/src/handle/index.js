@@ -406,6 +406,11 @@ export class Handle extends ReadyResource {
     return this.store.rotate()
   }
 
+  /** @private */
+  _removed(id) {
+    return this.store.removed(id)
+  }
+
   // the same context, its refs writing into one batch; a fn that ignores it would write outside
   /** @private */
   async _tx(fn) {

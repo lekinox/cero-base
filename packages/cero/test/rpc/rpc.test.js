@@ -533,6 +533,13 @@ test("rpc: deactivate takes a room off the swarm, activate brings it back; suspe
   t.absent((await get(client.status)).data.suspended, 'resumed')
 })
 
+test('rpc: removed reads in the worker, the answer back in the UI', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'engineering' })
+  t.is(await cero.removed(team, me.identity.id), null, 'a member')
+  t.is(await cero.removed(team, Identity.randomBytes(32).toString('hex')), null, 'never one')
+})
+
 test('rpc: rotate on a room round-trips via the wire', async (t) => {
   const { me, client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })

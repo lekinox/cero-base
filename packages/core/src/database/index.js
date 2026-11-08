@@ -15,7 +15,8 @@ import {
   QUERY_RESERVED,
   RANK,
   ADMIN,
-  WRITE
+  WRITE,
+  REMOVALS
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
@@ -33,7 +34,7 @@ import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 import { Rotation } from './rotation.js'
 import { makeChanges } from './changes.js'
-import { makeDispatcher, BESPOKE } from './dispatch.js'
+import { makeDispatcher, BESPOKE, leftId } from './dispatch.js'
 import { keyPair } from '../mailbox/inbox.js'
 
 // autobee remaps an older store once a recovery peer, a mirror, serves it; unset, it closes the store
@@ -534,6 +535,23 @@ export class Database extends ReadyResource {
   async get(name, query) {
     this.guard()
     return this._read(this.view, name, query)
+  }
+
+  /**
+   * Whether a member is out for good, as this device has seen it: `'removed'` by another member, `'left'` on her
+   * own, or null while she is a member, never was one, or her going has not reached this device. A member let in
+   * again after is a member: null.
+   *
+   * @param {string} memberId
+   * @returns {Promise<'removed' | 'left' | null>}
+   */
+  async removed(memberId) {
+    this.guard()
+    if ((await this.get('members', memberId)).data) return null
+    const col = `@${this.ns}/${REMOVALS}`
+    if (await this.view.get(col, { id: memberId })) return 'removed'
+    if (await this.view.get(col, { id: leftId(memberId) })) return 'left'
+    return null
   }
 
   // the same read against any view: hooks read the transaction they run in

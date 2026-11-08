@@ -418,6 +418,19 @@ export function deny(ctx, request, reason = '') {
 }
 
 /**
+ * Whether a member is out of a handle for good, as this device has seen it: `'removed'` by another
+ * member, `'left'` on her own, or null while she is a member, never was one, or her going has not
+ * reached this device. Someone let in again after is a member: null.
+ *
+ * @param {Context} ctx
+ * @param {string} id  The member's id.
+ * @returns {Promise<'removed' | 'left' | null>}
+ */
+export function removed(ctx, id) {
+  return ctx._removed(id)
+}
+
+/**
  * Quit a handle for good: it leaves your list and closes on this device.
  *
  * @param {Context} ctx

@@ -282,6 +282,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _rotate;
     /** @private */
+    private _removed;
+    /** @private */
     private _tx;
     /** @private */
     private _leave;

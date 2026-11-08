@@ -42,6 +42,7 @@ export declare const cero: {
     deny(ctx: operators.Context, request: {
         id: string;
     }, reason?: string): Promise<void>;
+    removed(ctx: operators.Context, id: string): Promise<'removed' | 'left' | null>;
     leave(ctx: operators.Context): Promise<void>;
     close(ctx: operators.Context): Promise<void>;
     cancel(me: operators.Context, code: string): Promise<boolean>;

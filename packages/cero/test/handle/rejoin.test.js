@@ -234,6 +234,31 @@ test('rejoin: taken out by the owner, a code minted before is still turned away'
   t.is(err?.reason, 'removed')
 })
 
+// what an app reads to end what the handle gave her elsewhere: an explicit record, never a row not yet here
+test('removed: taken out says removed, leaving says left, a member or a stranger says nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { a, clinic } = await room(t, testnet)
+  const { b } = await leaver(t, testnet, clinic, await cero.invite(clinic))
+  t.is(await cero.removed(clinic, b.me.identity.id), null, 'a member')
+  t.is(await cero.removed(clinic, Identity.randomBytes(32).toString('hex')), null, 'never one')
+  t.is(await cero.removed(clinic, a.me.identity.id), null, 'the owner')
+  await del(clinic.members, b.me.identity.id)
+  t.is(await cero.removed(clinic, b.me.identity.id), 'removed', 'taken out')
+  const c = await left(t, testnet, clinic, await cero.invite(clinic))
+  t.is(await cero.removed(clinic, c.me.identity.id), 'left', 'left on her own')
+})
+
+test('removed: someone let in again after is a member', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { clinic } = await room(t, testnet)
+  const b = await left(t, testnet, clinic, await cero.invite(clinic))
+  t.is(await cero.removed(clinic, b.me.identity.id), 'left')
+  const back = await open(b.me.team, await cero.invite(clinic))
+  t.teardown(() => back.close().catch(() => {}))
+  await waitUntil(async () => (await get(clinic.members, b.me.identity.id)).data)
+  t.is(await cero.removed(clinic, b.me.identity.id), null, 'back in')
+})
+
 test('rejoin: deleting someone who is no member, by any id, revokes no device', async (t) => {
   const testnet = await makeTestnet(t)
   const { clinic } = await room(t, testnet)

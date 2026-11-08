@@ -43,6 +43,9 @@ const isKey = (b) => b?.byteLength === 32
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
 
+// a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
+export const leftId = (memberId) => `left:${memberId}`
+
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
@@ -378,11 +381,6 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted })
   }
-  // a member who left, apart from one removed and from a revoked device: ids never hold ':'
-  function leftId(memberId) {
-    return `left:${memberId}`
-  }
-
   // the devices of the chain, not the identity it starts with: a member's removal is ordered by
   // its invites, a device's is for good
   async function revoked(view, proof) {

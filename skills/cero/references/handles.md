@@ -177,6 +177,18 @@ in: `INVALID`. The removed member's `room.status` shows `role: null`, and
 they come back only through an invite minted after the removal: an older one rejects `DENIED` with
 `err.reason` `'removed'`.
 
+### Removed
+
+```js
+await cero.removed(room, memberId) // 'removed', 'left' or null
+```
+
+Whether a member is out for good, from the record the handle keeps of it: `'removed'` when another
+member took her out, `'left'` when she left. It is `null` while she is a member, once she is let in
+again, for someone who never was one, and while her going has not reached this device. A missing
+`members` row is not that record: on a device still catching up it only means not yet. Read it to
+end what the handle gave her elsewhere, a seat in another handle say.
+
 ## Remove and re-key
 
 ```js

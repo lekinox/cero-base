@@ -29,6 +29,7 @@ export const {
   accept,
   deny,
   leave,
+  removed,
   close,
   cancel,
   suspend,
@@ -363,6 +364,11 @@ const operators = {
   /** @private */
   async _leave() {
     await this.rpc.leave({ handle: this.id })
+  },
+
+  /** @private */
+  _removed(id) {
+    return this._verb('removed', id)
   },
 
   /** @private */

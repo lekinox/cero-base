@@ -413,6 +413,15 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<SingleResult | ListResult>}
      */
     get(name: string, query?: string | Query): Promise<SingleResult | ListResult>;
+    /**
+     * Whether a member is out for good, as this device has seen it: `'removed'` by another member, `'left'` on her
+     * own, or null while she is a member, never was one, or her going has not reached this device. A member let in
+     * again after is a member: null.
+     *
+     * @param {string} memberId
+     * @returns {Promise<'removed' | 'left' | null>}
+     */
+    removed(memberId: string): Promise<'removed' | 'left' | null>;
     /** @private */
     private _read;
     /**
