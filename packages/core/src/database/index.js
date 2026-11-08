@@ -245,6 +245,9 @@ export class Database extends ReadyResource {
     })
     // without a listener autobee escalates apply/view errors to a process crash
     this.bee.on('error', this._onerror)
+    // a failed background remap is only a warning: the store reads its old cores until a reopen or a fast-forward
+    // tries again
+    this.bee.on('warning', this._onerror)
 
     // with no mirror to hold the database, every member holds it: any member serves a joiner, offline
     if (this.network && !this.network.mirrors.length) {

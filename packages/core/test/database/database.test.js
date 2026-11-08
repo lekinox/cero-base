@@ -2422,6 +2422,15 @@ test('a throwing after hook refuses the op', async (t) => {
   t.is(data.length, 0, 'the row never landed')
 })
 
+// autobee reports a failed background remap as a warning, never an error: the app hears it through onerror
+test('a warning from the store reaches onerror', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const warning = new Error('remap failed')
+  db.bee.emit('warning', warning)
+  t.alike(errors, [warning])
+})
+
 // which databases swarm is ranked by their last update, not by being open
 test('presence: an update ranks a database, opening it does not', async (t) => {
   const testnet = await makeTestnet(t)
