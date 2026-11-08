@@ -24,7 +24,7 @@ ESM everywhere. The three packages publish at one version, in lockstep.
 
 ```sh
 npm install
-npm test                  # the three packages in parallel under Bare, one file per process
+npm test                  # the packages one at a time under Bare, four files at once; core's network timings alone
 npm run test:node         # the same under Node
 npm run test:core         # one package
 npm run lint              # prettier + lunte + docs name only API the source has
