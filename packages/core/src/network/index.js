@@ -83,6 +83,8 @@ export class Network extends ReadyResource {
     /** @private */
     this._blindPeering = null
     /** @private */
+    this._peeringClosed = false
+    /** @private */
     this._lost = new Set()
     /** @private */
     this._relookup = null
@@ -223,13 +225,25 @@ export class Network extends ReadyResource {
   }
 
   /**
+   * Stop mirroring, before the databases close: blind peering reads storage for every database it
+   * mirrors, so once it is closed none of its work outlives storage. `peering()` throws CLOSED
+   * after it; closing the network does it too.
+   *
+   * @returns {Promise<void>}
+   */
+  async closePeering() {
+    this._peeringClosed = true
+    await this._blindPeering?.close()
+  }
+
+  /**
    * The blind-peering client, built on first use: a mailbox post names mirrors this network
    * may not have been given.
    *
    * @returns {import('blind-peering')}
    */
   peering() {
-    if (this.closing || this.closed) throw CeroError.CLOSED('Network')
+    if (this.closing || this.closed || this._peeringClosed) throw CeroError.CLOSED('Network')
     if (!this._blindPeering) {
       this._blindPeering = new BlindPeering(this.swarm.dht, this.store, {
         blindPeers: this.mirrors.map((key) => ({ key })),

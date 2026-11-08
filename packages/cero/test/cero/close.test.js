@@ -52,6 +52,27 @@ test('close: a send after the close fails as closing', async (t) => {
   t.absent(/Storage/.test(err?.message), err?.message)
 })
 
+// blind peering reads storage for each database it mirrors: none of that work may still run when storage closes
+test('close: mirroring stops before any database closes', async (t) => {
+  const { me } = await device(t)
+  const room = await cero.open(me.team, { name: 'clinic' })
+  const order = []
+  const record = (target, method, label) => {
+    const run = target[method].bind(target)
+    target[method] = async (...args) => {
+      order.push(label)
+      return run(...args)
+    }
+  }
+  record(me.network, 'closePeering', 'peering')
+  record(me.store, 'close', 'root')
+  record(room.store, 'close', 'room')
+  await me.close()
+  t.is(order[0], 'peering', `mirroring stops first: ${order.join(', ')}`)
+  t.ok(order.includes('root') && order.includes('room'), 'then the databases close')
+  t.exception(() => me.network.peering(), /CLOSED/, 'and takes no more work')
+})
+
 test('close: it still opens again on the same storage', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()

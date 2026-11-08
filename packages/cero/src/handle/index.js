@@ -309,8 +309,12 @@ export class Handle extends ReadyResource {
     this._owned.clear()
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
+    const root = !this.parent
     const steps = [
       ...[...(this._joining?.values() || [])].map((join) => () => join.close()),
+      // mirroring stops before any database closes, once the mailbox is done with it: blind peering reads
+      // storage for each database it mirrors
+      ...(root ? [() => this.mailbox.close(), () => this.network.closePeering()] : []),
       () => this._blobs?.close(),
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
       ...[...(this.children || [])].map((c) => () => c._end()),
@@ -320,13 +324,12 @@ export class Handle extends ReadyResource {
     this._epochBlobs = null
     this.children?.clear()
 
-    if (this.parent) {
+    if (!root) {
       this.parent.children?.delete(this)
       steps.push(() => this.store.close())
     } else {
       const store = this.store.store
       steps.push(
-        () => this.mailbox.close(),
         () => this._bluetooth?.close(),
         () => this.local.close(),
         async () => {

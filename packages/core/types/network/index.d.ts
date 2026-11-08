@@ -89,6 +89,8 @@ export declare class Network extends ReadyResource {
     /** @private */
     _blindPeering;
     /** @private */
+    _peeringClosed;
+    /** @private */
     _lost;
     /** @private */
     _relookup;
@@ -121,6 +123,14 @@ export declare class Network extends ReadyResource {
     }): import('@hyperswarm/secret-stream');
     /** @private */
     private _add;
+    /**
+     * Stop mirroring, before the databases close: blind peering reads storage for every database it
+     * mirrors, so once it is closed none of its work outlives storage. `peering()` throws CLOSED
+     * after it; closing the network does it too.
+     *
+     * @returns {Promise<void>}
+     */
+    closePeering(): Promise<void>;
     /**
      * The blind-peering client, built on first use: a mailbox post names mirrors this network
      * may not have been given.
