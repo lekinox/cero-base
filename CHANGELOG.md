@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.11.0 (2026-11-08)
+
+### Bug Fixes
+
+- mirroring stops before any database closes, so blind peering never reads a closed storage
+- restore and link build the new identity beside the old and swap only once it opens; a killed swap settles on the next launch
+- leaving first does not dodge a removal
+- handles are held, not owned; leaving is not a removal; a send racing close fails as closing
+
+### Other
+
+- 🧪 test: the packages test one at a time and core's network timings run alone, so load never fails a timing
+- 🚀 deps: autobee 2.13.3; a failed background remap reaches onerror
+- 🚀 deps: every package, example and service on the latest releases
+- relay: refuse self-pairing; idle timer follows real link traffic
+- relay: per-IP unpaired cap, /64 grouping, link cap and idle timeout
+- relay: raise MAX_PER_IP default to 256 for carrier-grade NAT
+- services: add blind-relay with abuse caps; publish UDP ports for mirror and relay
+
 ## 2.10.0 (2026-11-02)
 
 ### Features
