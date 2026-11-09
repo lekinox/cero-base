@@ -157,6 +157,25 @@ test('invite: ttl is ms or a duration', async (t) => {
   await t.exception(pairing.invite({ ttl: 'soon' }), /not a duration/)
 })
 
+test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  await pairing.invite({ ttl: '1h' })
+  // the room closes while a sync drops an invite that ran out; every sync is let finish
+  const syncs = []
+  const sync = pairing._sync.bind(pairing)
+  pairing._sync = () => syncs[syncs.push(sync()) - 1]
+  const call = db.call.bind(db)
+  db.call = async (verb, ...args) => {
+    if (verb === 'del-invite') await pairing.close()
+    return call(verb, ...args)
+  }
+  await pairing.invite({ ttl: -1000 }).catch(() => {})
+  await Promise.allSettled(syncs)
+  t.ok(pairing.closed, 'closed mid-sync')
+  t.is(pairing._expiry, null, 'nothing left to wake it')
+})
+
 test('invite: a rank above member is single-use', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing } = await makeHost(t, testnet)

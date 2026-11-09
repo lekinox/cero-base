@@ -101,6 +101,7 @@ export class Pairing extends ReadyResource {
   async _close() {
     this.db.off('update', this._onupdate)
     clearTimeout(this._expiry)
+    this._expiry = null
     const posts = [...this._replies.values(), ...this._denials.values()]
     this._replies.clear()
     this._denials.clear()
@@ -232,6 +233,9 @@ export class Pairing extends ReadyResource {
   /** @private */
   _arm(rows) {
     clearTimeout(this._expiry)
+    this._expiry = null
+    // a sync that awaited past close arms nothing: _close cleared the timer already
+    if (this.closing || this.closed) return
     const live = rows.filter((row) => row.expires > 0 && !expired(row))
     const next = Math.min(...live.map((row) => row.expires))
     if (!Number.isFinite(next)) return
