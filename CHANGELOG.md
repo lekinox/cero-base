@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.12.0 (2026-11-09)
+
+### Features
+
+- cero.removed(room, id) says whether a member was taken out or left, from the record the handle keeps
+
+### Bug Fixes
+
+- a pairing closed while it syncs arms no expiry timer, so nothing keeps the process alive
+- a member's own writes never carry its view of its rank, and the same profile mirrors no op
+
 ## 2.11.0 (2026-11-08)
 
 ### Bug Fixes
