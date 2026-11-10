@@ -125,6 +125,9 @@ export class Handle extends ReadyResource {
     // children still opening, not adopted yet: a close must close them too
     /** @private */
     this._pending = parent ? null : new Set()
+    // children closing on their own, their linger over: a close waits for them, they still read its stores
+    /** @private */
+    this._ending = parent ? null : new Set()
     /** @private */
     this._typeHooks = parent ? null : new Set()
     /** @private */
@@ -321,6 +324,7 @@ export class Handle extends ReadyResource {
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
       ...[...(this.children || [])].map((c) => () => c._end()),
       ...[...(this._pending || [])].map((c) => () => c._end()),
+      ...[...(this._ending || [])].map((c) => () => c.closing),
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -328,6 +332,7 @@ export class Handle extends ReadyResource {
 
     if (!root) {
       this.parent.children?.delete(this)
+      this.parent._ending?.add(this)
       steps.push(
         () => this.parent._seal(this).catch(this._onerror),
         () => this.store.close()
@@ -347,7 +352,11 @@ export class Handle extends ReadyResource {
         () => this._storage?.close()
       )
     }
-    await settle(steps)
+    try {
+      await settle(steps)
+    } finally {
+      this.parent?._ending?.delete(this)
+    }
   }
 
   /**
@@ -618,7 +627,8 @@ export class Handle extends ReadyResource {
     if (this._queued) {
       if (child) this._queued.children.add(child)
       else this._queued.all = true
-      return this._indexing
+      // a failed pass reaches onerror once, through the call that queued it: joined calls only wait for it
+      return this._indexing.catch(() => {})
     }
     const queued = (this._queued = { all: !child, children: new Set(child ? [child] : []) })
     const run = () => {
@@ -649,7 +659,8 @@ export class Handle extends ReadyResource {
     const reads = last ? [last] : (only ?? [...this.children, ...this._pending])
     const open = new Map(
       [...reads]
-        .filter((child) => child.opened)
+        // a handle on its way out is its seal's to read: any other pass finds its store closed
+        .filter((child) => child.opened && (child === last || !child.closing))
         .map((child) => [b4a.toHex(child.store.discoveryKey), child])
     )
     for (const row of rows) {

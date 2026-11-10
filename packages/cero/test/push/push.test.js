@@ -229,6 +229,35 @@ test('topics: a pass that fails leaves the next one to run, and an unreadable ha
   t.ok(await receive(me, await pushOf(second, second)), 'the others are written as ever')
 })
 
+test('topics: a failed pass that several updates joined reaches onerror once', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const room = await open(me.team, { name: 'clinic' })
+  await me._indexing
+
+  // the pass under way is slow, and the one queued behind it fails
+  const reindex = me._reindex.bind(me)
+  let release
+  const held = new Promise((resolve) => (release = resolve))
+  let passes = 0
+  me._reindex = async (...args) => {
+    passes++
+    if (passes === 1) await held
+    if (passes === 2) throw new Error('disk full')
+    return reindex(...args)
+  }
+  for (let i = 0; i < 6; i++) await set(room.members, { id: me.identity.id, name: `a${i}` })
+  release()
+  await waitUntil(() => errors.length > 0)
+  for (let p = null; p !== me._indexing;) await (p = me._indexing).catch(() => {})
+  t.is(passes, 2, 'the updates behind the slow pass joined one')
+  t.alike(
+    errors.map((e) => e.message),
+    ['disk full'],
+    'reported once'
+  )
+})
+
 test('topics: a burst of updates on one handle is a few passes that read only that handle, and the last one lands', async (t) => {
   const a = await ceroOpen(t)
   const c = await ceroOpen(t, { testnet: a.testnet })
@@ -268,6 +297,37 @@ test('topics: a burst of updates on one handle is a few passes that read only th
   for (let p = null; p !== a.me._indexing;) await (p = a.me._indexing)
   t.ok(counts.passes < counts.updates / 2, `${counts.passes} passes for ${counts.updates} updates`)
   t.is(counts.other, 0, 'the other handle was not read')
+})
+
+test('topics: an update that lands while a handle closes leaves its row as it was sealed', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { linger: 0, onerror: (err) => errors.push(err) })
+  const room = await open(me.team, { name: 'clinic' })
+  const own = await pushOf(room, room)
+  await waitUntil(async () => await receive(me, own))
+  // an op of another member applies between the seal and the store closing
+  const seal = me._seal.bind(me)
+  me._seal = (child) => {
+    const sealing = seal(child)
+    child.store.emit('update', new Set(['members']))
+    return sealing
+  }
+  // the store is still closing when the pass that update asked for runs
+  const close = room.store._close.bind(room.store)
+  let closing
+  const held = new Promise((resolve) => (closing = resolve))
+  room.store._close = async () => {
+    await held
+    return close()
+  }
+  const closed = cero.close(room)
+  await waitUntil(() => !!room.store.closing)
+  for (let p = null; p !== me._indexing;) await (p = me._indexing).catch(() => {})
+  closing()
+  await closed
+  t.is(me._ending.size, 0, 'closed, it is no longer waited for')
+  t.alike(errors, [], 'nothing reaches onerror')
+  t.ok(await receive(me, own), 'its pushes still verify')
 })
 
 test('topics: a second device of the identity lists a handle it never opened', async (t) => {

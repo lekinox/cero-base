@@ -136,6 +136,37 @@ test('close: a root suspended with nothing in flight closes', async (t) => {
   t.ok(me.closed, 'closed')
 })
 
+test('close: a room still closing on its own is waited for, so the local store outlives it', async (t) => {
+  const { me } = await device(t, { linger: 1 })
+  const room = await cero.open(me.team, { name: 'clinic' })
+  await me._indexing
+  const errors = []
+  room._onerror = (err) => errors.push(err)
+  const order = []
+  const close = me.local.close.bind(me.local)
+  me.local.close = () => {
+    order.push('local')
+    return close()
+  }
+  room.once('close', () => order.push('room'))
+  // its last writers row takes a while to write, as in a big room
+  const seal = me._seal.bind(me)
+  me._seal = async (child) => {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    return seal(child)
+  }
+  await cero.close(room)
+  await waitUntil(() => !!room.closing)
+  await me.close()
+  await room.closing.catch(() => {})
+  t.alike(order, ['room', 'local'], 'the room closed first')
+  t.alike(
+    errors.map((e) => e.message),
+    [],
+    'its row was written with the local store open'
+  )
+})
+
 test('close: it still opens again on the same storage', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
