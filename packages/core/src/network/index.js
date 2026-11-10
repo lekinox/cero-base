@@ -167,10 +167,7 @@ export class Network extends ReadyResource {
     this._swarm = null
     if (swarm) {
       // force destroy still awaits a server.close round-trip; cap it
-      await Promise.race([
-        swarm.destroy({ force: true }).catch(safetyCatch),
-        new Promise((r) => setTimeout(r, 750))
-      ])
+      await capped(swarm.destroy({ force: true }).catch(safetyCatch), 750)
     }
 
     if (this._blindPeering) {
@@ -262,7 +259,7 @@ export class Network extends ReadyResource {
    */
   async flush({ timeout = 500 } = {}) {
     if (!this._swarm) return
-    await Promise.race([this._swarm.flush(), new Promise((r) => setTimeout(r, timeout))])
+    await capped(this._swarm.flush(), timeout)
   }
 
   /**
@@ -389,6 +386,16 @@ function dropIfSilent(conn) {
   }, SILENT_TIMEOUT)
   timer.unref()
   conn.once('close', () => clearTimeout(timer))
+}
+
+// the timer goes once the race settles, or it keeps a closed process alive
+async function capped(promise, ms) {
+  let timer = null
+  try {
+    await Promise.race([promise, new Promise((resolve) => (timer = setTimeout(resolve, ms)))])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function isTopic(x) {

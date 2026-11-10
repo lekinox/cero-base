@@ -20,6 +20,11 @@ packages/cero/test/fixtures/.compat/
 packages/*/package-lock.json
 example/*/package-lock.json
 
+# secrets the services read
+services/mirror/gateway/service-account.json
+services/mirror/gateway/config.json
+services/relay/key
+
 # local notes and tooling
 .claude
 .superpowers/

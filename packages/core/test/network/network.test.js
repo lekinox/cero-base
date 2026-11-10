@@ -29,6 +29,7 @@ import {
 test.configure({ timeout: 60000 })
 
 const PEER = new URL('../fixtures/peer.js', import.meta.url).pathname
+const CLOSE = new URL('../fixtures/close.js', import.meta.url).pathname
 
 // ─── channel ──────────────────────────────────────────────────────────────
 
@@ -114,6 +115,28 @@ test('close() is idempotent', async (t) => {
   await net.close()
   await net.close()
   t.pass('multiple close() calls succeed')
+})
+
+// ms the process lives on after close resolved
+async function outlives(t, mode) {
+  const testnet = await makeTestnet(t)
+  const args = [CLOSE, await t.tmp(), JSON.stringify(testnet.bootstrap), mode]
+  const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] })
+  let closed = 0
+  child.stdout.on('data', (data) => b4a.toString(data).includes('closed') && (closed = Date.now()))
+  await new Promise((resolve) => child.on('exit', resolve))
+  t.ok(closed, 'closed')
+  return Date.now() - closed
+}
+
+test('close(): the process exits as soon as close resolves', async (t) => {
+  const ms = await outlives(t, 'close')
+  t.ok(ms < 300, `exited ${ms} ms after close`)
+})
+
+test('flush(): a flush that settles leaves no timer to keep the process alive', async (t) => {
+  const ms = await outlives(t, 'flush')
+  t.ok(ms < 300, `exited ${ms} ms after close`)
 })
 
 // ─── swarm keypair ────────────────────────────────────────────────────────

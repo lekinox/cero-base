@@ -88,6 +88,25 @@ test('close is idempotent', async (t) => {
   t.is(blobs.closed, true)
 })
 
+test('close releases the namespace session', async (t) => {
+  const { store } = await makeStore(t)
+  await store.ready()
+  const sessions = store.corestores.size
+  const encryptionKey = Identity.randomBytes(32)
+  const first = new Blobs({ store, encryptionKey })
+  await first.ready()
+  const id = await first.put(b4a.from('x'))
+  await first.close()
+  t.is(store.corestores.size, sessions, 'a Blobs that wrote')
+
+  // as a handle reads a file of an older epoch: open by key, get, close
+  const again = new Blobs({ store, key: first.key, encryptionKey })
+  await again.ready()
+  t.alike(await again.get(id), b4a.from('x'))
+  await again.close()
+  t.is(store.corestores.size, sessions, 'and one opened by key')
+})
+
 test('id, key, discoveryKey are null before ready', async (t) => {
   const { store } = await makeStore(t)
   const blobs = new Blobs({ store, encryptionKey: Identity.randomBytes(32) })

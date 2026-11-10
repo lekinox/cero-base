@@ -39,6 +39,8 @@ export class Blobs extends ReadyResource {
 
     /** @private */
     this._coreKey = key || null
+    /** @private */
+    this._ns = null
     /** @type {import('hypercore') | null} */
     this.core = null
     /** @type {import('hyperblobs') | null} */
@@ -81,8 +83,8 @@ export class Blobs extends ReadyResource {
     if (this._coreKey) opts.key = this._coreKey
     else opts.name = this.name
 
-    const ns = this.store.namespace(NS)
-    this.core = ns.get(opts)
+    this._ns = this.store.namespace(NS)
+    this.core = this._ns.get(opts)
     await this.core.ready()
 
     this.hyperblobs = new Hyperblobs(this.core)
@@ -96,6 +98,7 @@ export class Blobs extends ReadyResource {
   async _close() {
     if (this.hyperblobs) await this.hyperblobs.close()
     if (this.core) await this.core.close()
+    if (this._ns) await this._ns.close()
   }
 
   /**
