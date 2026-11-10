@@ -1,7 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 
-import { Local } from '../../src/local/index.js'
+import { Local, box } from '../../src/local/index.js'
 import { cero, open as openHandle } from '../../src/index.js'
 import { put, set, get, del, watch } from '../../src/lib/operators.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -93,6 +93,21 @@ test('Local: persists across reopen', async (t) => {
   t.is(list.length, 1)
   t.is(list[0].text, 'a')
   await local.close()
+})
+
+test('box: a handled row keeps its place across a reopen', async (t) => {
+  const dir = await t.tmp()
+  let local = new Local(dir, spec)
+  await local.ready()
+  const mail = { id: 'aa', address: b4a.alloc(32, 1), message: b4a.alloc(0), handled: 7 }
+  await box(local.store, 'inbox').put(mail)
+  await local.close()
+
+  local = new Local(dir, spec)
+  await local.ready()
+  t.teardown(() => local.close())
+  const [row] = await box(local.store, 'inbox').list()
+  t.is(row.handled, 7)
 })
 
 // ─── pagination ───────────────────────────────────────────────────────────

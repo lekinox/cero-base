@@ -8,20 +8,21 @@ import b4a from 'b4a'
  * receiving at the address, and deposited on `mirrors` for an owner who is offline.
  * `delivered` resolves on the first read, by the owner or by a mirror holding it for them.
  * Given a `core` instead, it announces that core as it is; given a `name`, the core is the
- * store's core of that name, and a message it already holds is not written twice.
+ * store's core of that name, and a message it already holds is not written twice. `sealed` says
+ * the message is sealed to the address already.
  */
 export class Post extends ReadyResource {
   /**
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} address
    * @param {Uint8Array | null} message
-   * @param {{ mirrors?: Uint8Array[], core?: import('hypercore'), name?: string }} [opts]
+   * @param {{ mirrors?: Uint8Array[], core?: import('hypercore'), name?: string, sealed?: boolean }} [opts]
    */
-  constructor(network, address, message, { mirrors = [], core = null, name } = {}) {
+  constructor(network, address, message, { mirrors = [], core = null, name, sealed = false } = {}) {
     super()
     this.network = network
     this.address = address
-    this.message = message
+    this.message = message && !sealed ? crypto.encrypt(message, address) : message
     this.mirrors = mirrors
     this.name = name || b4a.toHex(crypto.randomBytes(32))
     /** @type {Promise<void>} */
@@ -44,12 +45,13 @@ export class Post extends ReadyResource {
     this._core = core
     await core.ready()
     core.once('upload', () => this._ondelivered())
-    if (this.message && core.length === 0) await core.append(crypto.encrypt(this.message, address))
+    if (this.message && core.length === 0) await core.append(this.message)
 
     const wakeup = [{ key: core.key, length: core.length }]
     const session = network.wakeup.session(address, {
       discoveryKey: crypto.discoveryKey(address),
-      onpeeractive: (peer) => session.announce(peer, wakeup)
+      onpeeractive: (peer) => session.announce(peer, wakeup),
+      onlookup: (req, peer) => session.announce(peer, wakeup)
     })
     this._session = session
     // a topic this network already joined has active peers that will not fire onpeeractive again

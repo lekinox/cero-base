@@ -222,7 +222,11 @@ export const local = {
     name: string,
     erase: bool,
     // received: the inbox fetched the core, so it may erase it once handled
-    fetched: bool
+    fetched: bool,
+    // received and handled, when: the row stays so a mirror announcing it again is ignored
+    handled: uint,
+    // sent: the message is sealed to the address; absent, it is in the clear and sealed to go out
+    sealed: bool
   },
   environment: {
     channel: required(string)

@@ -12,10 +12,12 @@ import { CeroError } from '../lib/errors.js'
  * @property {string} id                 Unique per message, hex.
  * @property {string} [name]             The core it travels in, so a restart sends it on the same core.
  * @property {Uint8Array} address        Where it goes, or where it arrived.
- * @property {Uint8Array} message
+ * @property {Uint8Array} message      Sent: as `sealed` says. Received: empty, it stays in its core.
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
  * @property {boolean} [keep]            False erases the sender's copy once someone read it.
  * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it.
+ * @property {number} [handled]          When it was handled: the id is remembered for a while.
+ * @property {boolean} [sealed]          Sent: `message` is sealed to the address, not in the clear.
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
@@ -91,7 +93,8 @@ export class Mailbox extends ReadyResource {
   /**
    * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
    * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
-   * over again the next time this address is received.
+   * over again the next time this address is received. One it resolves `false` on was not for
+   * this address: it is erased as one that does not open.
    *
    * @param {Uint8Array} secret
    * @param {(message: Uint8Array) => unknown} onmessage
@@ -124,7 +127,15 @@ export class Mailbox extends ReadyResource {
     if (this.closing) throw CeroError.CLOSED('Mailbox')
     if (!this.opened) await this.ready()
     const name = b4a.toHex(crypto.randomBytes(32))
-    const mail = { id: b4a.toHex(crypto.randomBytes(16)), name, address, message, mirrors, keep }
+    const mail = {
+      id: b4a.toHex(crypto.randomBytes(16)),
+      name,
+      address,
+      message: crypto.encrypt(message, address),
+      mirrors,
+      keep,
+      sealed: true
+    }
     try {
       await this.outbox.put(mail)
     } catch (err) {
@@ -136,8 +147,8 @@ export class Mailbox extends ReadyResource {
   }
 
   /** @private */
-  _deliver({ id, name, address, message, mirrors, keep = true }) {
-    const post = new Post(this.network, address, message, { mirrors, name })
+  _deliver({ id, name, address, message, mirrors, keep = true, sealed = false }) {
+    const post = new Post(this.network, address, message, { mirrors, name, sealed })
     this._track(post)
     deliver(post, () => this.outbox.del(id))
       .then(() => keep || erase(this.network.store, post.key).catch(this.onerror))

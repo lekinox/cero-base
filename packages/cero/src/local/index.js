@@ -89,8 +89,8 @@ function pack({ mirrors = [], keep = true, ...mail }) {
   return { ...mail, mirrors: b4a.concat(mirrors), erase: !keep }
 }
 
-function unpack({ id, address, message, mirrors, name, erase, fetched }) {
+function unpack({ id, address, message, mirrors, name, erase, fetched, handled, sealed }) {
   const keys = []
   for (let i = 0; i < (mirrors?.byteLength || 0); i += 32) keys.push(mirrors.subarray(i, i + 32))
-  return { id, address, message, mirrors: keys, name, keep: !erase, fetched }
+  return { id, address, message, mirrors: keys, name, keep: !erase, fetched, handled, sealed }
 }
