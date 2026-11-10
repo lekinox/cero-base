@@ -1416,6 +1416,43 @@ test('link: that device links later with a new invite', async (t) => {
   t.pass('and writes to the root')
 })
 
+test('link: a device whose root lags prunes no sibling', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b1 = await ceroOpen(t, { testnet: a.testnet })
+  const id = b1.me.identity.id
+  await open(b1.me.team, await cero.invite(room))
+  const phrase = await cero.phrase(b1.me)
+  const listed = (me) =>
+    waitUntil(async () => ((await get(me.team)).data.length === 1 ? true : null))
+  const seats = async (handle) =>
+    (await get(handle.devices)).data.filter((d) => d.memberId === id && d.key).map((d) => d.id)
+
+  // b2 last runs before b3 is added: its root never hears of b3
+  const b2 = await ceroOpen(t, { testnet: a.testnet, phrase })
+  await listed(b2.me)
+  await b2.me.close()
+  const b3 = await ceroOpen(t, { testnet: a.testnet, phrase })
+  await listed(b3.me)
+  await open(b3.me.team, { id: room.id })
+  await waitUntil(async () => ((await seats(room)).length === 2 ? true : null))
+  const before = await seats(room)
+  await b1.me.close()
+  await b3.me.close()
+
+  // b2 comes back while its siblings are away, and opens the room
+  const back = await cero(b2.dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => back.close().catch(() => {}), { order: 1 })
+  const mine = await open(back.team, { id: room.id })
+  const kept = async () => {
+    const now = await seats(mine)
+    return before.every((d) => now.includes(d))
+  }
+  await waitUntil(kept)
+  await back._pruneAll()
+  t.ok(await kept(), 'b1 and b3 keep their seats')
+})
+
 test('cero(): a second device auto-claims', async (t) => {
   const testnet = await makeTestnet(t)
 

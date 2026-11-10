@@ -1119,11 +1119,11 @@ export class Handle extends ReadyResource {
   // handles are told by whichever device of the identity has them open
   /** @private */
   async _prune(child) {
-    const { data: mine } = await this.store.get('devices')
-    const kept = new Set(mine.filter((d) => d.key).map((d) => b4a.toHex(d.key)))
     const { data: rows } = await child.store.get('devices')
     for (const row of rows) {
-      if (row.memberId !== this.identity.id || !row.key || kept.has(b4a.toHex(row.key))) continue
+      if (row.memberId !== this.identity.id || !row.key) continue
+      // a sibling this root has not heard of yet is no removal: only its record is
+      if ((await this.store.removed(hid.encode(row.key))) !== 'removed') continue
       if (child.closing || child.closed) return
       await child.store.del('devices', row.id)
     }
