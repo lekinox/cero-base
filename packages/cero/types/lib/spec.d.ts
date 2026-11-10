@@ -43,6 +43,10 @@ export type SpecMeta = {
      */
     type?: string;
     version?: number;
+    /**
+     * What a write means to Cero, raised by a release that changes it.
+     */
+    rules?: number;
     refs: Record<string, RefInfo>;
     local?: {
         refs: Record<string, RefInfo>;
@@ -80,6 +84,7 @@ export type Row = import('@cero-base/core/database').Row;
  * @property {string} [ns]
  * @property {string} [type]     The handle type, on a handle's spec.
  * @property {number} [version]
+ * @property {number} [rules]    What a write means to Cero, raised by a release that changes it.
  * @property {Record<string, RefInfo>} refs
  * @property {{ refs: Record<string, RefInfo> }} [local]
  * @property {Record<string, SpecMeta>} [handles]

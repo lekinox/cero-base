@@ -1156,7 +1156,6 @@ export class Database extends ReadyResource {
   }
 }
 
-// an unbounded read of an old checkout wedges autobee's drain; null means untrusted
 // the view's definition version, then the rules it was applied under: a marker that predates the
 // rules holds the first only
 function viewMarker(buf) {
@@ -1165,6 +1164,7 @@ function viewMarker(buf) {
   return { db, rules: state.start < state.end ? c.uint.decode(state) : 0 }
 }
 
+// an unbounded read of an old checkout wedges autobee's drain; null means untrusted
 function bounded(promise, ms = 2000) {
   return Promise.race([
     promise.then((v) => ({ v })),
