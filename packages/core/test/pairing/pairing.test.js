@@ -461,6 +461,60 @@ test('join: a settled join leaves no row in the box, accepted or denied', async 
   t.pass('denied')
 })
 
+test('join: two replies racing settle it once, and nothing is kept after', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  let read = 0
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => {
+    if (!m.handled) read++
+    return put(m)
+  }
+  const kept = []
+  // the first answer is still being kept when the second is read
+  const keep = async (answer) => {
+    kept.push(answer)
+    await waitFor(() => read === 2, { timeout: 30000 })
+  }
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
+  await asked(host.db)
+
+  // as two member devices answer at once
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  const keys = []
+  for (let i = 0; i < 2; i++) {
+    await host.mailbox.send(reply, answer)
+    keys.push(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+  }
+  t.alike((await joining).key, host.db.key)
+  await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
+  for (const key of keys) await waitFor(async () => !(await stored(joiner.net, key)))
+  t.is(kept.length, 1, 'kept once')
+  t.alike(await joiner.mailbox.inbox.list(), [], 'no row')
+})
+
+test('join: a reply its keep failed on leaves the next one to settle it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  let tries = 0
+  const keep = async () => {
+    if (tries++ === 0) throw new Error('disk full')
+  }
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
+  await asked(host.db)
+
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  await host.mailbox.send(reply, answer)
+  await waitFor(() => tries === 1, { timeout: 30000 })
+  await host.mailbox.send(reply, answer)
+  t.alike((await joining).key, host.db.key)
+  t.is(tries, 2)
+})
+
 test('link: a bare device joins, the accepter attests it, and the reply carries its chain', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await makeHost(t, testnet)

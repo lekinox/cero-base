@@ -376,14 +376,23 @@ export class Pairing extends ReadyResource {
       resolve = res
       fail = rej
     })
+    let settling = false
     let over = false
     const settle = async (answer, done) => {
-      await keep(answer)
+      settling = true
+      try {
+        await keep(answer)
+      } catch (err) {
+        settling = false
+        throw err
+      }
       over = true
       done(answer)
     }
-    // anything else sealed to the reply address is turned away, so the inbox keeps none of it
+    // anything else sealed to the reply address, a second answer too, is turned away, so the
+    // inbox keeps none of it
     const onreply = async (message) => {
+      if (settling) return false
       const response = decode(Response, message)
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)

@@ -234,7 +234,8 @@ export class Inbox extends ReadyResource {
     // a core this device already holds is not the inbox's to erase, whatever is announced here
     const fetched = !(await store.storage.hasCore(crypto.discoveryKey(key)))
     const message = await this._unseal(key, { timeout: READ_TIMEOUT })
-    if (!message) return this._drop(id, fetched, true)
+    // one that lands after close is dropped as if it timed out, for the next start to read
+    if (!message || this.closing) return this._drop(id, fetched, true)
     await this.box.put({ id, address: this.address, message: EMPTY, fetched })
     // past it the slot is free, and the message stays in the box until its handler resolves
     await new Promise((resolve) => {

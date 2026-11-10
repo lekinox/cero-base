@@ -988,6 +988,34 @@ test('Mailbox: opening drops handled rows over 30 days old, at any address', asy
   t.ok(box.mail.has(fresh), 'one handled since is kept')
 })
 
+test('Inbox: a read that finishes after close hands nothing over and keeps nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const box = kept()
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  const address = Mailbox.getAddress(secret)
+  let calls = 0
+  const inbox = b.receive(secret, () => calls++)
+
+  // announced while it is still empty, so the read waits on it
+  const sender = await peer(t, testnet)
+  const writer = crypto.keyPair()
+  const core = sender.store.get({
+    keyPair: writer,
+    manifest: { version: sender.store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+  })
+  t.teardown(() => core.close())
+  await core.ready()
+  announce(t, sender, address, [core.key])
+  await waitFor(() => inbox._reading === 1, { timeout: 30000 })
+  await inbox.close()
+  await core.append(crypto.encrypt(b4a.from('late'), address))
+
+  await waitFor(async () => calls > 0 || !(await holds(b.network, core.key)), { timeout: 30000 })
+  t.is(calls, 0, 'not handed over')
+  t.is(box.mail.size, 0, 'no row')
+})
+
 test('Inbox: forget deletes the rows of its address, one written as it forgets too', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await mailbox(t, testnet)
