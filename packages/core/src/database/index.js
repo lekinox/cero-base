@@ -865,7 +865,11 @@ export class Database extends ReadyResource {
         continue
       }
       if (op.version > this.version) {
-        this._onfuture(op.version)
+        // anyone holding the key appends a node: only a writer's raises behind
+        const device = await view.get(`@${this.ns}/devices`, { id: hid.encode(node.key) })
+        const member =
+          device?.memberId && (await view.get(`@${this.ns}/members`, { id: device.memberId }))
+        if (can(member?.role, WRITE)) this._onfuture(op.version)
         continue
       }
       ready.push({ ...node, value: op.body })

@@ -8,6 +8,7 @@ import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import hid from 'hypercore-id-encoding'
 import Hypercore from 'hypercore'
+import Autobee from 'autobee'
 import { genId } from '../../src/lib/ids.js'
 import { admission } from '../../src/lib/utils.js'
 import {
@@ -3230,4 +3231,54 @@ test('gate: a removal applied while behind is not re-keyed by this device, nor a
     'the audit did not try to write'
   )
   t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no re-key')
+})
+
+// anyone holding the database key appends an optimistic node: only a seated writer's newer version freezes writes
+test('gate: a node from a core no member owns raises nothing', async (t) => {
+  const errors = []
+  const { db, store } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const plain = { optimistic: true, encrypted: true, links: [] }
+  const future = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'future' })
+  await core.append(Autobee.encodeValue(wrap(db.version + 1, future), plain))
+  // a node after it, refused for want of a member, says the stranger's core was applied
+  const present = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'present' })
+  await core.append(Autobee.encodeValue(wrap(db.version, present), plain))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(() => errors.some((e) => e.code === 'REFUSED'))
+
+  t.is(db.behind, null, 'not behind')
+  const put = await db.put('messages', { text: 'after' }).catch((e) => e)
+  t.ok(put.data, 'the owner writes')
+})
+
+test("gate: a reader's far-future node raises nothing", async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'owner' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db, 'reader')
+  t.absent(b.db.writable, 'a reader has no writer seat')
+
+  const { wrap } = await import('../../src/database/envelope.js')
+  const future = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'future' })
+  await b.db.bee.append(wrap(2 ** 40, future), { optimistic: true })
+  const present = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'present' })
+  await b.db.bee.append(wrap(b.db.version, present), { optimistic: true })
+  await waitFor(() => a.errors.some((e) => e.code === 'REFUSED'))
+
+  t.is(a.db.behind, null, 'the owner is not behind')
+  t.is(b.db.behind, null, 'nor is the reader')
+  const put = await a.db.put('messages', { text: 'owner write' }).catch((e) => e)
+  t.ok(put.data, 'the owner writes')
 })
