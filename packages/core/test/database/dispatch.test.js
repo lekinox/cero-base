@@ -268,6 +268,44 @@ test('del-member: every row one removal drops derives a row of its own', async (
   t.is(rows.length, 3, 'two devices and the member, a row each')
 })
 
+test('mint: a derived row never lands on an id another member already wrote', async (t) => {
+  const victim = await second('member')
+  const squatter = await second('member')
+  const { db } = await withRole(t, 'owner', {
+    members: [victim.row, squatter.row],
+    after: {
+      put: ({ name, put }) =>
+        name === 'messages' ? put('records', { text: 'derived' }) : undefined
+    }
+  })
+  const value = db.spec.dispatch.encode(`@${db.ns}/add-messages`, {
+    id: 'mine',
+    text: 'hi',
+    createdAt: 2,
+    updatedAt: 2
+  })
+  const seed = crypto.hash(value)
+  const next = z32.encode(crypto.hash([seed, c.encode(c.uint, 0)]).subarray(0, 16))
+  await seat(db, squatter)
+  const squat = { id: next, text: 'squat', createdAt: 1, updatedAt: 1 }
+  t.is(await apply(db, squatter.writer.publicKey, 'add-records', squat), null, 'the squat lands')
+
+  await seat(db, victim)
+  const tx = db.view.transaction()
+  const ctx = { view: tx, host: noHost, key: victim.writer.publicKey, dbKey: db.key, seed }
+  const err = await db.dispatcher.dispatch(value, ctx).then(
+    () => null,
+    (err) => err
+  )
+  t.is(err?.code, undefined, 'the write is not refused')
+  t.ok(await tx.get(`@${db.ns}/messages`, { id: 'mine' }), 'and lands')
+  const rows = await tx.find(`@${db.ns}/records`, {}).toArray()
+  await tx.close()
+  const derived = rows.find((r) => r.text === 'derived')
+  t.ok(derived, 'with its derived row')
+  t.not(derived?.id, next, 'under another id')
+})
+
 // ─── del-writer: removal hierarchy + self-removal ─────────────────────────
 
 function delWriterOp(writer) {

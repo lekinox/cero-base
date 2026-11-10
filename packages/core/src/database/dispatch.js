@@ -118,10 +118,16 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     return others.length > 0 && !others.some((m) => m.role === OWNER)
   }
 
-  // every peer mints the same ids: the node's seed and a count within it
+  // every peer mints the same ids: the node's seed and a count within it, past any id the
+  // collection already holds, so no row written before can make a derived one an overwrite
   function minter(seed) {
     let n = 0
-    return () => z32.encode(crypto.hash([seed, c.encode(c.uint, n++)]).subarray(0, 16))
+    return async (view, name) => {
+      while (true) {
+        const id = z32.encode(crypto.hash([seed, c.encode(c.uint, n++)]).subarray(0, 16))
+        if (!(await view.get(name, { id }))) return id
+      }
+    }
   }
 
   async function bump(view, name) {
@@ -185,10 +191,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     }
     return {
       get: (ref, query) => read(ctx.view, refName(ref), query),
-      put: (ref, row) => {
+      put: async (ref, row) => {
         const name = refName(ref)
         if (single(name)) return write(name, 'set', held(name, row, stamp(row, null, ctx.ts)))
-        const stored = stamp({ ...row, id: row.id ?? ctx.mint() }, null, ctx.ts)
+        const id = row.id ?? (await ctx.mint(ctx.view, col(name)))
+        const stored = stamp({ ...row, id }, null, ctx.ts)
         return write(name, 'add', held(name, row, stored))
       },
       // an upsert, as the set operator appends it
@@ -815,7 +822,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       let refusal = null
       for (const node of nodes) {
         try {
-          const seed = crypto.hash([node.key, c.encode(c.uint, node.length)])
+          const seed = crypto.hash([node.key, c.encode(c.uint, node.length), node.value])
           // never a clock: the node's time is the same on every peer
           await router.dispatch(node.value, {
             view: tx,
