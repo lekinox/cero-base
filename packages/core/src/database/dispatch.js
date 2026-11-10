@@ -108,6 +108,12 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     return others.length > 0 && !others.some((m) => m.role === OWNER)
   }
 
+  // every peer mints the same ids: the node's seed and a count within it
+  function minter(seed) {
+    let n = 0
+    return () => z32.encode(crypto.hash([seed, c.encode(c.uint, n++)]).subarray(0, 16))
+  }
+
   async function bump(view, name) {
     const value = ((await view.get(countersCol, { name }))?.value ?? 0) + 1
     await view.insert(countersCol, { name, value })
@@ -154,9 +160,6 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   // the operators developers know, bound to this op. A write is dispatched as the op's writer
   // would append it, so the same rank and `own` rules judge it
   function operators(ctx, ts) {
-    let n = 0
-    // every peer must mint the same id: hash the applying op and a per-op counter
-    const mint = () => z32.encode(crypto.hash([ctx.seed, c.encode(c.uint, n++)]).subarray(0, 16))
     const current = (name, id) =>
       single(name) ? ctx.view.findOne(col(name), {}) : ctx.view.get(col(name), { id })
     // held to the fields as a direct write is, before the encoder drops or chokes on one
@@ -175,7 +178,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       put: (ref, row) => {
         const name = refName(ref)
         if (single(name)) return write(name, 'set', held(name, row, stamp(row, null, ts)))
-        const stored = stamp({ ...row, id: row.id ?? mint() }, null, ts)
+        const stored = stamp({ ...row, id: row.id ?? ctx.mint() }, null, ts)
         return write(name, 'add', held(name, row, stored))
       },
       // an upsert, as the set operator appends it
@@ -350,11 +353,11 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   // only REFUSED aborts a batch: every peer derives it. Decode failures and unknown routes skip one node
   const isRefusal = (err) => err?.isCeroError === true && err.code === 'REFUSED'
 
-  // an op's after hooks run once all its rows landed
+  // an op's after hooks run once all its rows landed; its ctx writes count on its node's mint
   const add = (verb, fn) =>
     router.add(`@${ns}/${verb}`, async (op, ctx) => {
       const later = []
-      await fn(op, { ...ctx, later })
+      await fn(op, { ...ctx, later, mint: ctx.mint ?? minter(ctx.seed) })
       for (const run of later) await run()
     })
 
@@ -842,7 +845,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       let refusal = null
       for (const node of nodes) {
         try {
-          const seed = crypto.hash([node.key, node.value])
+          const seed = crypto.hash([node.key, c.encode(c.uint, node.length)])
           await router.dispatch(node.value, {
             view: tx,
             host: deferred,

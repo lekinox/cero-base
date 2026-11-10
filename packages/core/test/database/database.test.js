@@ -650,13 +650,24 @@ test('call: rows an action hook writes get the same ids on every peer', async (t
   await waitForConnection(a.network)
   await waitForConnection(b.network)
   await a.db.call('promote', { memberId: 'm', role: 'admin' })
+  await a.db.call('promote', { memberId: 'm', role: 'admin' })
   const onA = (await a.db.get('notes')).data
   const onB = await waitFor(async () => {
     const { data } = await b.db.get('notes')
     return data.length === onA.length ? data : null
   })
-  t.is(onA.length, 1)
-  t.alike(onB, onA, 'identical row, id included, derived independently on B')
+  t.is(onA.length, 2)
+  t.alike(onB, onA, 'identical rows, ids included, derived independently on B')
+})
+
+test('call: the same action called twice derives two rows', async (t) => {
+  const db = await teamDb(t, {
+    promote: ({ row, put }) => put('notes', { text: `promoted ${row.memberId}` })
+  })
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  const { data } = await db.get('notes')
+  t.is(data.length, 2, 'a repeat mints a new id')
 })
 
 test('call: an action hook cannot raise its caller’s role, ctx writes run the rank rules', async (t) => {

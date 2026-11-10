@@ -246,6 +246,28 @@ test('del-member: the last owner of a room others are in cannot leave it', async
   t.is((await db.get('members', identity.id)).data?.role, 'owner', 'still the owner')
 })
 
+test('del-member: every row one removal drops derives a row of its own', async (t) => {
+  const { db } = await withRole(t, 'owner', {
+    after: { del: ({ name, id, put }) => put('messages', { text: `gone ${name} ${id}` }) }
+  })
+  const other = await Identity.create()
+  const tx = db.view.transaction()
+  const ts = Date.now()
+  const member = { id: other.id, key: crypto.randomBytes(32), role: 'member', createdAt: ts }
+  await tx.insert(`@${db.ns}/members`, member)
+  for (let i = 0; i < 2; i++) {
+    const id = hid.encode(crypto.randomBytes(32))
+    const device = { id, memberId: other.id, createdAt: ts, key: crypto.randomBytes(32) }
+    await tx.insert(`@${db.ns}/devices`, device)
+  }
+  const value = db.spec.dispatch.encode(`@${db.ns}/del-member`, { id: other.id })
+  const ctx = { view: tx, host: noHost, key: db.writerKey, dbKey: db.key, seed: crypto.hash(value) }
+  await db.dispatcher.dispatch(value, ctx)
+  const rows = await tx.find(`@${db.ns}/messages`, {}).toArray()
+  await tx.close()
+  t.is(rows.length, 3, 'two devices and the member, a row each')
+})
+
 // ─── del-writer: removal hierarchy + self-removal ─────────────────────────
 
 function delWriterOp(writer) {
