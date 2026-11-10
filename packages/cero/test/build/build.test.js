@@ -678,6 +678,29 @@ test('build: an RPC type a Cero release drops keeps the contract', async (t) => 
   t.is(await contractOf(dir), 1, 'and the contract stays')
 })
 
+// the contract shapes the types the collections and routes name; one embedded in them would escape it
+test('build: no stored type embeds another type', async (t) => {
+  const specDir = await buildInto(t, 'embeds')
+  const read = async (rel) => JSON.parse(await fs.readFile(join(specDir, rel), 'utf-8'))
+  const dirs = [
+    'main',
+    ...(await fs.readdir(join(specDir, 'handles'))).map((n) => join('handles', n))
+  ]
+  for (const dir of dirs) {
+    const types = (await read(join(dir, 'schema', 'schema.json'))).schema
+    const db = await read(join(dir, 'db', 'db.json'))
+    const routes = await read(join(dir, 'dispatch', 'dispatch.json'))
+    const named = new Set([
+      ...db.schema.map((x) => x.schema),
+      ...routes.schema.map((x) => x.requestType)
+    ])
+    const embedded = types
+      .filter((type) => named.has(`@${type.namespace}/${type.name}`))
+      .flatMap((type) => type.fields.filter((f) => f.type.startsWith('@')).map((f) => f.type))
+    t.alike(embedded, [], `${dir}: shape a type it embeds too, in shapeOf, before adding one`)
+  }
+})
+
 test('build: a field appended to a stored type at the root raises the contract', async (a) => {
   const more = schema({ ...plain.defs, notes: t.collection({ text: t.string, tag: t.string }) })
   const dir = await rebuilt(a, 'contract-root', plain, more)
