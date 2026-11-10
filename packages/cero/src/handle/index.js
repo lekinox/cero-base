@@ -1172,7 +1172,7 @@ export class Handle extends ReadyResource {
       }
     }
     this._typeHooks.add(hook)
-    for (const child of this.children) hook.apply(child)
+    for (const child of [...this.children, ...this._pending]) hook.apply(child)
     const off = () => {
       this._typeHooks.delete(hook)
       for (const o of offs.values()) o()
