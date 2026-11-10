@@ -539,6 +539,39 @@ test('invites: a denial reaches the caller, or onerror once nobody waits', async
   t.alike(await joinsOf(back), [])
 })
 
+// a join whose caller stopped waiting, landing once the owner is back
+async function unclaimed(t, opts) {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  await cero.suspend(owner)
+
+  const { me: joiner } = await ceroOpen(t, { testnet, ...opts })
+  const err = await joiner._join(invite, 'team', { timeout: 300 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT', 'the caller stops waiting')
+  const landed = new Promise((resolve) => joiner.once('handle', resolve))
+  await cero.resume(owner)
+  return { joiner, room: await landed }
+}
+
+test('invites: a join that lands with nobody waiting lingers and closes', async (t) => {
+  const { room } = await unclaimed(t, { linger: 50 })
+  await waitUntil(() => room.closed, 10000)
+  t.pass('nobody opened it, so it closed')
+})
+
+test("invites: a join that lands with nobody waiting is the app's once it opens it", async (t) => {
+  const { joiner, room } = await unclaimed(t, { linger: 2000 })
+  const mine = await open(joiner.team, { id: room.id })
+  t.is(mine, room, 'opened within the linger, the same handle')
+  t.ok(!mine._idle, 'and kept')
+  await mine.close()
+  t.ok(mine._idle, 'its close starts the linger')
+  await waitUntil(() => mine.closed, 10000)
+  t.pass('and it closes')
+})
+
 // the joiner's store hangs on one write, as a device that stops mid-write does
 function stall(store, method, when) {
   const call = store[method].bind(store)
