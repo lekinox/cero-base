@@ -41,6 +41,8 @@ export declare class Blobs extends ReadyResource {
     name: string;
     /** @private */
     _coreKey;
+    /** @private */
+    _ns;
     /** @type {import('hypercore') | null} */
     core: import('hypercore') | null;
     /** @type {import('hyperblobs') | null} */
