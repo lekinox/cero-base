@@ -893,6 +893,25 @@ test('cero(): a relaunch with no reachable bootstrap opens as fast as one with',
   t.ok(offline < online + 300, 'no wait on a network that is not there')
 })
 
+test("cero(): the identity's secret key is not on disk", async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap, storageKey: b4a.alloc(32, 5) }
+  const me = await cero(dir, spec, opts)
+  const { secretKey } = await Identity.keyPair(me.identity.seed)
+  const phrase = me.identity.toPhrase()
+  await me.close()
+  // a sodium secret key is its seed then its public key: the first half is the secret
+  t.absent(await diskContains(dir, secretKey.subarray(0, 32)), 'not under the dir')
+
+  const again = await cero(dir, spec, opts)
+  t.ok(again.store.writable, 'the creating device relaunches')
+  const b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, phrase })
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  await again.close()
+  t.alike(b.store.key, me.store.key, 'and a recovery reads the pointer it wrote')
+})
+
 test('peek(): rejects bad dir', async (t) => {
   await t.exception.all(() => peek(null, spec), /dir/)
   await t.exception.all(() => peek('', spec), /dir/)

@@ -160,12 +160,7 @@ async function start(dir, spec, opts = {}) {
     discovery = network.join(identity.topic)
 
     // the pointer core: identity-signed, written once by the creating device, holds the root key
-    const manifest = pointerManifest(store, identity)
-    const pointer = store.get(
-      creating
-        ? { keyPair: await Identity.keyPair(identity.seed), manifest }
-        : { key: Hypercore.key(manifest) }
-    )
+    const pointer = store.get({ manifest: pointerManifest(store, identity) })
     await pointer.ready()
     network.attach(pointer)
 
@@ -204,7 +199,9 @@ async function start(dir, spec, opts = {}) {
 
     if (!done) {
       if (creating && pointer.length === 0) {
-        await pointer.append(c.encode(c.fixed32, me.store.key))
+        // signed per append: a keypair handed to the store would be kept on disk
+        const signer = await Identity.keyPair(identity.seed)
+        await pointer.append(c.encode(c.fixed32, me.store.key), { keyPair: signer })
       }
       if (linked) {
         await local.store.set('device', pack(identity))
