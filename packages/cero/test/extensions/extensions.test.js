@@ -448,6 +448,39 @@ test('hooks: a hook on a type ref covers rooms already open, and off() lifts it'
   t.ok((await put(later.messages, { text: 'nope' })).data, 'and on the later one')
 })
 
+test('hooks: a type hook registered while a handle opens runs on its ops', async (t) => {
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending'), { linger: 0 })
+  const first = await open(me.room, { name: 'clinic' })
+  const { id } = first
+  await first.close()
+
+  const opening = open(me.room, { id })
+  await waitUntil(() => me._pending.size > 0, 10000, 1)
+  const off = before(me.room.messages, ({ row }) => row.text !== 'nope')
+  const room = await opening
+  await t.exception(
+    put(room.messages, { text: 'nope' }),
+    /REFUSED/,
+    'the opening room got the hook'
+  )
+  off()
+  t.ok((await put(room.messages, { text: 'nope' })).data, 'and off() lifts it')
+})
+
+test('hooks: a type hook lifted while a handle opens never runs on it', async (t) => {
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending-off'), { linger: 0 })
+  const first = await open(me.room, { name: 'clinic' })
+  const { id } = first
+  await first.close()
+
+  const opening = open(me.room, { id })
+  await waitUntil(() => me._pending.size > 0, 10000, 1)
+  const off = before(me.room.messages, ({ row }) => row.text !== 'nope')
+  off()
+  const room = await opening
+  t.ok((await put(room.messages, { text: 'nope' })).data, 'the write lands')
+})
+
 // a spec built from a module path carries its list; `source` is the module's body
 async function buildModule(t, sub, source) {
   const dir = join(buildRoot, sub)

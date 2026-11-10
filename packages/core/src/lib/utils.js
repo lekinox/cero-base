@@ -143,6 +143,9 @@ export function searchHit(row, term, fields) {
  */
 export function filter(rows, query) {
   if (!query) return rows
+  if (query.fields !== undefined && !Array.isArray(query.fields)) {
+    throw CeroError.INVALID('fields is a list of field names')
+  }
   let out = rows
   for (const key of Object.keys(query)) {
     if (QUERY_RESERVED.has(key)) continue

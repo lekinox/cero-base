@@ -160,6 +160,11 @@ export declare class Server extends RPCServer {
      */
     private _wireVerbs;
     /**
+     * Register a request handler whose error fails only its call.
+     * @private
+     */
+    private _on;
+    /**
      * Look up a live handle by id, throwing if unknown. Binds the handle's
      * codec on first use.
      *

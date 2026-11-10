@@ -327,6 +327,62 @@ test('rpc: search + fields filter rows over the wire', async (t) => {
   )
 })
 
+test('rpc: a wrong-typed query rejects the call and the worker lives', async (t) => {
+  const errors = []
+  const { server, client } = await openPair(t, {}, { onerror: (err) => errors.push(err) })
+  await waitUntil(() => server._errors.size === 1)
+  await put(client.messages, { text: 'hello' })
+  await t.exception(get(client.messages, { search: 'hel', fields: 'text' }), /INVALID/)
+  const garbled = client.rpc.watch({
+    handle: client.id,
+    ref: 'messages',
+    query: b4a.from([0xff]),
+    local: false
+  })
+  await t.exception(
+    (async () => {
+      for await (const _snap of garbled);
+    })(),
+    'a query that does not decode fails the watch'
+  )
+  t.is((await get(client.messages)).data.length, 1, 'the worker still answers')
+  t.alike(errors, [], 'a refusal is not a bug')
+})
+
+test('rpc: a bug in a handler fails the call and reaches onerror', async (t) => {
+  const errors = []
+  const { me, server, client } = await openPair(t, {}, { onerror: (err) => errors.push(err) })
+  await waitUntil(() => server._errors.size === 1)
+  const read = me.store.get
+  me.store.get = () => {
+    throw new TypeError('boom')
+  }
+  const err = await get(client.messages).catch((e) => e)
+  me.store.get = read
+  t.is(err?.message, 'boom', 'the call rejects')
+  await waitUntil(() => errors.length === 1)
+  t.is(errors[0].message, 'boom', 'the worker reports it')
+  t.is((await get(client.messages)).data.length, 0, 'the worker still answers')
+})
+
+test('rpc: a ref name that is a handle property is UNKNOWN', async (t) => {
+  const errors = []
+  const { server, client } = await openPair(t, {}, { onerror: (err) => errors.push(err) })
+  await waitUntil(() => server._errors.size === 1)
+  const room = await open(client.team, { name: 'a' })
+  const data = b4a.alloc(0)
+  for (const handle of [client.id, room.id]) {
+    for (const ref of ['store', 'identity', 'parent']) {
+      const req = { handle, ref, local: false }
+      await t.exception(client.rpc.get(req), /UNKNOWN/, `get ${ref}`)
+      await t.exception(client.rpc.addRow({ ...req, data }), /UNKNOWN/, `put ${ref}`)
+      await t.exception(client.rpc.set({ ...req, data }), /UNKNOWN/, `set ${ref}`)
+      await t.exception(client.rpc.del({ ...req, id: 'x' }), /UNKNOWN/, `del ${ref}`)
+    }
+  }
+  t.alike(errors, [], 'a refusal is not a bug')
+})
+
 test('rpc: del removes a row over the wire', async (t) => {
   const { client } = await openPair(t)
   const { data: row } = await put(client.messages, { text: 'a' })
@@ -363,6 +419,39 @@ test('rpc: watch over the wire — destroy stops emissions', async (t) => {
   await new Promise((r) => setTimeout(r, 100))
   t.is(emissions, 0, 'no emissions after destroy')
   t.ok(stream.destroyed, 'stream is destroyed')
+})
+
+test('rpc: a watch the client destroys stops on the worker', async (t) => {
+  const { me, server, client } = await openPair(t)
+  const stream = watch(client.messages)
+  await new Promise((resolve) => stream.once('data', resolve))
+  stream.destroy()
+  await waitUntil(() => !server._watchStreams.get(client.id)?.size)
+  t.pass('the worker let go of the stream')
+
+  let last = null
+  const live = watch(me.messages)
+  live.on('data', (snap) => (last = snap))
+  await waitUntil(() => last)
+  const db = me.store
+  const read = db.get
+  let reads = 0
+  db.get = (...args) => (reads++, read.apply(db, args))
+  await put(me.messages, { text: 'a' })
+  await waitUntil(() => last.data.length === 1)
+  db.get = read
+  live.destroy()
+  t.is(reads, 1, 'a write is read once, for the watch still open')
+})
+
+test('rpc: an errors stream the client drops leaves the worker', async (t) => {
+  const { server, client } = await openPair(t)
+  await waitUntil(() => server._errors.size === 1)
+  const errors = client.rpc.errors({})
+  await waitUntil(() => server._errors.size === 2)
+  errors.destroy()
+  await waitUntil(() => server._errors.size === 1)
+  t.pass('only the client’s own stream is left')
 })
 
 test('rpc: client close ends live watch streams cleanly (no error)', async (t) => {

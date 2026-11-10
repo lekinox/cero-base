@@ -23,7 +23,7 @@ import * as verbs from './lib/operators.js'
 import { peek } from './lib/peek.js'
 import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
-import { FLUSH, TIMEOUT } from './lib/constants.js'
+import { TIMEOUT } from './lib/constants.js'
 import { commit, nextOf, settle, staging } from './lib/swap.js'
 
 export { Handle, Ref, Local }
@@ -154,21 +154,13 @@ async function start(dir, spec, opts = {}) {
       ? await ask(local, network, spec, { ...opts, writer: keyPair, timeout }, pending)
       : null
     const identity = linked ? linked.identity : resolved.identity
-    const fresh = resolved?.fresh === true
     // the radio before the pointer read: a phrase recovers from a device in range, no internet
     bluetooth = new Bluetooth(network, { ...bt, identity, keyPair })
     await bluetooth.ready()
     discovery = network.join(identity.topic)
-    // a fresh identity has no peers yet, flushing the announce would only delay onboarding
-    if (!fresh) await Promise.race([discovery.flush(), new Promise((r) => setTimeout(r, FLUSH))])
 
     // the pointer core: identity-signed, written once by the creating device, holds the root key
-    const manifest = pointerManifest(store, identity)
-    const pointer = store.get(
-      creating
-        ? { keyPair: await Identity.keyPair(identity.seed), manifest }
-        : { key: Hypercore.key(manifest) }
-    )
+    const pointer = store.get({ manifest: pointerManifest(store, identity) })
     await pointer.ready()
     network.attach(pointer)
 
@@ -207,7 +199,9 @@ async function start(dir, spec, opts = {}) {
 
     if (!done) {
       if (creating && pointer.length === 0) {
-        await pointer.append(c.encode(c.fixed32, me.store.key))
+        // signed per append: a keypair handed to the store would be kept on disk
+        const signer = await Identity.keyPair(identity.seed)
+        await pointer.append(c.encode(c.fixed32, me.store.key), { keyPair: signer })
       }
       if (linked) {
         await local.store.set('device', pack(identity))
@@ -238,7 +232,9 @@ async function start(dir, spec, opts = {}) {
 }
 
 /**
- * Restore a cero instance from a recovery phrase.
+ * Switch this device to the identity of a recovery phrase. That identity opens beside `me` and
+ * recovers from a device of it; once it has opened, `me` closes and its data is deleted. A failure
+ * leaves `me` as it was, and the phrase of `me`'s own identity resolves `me`.
  *
  * @param {Context} me  The root to restore.
  * @param {string} phrase  The identity's BIP-39 phrase, as `cero.phrase(me)` gives it.
@@ -254,8 +250,9 @@ export async function restore(me, phrase) {
 }
 
 /**
- * Link this device to the identity behind a device invite: closes `me`, deletes `dir/main` and
- * opens the directory with `invite`, as a new device of that identity, with no phrase on it.
+ * Link this device to the identity behind a device invite, as a new device of it with no phrase on
+ * it. It opens beside `me`; once accepted, `me` closes and its data is deleted. A denial or a failure
+ * leaves `me` as it was.
  *
  * @param {Context} me  The root to replace.
  * @param {string} invite  A device invite, as `cero.invite(me)` gives it on a device of that identity.
@@ -330,15 +327,18 @@ async function resolveIdentity(opts, local, done) {
   const provided = opts.phrase ? Identity.toSeed(opts.phrase) : null
   const seed = (await local.store.get('master')).data?.seed ?? null
   const row = (await local.store.get('device')).data
-  if (seed && !row) throw CeroError.INVALID('this storage predates device keys: recreate it')
+  if (done && seed && !row) {
+    throw CeroError.INVALID('this storage predates device keys: recreate it')
+  }
   const same =
     row && provided ? b4a.equals((await Identity.keyPair(provided)).publicKey, row.identity) : true
   // another identity comes in only through restore, which wipes this one first
   if (done && !same) throw CeroError.INVALID('dir holds another identity: switch with cero.restore')
   // a phrase given to an unfinished setup takes over from the identity it minted
   if (row && same) return { identity: unpack(row, seed), fresh: false, minted: false }
-  const identity = await Identity.create({ seed: provided, words: opts.words })
-  return { identity, fresh: !provided, minted: true }
+  // a launch killed before its device row goes on from the seed it stored
+  const identity = await Identity.create({ seed: provided ?? seed, words: opts.words })
+  return { identity, fresh: !provided && !seed, minted: true }
 }
 
 // the root's own join in the joins rows
