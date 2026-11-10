@@ -118,6 +118,10 @@ export class Inbox extends ReadyResource {
     /** @private */
     this._erasing = new Set()
     /** @private */
+    this._landing = new Set() // reads, up to their row in the box
+    /** @private */
+    this._waiting = new Set() // cores open for a block still to come
+    /** @private */
     this._session = null
     /** @private */
     this._discovery = null
@@ -162,7 +166,9 @@ export class Inbox extends ReadyResource {
     this._session?.destroy()
     // the unannounce is a DHT round trip, never waited on
     this._discovery?.destroy().catch(safetyCatch)
-    await Promise.allSettled(this._erasing)
+    // nothing more is fetched: its sender counts a message delivered once its block is read
+    for (const core of this._waiting) core.close().catch(safetyCatch)
+    await Promise.allSettled([...this._landing, ...this._erasing])
   }
 
   // a key stays queued by every peer that announced it, so a read that failed is tried through the
@@ -241,21 +247,36 @@ export class Inbox extends ReadyResource {
 
   /** @private */
   async _read(id, key) {
-    const { held, message } = await this._unseal(key, { timeout: this.timeout })
-    // a core this device already held is not the inbox's to erase, whatever is announced here
-    const fetched = !held
-    // one that lands after close is dropped as if it timed out, for the next start to read
-    if (!message || this.closing) return this._drop(id, fetched, true)
-    await this.box.put({ id, address: this.address, message: EMPTY, fetched })
+    const landing = this._land(id, key)
+    this._landing.add(landing)
+    const mail = await landing.finally(() => this._landing.delete(landing))
+    if (!mail) return
     // past it the slot is free, and the message stays in the box until its handler resolves
     await new Promise((resolve) => {
       const timer = setTimeout(resolve, this.timeout)
       timer.unref()
-      this._handle({ id, message, fetched }).finally(() => {
+      this._handle(mail).finally(() => {
         clearTimeout(timer)
         resolve()
       })
     })
+  }
+
+  // in the box before anything else: its sender has it as delivered from the moment it was read
+  /** @private */
+  async _land(id, key) {
+    const { held, message } = await this._unseal(key, { timeout: this.timeout })
+    // a core this device already held is not the inbox's to erase, whatever is announced here
+    const fetched = !held
+    if (!message) {
+      await this._drop(id, fetched, true)
+      return null
+    }
+    await this.box.put({ id, address: this.address, message: EMPTY, fetched })
+    if (!this.closing) return { id, message, fetched }
+    // read as the inbox closed: it waits in the box for the next time its address is received
+    this._settle(id)
+    return null
   }
 
   // kept from before a restart: the message is in its core, held here since it was read
@@ -272,14 +293,17 @@ export class Inbox extends ReadyResource {
   _unseal(key, opts) {
     const { store } = this.network
     return exclusive(store, key, async () => {
+      if (this.closing) opts = { wait: false }
       const held = await store.storage.hasCore(crypto.discoveryKey(key))
       if (!held && opts.wait === false) return { held, message: null }
       const core = store.get({ key })
+      this._waiting.add(core)
       try {
         return { held, message: crypto.decrypt(await core.get(0, opts), this.keyPair) }
       } catch {
-        return { held, message: null } // nobody served it in time
+        return { held, message: null } // nobody served it in time, or the inbox closed
       } finally {
+        this._waiting.delete(core)
         await core.close()
       }
     })
