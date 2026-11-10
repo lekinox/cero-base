@@ -97,21 +97,6 @@ export class Inbox extends ReadyResource {
     this._session = null
     /** @private */
     this._discovery = null
-    /** @private */
-    this._forgotten = false
-  }
-
-  /**
-   * Close, and delete all the box keeps for this address: for one nothing is received at again.
-   *
-   * @returns {Promise<void>}
-   */
-  async forget() {
-    this._forgotten = true
-    await this.close()
-    for (const mail of await this.box.list()) {
-      if (b4a.equals(mail.address, this.address)) await this.box.del(mail.id)
-    }
   }
 
   /** @private */
@@ -302,7 +287,6 @@ export class Inbox extends ReadyResource {
   async _remember(id) {
     const handled = Date.now()
     await this.box.put({ id, address: this.address, message: EMPTY, handled })
-    if (this._forgotten) return this.box.del(id)
     this._handled.set(id, handled)
     await this._prune()
   }

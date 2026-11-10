@@ -1016,35 +1016,6 @@ test('Inbox: a read that finishes after close hands nothing over and keeps nothi
   t.is(box.mail.size, 0, 'no row')
 })
 
-test('Inbox: forget deletes the rows of its address, one written as it forgets too', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await mailbox(t, testnet)
-  const box = kept()
-  const [other] = await fill(box, Mailbox.getAddress(crypto.randomBytes(32)), 1)
-  const secret = crypto.randomBytes(32)
-  let release, landed
-  const writing = new Promise((resolve) => {
-    const put = box.put
-    box.put = async (m) => {
-      if (!m.handled) return put(m)
-      resolve()
-      await new Promise((resolve) => (release = resolve))
-      await put(m)
-      landed()
-    }
-  })
-  const written = new Promise((resolve) => (landed = resolve))
-  const b = await mailbox(t, testnet, { inbox: box })
-  const inbox = b.receive(secret, () => {})
-  await a.send(Mailbox.getAddress(secret), b4a.from('once'))
-  await writing
-  await inbox.forget()
-  release()
-  await written
-  await waitFor(() => box.mail.size === 1)
-  t.ok(box.mail.has(other), 'another address keeps its rows')
-})
-
 test('Inbox: a handled id is forgotten after 30 days', async (t) => {
   const testnet = await makeTestnet(t)
   const box = kept()

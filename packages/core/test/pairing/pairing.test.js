@@ -446,21 +446,6 @@ test('confirm: junk sealed to the reply address leaves nothing on the joiner, th
   t.pass('and its core is erased once the answer is kept')
 })
 
-test('join: a settled join leaves no row in the box, accepted or denied', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { host, joiner } = await makeHostJoiner(t, testnet)
-  await joiner.join(await host.pairing.invite())
-  await waitFor(async () => (await joiner.mailbox.inbox.list()).length === 0)
-  t.pass('accepted')
-
-  const other = await makeJoiner(t, testnet)
-  const joining = other.join(await host.pairing.invite({ confirm: true })).catch((e) => e)
-  await host.pairing.deny((await asked(host.db)).id, 'no')
-  t.is((await joining).code, 'DENIED')
-  await waitFor(async () => (await other.mailbox.inbox.list()).length === 0)
-  t.pass('denied')
-})
-
 test('join: two replies racing settle it once, and nothing is kept after', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
@@ -492,7 +477,9 @@ test('join: two replies racing settle it once, and nothing is kept after', async
   await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
   for (const key of keys) await waitFor(async () => !(await stored(joiner.net, key)))
   t.is(kept.length, 1, 'kept once')
-  t.alike(await joiner.mailbox.inbox.list(), [], 'no row')
+  const rows = await joiner.mailbox.inbox.list()
+  t.is(rows.length, 1, 'one answer remembered')
+  t.ok(rows[0].handled)
 })
 
 test('join: a reply its keep failed on leaves the next one to settle it', async (t) => {
@@ -513,6 +500,51 @@ test('join: a reply its keep failed on leaves the next one to settle it', async 
   await host.mailbox.send(reply, answer)
   t.alike((await joining).key, host.db.key)
   t.is(tries, 2)
+})
+
+test('offline: an old denial a mirror still announces does not settle the same writer joining again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeBlindPeer(t, testnet)
+  const host = await makeHost(t, testnet, { mirrors: [mirror.publicKey] })
+  const joiner = await makeJoiner(t, testnet, { mirrors: [mirror.publicKey] })
+  const writer = crypto.keyPair()
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const deposited = new Promise((resolve) => {
+    const onadd = (record) => {
+      if (!record.referrer || !b4a.equals(record.referrer, reply)) return
+      mirror.off('add-core', onadd)
+      resolve(record.key)
+    }
+    mirror.on('add-core', onadd)
+  })
+
+  const first = joiner.join(await host.pairing.invite({ confirm: true }), { writer })
+  await host.pairing.deny((await asked(host.db)).id, 'no')
+  t.is((await first.catch((e) => e)).code, 'DENIED')
+  const denial = await deposited
+  const held = mirror.store.get({ key: denial })
+  await held.ready()
+  await waitFor(() => held.length > 0 && held.contiguousLength === held.length, { timeout: 30000 })
+  await held.close()
+
+  let announced = null
+  const heard = new Promise((resolve) => (announced = resolve))
+  // passive, so the inbox's session is what wakes the topic and gets the mirror's announce
+  const spy = joiner.net.wakeup.session(reply, {
+    active: false,
+    discoveryKey: crypto.discoveryKey(reply),
+    onannounce: (entries) => entries.some((e) => b4a.equals(e.key, denial)) && announced()
+  })
+  t.teardown(() => spy.destroy())
+  const again = joiner.join(await host.pairing.invite({ confirm: true }), { writer })
+  await heard
+  const request = await asked(host.db)
+  await host.pairing.accept(request.id)
+  const res = await again.catch((e) => e)
+  t.absent(
+    res instanceof Error,
+    `settled by the accept${res instanceof Error ? `, not ${res.code}` : ''}`
+  )
 })
 
 test('link: a bare device joins, the accepter attests it, and the reply carries its chain', async (t) => {
