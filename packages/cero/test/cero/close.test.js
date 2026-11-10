@@ -167,6 +167,87 @@ test('close: a room still closing on its own is waited for, so the local store o
   )
 })
 
+// holds one step of the root's close: resolves once the close reached it, and returns its release
+function hold(target, method) {
+  const original = target[method].bind(target)
+  let reached
+  let release
+  const at = new Promise((resolve) => (reached = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  target[method] = async (...args) => {
+    reached()
+    await held
+    return original(...args)
+  }
+  return { at, release }
+}
+
+test('close: a room opened as the root closes fails as closed, and none is opened', async (t) => {
+  const { me, errors } = await device(t, { linger: 0 })
+  const room = await cero.open(me.team, { name: 'clinic' })
+  const { id } = room
+  await cero.close(room)
+  await me._indexing
+  // the root's first step is held, so the open comes once the root listed what it closes
+  const step = hold(me.mailbox, 'close')
+  let rooms = 0
+  const add = me._pending.add.bind(me._pending)
+  me._pending.add = (child) => {
+    rooms++
+    return add(child)
+  }
+  const closed = me.close()
+  await step.at
+  const failed = await cero.open(me.team, { id }).catch((err) => err)
+  t.is(failed.code, 'CLOSED')
+  t.is(rooms, 0, 'no room opens on a root that is closing')
+  step.release()
+  await closed
+  t.alike(
+    errors.map((e) => e.message),
+    []
+  )
+})
+
+test('close: a room opened as the stores close under it fails as closed, not as its storage', async (t) => {
+  const { me } = await device(t, { linger: 0 })
+  const room = await cero.open(me.team, { name: 'clinic' })
+  const { id } = room
+  await cero.close(room)
+  await me._indexing
+  const step = hold(me.mailbox, 'close')
+  // its read lands on a store mid-close, which fails as that store does
+  me._loadKeyPair = async () => {
+    throw new Error('Hyperdb is closed')
+  }
+  const closed = me.close()
+  await step.at
+  const failed = await cero.open(me.team, { id }).catch((err) => err)
+  t.is(failed.code, 'CLOSED', failed.message)
+  step.release()
+  await closed
+})
+
+test('close: an app closed as a room it serves reopens at launch reports nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const errors = []
+  const opts = { bootstrap: testnet.bootstrap, onerror: (err) => errors.push(err.message) }
+  const first = await cero(dir, spec, opts)
+  // a room with a live invite is opened again at every launch, to answer its joins
+  const room = await cero.open(first.team, { name: 'clinic' })
+  await cero.invite(room)
+  await first.close()
+
+  const me = await cero(dir, spec, opts)
+  t.is(me._loading.size, 1, 'the room is still reopening')
+  await me.close()
+  await waitUntil(() => me._loading.size === 0)
+  // its failure reaches the handler a turn after the load ends
+  await new Promise((resolve) => setTimeout(resolve))
+  t.alike(errors, [])
+})
+
 test('close: it still opens again on the same storage', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()

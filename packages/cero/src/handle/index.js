@@ -1089,42 +1089,46 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _reopen(type, id) {
-    const { data } = await this.store.get('handles', id)
-    if (!data) throw CeroError.UNKNOWN('handle', id)
-    if (data.type !== type) {
-      throw CeroError.INVALID(`handle ${id} is type ${data.type}, not ${type}`)
-    }
-    let writer = await this._loadKeyPair(id)
-    if (!writer) {
-      writer = Identity.randomKeyPair()
-      // stored before its claim is on the log: a retry claims with it, never with another
-      await this._saveKeyPair(id, writer)
-    }
-    const child = this._room({
-      spec: pickHandle(this.spec, type),
-      namespace: `${NS}/handle/${type}/${id}`,
-      key: data.key,
-      encryptionKey: data.encryptionKey,
-      epochs: data.epochs ? c.decode(epochEntries, data.epochs) : undefined,
-      keyPair: /** @type {KeyPair} */ (writer)
-    })
+    let child = null
     try {
+      const { data } = await this.store.get('handles', id)
+      if (!data) throw CeroError.UNKNOWN('handle', id)
+      if (data.type !== type) {
+        throw CeroError.INVALID(`handle ${id} is type ${data.type}, not ${type}`)
+      }
+      let writer = await this._loadKeyPair(id)
+      if (!writer) {
+        writer = Identity.randomKeyPair()
+        // stored before its claim is on the log: a retry claims with it, never with another
+        await this._saveKeyPair(id, writer)
+      }
+      child = this._room({
+        spec: pickHandle(this.spec, type),
+        namespace: `${NS}/handle/${type}/${id}`,
+        key: data.key,
+        encryptionKey: data.encryptionKey,
+        epochs: data.epochs ? c.decode(epochEntries, data.epochs) : undefined,
+        keyPair: /** @type {KeyPair} */ (writer)
+      })
       await child.ready()
       // a writer that never wrote has not claimed yet
       if (!child.store.writable && child.store.length === 0) {
         await child.store.claim({ timeout: TIMEOUT })
       }
       this._adopt(child, {})
+      return child
     } catch (err) {
-      await child._end().catch(safetyCatch)
-      throw err
+      await child?._end().catch(safetyCatch)
+      // a reopen the root's close broke fails with CLOSED, whichever store went first
+      throw this.closing || this.closed ? CeroError.CLOSED('Handle') : err
     }
-    return child
   }
 
   // a handle has its type's hooks before it opens, so no op it applies runs without them
   /** @private */
   _room(opts) {
+    // a closing root has listed the rooms it closes: one opened now would outlive its stores
+    if (this.closing || this.closed) throw CeroError.CLOSED('Handle')
     const child = new Handle({ parent: this, ...opts })
     for (const hook of this._typeHooks) hook.apply(child)
     this._pending.add(child)
@@ -1273,6 +1277,8 @@ export class Handle extends ReadyResource {
     for (const { id, type } of (await this.local.store.get('serving')).data) {
       this._load(type, id).catch((err) => {
         if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
+        // a close cut it short: the room is served again at the next launch
+        if (err.code === 'CLOSED') return
         this._onerror(err)
       })
     }
