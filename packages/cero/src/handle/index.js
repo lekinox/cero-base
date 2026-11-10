@@ -606,10 +606,11 @@ export class Handle extends ReadyResource {
     return { data, total: data.length, size: data.length }
   }
 
-  // one pass at a time: two overlapping could put back a row the later one deleted
+  // one pass at a time, failed or not: two overlapping could put back a row the later one deleted
   /** @private */
   _index() {
-    this._indexing = (this._indexing ?? Promise.resolve()).then(() => this._reindex())
+    const run = () => this._reindex()
+    this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }
 
@@ -623,7 +624,7 @@ export class Handle extends ReadyResource {
     // an opened handle not adopted yet has its writers already: its row is written once
     const open = new Map(
       [...this.children, ...this._pending]
-        .filter((child) => child.opened)
+        .filter((child) => child.opened && !child.closing)
         .map((child) => [b4a.toHex(child.store.discoveryKey), child])
     )
     for (const row of rows) {
@@ -640,7 +641,9 @@ export class Handle extends ReadyResource {
         encryptionKey: h.encryptionKey ?? null,
         epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
         // a handle that is not open keeps the writers it had when it last was
-        writers: child ? await writersOf(child.store) : (have.get(id)?.writers ?? null)
+        writers: child
+          ? await writersOf(child.store).catch(unread)
+          : (have.get(id)?.writers ?? null)
       }
       if (same(have.get(id), row)) continue
       await this.local.store.put('topics', row)
@@ -1320,6 +1323,12 @@ async function writersOf(db) {
   const [devices, members] = await Promise.all([db.get('devices'), db.get('members')])
   const writes = new Set(members.data.filter((m) => can(m.role, WRITE)).map((m) => m.id))
   return b4a.concat(devices.data.filter((d) => writes.has(d.memberId)).map((d) => hid.decode(d.id)))
+}
+
+// a handle whose writers do not read accepts nobody
+function unread(err) {
+  safetyCatch(err)
+  return null
 }
 
 function sameBytes(a, b) {

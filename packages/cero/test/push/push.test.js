@@ -138,6 +138,35 @@ test('topics: the root lists a topic per handle, kept with the handles rows', as
   t.pass('gone with the handle')
 })
 
+test('topics: a pass that fails leaves the next one to run, and an unreadable handle costs its own row', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const store = me.local.store
+  const put = store.put.bind(store)
+  store.put = (name, value) => {
+    if (name !== 'topics') return put(name, value)
+    store.put = put
+    throw new Error('disk full')
+  }
+  const first = await open(me.team, { name: 'first' })
+  await waitUntil(() => errors.length > 0)
+  const second = await open(me.team, { name: 'second' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 2)
+  t.pass('the pass after the failed one wrote both rows')
+  const own = await pushOf(first, first)
+  await waitUntil(async () => await receive(me, own))
+
+  const read = first.store.get
+  first.store.get = async () => {
+    throw new Error('unreadable')
+  }
+  await open(me.team, { name: 'third' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 3)
+  first.store.get = read
+  t.is(await receive(me, own), null, 'the handle it could not read accepts nobody')
+  t.ok(await receive(me, await pushOf(second, second)), 'the others are written as ever')
+})
+
 test('topics: a second device of the identity lists a handle it never opened', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
@@ -292,7 +321,7 @@ test('push: a subscribe that fails is retried at the next change, the follower l
   const messaging = mockMessaging({ failFirst: true })
   const errors = []
   const { b } = await scene(t, { messaging, errors })
-  await waitUntil(() => errors.length === 1)
+  await waitUntil(() => errors.length > 0)
   t.is(messaging.topics.size, 0, 'the first subscribe failed, and was reported')
   const other = await open(b.client.team, { name: 'other' })
   await waitUntil(() => messaging.topics.size === 2)
