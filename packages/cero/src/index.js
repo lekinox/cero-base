@@ -327,8 +327,9 @@ async function resolveIdentity(opts, local, done) {
   const provided = opts.phrase ? Identity.toSeed(opts.phrase) : null
   const seed = (await local.store.get('master')).data?.seed ?? null
   const row = (await local.store.get('device')).data
-  if (done && seed && !row)
+  if (done && seed && !row) {
     throw CeroError.INVALID('this storage predates device keys: recreate it')
+  }
   const same =
     row && provided ? b4a.equals((await Identity.keyPair(provided)).publicKey, row.identity) : true
   // another identity comes in only through restore, which wipes this one first
