@@ -14,7 +14,7 @@ export declare const leftId: (memberId: any) => string;
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<Array<{ value: Buffer, key: Buffer }>> }}  `apply` resolves to the nodes that landed.
+ * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<Array<{ value: Buffer, key: Buffer }>> }}  `apply` resolves to the nodes that landed.
  */
 export declare function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }: {
     spec: {
@@ -51,6 +51,7 @@ export declare function makeDispatcher({ spec, ns, onerror, key, onepoch, room, 
     read: (view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>;
 }): {
     dispatch: (value: Buffer, ctx: object) => Promise<void>;
+    role: (view: object, writer: Uint8Array) => Promise<string | null>;
     apply: (nodes: Array<{
         value: Buffer;
         key: Buffer;
