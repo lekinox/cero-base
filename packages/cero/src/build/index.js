@@ -343,6 +343,12 @@ function slots(schemaDir, ns) {
   return (desc) => {
     const names = had.get(desc.name)
     if (!names || !desc.fields) return desc
+    const gone = names.find((n) => !desc.fields.some((f) => f.name === n))
+    if (gone) {
+      throw CeroError.INVALID(
+        `${gone} was removed from ${desc.name}: fields are stored by position`
+      )
+    }
     const at = (f) => (names.includes(f.name) ? names.indexOf(f.name) : names.length)
     return { ...desc, fields: desc.fields.toSorted((a, b) => at(a) - at(b)) }
   }

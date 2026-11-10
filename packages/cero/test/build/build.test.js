@@ -413,6 +413,46 @@ test('build: a field added to a builtin goes after the ones a built spec has', a
   await importSpec(specDir)
 })
 
+// a row is stored by position: a field gone from a built type would hand its slot to the next one
+const titled = schema({ notes: t.collection({ title: t.string, body: t.string }) })
+
+test('build: a field removed while another is added is refused', async (a) => {
+  const due = schema({ notes: t.collection({ body: t.string, due: t.string }) })
+  await a.exception.all(
+    () => rebuilt(a, 'remove-add', titled, due),
+    /title was removed from notes: fields are stored by position/
+  )
+})
+
+test('build: a renamed field is refused', async (a) => {
+  const named = schema({ notes: t.collection({ name: t.string, body: t.string }) })
+  await a.exception.all(() => rebuilt(a, 'rename', titled, named), /title was removed from notes/)
+})
+
+test('build: a field an app added to a builtin cannot be removed', async (a) => {
+  const pin = schema({ handles: t.extend({ pin: t.string }) })
+  await a.exception.all(
+    () => rebuilt(a, 'remove-extend', noted, pin),
+    /note was removed from handle/
+  )
+})
+
+test('build: a field appended keeps every stored row', async (a) => {
+  const due = schema({ notes: t.collection({ title: t.string, body: t.string, due: t.string }) })
+  const { spec: before } = await importSpec(await rebuilt(a, 'append-v1', titled))
+  const { spec: after } = await importSpec(await rebuilt(a, 'append-v2', titled, due))
+
+  const testnet = await makeTestnet(a)
+  const dir = await a.tmp()
+  const me = await cero(dir, before, { bootstrap: testnet.bootstrap, extensions: [] })
+  await put(me.notes, { id: 'n1', title: 'Groceries', body: 'milk' })
+  await me.close()
+  const again = await cero(dir, after, { bootstrap: testnet.bootstrap, extensions: [] })
+  a.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const { data } = await get(again.notes, 'n1')
+  a.alike([data.title, data.body, data.due], ['Groceries', 'milk', null])
+})
+
 // a built spec keeps its route numbers, so the routes cero registers ahead of the app's are
 // frozen: one more there takes the id an app route shipped with
 test('build: the app routes start at the id they shipped with', async (t) => {
