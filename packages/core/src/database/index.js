@@ -1056,8 +1056,7 @@ export class Database extends ReadyResource {
           view: tx,
           key: this.writerKey,
           dbKey: this.key,
-          seed: crypto.hash([this.writerKey, value]),
-          dryRun: true
+          seed: crypto.hash([this.writerKey, value])
         })
       }
       return tx.updated()

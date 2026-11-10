@@ -44,7 +44,8 @@ const isKey = (b) => b?.byteLength === 32
 
 function sealed(wrapped) {
   try {
-    return c.decode(wraps, wrapped).length > 0
+    c.decode(wraps, wrapped)
+    return true
   } catch {
     return false
   }
@@ -493,7 +494,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (op.commit?.byteLength !== 32) return
     // the stamp is picked before any block is written, so epochs reorder freely; uniqueness is enforced here
     if (!Number.isInteger(op.stamp) || op.stamp <= 0 || op.stamp > 0xffffffff) return
-    // envelopes nobody can open would stop every later audit
+    // envelopes that do not decode would stop every later audit
     if (!sealed(op.wrapped)) return
     if (!can(await getSignerRole(ctx.view, ctx.key), REMOVE)) {
       throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
