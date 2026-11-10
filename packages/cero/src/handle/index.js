@@ -457,10 +457,6 @@ export class Handle extends ReadyResource {
     return Promise.resolve()
   }
 
-  /**
-   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
-   * @private
-   */
   /** @private one more holder: a lingering handle is kept */
   _hold() {
     clearTimeout(this._idle)
@@ -468,6 +464,10 @@ export class Handle extends ReadyResource {
     this._refs++
   }
 
+  /**
+   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+   * @private
+   */
   _end() {
     clearTimeout(this._idle)
     this._idle = null
@@ -608,10 +608,11 @@ export class Handle extends ReadyResource {
     return { data, total: data.length, size: data.length }
   }
 
-  // one pass at a time: two overlapping could put back a row the later one deleted
+  // one pass at a time, failed or not: two overlapping could put back a row the later one deleted
   /** @private */
   _index() {
-    this._indexing = (this._indexing ?? Promise.resolve()).then(() => this._reindex())
+    const run = () => this._reindex()
+    this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }
 

@@ -162,6 +162,33 @@ test('topics: the root lists a topic per handle, kept with the handles rows', as
   t.pass('gone with the handle')
 })
 
+test('topics: after one failed reindex the next handles change still indexes', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const store = me.local.store
+  const put = store.put.bind(store)
+  let failing = true
+  store.put = (name, value) => {
+    if (name !== 'topics' || !failing) return put(name, value)
+    failing = false
+    return Promise.reject(new Error('disk full'))
+  }
+  await open(me.team, { name: 'clinic' })
+  await waitUntil(() => errors.length || null)
+  t.alike(
+    errors.map((e) => e.message),
+    ['disk full'],
+    'the failed pass reaches onerror'
+  )
+  await open(me.team, { name: 'other' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 2, 10000)
+  t.alike(
+    errors.map((e) => e.message),
+    ['disk full'],
+    'and only once'
+  )
+})
+
 test('topics: a second device of the identity lists a handle it never opened', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
