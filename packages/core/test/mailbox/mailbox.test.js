@@ -1016,6 +1016,30 @@ test('Inbox: a read that finishes after close hands nothing over and keeps nothi
   t.is(box.mail.size, 0, 'no row')
 })
 
+test('Inbox: a handled stamped ahead of now counts from now', async (t) => {
+  const testnet = await makeTestnet(t)
+  const box = kept()
+  const secret = crypto.randomBytes(32)
+  const [ahead] = await fill(box, Mailbox.getAddress(secret), 1, Date.now() + 365 * 864e5)
+  const b = await mailbox(t, testnet, { inbox: box })
+  const inbox = b.receive(secret, () => {})
+  await inbox.ready()
+  t.ok(box.mail.get(ahead).handled <= Date.now(), 'rewritten to now')
+})
+
+test('Mailbox: 40 messages sent before anyone receives all arrive once an inbox opens', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+  for (let i = 0; i < 40; i++) await a.send(Mailbox.getAddress(secret), b4a.from(`${i}`))
+
+  const b = await mailbox(t, testnet)
+  const got = new Set()
+  b.receive(secret, (message) => got.add(b4a.toString(message)))
+  await waitFor(() => got.size === 40, { timeout: 60000 })
+  t.pass('past what one peer may queue, it is asked again')
+})
+
 test('Inbox: a handled id is forgotten after 30 days', async (t) => {
   const testnet = await makeTestnet(t)
   const box = kept()
