@@ -1463,15 +1463,16 @@ test('a ctx.put over an id keeps createdAt and ignores the timestamps it passes'
     if (ctx.name !== 'messages') return
     return ctx.put('records', { id: 'r', text: ctx.row.text, createdAt: 1, updatedAt: 1 })
   })
-  const { data: m1 } = await db.put('messages', { text: 'a' })
+  await db.put('messages', { text: 'a' })
   const { data: first } = await db.get('records', 'r')
-  t.ok(first.createdAt >= m1.updatedAt, 'stamped at its op, not by the hook')
+  t.not(first.createdAt, 1, 'stamped at its op, not by the hook')
 
-  await waitFor(() => Date.now() > first.updatedAt)
-  await db.put('messages', { text: 'b' })
+  // a row whose own times are long gone: the derived one takes the time its node was written
+  const before = Date.now()
+  await db.write([['add-messages', { id: 'm2', text: 'b', createdAt: 5, updatedAt: 5 }]])
   const { data: second } = await db.get('records', 'r')
   t.is(second.createdAt, first.createdAt, 'createdAt is when the id was first written')
-  t.ok(second.updatedAt > first.updatedAt, 'updatedAt is its op’s')
+  t.ok(second.updatedAt >= before, 'updatedAt is its node’s time, not the row’s')
 })
 
 test('a ctx write is held to the fields as a direct write is', async (t) => {
