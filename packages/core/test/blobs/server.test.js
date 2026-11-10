@@ -68,11 +68,7 @@ test('file-server: close tears down the server', async (t) => {
   t.is((await fetch(url)).status, 200, 'serves while open')
 
   await server.close()
-  let threw = false
-  try {
-    await fetch(url)
-  } catch {
-    threw = true
-  }
-  t.ok(threw, 'connection refused after close')
+  // its port is anyone's again: whoever answers there now does not serve the link
+  const res = await fetch(url).catch(() => null)
+  t.not(res?.status, 200, 'not served after close')
 })
