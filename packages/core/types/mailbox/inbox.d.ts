@@ -62,6 +62,10 @@ export declare class Inbox extends ReadyResource {
     /** @private */
     _erasing;
     /** @private */
+    _landing;
+    /** @private */
+    _waiting;
+    /** @private */
     _session;
     /** @private */
     _discovery;
@@ -91,6 +95,8 @@ export declare class Inbox extends ReadyResource {
     private _settle;
     /** @private */
     private _read;
+    /** @private */
+    private _land;
     /** @private */
     private _resume;
     /** @private */

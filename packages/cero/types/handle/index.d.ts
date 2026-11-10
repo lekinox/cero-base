@@ -181,6 +181,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _pending;
     /** @private */
+    _ending;
+    /** @private */
     _typeHooks;
     /** @private */
     _loading;
