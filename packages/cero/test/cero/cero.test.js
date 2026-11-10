@@ -1380,6 +1380,42 @@ test('link: a removed device loses its seats in every handle, and the root re-ke
   t.pass('the device writes nowhere')
 })
 
+// a new device accepted on `a` that stops waiting before its keys, left unread past the invite
+async function unread(t, a) {
+  const invite = await cero.invite(a.me, { ttl: '6s' })
+  const dir = await t.tmp()
+  const opts = { bootstrap: a.testnet.bootstrap, invite, recoveryTimeout: 1500 }
+  await t.exception(cero(dir, spec, opts), /TIMEOUT/)
+  await cero.accept(a.me, await asked(a.me))
+  await waitUntil(async () => (await get(a.me.requests)).data.find((r) => r.admitted) || null)
+  await waitUntil(async () => ((await get(a.me.requests)).data.length === 0 ? true : null))
+  return dir
+}
+
+test('link: an accepted device that never reads its keys leaves the root writable', async (t) => {
+  const a = await ceroOpen(t)
+  await set(a.me.profile, { name: 'ana' })
+  await unread(t, a)
+  t.ok(a.me.store.writable, 'the accepting device still writes to its root')
+  t.is((await get(a.me.devices)).data.length, 2, 'and the unread device keeps its seat')
+  await set(a.me.profile, { name: 'still ana' })
+  t.is((await get(a.me.profile)).data?.name, 'still ana')
+})
+
+test('link: that device links later with a new invite', async (t) => {
+  const a = await ceroOpen(t)
+  const dir = await unread(t, a)
+  const invite = await cero.invite(a.me)
+  const linking = cero(dir, spec, { bootstrap: a.testnet.bootstrap, invite })
+  linking.catch(() => {})
+  await cero.accept(a.me, await asked(a.me))
+  const b = await linking
+  t.teardown(() => b.close().catch(() => {}), { order: 1 })
+  t.is(b.id, a.me.id, 'let in as a device of the same identity')
+  await waitUntil(() => (b.store.writable ? true : null))
+  t.pass('and writes to the root')
+})
+
 test('cero(): a second device auto-claims', async (t) => {
   const testnet = await makeTestnet(t)
 

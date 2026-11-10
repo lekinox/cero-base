@@ -386,6 +386,42 @@ test('expiry: a joiner admitted but gone is removed at expiry, even while offere
   t.ok(await waitFor(gone, { timeout: 8000 }).catch(() => false), 'removed once it ran out')
 })
 
+test('expiry: an extra device that never read its keys costs its member nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ reuse: true, ttl: 4000 })
+  const first = await joiner.join(invite)
+  const owed = async () => (await host.db.get('requests')).data
+  await waitFor(async () => (await owed()).length === 0)
+
+  // nobody answers while a second device of the member lands, and it leaves before reading its keys
+  await host.pairing.close()
+  const device = await makeMailbox(t, testnet)
+  const writer = crypto.keyPair()
+  const opts = { identity: joiner.identity, spec, writer, timeout: 0 }
+  const joining = Pairing.join(device.mailbox, invite, opts).catch((e) => e)
+  await waitFor(async () => (await owed()).length === 1)
+  await device.mailbox.close()
+  await joining
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  await waitFor(async () => (await owed()).length === 0, { timeout: 10000 })
+  t.ok(await member(host.db, joiner.identity), 'the member stays')
+  const seat = (pair) =>
+    hid.encode(Hypercore.key({ version: 2, signers: [{ publicKey: pair.publicKey }] }))
+  t.ok((await host.db.get('devices', seat(first.writer))).data, 'with the device that read them')
+  t.ok((await host.db.get('devices', seat(writer))).data, 'and the unread one keeps its seat')
+
+  // the same device, back with a fresh invite, reads its keys this time
+  const again = new Mailbox(device.net)
+  t.teardown(() => again.close().catch(() => {}), { order: 1 })
+  const fresh = await pairing.invite()
+  const result = await Pairing.join(again, fresh, { ...opts, timeout: 30000 })
+  t.alike(result.key, host.db.key)
+})
+
 // ─── confirm invites: a member accepts ─────────────────────────────────────
 
 test('confirm: a join waits as a request until a member accepts it', async (t) => {
