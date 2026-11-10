@@ -188,6 +188,7 @@ export class Server extends RPCServer {
    */
   _wireInit() {
     this.rpc.onErrors((stream) => {
+      closeWithWire(stream)
       this._errors.add(stream)
       stream.on('error', safetyCatch)
       stream.on('close', () => this._errors.delete(stream))
@@ -222,6 +223,7 @@ export class Server extends RPCServer {
    */
   _wireLink() {
     this.rpc.onLink((stream) => {
+      closeWithWire(stream)
       stream.on('error', safetyCatch)
       const run = async () => {
         if (!this.me) throw CeroError.NOT_READY('Server', 'server')
@@ -317,6 +319,7 @@ export class Server extends RPCServer {
       // a watch ending with its handle ends the client's
       live.once('close', () => stream.destroy())
       // channel teardown destroys the stream with CHANNEL_CLOSED; 'close' cleans up
+      closeWithWire(stream)
       stream.on('error', safetyCatch)
       stream.on('close', () => {
         live.off('data', onData)
@@ -512,6 +515,11 @@ export async function serve(ipc, spec, opts) {
   const server = new Server(ipc, spec, opts)
   await server.ready()
   return server
+}
+
+// hrpc destroys only the wire's stream when the client drops it, never the one a handler holds
+function closeWithWire(stream) {
+  stream.writeStream.once('close', () => stream.destroy())
 }
 
 // a query crosses as the client wrote it; no bytes is no query

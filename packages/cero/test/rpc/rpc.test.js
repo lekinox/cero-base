@@ -421,6 +421,39 @@ test('rpc: watch over the wire — destroy stops emissions', async (t) => {
   t.ok(stream.destroyed, 'stream is destroyed')
 })
 
+test('rpc: a watch the client destroys stops on the worker', async (t) => {
+  const { me, server, client } = await openPair(t)
+  const stream = watch(client.messages)
+  await new Promise((resolve) => stream.once('data', resolve))
+  stream.destroy()
+  await waitUntil(() => !server._watchStreams.get(client.id)?.size)
+  t.pass('the worker let go of the stream')
+
+  let last = null
+  const live = watch(me.messages)
+  live.on('data', (snap) => (last = snap))
+  await waitUntil(() => last)
+  const db = me.store
+  const read = db.get
+  let reads = 0
+  db.get = (...args) => (reads++, read.apply(db, args))
+  await put(me.messages, { text: 'a' })
+  await waitUntil(() => last.data.length === 1)
+  db.get = read
+  live.destroy()
+  t.is(reads, 1, 'a write is read once, for the watch still open')
+})
+
+test('rpc: an errors stream the client drops leaves the worker', async (t) => {
+  const { server, client } = await openPair(t)
+  await waitUntil(() => server._errors.size === 1)
+  const errors = client.rpc.errors({})
+  await waitUntil(() => server._errors.size === 2)
+  errors.destroy()
+  await waitUntil(() => server._errors.size === 1)
+  t.pass('only the client’s own stream is left')
+})
+
 test('rpc: client close ends live watch streams cleanly (no error)', async (t) => {
   const { client } = await openPair(t)
   const stream = watch(client.messages)
