@@ -10,6 +10,13 @@ export declare function keyPair(secret: Uint8Array): {
     secretKey: Uint8Array;
 };
 /**
+ * A handled row old enough to forget; one whose `handled` is no time is not.
+ *
+ * @param {import('./index.js').Mail} mail
+ * @returns {boolean}
+ */
+export declare function aged({ handled }: import('./index.js').Mail): boolean;
+/**
  * Erase the core a message travelled in. Corestore leaves a core that still has a session open,
  * and that is an error here, not silence.
  *

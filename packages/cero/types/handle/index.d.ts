@@ -213,6 +213,10 @@ export declare class Handle extends ReadyResource {
     _live;
     /** @private */
     _ac;
+    _queued: {
+        all: boolean;
+        children: Set<any>;
+    };
     _indexing: any;
     /** @param {HandleOpts} [opts] */
     constructor(opts?: HandleOpts);
