@@ -168,6 +168,47 @@ test('topics: a pass that fails leaves the next one to run, and an unreadable ha
   t.ok(await receive(me, await pushOf(second, second)), 'the others are written as ever')
 })
 
+test('topics: a burst of updates on one handle is a few passes that read only that handle, and the last one lands', async (t) => {
+  const a = await ceroOpen(t)
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const other = await open(a.me.team, { name: 'other' })
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(room.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  await waitUntil(async () => await receive(a.me, payload))
+  await a.me._indexing
+
+  // a pass that reads a handle's writers takes a while, as in a big room
+  const counts = { passes: 0, updates: 0, other: 0 }
+  const reindex = a.me._reindex.bind(a.me)
+  a.me._reindex = (...args) => {
+    counts.passes++
+    return reindex(...args)
+  }
+  room.store.on('update', (touched) => touched.has('members') && counts.updates++)
+  const slow = room.store.get.bind(room.store)
+  room.store.get = async (name, query) => {
+    const read = await slow(name, query)
+    if (query === undefined) await new Promise((resolve) => setTimeout(resolve, 100))
+    return read
+  }
+  const plain = other.store.get.bind(other.store)
+  other.store.get = (name, query) => {
+    if (query === undefined) counts.other++
+    return plain(name, query)
+  }
+  for (let i = 0; i < 20; i++) await set(room.members, { id: a.me.identity.id, name: `a${i}` })
+  await set(room.members, { id: c.me.identity.id, role: 'reader' })
+  await waitUntil(async () => (await receive(a.me, payload)) === null)
+  t.pass('the last update, her demotion, landed')
+  for (let p = null; p !== a.me._indexing;) await (p = a.me._indexing)
+  t.ok(counts.passes < counts.updates / 2, `${counts.passes} passes for ${counts.updates} updates`)
+  t.is(counts.other, 0, 'the other handle was not read')
+})
+
 test('topics: a second device of the identity lists a handle it never opened', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })

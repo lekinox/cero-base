@@ -609,10 +609,20 @@ export class Handle extends ReadyResource {
     return { data, total: data.length, size: data.length }
   }
 
-  // one pass at a time, failed or not: two overlapping could put back a row the later one deleted
+  // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
+  // pass waits to start joins it; `child` is the handle whose writers changed, none reads every open one
   /** @private */
-  _index() {
-    const run = () => this._reindex()
+  _index(child = null) {
+    if (this._queued) {
+      if (child) this._queued.children.add(child)
+      else this._queued.all = true
+      return this._indexing
+    }
+    const queued = (this._queued = { all: !child, children: new Set(child ? [child] : []) })
+    const run = () => {
+      this._queued = null
+      return this._reindex(null, queued.all ? null : queued.children)
+    }
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }
@@ -627,16 +637,17 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
-  async _reindex(last = null) {
+  async _reindex(last = null, only = null) {
     if (this.closed || (this.closing && !last)) return
     const { data: handles } = await this.store.get('handles')
     const { data: rows } = await this.local.store.get('topics')
     const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
     const have = new Map(rows.map((row) => [row.id, row]))
     // an opened handle not adopted yet has its writers already: its row is written once
+    const reads = last ? [last] : (only ?? [...this.children, ...this._pending])
     const open = new Map(
-      [...this.children, ...this._pending, last]
-        .filter((child) => child?.opened)
+      [...reads]
+        .filter((child) => child.opened)
         .map((child) => [b4a.toHex(child.store.discoveryKey), child])
     )
     for (const row of rows) {
@@ -652,7 +663,7 @@ export class Handle extends ReadyResource {
         name: h.name ?? null,
         encryptionKey: h.encryptionKey ?? null,
         epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
-        // a handle that is not open keeps the writers it had when it last was
+        // a handle not read in this pass keeps the writers it had when it last was
         writers: child
           ? await writersOf(child.store).catch(unread)
           : (have.get(id)?.writers ?? null)
@@ -1144,12 +1155,12 @@ export class Handle extends ReadyResource {
   _seats(child) {
     const onchange = (touched) => {
       if (touched.has('*') || touched.has('devices') || touched.has('members')) {
-        this._index().catch(this._onerror)
+        this._index(child).catch(this._onerror)
       }
     }
     child.store.on('update', onchange)
     child.once('close', () => child.store.off('update', onchange))
-    this._index().catch(this._onerror)
+    this._index(child).catch(this._onerror)
   }
 
   // a device removed from the root loses its seats in every handle: its chain is static, so the
