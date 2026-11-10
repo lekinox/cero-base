@@ -1,6 +1,18 @@
 import { CeroError } from '@cero-base/core/errors'
 
 /**
+ * Every name `in` finds on an instance through its prototype chain, its methods and getters.
+ *
+ * @param {object} proto
+ * @returns {string[]}
+ */
+export function inherited(proto) {
+  const out = []
+  for (let p = proto; p; p = Object.getPrototypeOf(p)) out.push(...Object.getOwnPropertyNames(p))
+  return out
+}
+
+/**
  * @typedef {'collection' | 'single' | 'action' | 'handle'} RefKind
  * @typedef {import('./spec.js').RefInfo} RefInfo
  * @typedef {import('./spec.js').Spec} Spec

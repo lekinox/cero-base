@@ -154,7 +154,8 @@ await cero.put(me.local.drafts, { text: 'half a thought' })
 
 `local` holds collections and singles that stay on this device, at `me.local.<name>`. They have no
 hooks, batches, actions or `t.file`, and lists come back in id order. Cero keeps its own device data there, so these names are taken: `master`,
-`keypair`, `handle-keypairs`, `joins`, `inbox`, `outbox`, `environment`, `serving`.
+`device`, `keypair`, `handle-keypairs`, `joins`, `inbox`, `outbox`, `environment`, `serving`,
+`topics`.
 
 ## Add fields to a builtin
 
@@ -176,12 +177,27 @@ it. A `t.file` field is copied with its file, so it resolves in every handle. Se
 
 ## Reserved names
 
-- `status` at the root or in a handle type, and `joins` or `nearby` at the root: Cero computes
-  these on the device, and the build throws.
-- A builtin's name, such as `members` or `files`, for a ref of your own.
-- A name the root or a handle already carries, such as `id`, `type`, `store`, `parent`,
-  `children`, `device`, `identity`, `network`, `spec`, `signal` or `root`. It builds, then throws
-  `INVALID` when the root or the handle opens.
+The build throws `INVALID` on a name Cero takes, and says which one to rename:
+
+- A field of a collection named `id`, `memberId`, `index`, `createdAt` or `updatedAt`: Cero
+  writes these on every row. A single takes any field name.
+- A ref named like a builtin of its scope: `members`, `devices`, `invites`, `requests`,
+  `handles`, `files`, `counters`, `epochs`, `removals`, `refusals`, `spent` and `status` at the
+  root and in a handle type, and `joins`, `nearby` and `topics` at the root. In `local`, the
+  names listed [above](#keep-data-on-this-device).
+- A ref named like one of Cero's types: `member`, `device`, `invite`, `handle`, `file`,
+  `request`, `writer`, `counter`, `epoch`, `join`, `accept`, `deny`, `removal`, `refusal`,
+  `spent`, `status`, `joining`, `peer`, `topic`, `del-by-id` and the `req-` and `res-` names of
+  its messages. In `local`: `master`, `device`, `keypair`, `handle-keypair`, `serving`, `join`,
+  `mail`, `environment` and `subscription`.
+- A ref whose writes would take one of Cero's: an action named `rotate-key` or `add-writer`, or a
+  name such as `add-member` that one of Cero's writes already has.
+- A name the root, a handle, the local store or the client in a UI carries, such as `id`, `name`,
+  `type`, `store`, `parent`, `children`, `device`, `identity`, `network`, `spec`, `signal`,
+  `root`, `close`, `on` or the operators `put`, `set`, `get`, `del`, `watch` and `call`, and any
+  name that starts with `_`.
+- A handle type named other than a lowercase letter followed by letters and digits: `chatRoom`
+  builds, `chat-room` does not.
 
 ## Declare an action
 
@@ -209,7 +225,8 @@ await build('./spec', schema)
 ```
 
 `spec/index.js` exports `spec`, which you pass to `cero()`. The build fails on an unknown field
-type, a bad `t.extend`, a computed name, or a change that would break stored rows.
+type, a bad `t.extend`, a [reserved name](#reserved-names), or a change that would break stored
+rows.
 
 | Option       | Default         | Does                                                                                                                                                                |
 | ------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

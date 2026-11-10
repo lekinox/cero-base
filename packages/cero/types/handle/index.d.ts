@@ -4,9 +4,9 @@ import { Database } from '@cero-base/core/database';
 import { Mailbox } from '@cero-base/core/mailbox';
 import { Blobs } from '@cero-base/core/blobs';
 import { FileServer } from '@cero-base/core/blobs/server';
+import { Local } from '../local/index.js';
 export { Ref } from '../lib/refs.js';
 export type Network = import('@cero-base/core/network').Network;
-export type Local = import('../local/index.js').Local;
 export type Spec = import('../lib/spec.js').Spec;
 export type KeyPair = import('@cero-base/core/identity').KeyPair;
 export type HandleOpts = {
@@ -113,7 +113,6 @@ export type Child = Handle & HandleExtra;
 export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
 /**
  * @typedef {import('@cero-base/core/network').Network} Network
- * @typedef {import('../local/index.js').Local} Local
  * @typedef {import('../lib/spec.js').Spec} Spec
  * @typedef {import('@cero-base/core/identity').KeyPair} KeyPair
  *
@@ -161,7 +160,7 @@ export declare class Handle extends ReadyResource {
     network: Network;
     spec: import("../lib/spec.js").Spec;
     parent: Handle;
-    local: import("../index.js").Local;
+    local: Local;
     /** @type {Mailbox} */
     mailbox: Mailbox;
     /** @private */
@@ -462,3 +461,9 @@ export declare class Handle extends ReadyResource {
      */
     private _loadKeyPair;
 }
+/**
+ * The names a schema ref cannot take in the worker, where its handles and local store carry them.
+ *
+ * @type {string[]}
+ */
+export declare const reserved: string[];

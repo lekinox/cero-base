@@ -7,7 +7,7 @@ import c from 'compact-encoding'
 import z32 from 'z32'
 import { decodeId } from '@cero-base/core/blobs/codec'
 
-import { Ref } from '../lib/refs.js'
+import { Ref, inherited } from '../lib/refs.js'
 import { follow } from './push.js'
 import * as verbs from '../lib/operators.js'
 import { t, schema } from '../lib/spec.js'
@@ -660,6 +660,20 @@ export async function connect(ipc, spec, opts) {
   await client.ready()
   return client
 }
+
+/**
+ * The names a schema ref cannot take in the UI, where its client, handles and local refs carry them.
+ *
+ * @type {string[]}
+ */
+export const reserved = [
+  ...inherited(Client.prototype),
+  ...inherited(Handle.prototype),
+  ...inherited(LocalRefs.prototype),
+  ...Object.keys(operators),
+  ...['opening', 'closing', 'opened', 'closed', 'ipc', 'framed', 'rpc', 'spec', 'parent', 'id'],
+  ...['type', 'name', 'device', 'store', 'local']
+]
 
 /**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a

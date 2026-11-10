@@ -59,6 +59,11 @@ export declare const defs: {
         };
     };
 };
+export declare const base: {
+    name: string;
+    type: string;
+    required: boolean;
+}[];
 export type RefInfo = import('../lib/spec.js').RefInfo;
 export type FieldType = {
     prim: string;
@@ -131,6 +136,20 @@ export declare function dispatches(ns: string): Array<{
     name: string;
     requestType: string;
 }>;
+/**
+ * The names Cero takes in a scope, which an app ref would shadow: its refs and collections, its
+ * types and its routes.
+ *
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @param {boolean} root
+ * @returns {{ refs: Set<string>, types: Set<string>, routes: Set<string> }}
+ */
+export declare function reserved(ns: string, scope: 'main' | 'local', root: boolean): {
+    refs: Set<string>;
+    types: Set<string>;
+    routes: Set<string>;
+};
 /**
  * @param {string} ns
  * @returns {Array<{ name: string, request: { name: string }, response: { name: string, stream?: boolean } }>}

@@ -13,6 +13,8 @@ import { CeroError } from '@cero-base/core/errors'
 
 import { NS } from '../lib/constants.js'
 import { extensionsOf } from '../extensions/index.js'
+import { reserved as worker } from '../handle/index.js'
+import { reserved as ui } from '../rpc/client.js'
 import * as internal from './internal.js'
 
 /**
@@ -143,25 +145,32 @@ function compile(root, ns, scope = 'main', top = false) {
     indexes: [],
     meta: { ns, refs: {} },
     ns,
-    scope
+    scope,
+    taken: internal.reserved(ns, scope, top)
   }
 
   Object.assign(ctx.meta.refs, internal.refs(ns, scope))
 
   for (const [name, node] of Object.entries(root)) {
+    if (!node.kind || node.kind === 'extend') continue
+    if (ctx.taken.refs.has(name)) throw CeroError.INVALID(`'${name}' is a builtin ref, rename it`)
+    // a private field of either side is named with a leading _
+    if (name.startsWith('_') || worker.includes(name) || ui.includes(name)) {
+      throw CeroError.INVALID(`'${name}' is taken by the handle or the client, rename it`)
+    }
     if (node.kind === 'handle') {
+      if (!/^[a-z][a-zA-Z0-9]*$/.test(name)) {
+        throw CeroError.INVALID(
+          `'${name}' is not a handle name: a lowercase letter, then letters and digits; rename it`
+        )
+      }
       ctx.meta.refs[name] = { kind: 'handle', type: node.type || name, schema: `@${ns}/handle` }
       continue
     }
     register(name, node, ctx)
   }
 
-  if (scope === 'main') {
-    for (const [name, ref] of Object.entries(internal.live(ns, top))) {
-      if (name in root) throw CeroError.INVALID(`'${name}' is a builtin ref, rename it`)
-      ctx.meta.refs[name] = ref
-    }
-  }
+  if (scope === 'main') Object.assign(ctx.meta.refs, internal.live(ns, top))
 
   return {
     types: ctx.types,
@@ -181,6 +190,10 @@ function extendBuiltins(refs, extend) {
 
 function register(name, node, ctx) {
   const fqn = `@${ctx.ns}/${name}`
+  const routes = node.kind === 'action' ? [name] : ['add', 'set', 'del'].map((v) => `${v}-${name}`)
+  const route = routes.find((r) => ctx.taken.routes.has(r))
+  if (route) throw CeroError.INVALID(`'${name}' makes Cero's route '${route}', rename it`)
+  if (ctx.taken.types.has(name)) throw CeroError.INVALID(`'${name}' is a builtin type, rename it`)
   if (node.kind === 'action') {
     ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.dispatches.push({ name, requestType: fqn })
@@ -201,17 +214,14 @@ function register(name, node, ctx) {
     return
   }
   if (node.kind === 'collection') {
+    const field = internal.base.find((f) => f.name in node.fields)
+    if (field) {
+      throw CeroError.INVALID(`'${field.name}' in '${name}' is a field Cero writes, rename it`)
+    }
     ctx.types.push({
       name,
       compact: false,
-      fields: [
-        { name: 'id', type: 'string', required: true },
-        { name: 'memberId', type: 'string', required: false },
-        { name: 'index', type: 'uint', required: false },
-        { name: 'createdAt', type: 'int', required: false },
-        { name: 'updatedAt', type: 'int', required: false },
-        ...internal.fields(node.fields)
-      ]
+      fields: [...internal.base, ...internal.fields(node.fields)]
     })
     ctx.collections.push({ name, schema: fqn, key: ['id'] })
     ctx.dispatches.push({ name: `add-${name}`, requestType: fqn })

@@ -1,11 +1,16 @@
 import test from 'brittle'
 import process from 'process'
+import { Duplex } from 'streamx'
 import { promises as fs, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
+import { reserved as worker } from '../../src/handle/index.js'
+import { Ref } from '../../src/lib/refs.js'
+import { serve } from '../../src/rpc/server.js'
+import { connect, reserved as ui } from '../../src/rpc/client.js'
 import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
 import { rpc, contract } from '../../src/build/schemas.js'
@@ -46,6 +51,13 @@ async function buildInto(t, sub, sch = fixture) {
   t.teardown(() => fs.rm(specDir, { recursive: true, force: true }))
   await build(specDir, sch)
   return specDir
+}
+
+function pair() {
+  let a, b
+  a = new Duplex({ write: (data, cb) => (b.push(data), cb(null)) })
+  b = new Duplex({ write: (data, cb) => (a.push(data), cb(null)) })
+  return [a, b]
 }
 
 async function importSpec(specDir) {
@@ -128,6 +140,164 @@ test('build: status and joins are computed builtins an app cannot declare', asyn
   const dir = join(buildRoot, 'live-taken')
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
   await t.exception.all(() => build(dir, takenSchema), /'status' is a builtin/)
+})
+
+async function refused(t, sub, sch, message) {
+  const dir = join(buildRoot, sub)
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await t.exception.all(() => build(dir, sch, { extensions: [] }), message)
+}
+
+test('build: a collection field named like one Cero writes on every row is refused', async (a) => {
+  // a shipped app had updatedAt twice: the next build threw or moved a field
+  const reports = t.collection({ score: t.uint, updatedAt: t.uint, by: t.string })
+  await refused(a, 'base-handle', schema({ group: { reports } }), /'updatedAt' in 'reports'/)
+  const notes = t.collection({ id: t.string, text: t.string })
+  await refused(a, 'base-root', schema({ notes }), /'id' in 'notes'/)
+  const drafts = t.collection({ index: t.string })
+  await refused(a, 'base-local', schema({ local: { drafts } }), /'index' in 'drafts'/)
+})
+
+test('build: a single keeps any field name, it has none of Cero', async (a) => {
+  const settings = t.single({ id: t.string, index: t.uint, updatedAt: t.int })
+  const specDir = await buildInto(a, 'base-single', schema({ settings }))
+  const { meta } = await importSpec(specDir)
+  a.alike(meta.refs.settings.fields, ['id', 'index', 'updatedAt'])
+})
+
+test('build: an app ref named like a builtin ref of its scope is refused', async (a) => {
+  const text = t.collection({ text: t.string })
+  await refused(a, 'ref-root', schema({ members: text }), /'members' is a builtin ref/)
+  await refused(a, 'ref-handle', schema({ room: { devices: text } }), /'devices' is a builtin/)
+  await refused(a, 'ref-type', schema({ members: { notes: text } }), /'members' is a builtin/)
+  await refused(a, 'ref-epochs', schema({ epochs: text }), /'epochs' is a builtin ref/)
+  await refused(a, 'ref-local', schema({ local: { topics: text } }), /'topics' is a builtin/)
+  const device = t.single({ theme: t.string })
+  await refused(a, 'ref-local-single', schema({ local: { device } }), /'device' is a builtin/)
+})
+
+test('build: a name only the root computes is free in a handle type', async (a) => {
+  const text = t.collection({ text: t.string })
+  const specDir = await buildInto(a, 'ref-free', schema({ room: { topics: text, nearby: text } }))
+  const { meta } = await importSpec(specDir)
+  a.is(meta.handles.room.refs.topics.kind, 'collection')
+  a.is(meta.handles.room.refs.nearby.kind, 'collection')
+})
+
+test('build: an app ref named like a builtin type is refused', async (a) => {
+  const text = t.collection({ text: t.string })
+  await refused(a, 'type-counter', schema({ counter: text }), /'counter' is a builtin type/)
+  const peer = t.single({ name: t.string })
+  await refused(a, 'type-peer', schema({ room: { peer } }), /'peer' is a builtin type/)
+  await refused(a, 'type-rpc', schema({ 'res-data': text }), /'res-data' is a builtin type/)
+  await refused(a, 'type-local', schema({ local: { mail: text } }), /'mail' is a builtin type/)
+})
+
+test('build: an app ref that makes one of Cero routes is refused', async (a) => {
+  // the same fields as Cero's accept: it built, shared the route, and replaced its handler
+  const accept = t.action({ id: t.required(t.string), role: t.string, proof: t.bytes })
+  await refused(a, 'route-accept', schema({ accept }), /'accept' makes Cero's route 'accept'/)
+  const join = t.action({ code: t.string })
+  await refused(a, 'route-join', schema({ room: { join } }), /'join' makes Cero's route 'join'/)
+  const refusal = t.collection({ text: t.string })
+  await refused(
+    a,
+    'route-refusal',
+    schema({ refusal }),
+    /'refusal' makes Cero's route 'del-refusal'/
+  )
+  const rotate = t.action({ x: t.string })
+  await refused(
+    a,
+    'route-rotate',
+    schema({ 'rotate-key': rotate }),
+    /makes Cero's route 'rotate-key'/
+  )
+})
+
+test('build: an action named near a route of Cero builds', async (a) => {
+  const specDir = await buildInto(a, 'route-free', schema({ accepted: t.action({ id: t.string }) }))
+  const { meta } = await importSpec(specDir)
+  a.is(meta.refs.accepted.kind, 'action')
+})
+
+test('build: a handle name that is not an identifier is refused', async (a) => {
+  const room = { notes: t.collection({ text: t.string }) }
+  await refused(
+    a,
+    'shape-hyphen',
+    schema({ 'chat-room': room }),
+    /'chat-room' is not a handle name/
+  )
+  await refused(a, 'shape-upper', schema({ Room: room }), /'Room' is not a handle name/)
+})
+
+test('build: a camel-case handle name builds and imports', async (a) => {
+  const room = { notes: t.collection({ text: t.string }) }
+  const specDir = await buildInto(a, 'shape-camel', schema({ chatRoom2: room }))
+  const { spec } = await importSpec(specDir)
+  a.ok(spec.handles.chatRoom2.database, 'the generated module imports')
+})
+
+test('build: a ref named like a member of the handle or the client is refused', async (a) => {
+  const text = t.collection({ text: t.string })
+  // the worker opened it and the UI threw on connect
+  await refused(a, 'member-ui', schema({ watch: text }), /'watch' is taken by the handle/)
+  await refused(a, 'member-worker', schema({ signal: text }), /'signal' is taken by the handle/)
+  await refused(a, 'member-child', schema({ room: { name: text } }), /'name' is taken/)
+  await refused(a, 'member-local', schema({ local: { schemaOf: text } }), /'schemaOf' is taken/)
+  await refused(a, 'member-private', schema({ _pair: text }), /'_pair' is taken/)
+  await refused(a, 'member-handle', schema({ store: { notes: text } }), /'store' is taken/)
+})
+
+test('build: the members the build refuses cover every field a handle and a client carry', async (a) => {
+  const specDir = await buildInto(a, 'members')
+  const { spec } = await importSpec(specDir)
+  const testnet = await makeTestnet(a)
+  const me = await cero(await a.tmp(), spec, { bootstrap: testnet.bootstrap })
+  a.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const [up, down] = pair()
+  const server = await serve(up, spec, { storage: await a.tmp(), bootstrap: testnet.bootstrap })
+  a.teardown(() => server.close().catch(() => {}), { order: 4 })
+  const client = await connect(down, spec)
+  a.teardown(() => client.close().catch(() => {}), { order: 3 })
+
+  // a private field is refused by its leading _, every other one by name
+  const fields = (o) => Object.keys(o).filter((k) => !k.startsWith('_') && !(o[k] instanceof Ref))
+  for (const o of [me, await open(me.team), me.local]) {
+    a.alike(
+      fields(o).filter((k) => !worker.includes(k)),
+      [],
+      `worker ${o.constructor.name}`
+    )
+  }
+  for (const o of [client, await open(client.team), client.local]) {
+    a.alike(
+      fields(o).filter((k) => !ui.includes(k)),
+      [],
+      `client ${o.constructor.name}`
+    )
+  }
+})
+
+test('build: a schema with names near the reserved ones builds and opens', async (a) => {
+  const near = schema({
+    notes: t.collection({ title: t.string, memberIds: t.string, created: t.int }),
+    watched: t.collection({ text: t.string }),
+    acceptAll: t.action({ id: t.string }),
+    room: { profile: t.single({ name: t.string }), files2: t.collection({ text: t.string }) },
+    local: { devices: t.collection({ name: t.string }) }
+  })
+  const specDir = await buildInto(a, 'near', near)
+  const { spec } = await importSpec(specDir)
+  const testnet = await makeTestnet(a)
+  const me = await cero(await a.tmp(), spec, { bootstrap: testnet.bootstrap })
+  a.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const { data } = await put(me.notes, { title: 'a', memberIds: 'x', created: 1 })
+  a.is(data.title, 'a')
+  const room = await open(me.room)
+  await put(room.files2, { text: 'b' })
+  a.is((await get(room.files2)).data.length, 1)
 })
 
 test('build: t.extend on a non-builtin throws', async (t) => {
