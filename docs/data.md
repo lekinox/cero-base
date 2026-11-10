@@ -159,7 +159,7 @@ and take `{ signal }` as a third argument. Hooks fire on the builtins too, such 
 
 The `cero.` operators throw inside a hook: use the ones on ctx. `ctx.put` mints the same id on
 every device, `ctx.set` needs an id on a collection, and `ctx.get` returns `t.file` fields as bare
-ids. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
+ids. A row written through ctx carries the time of the write that ran the hook. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
 not make refuses the whole write: a hook that writes on every join checks `ctx.role` first, or a
 reader's join is refused. A hook reads only ctx, never a clock, random numbers or local state, or
 devices store different rows; the writing device runs it twice, to check the write and to store it.

@@ -670,6 +670,26 @@ test('call: the same action called twice derives two rows', async (t) => {
   t.is(data.length, 2, 'a repeat mints a new id')
 })
 
+test('call: rows an action derives carry the time of its op', async (t) => {
+  const db = await teamDb(t, { promote: ({ row, put }) => put('notes', { text: row.memberId }) })
+  const before = Date.now()
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  const { data } = await db.get('notes')
+  t.ok(data[0].createdAt >= before && data[0].createdAt <= Date.now(), 'created at the op')
+  t.is(data[0].updatedAt, data[0].createdAt)
+})
+
+test('after("del"): a derived row carries the time of the delete, not of the deleted row', async (t) => {
+  const db = await teamDb(t, {
+    del: ({ name, id, put }) => (name === 'notes' ? put('messages', { text: id }) : undefined)
+  })
+  await db.write([['add-notes', { id: 'old', text: 'x', createdAt: 1, updatedAt: 1 }]])
+  const before = Date.now()
+  await db.del('notes', 'old')
+  const { data } = await db.get('messages')
+  t.ok(data[0].createdAt >= before, 'stamped at the delete')
+})
+
 test('call: an action hook cannot raise its caller’s role, ctx writes run the rank rules', async (t) => {
   const { db, identity } = await withRole(t, 'member', {
     spec: spec.handles.team,
@@ -1444,13 +1464,13 @@ test('a ctx.put over an id keeps createdAt and ignores the timestamps it passes'
   })
   const { data: m1 } = await db.put('messages', { text: 'a' })
   const { data: first } = await db.get('records', 'r')
-  t.is(first.createdAt, m1.updatedAt, 'stamped from its op, not by the hook')
+  t.ok(first.createdAt >= m1.updatedAt, 'stamped at its op, not by the hook')
 
-  await waitFor(() => Date.now() > m1.updatedAt)
-  const { data: m2 } = await db.put('messages', { text: 'b' })
+  await waitFor(() => Date.now() > first.updatedAt)
+  await db.put('messages', { text: 'b' })
   const { data: second } = await db.get('records', 'r')
   t.is(second.createdAt, first.createdAt, 'createdAt is when the id was first written')
-  t.is(second.updatedAt, m2.updatedAt, 'updatedAt is its op’s')
+  t.ok(second.updatedAt > first.updatedAt, 'updatedAt is its op’s')
 })
 
 test('a ctx write is held to the fields as a direct write is', async (t) => {

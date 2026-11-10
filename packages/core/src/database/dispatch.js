@@ -159,7 +159,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
 
   // the operators developers know, bound to this op. A write is dispatched as the op's writer
   // would append it, so the same rank and `own` rules judge it
-  function operators(ctx, ts) {
+  function operators(ctx) {
     const current = (name, id) =>
       single(name) ? ctx.view.findOne(col(name), {}) : ctx.view.get(col(name), { id })
     // held to the fields as a direct write is, before the encoder drops or chokes on one
@@ -177,8 +177,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       get: (ref, query) => read(ctx.view, refName(ref), query),
       put: (ref, row) => {
         const name = refName(ref)
-        if (single(name)) return write(name, 'set', held(name, row, stamp(row, null, ts)))
-        const stored = stamp({ ...row, id: row.id ?? ctx.mint() }, null, ts)
+        if (single(name)) return write(name, 'set', held(name, row, stamp(row, null, ctx.ts)))
+        const stored = stamp({ ...row, id: row.id ?? ctx.mint() }, null, ctx.ts)
         return write(name, 'add', held(name, row, stored))
       },
       // an upsert, as the set operator appends it
@@ -187,7 +187,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         if (!single(name) && !row.id) throw CeroError.INVALID(`set('${name}') needs an id`)
         const verb = single(name) || BESPOKE.has(verbOf(name)) ? 'set' : 'add'
         const was = await current(name, row.id)
-        return write(name, verb, held(name, row, stamp({ ...was, ...row }, was?.createdAt, ts)))
+        return write(name, verb, held(name, row, stamp({ ...was, ...row }, was?.createdAt, ctx.ts)))
       },
       del: (ref, id) => {
         const name = refName(ref)
@@ -210,9 +210,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       await write(row)
       return row
     }
-    // never a clock: a derived row must stamp the same timestamp on every peer
-    const ts = row?.updatedAt || existing?.updatedAt || 0
-    const hctx = { op, name, row, existing, id, ...(await author(ctx)), ...operators(ctx, ts) }
+    const hctx = { op, name, row, existing, id, ...(await author(ctx)), ...operators(ctx) }
     await fire(fns.before, hctx, true)
     await write(hctx.row)
     // once every row of the op landed: a join's after hooks write as a member
@@ -253,7 +251,6 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   // `landed` needs to fire the after hooks once the change lands
   async function decide(ctx, op, { row = null, existing, ranked }, refusal) {
     const fns = pick(op, ctx)
-    const ts = row?.updatedAt || existing?.updatedAt || 0
     const hctx = {
       op,
       name: 'members',
@@ -262,7 +259,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       id: existing.id,
       ranked,
       ...(await author(ctx)),
-      ...operators(ctx, ts)
+      ...operators(ctx)
     }
     // a grant widens rank among the room's writers only: never for a reader, nor for someone who
     // is no member at all
@@ -846,12 +843,14 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       for (const node of nodes) {
         try {
           const seed = crypto.hash([node.key, c.encode(c.uint, node.length)])
+          // never a clock: the node's time is the same on every peer
           await router.dispatch(node.value, {
             view: tx,
             host: deferred,
             key: node.key,
             dbKey,
-            seed
+            seed,
+            ts: node.timestamp
           })
         } catch (err) {
           // anything but a refusal skips one node, so an older peer never drops a batch its newer neighbour applies
