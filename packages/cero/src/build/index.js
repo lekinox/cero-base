@@ -48,6 +48,7 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
       if (v && v.kind === 'extend') {
         const type = internal.defs.main[k]?.type
         if (!type) throw CeroError.INVALID(`'${k}' is not an extendable builtin`)
+        if ('memberId' in v.fields) throw CeroError.INVALID(written('memberId', k))
         // app schema wins on field conflicts, extensions only add new fields
         extend[type] = fromExt ? { ...v.fields, ...extend[type] } : { ...extend[type], ...v.fields }
       } else if (fromExt && isPlainHandle(v)) {
@@ -68,33 +69,44 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
   }
   for (const { meta } of [main, ...Object.values(handles)]) extendBuiltins(meta.refs, extend)
 
-  emitMain(join(specDir, 'main'), ns, main, { rpc: true, extend })
-  emitLocal(join(specDir, 'local'), ns, local)
-  for (const [name, handle] of Object.entries(handles)) {
-    emitMain(join(specDir, 'handles', name), ns, handle, { rpc: false, extend })
-  }
+  // a refused build leaves the spec as it was: it is written beside it and moved in whole
+  const next = `${specDir}.next`
+  await fs.rm(next, { recursive: true, force: true })
+  if (existsSync(specDir)) await fs.cp(specDir, next, { recursive: true })
+  try {
+    emitMain(join(next, 'main'), ns, main, { rpc: true, extend })
+    emitLocal(join(next, 'local'), ns, local)
+    for (const [name, handle] of Object.entries(handles)) {
+      emitMain(join(next, 'handles', name), ns, handle, { rpc: false, extend })
+    }
 
-  const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
-  const version = await contract(specDir, dirs, [main, ...Object.values(handles)])
-  const meta = {
-    ...main.meta,
-    version,
-    local: local.meta,
-    handles: Object.fromEntries(
-      Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version }])
+    const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
+    const version = await contract(next, dirs, [main, ...Object.values(handles)])
+    const meta = {
+      ...main.meta,
+      version,
+      local: local.meta,
+      handles: Object.fromEntries(
+        Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version }])
+      )
+    }
+
+    // the type marker tells the runtime which handle type to open
+    for (const [name] of Object.entries(handles)) {
+      if (meta.refs[name]) meta.refs[name] = { kind: 'handle', type: name, schema: `@${ns}/handle` }
+    }
+
+    await fs.writeFile(
+      join(next, 'index.js'),
+      wireModule(meta, Object.keys(handles), from, extensions),
+      'utf-8'
     )
+  } catch (err) {
+    await fs.rm(next, { recursive: true, force: true })
+    throw err
   }
-
-  // the type marker tells the runtime which handle type to open
-  for (const [name] of Object.entries(handles)) {
-    if (meta.refs[name]) meta.refs[name] = { kind: 'handle', type: name, schema: `@${ns}/handle` }
-  }
-
-  await fs.writeFile(
-    join(specDir, 'index.js'),
-    wireModule(meta, Object.keys(handles), from, extensions),
-    'utf-8'
-  )
+  await fs.rm(specDir, { recursive: true, force: true })
+  await fs.rename(next, specDir)
 }
 
 const str = (v) => (typeof v === 'string' ? v : null)
@@ -157,9 +169,9 @@ function compile(root, ns, scope = 'main', top = false) {
       throw CeroError.INVALID(`'${name}' is taken by the handle or the client, rename it`)
     }
     if (node.kind === 'handle') {
-      if (!/^[a-z][a-zA-Z0-9]*$/.test(name)) {
+      if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name)) {
         throw CeroError.INVALID(
-          `'${name}' is not a handle name: a lowercase letter, then letters and digits; rename it`
+          `'${name}' is not a handle name: a letter, then letters, digits or _; rename it`
         )
       }
       ctx.meta.refs[name] = { kind: 'handle', type: node.type || name, schema: `@${ns}/handle` }
@@ -186,6 +198,8 @@ function extendBuiltins(refs, extend) {
   }
 }
 
+const written = (field, name) => `'${field}' in '${name}' is a field Cero writes, rename it`
+
 function register(name, node, ctx) {
   const fqn = `@${ctx.ns}/${name}`
   const routes = node.kind === 'action' ? [name] : ['add', 'set', 'del'].map((v) => `${v}-${name}`)
@@ -200,6 +214,7 @@ function register(name, node, ctx) {
     return
   }
   if (node.kind === 'single') {
+    if ('memberId' in node.fields) throw CeroError.INVALID(written('memberId', name))
     ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.collections.push({ name, schema: fqn, key: [] })
     ctx.dispatches.push({ name: `set-${name}`, requestType: fqn })
@@ -213,9 +228,7 @@ function register(name, node, ctx) {
   }
   if (node.kind === 'collection') {
     const field = internal.base.find((f) => f.name in node.fields)
-    if (field) {
-      throw CeroError.INVALID(`'${field.name}' in '${name}' is a field Cero writes, rename it`)
-    }
+    if (field) throw CeroError.INVALID(written(field.name, name))
     ctx.types.push({
       name,
       compact: false,
@@ -248,11 +261,11 @@ function register(name, node, ctx) {
 
 // one contract for the app, kept in contract.json: it rises once per build that changes what is
 // stored, at the root or in any handle type, or what a write means to Cero, never for RPC alone.
-// A spec without one starts from its builders' versions, so a shipped app's number never goes down.
-// It keeps each collection's own flag too: apply reads it from the reader's spec, so it never changes
+// A spec without one starts from its builders' versions, so a shipped app's number never goes down
 async function contract(specDir, dirs, compiled) {
   const file = join(specDir, 'contract.json')
   const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
+  // apply reads own from the reader's spec, so a collection keeps the one it shipped with
   const own = { ...kept?.own }
   dirs.forEach((dir, i) => {
     const was = own[dir] || {}
@@ -284,8 +297,7 @@ function owned(refs) {
   )
 }
 
-// what a spec directory stores: its collections, its routes and the types they name. schema.json
-// also holds the computed and RPC types, and keeps every type it was ever given
+// what a spec directory stores: its collections, its routes and the types they name, nothing else in schema.json
 async function shapeOf(dir) {
   const read = async (rel) => JSON.parse(await fs.readFile(join(dir, rel), 'utf-8'))
   const { version: types, ...schema } = await read('schema/schema.json')
@@ -307,7 +319,9 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  const keep = slots(schemaDir, ns)
+  const stored = [...internal.collections(ns, 'main'), ...collections].map((x) => x.schema)
+  const sent = [...internal.dispatches(ns), ...dispatches].map((x) => x.requestType)
+  const keep = slots(schemaDir, ns, new Set([...stored, ...sent]))
   for (const desc of internal.types('main', extend)) sns.register(keep(desc))
   for (const desc of types) sns.register(keep(desc))
   if (rpc) for (const desc of internal.types('rpc')) sns.register(keep(desc))
@@ -340,7 +354,8 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  const keep = slots(schemaDir, ns)
+  const stored = [...internal.collections(ns, 'local'), ...collections].map((x) => x.schema)
+  const keep = slots(schemaDir, ns, new Set(stored))
   for (const desc of internal.types('local')) sns.register(keep(desc))
   for (const desc of types) sns.register(keep(desc))
   Hyperschema.toDisk(s, schemaDir, { esm: true })
@@ -356,7 +371,7 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
 // a field keeps the slot the built spec gave it, whichever schema declares it: hyperschema stores
 // a row by position, and a type's fields are cero's, then its extensions', then the app's, so one
 // more of cero's would take an extension's slot. A field the spec lacks goes after the ones it has
-function slots(schemaDir, ns) {
+function slots(schemaDir, ns, stored) {
   const file = join(schemaDir, 'schema.json')
   const built = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')).schema : []
   const had = new Map(
@@ -367,10 +382,11 @@ function slots(schemaDir, ns) {
   return (desc) => {
     const names = had.get(desc.name)
     if (!names || !desc.fields) return desc
-    const gone = names.find((n) => !desc.fields.some((f) => f.name === n))
+    const lost = (n) => !desc.fields.some((f) => f.name === n)
+    const gone = stored.has(`@${ns}/${desc.name}`) && names.find(lost)
     if (gone) {
       throw CeroError.INVALID(
-        `${gone} was removed from ${desc.name}: fields are stored by position`
+        `'${gone}' was removed from '${desc.name}': fields are stored by position`
       )
     }
     const at = (f) => (names.includes(f.name) ? names.indexOf(f.name) : names.length)

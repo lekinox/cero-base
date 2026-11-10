@@ -1,5 +1,4 @@
-// What a handle, the local store and the UI's client already carry: a schema ref cannot take one of these
-// names, nor one with a leading _. The suite checks the list against the real objects.
+// what a handle, the local store and the UI's client carry on Bare or Node: no schema ref takes one of these names
 export const reserved = [
   'addListener',
   'addOnceListener',

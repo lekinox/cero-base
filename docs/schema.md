@@ -180,20 +180,21 @@ it. A `t.file` field is copied with its file, so it resolves in every handle. Se
 The build throws `INVALID` on a name Cero takes, and says which one to rename:
 
 - A field of a collection named `id`, `memberId`, `index`, `createdAt` or `updatedAt`: Cero
-  writes these on every row. A single takes any field name.
+  writes these on every row. In a single, and in a field added to a builtin, only `memberId` is
+  taken.
 - A ref named like a builtin of its scope: `members`, `devices`, `invites`, `requests`,
   `handles`, `files` and `status` at the root and in a handle type, and `joins`, `nearby` and
   `topics` at the root. In `local`, the names listed [above](#keep-data-on-this-device).
 - A ref named like something Cero stores or sends under that name, such as `member`, `invite`,
-  `epoch` or `counter`.
+  `epochs` or `counters`.
 - A ref whose writes would take one of Cero's: an action named `accept`, or a collection named
   `member`, whose `add-member` Cero already has.
 - A name the root, a handle, the local store or the client in a UI carries, such as `id`, `name`,
   `type`, `store`, `parent`, `children`, `device`, `identity`, `network`, `spec`, `signal`,
   `root`, `close`, `on` or the operators `put`, `set`, `get`, `del`, `watch` and `call`, and any
   name that starts with `_`.
-- A handle type named other than a lowercase letter followed by letters and digits: `chatRoom`
-  builds, `chat-room` does not.
+- A handle type whose name is not a letter followed by letters, digits or `_`: `chatRoom` builds,
+  `chat-room` does not.
 
 ## Declare an action
 
@@ -237,11 +238,11 @@ const v1 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool }) }
 const v2 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool, due: t.int }) })
 ```
 
-Fields are stored by position, so add new ones at the end. Removing a field, or changing its type
-or `required`, fails the build, and so does turning `own` on or off for a collection that shipped:
-a new rule needs a new collection. Reordering two fields of the same type builds, and swaps their
-data on every row. Keep `spec/` in git and rebuild over it after every change: it records what
-shipped.
+Fields are stored by position, so add new ones at the end. Removing or renaming a field, or
+changing its type or `required`, fails the build, and so does turning `own` on or off for a
+collection that shipped: a new rule needs a new collection. Reordering two fields of the same type
+builds, and swaps their data on every row. A build that fails leaves `spec/` as it was. Keep
+`spec/` in git and rebuild over it after every change: it records what shipped.
 
 The build keeps one contract version for the app in `spec/contract.json`, and every database stamps
 it on its writes, the root's and every handle's. It rises by one in a build that changes what is
