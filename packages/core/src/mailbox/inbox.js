@@ -44,17 +44,38 @@ export function aged({ handled }) {
   return isTime(handled) && Date.now() - handled >= HANDLED_FOR
 }
 
+// per store, the cores being read or erased: a core opened while its purge runs reads a header
+// half deleted and throws where no caller can catch it, so the two never overlap
+const using = new WeakMap()
+
+function exclusive(store, key, fn) {
+  const id = b4a.toHex(key)
+  let held = using.get(store)
+  if (!held) using.set(store, (held = new Map()))
+  const run = (held.get(id) || Promise.resolve()).then(fn)
+  const done = run.then(noop, noop)
+  held.set(id, done)
+  done.then(() => held.get(id) === done && held.delete(id))
+  return run
+}
+
 /**
- * Erase the core a message travelled in. Corestore leaves a core that still has a session open,
- * and that is an error here, not silence.
+ * Erase the core a message travelled in, once nothing reads it. Corestore leaves a core that
+ * still has a session open, and that is an error here, not silence. Nothing is erased once `live`
+ * says no, or the store is closing.
  *
  * @param {import('corestore')} store
  * @param {Uint8Array} key
+ * @param {() => boolean} [live]
  * @returns {Promise<void>}
  */
-export async function erase(store, key) {
-  const [gone] = await store.purge(key)
-  if (!gone) throw CeroError.CONFLICT(`mailbox: ${b4a.toHex(key)} is still open, not erased`)
+export function erase(store, key, live = () => true) {
+  return exclusive(store, key, async () => {
+    if (!live() || store.closing) return
+    if (!(await store.storage.hasCore(crypto.discoveryKey(key)))) return
+    const [gone] = await store.purge(key)
+    if (!gone) throw CeroError.CONFLICT(`mailbox: ${b4a.toHex(key)} is still open, not erased`)
+  })
 }
 
 /**
@@ -94,6 +115,8 @@ export class Inbox extends ReadyResource {
     /** @private */
     this._handled = new Map() // id → when it was handled, oldest first
     /** @private */
+    this._erasing = new Set()
+    /** @private */
     this._session = null
     /** @private */
     this._discovery = null
@@ -111,14 +134,15 @@ export class Inbox extends ReadyResource {
             id: mail.id,
             address: this.address,
             message: EMPTY,
-            handled: mail.handled
+            handled: mail.handled,
+            fetched: mail.fetched
           })
         }
         handled.push(mail)
         continue
       }
       this._mail.set(mail.id, { key: b4a.from(mail.id, 'hex'), queued: 0, busy: true })
-      this._resume(mail).catch(safetyCatch)
+      this._resume(mail).catch((err) => this.onerror(err))
     }
     handled.sort((a, b) => a.handled - b.handled)
     for (const mail of handled) this._handled.set(mail.id, mail.handled)
@@ -137,6 +161,7 @@ export class Inbox extends ReadyResource {
     this._session?.destroy()
     // the unannounce is a DHT round trip, never waited on
     this._discovery?.destroy().catch(safetyCatch)
+    await Promise.allSettled(this._erasing)
   }
 
   // a key stays queued by every peer that announced it, so a read that failed is tried through the
@@ -192,7 +217,7 @@ export class Inbox extends ReadyResource {
       this._reading++
       this._load.set(from, load + 1)
       this._read(id, mail.key)
-        .catch(safetyCatch)
+        .catch((err) => this.onerror(err))
         .finally(() => {
           this._reading--
           const left = this._load.get(from) - 1
@@ -215,10 +240,9 @@ export class Inbox extends ReadyResource {
 
   /** @private */
   async _read(id, key) {
-    const { store } = this.network
-    // a core this device already holds is not the inbox's to erase, whatever is announced here
-    const fetched = !(await store.storage.hasCore(crypto.discoveryKey(key)))
-    const message = await this._unseal(key, { timeout: this.timeout })
+    const { held, message } = await this._unseal(key, { timeout: this.timeout })
+    // a core this device already held is not the inbox's to erase, whatever is announced here
+    const fetched = !held
     // one that lands after close is dropped as if it timed out, for the next start to read
     if (!message || this.closing) return this._drop(id, fetched, true)
     await this.box.put({ id, address: this.address, message: EMPTY, fetched })
@@ -236,23 +260,39 @@ export class Inbox extends ReadyResource {
   // kept from before a restart: the message is in its core, held here since it was read
   /** @private */
   async _resume({ id, fetched }) {
-    const key = b4a.from(id, 'hex')
-    const held = await this.network.store.storage.hasCore(crypto.discoveryKey(key))
-    const message = held ? await this._unseal(key, { wait: false }) : null
+    const { held, message } = await this._unseal(b4a.from(id, 'hex'), { wait: false })
     if (message) return this._handle({ id, message, fetched })
     await this.box.del(id)
     await this._drop(id, fetched && held, false)
   }
 
+  // the message in a core, and whether this device held the core before
   /** @private */
-  async _unseal(key, opts) {
-    const core = this.network.store.get({ key })
+  _unseal(key, opts) {
+    const { store } = this.network
+    return exclusive(store, key, async () => {
+      const held = await store.storage.hasCore(crypto.discoveryKey(key))
+      if (!held && opts.wait === false) return { held, message: null }
+      const core = store.get({ key })
+      try {
+        return { held, message: crypto.decrypt(await core.get(0, opts), this.keyPair) }
+      } catch {
+        return { held, message: null } // nobody served it in time
+      } finally {
+        await core.close()
+      }
+    })
+  }
+
+  // none once closing: the next mailbox open erases what was handled with keep false
+  /** @private */
+  async _erase(key) {
+    const erasing = erase(this.network.store, key, () => !this.closing)
+    this._erasing.add(erasing)
     try {
-      return crypto.decrypt(await core.get(0, opts), this.keyPair)
-    } catch {
-      return null // nobody served it in time
+      await erasing
     } finally {
-      await core.close()
+      this._erasing.delete(erasing)
     }
   }
 
@@ -260,7 +300,7 @@ export class Inbox extends ReadyResource {
   /** @private */
   async _drop(id, fetched, retry) {
     try {
-      if (fetched) await erase(this.network.store, b4a.from(id, 'hex'))
+      if (fetched) await this._erase(b4a.from(id, 'hex'))
     } finally {
       this._settle(id, retry)
     }
@@ -270,12 +310,16 @@ export class Inbox extends ReadyResource {
   /** @private */
   async _handle({ id, message, fetched }) {
     try {
-      if ((await this.onmessage(message)) === false) {
+      const taken = (await this.onmessage(message)) !== false
+      // turned away as the inbox closes, it is kept as handled for the next start to erase
+      if (!taken && !(this.closing && fetched)) {
         await this.box.del(id)
         return await this._drop(id, fetched, false)
       }
-      await this._remember(id)
-      if (!this.keep && fetched) await erase(this.network.store, b4a.from(id, 'hex'))
+      // on a handled row, `fetched` is a core still to erase: the next start does it if this cannot
+      const erasing = (!taken || !this.keep) && fetched
+      await this._remember(id, erasing)
+      if (erasing) await this._erase(b4a.from(id, 'hex'))
       this._settle(id)
     } catch (err) {
       this.onerror(err)
@@ -284,9 +328,9 @@ export class Inbox extends ReadyResource {
 
   // in place of its row
   /** @private */
-  async _remember(id) {
+  async _remember(id, fetched) {
     const handled = Date.now()
-    await this.box.put({ id, address: this.address, message: EMPTY, handled })
+    await this.box.put({ id, address: this.address, message: EMPTY, handled, fetched })
     this._handled.set(id, handled)
     await this._prune()
   }
@@ -301,6 +345,8 @@ export class Inbox extends ReadyResource {
     }
   }
 }
+
+function noop() {}
 
 function isTime(handled) {
   return handled > EPOCH && handled <= Date.now()

@@ -441,9 +441,12 @@ test('confirm: junk sealed to the reply address leaves nothing on the joiner, th
 
   await host.pairing.accept(request.id)
   t.alike((await joining).key, host.db.key, 'the real reply settles the join')
+  // the join closes its inbox once answered, so the next start erases the reply's core
   const key = received.find((k) => !junk.some((j) => b4a.equals(j, k)))
-  await waitFor(async () => !(await stored(joiner.net, key)))
-  t.pass('and its core is erased once the answer is kept')
+  const again = new Mailbox(joiner.net, { inbox: joiner.mailbox.inbox })
+  t.teardown(() => again.close())
+  await again.ready()
+  t.absent(await stored(joiner.net, key), 'and the reply core is erased')
 })
 
 test('join: two replies racing settle it once, and nothing is kept after', async (t) => {
@@ -475,11 +478,13 @@ test('join: two replies racing settle it once, and nothing is kept after', async
   }
   t.alike((await joining).key, host.db.key)
   await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
-  for (const key of keys) await waitFor(async () => !(await stored(joiner.net, key)))
+  await waitFor(async () => (await joiner.mailbox.inbox.list()).every((m) => m.handled))
   t.is(kept.length, 1, 'kept once')
-  const rows = await joiner.mailbox.inbox.list()
-  t.is(rows.length, 1, 'one answer remembered')
-  t.ok(rows[0].handled)
+  // the join closed its inbox as it settled, so the next start erases what it read
+  const again = new Mailbox(joiner.net, { inbox: joiner.mailbox.inbox })
+  t.teardown(() => again.close())
+  await again.ready()
+  for (const key of keys) t.absent(await stored(joiner.net, key), 'erased')
 })
 
 test('join: a reply its keep failed on leaves the next one to settle it', async (t) => {

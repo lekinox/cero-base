@@ -15,7 +15,7 @@ import { CeroError } from '../lib/errors.js'
  * @property {Uint8Array} message      Sent: as `sealed` says. Received: empty, it stays in its core.
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
  * @property {boolean} [keep]            False erases the sender's copy once someone read it.
- * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it.
+ * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it; on a handled row, it still has to.
  * @property {number} [handled]          When it was handled: the id is remembered for a while.
  * @property {boolean} [sealed]          Sent: `message` is sealed to the address, not in the clear.
  *
@@ -80,8 +80,14 @@ export class Mailbox extends ReadyResource {
   /** @private */
   async _open() {
     await this.network.ready()
-    // an address no inbox receives at any more leaves its handled rows too
-    for (const mail of await this.inbox.list()) if (aged(mail)) await this.inbox.del(mail.id)
+    // at any address, one received at again or not: handled rows that aged go, and a core its
+    // inbox had to leave as it closed is erased
+    for (const mail of await this.inbox.list()) {
+      if (aged(mail)) await this.inbox.del(mail.id)
+      else if (mail.handled && mail.fetched) {
+        await this._erase(b4a.from(mail.id, 'hex')).catch(this.onerror)
+      }
+    }
     for (const mail of await this.outbox.list()) this._deliver(mail)
   }
 
@@ -154,8 +160,13 @@ export class Mailbox extends ReadyResource {
     const post = new Post(this.network, address, message, { mirrors, name, sealed })
     this._track(post)
     deliver(post, () => this.outbox.del(id))
-      .then(() => keep || erase(this.network.store, post.key).catch(this.onerror))
+      .then(() => keep || this._erase(post.key).catch(this.onerror))
       .catch(safetyCatch)
+  }
+
+  /** @private */
+  _erase(key) {
+    return erase(this.network.store, key, () => !this.closing)
   }
 
   /** @private */
