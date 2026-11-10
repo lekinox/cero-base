@@ -331,6 +331,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _index;
     /** @private */
+    private _seal;
+    /** @private */
     private _reindex;
     /** @private */
     private _receive;
@@ -436,6 +438,8 @@ export declare class Handle extends ReadyResource {
     private _wake;
     /** @private */
     private _adopt;
+    /** @private */
+    private _seats;
     /** @private */
     private _prune;
     /** @private */

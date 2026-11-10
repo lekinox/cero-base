@@ -20,7 +20,9 @@ export declare function keyPair(secret: Uint8Array): {
 export declare function erase(store: import('corestore'), key: Uint8Array): Promise<void>;
 /**
  * Receives at the address a secret owns, direct from the sender or from a mirror. A message
- * that does not open is dropped; one that opens is kept in `box` until `onmessage` resolves.
+ * that does not open in time, or that `onmessage` resolves `false` on, is dropped; one that opens
+ * is kept in `box` until `onmessage` resolves, as a row naming its core, never the message, and
+ * its id stays there for HANDLED_FOR once handled.
  * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
  * device held already is left alone.
  */
@@ -36,7 +38,17 @@ export declare class Inbox extends ReadyResource {
     onerror: (err: Error) => void;
     keep: boolean;
     /** @private */
-    _seen;
+    _mail;
+    /** @private */
+    _turns;
+    /** @private */
+    _load;
+    /** @private */
+    _behind;
+    /** @private */
+    _reading;
+    /** @private */
+    _handled;
     /** @private */
     _session;
     /** @private */
@@ -59,7 +71,23 @@ export declare class Inbox extends ReadyResource {
     /** @private */
     private _onannounce;
     /** @private */
+    private _forget;
+    /** @private */
+    private _next;
+    /** @private */
+    private _settle;
+    /** @private */
     private _read;
     /** @private */
+    private _resume;
+    /** @private */
+    private _unseal;
+    /** @private */
+    private _drop;
+    /** @private */
     private _handle;
+    /** @private */
+    private _remember;
+    /** @private */
+    private _prune;
 }

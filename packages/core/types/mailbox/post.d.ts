@@ -4,12 +4,13 @@ import ReadyResource from 'ready-resource';
  * receiving at the address, and deposited on `mirrors` for an owner who is offline.
  * `delivered` resolves on the first read, by the owner or by a mirror holding it for them.
  * Given a `core` instead, it announces that core as it is; given a `name`, the core is the
- * store's core of that name, and a message it already holds is not written twice.
+ * store's core of that name, and a message it already holds is not written twice. `sealed` says
+ * the message is sealed to the address already.
  */
 export declare class Post extends ReadyResource {
     network: import("../index.js").Network;
     address: Uint8Array<ArrayBufferLike>;
-    message: Uint8Array<ArrayBufferLike>;
+    message: any;
     mirrors: Uint8Array<ArrayBufferLike>[];
     name: string;
     /** @type {Promise<void>} */
@@ -26,12 +27,13 @@ export declare class Post extends ReadyResource {
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} address
      * @param {Uint8Array | null} message
-     * @param {{ mirrors?: Uint8Array[], core?: import('hypercore'), name?: string }} [opts]
+     * @param {{ mirrors?: Uint8Array[], core?: import('hypercore'), name?: string, sealed?: boolean }} [opts]
      */
-    constructor(network: import('../network/index.js').Network, address: Uint8Array, message: Uint8Array | null, { mirrors, core, name }?: {
+    constructor(network: import('../network/index.js').Network, address: Uint8Array, message: Uint8Array | null, { mirrors, core, name, sealed }?: {
         mirrors?: Uint8Array[];
         core?: import('hypercore');
         name?: string;
+        sealed?: boolean;
     });
     /** @private */
     private _open;

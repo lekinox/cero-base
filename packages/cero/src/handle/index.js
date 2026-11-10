@@ -636,7 +636,7 @@ export class Handle extends ReadyResource {
     // an opened handle not adopted yet has its writers already: its row is written once
     const open = new Map(
       [...this.children, ...this._pending, last]
-        .filter((child) => child?.opened && (child === last || !child.closing))
+        .filter((child) => child?.opened)
         .map((child) => [b4a.toHex(child.store.discoveryKey), child])
     )
     for (const row of rows) {

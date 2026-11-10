@@ -183,6 +183,8 @@ export declare const local: {
         name: import("@cero-base/core").Prim;
         erase: import("@cero-base/core").Prim;
         fetched: import("@cero-base/core").Prim;
+        handled: import("@cero-base/core").Prim;
+        sealed: import("@cero-base/core").Prim;
     };
     environment: {
         channel: import("@cero-base/core").Prim;
@@ -195,6 +197,7 @@ export declare const local: {
         name: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
+        writers: import("@cero-base/core").Prim;
     };
 };
 export declare const contract: {

@@ -12,6 +12,9 @@ export type Mail = {
      * Where it goes, or where it arrived.
      */
     address: Uint8Array;
+    /**
+     * Sent: as `sealed` says. Received: empty, it stays in its core.
+     */
     message: Uint8Array;
     /**
      * Where a sent message waits for an owner who is offline.
@@ -25,6 +28,14 @@ export type Mail = {
      * The inbox fetched the core it arrived in, so it may erase it.
      */
     fetched?: boolean;
+    /**
+     * When it was handled: the id is remembered for a while.
+     */
+    handled?: number;
+    /**
+     * Sent: `message` is sealed to the address, not in the clear.
+     */
+    sealed?: boolean;
 };
 export type Box = {
     list: () => Promise<Mail[]>;
@@ -50,10 +61,12 @@ export type MailboxOpts = {
  * @property {string} id                 Unique per message, hex.
  * @property {string} [name]             The core it travels in, so a restart sends it on the same core.
  * @property {Uint8Array} address        Where it goes, or where it arrived.
- * @property {Uint8Array} message
+ * @property {Uint8Array} message      Sent: as `sealed` says. Received: empty, it stays in its core.
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
  * @property {boolean} [keep]            False erases the sender's copy once someone read it.
  * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it.
+ * @property {number} [handled]          When it was handled: the id is remembered for a while.
+ * @property {boolean} [sealed]          Sent: `message` is sealed to the address, not in the clear.
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
@@ -109,7 +122,8 @@ export declare class Mailbox extends ReadyResource {
     /**
      * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
      * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
-     * over again the next time this address is received.
+     * over again the next time this address is received. One it resolves `false` on was not for
+     * this address: it is erased as one that does not open.
      *
      * @param {Uint8Array} secret
      * @param {(message: Uint8Array) => unknown} onmessage
