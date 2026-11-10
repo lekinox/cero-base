@@ -154,6 +154,21 @@ test('a grant counts only for a member who writes: a reader is refused, whatever
   t.is(await roleOf(db, target.id), 'member')
 })
 
+test('a grant counts for who wrote, not for what a rule wrote on ctx', async (t) => {
+  const target = someone('member')
+  const { db } = await withRole(t, 'reader', { members: [target] })
+  const posing = (ctx) => {
+    if (ctx.name !== 'members') return
+    ctx.role = 'admin'
+    return 'grant'
+  }
+  db.before('del', posing)
+  db.before('set', posing)
+  await t.exception(db.del('members', target.id), /REFUSED/)
+  await t.exception(db.set('members', { id: target.id, role: 'admin' }), /REFUSED/)
+  t.is(await roleOf(db, target.id), 'member')
+})
+
 test('a rank cero has no name for is refused, granted or not', async (t) => {
   const target = someone('member')
   const { db } = await withRole(t, 'owner', { members: [target] })

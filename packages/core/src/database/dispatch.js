@@ -231,12 +231,13 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       await write(meta.row)
       return meta.row
     }
+    const writer = await author(ctx)
     const base = { id: null, row: null, existing: null, ...meta }
-    const hctx = { ...base, ...(await author(ctx)), ...operators(ctx) }
+    const hctx = { ...base, ...writer, ...operators(ctx) }
     const granted = await fire(fns.before, hctx, true)
     // a grant widens rank among the room's writers only: never for a reader, nor for someone who
-    // is no member at all
-    const grant = granted && Boolean(hctx.memberId) && can(hctx.role, WRITE)
+    // is no member at all, whatever a rule wrote on ctx
+    const grant = granted && Boolean(writer.memberId) && can(writer.role, WRITE)
     if (rule && !meta.ranked && !grant) throw CeroError.REFUSED(rule)
     await write(hctx.row)
     // once every row of the op landed: a join's after hooks write as a member
