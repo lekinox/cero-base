@@ -803,9 +803,11 @@ test('apply: a refused op is not announced', async (t) => {
     seen.find((e) => e.row?.id === id),
     'no apply event for it'
   )
-  t.absent(
-    updates.find((touched) => touched.has('messages')),
-    'its ref is not touched'
+  await a.db.put('messages', { text: 'by the owner' })
+  t.alike(
+    updates.map((touched) => [...touched]),
+    [['messages']],
+    'no watcher ticks for it: only the write that landed does'
   )
 })
 
@@ -3385,6 +3387,67 @@ test("gate: a reader's far-future node raises nothing", async (t) => {
   t.is(b.db.behind, null, 'nor is the reader')
   const put = await a.db.put('messages', { text: 'owner write' }).catch((e) => e)
   t.ok(put.data, 'the owner writes')
+})
+
+// a joiner is no writer yet, so its newer join freezes nothing: it must still apply after the upgrade
+test('gate: a join from a newer release, skipped as too new, applies once this device catches up', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'owner' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: a.db.key, address: a.db.address })
+  const id = b4a.toHex(invite.id)
+  await a.db.call('add-invite', { id, role: 'member', createdAt: Date.now() })
+  await waitFor(async () => (await b.db.get('invites', id)).data)
+
+  const future = a.db.version + 1
+  const join = sealJoin(invite, b.identity, b.db.writerKey, Identity.randomBytes(32))
+  const op = spec.dispatch.encode('@cero/join', join)
+  await b.db.bee.append(wrap(future, op), { optimistic: true })
+  const present = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'present' })
+  // a far-future node from a stranger's core, as anyone holding the key could send, must not hide the nearer one
+  const kp = Identity.randomKeyPair()
+  const core = a.store.get({
+    keyPair: kp,
+    manifest: { version: a.store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const plain = { optimistic: true, encrypted: true, links: [] }
+  await core.append(Autobee.encodeValue(wrap(2 ** 40, present), plain))
+  await a.db.bee.wakeup({ key: core.key, length: core.length })
+  // a node after the join, refused for want of a member, says the joiner's core was applied
+  await b.db.bee.append(wrap(a.db.version, present), { optimistic: true })
+  await waitFor(() => a.errors.some((e) => e.code === 'REFUSED'))
+  t.is(a.db.behind, null, 'a joiner freezes nothing')
+  t.absent((await a.db.get('members', b.identity.id)).data, 'not let in before the upgrade')
+
+  const { key, keyPair, encryptionKey } = a.db
+  await a.db.close()
+  const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
+  const again = new Database({
+    store: a.store,
+    identity: a.identity,
+    network: a.network,
+    spec: upgraded,
+    key,
+    keyPair,
+    encryptionKey
+  })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  // the rebuilt view takes the joiner's core in again once it is announced, as a waiting join keeps doing
+  await b.db.bee.append(wrap(a.db.version, present), { optimistic: true })
+  await waitFor(async () => (await again.get('members', b.identity.id)).data)
+  t.pass('the skipped join applied')
+  t.is(again.behind, null, 'and nothing freezes')
 })
 
 test('gate: a newer op applied during a write stops it', async (t) => {

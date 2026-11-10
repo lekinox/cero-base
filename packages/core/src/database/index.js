@@ -114,6 +114,10 @@ export class Database extends ReadyResource {
     this.version = this.meta.version || 1
     /** @type {number | null} */
     this.behind = null
+    /** @private */
+    this._skipped = null
+    /** @private */
+    this._applied = false
     this.namespace = opts.namespace || NAMESPACE
     this._writable = false
     this.encryptionKey = opts.encryptionKey
@@ -831,7 +835,9 @@ export class Database extends ReadyResource {
     const local = this.bee.local
     const behind = await local.getUserData('cero/behind')
     this.behind = behind ? c.decode(c.uint, behind) : null
-    const caught = this.behind !== null && this.behind <= this.version
+    const skipped = await local.getUserData('cero/skipped')
+    this._skipped = skipped ? c.decode(c.uint, skipped) : null
+    const caught = [this._skipped, this.behind].some((v) => v !== null && v <= this.version)
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
     const grown = !!built && c.decode(c.uint, built) < db
@@ -839,8 +845,10 @@ export class Database extends ReadyResource {
     if (!caught && !grown) return false
     await local.setUserData('autobee/head', null)
     await local.setUserData('cero/behind', null)
+    await local.setUserData('cero/skipped', null)
     await this.bee.close()
     this.behind = null
+    this._skipped = null
     return true
   }
 
@@ -876,24 +884,27 @@ export class Database extends ReadyResource {
         continue
       }
       if (op.version > this.version) {
-        // anyone holding the key appends a node: only a writer's raises behind
-        const device = await view.get(`@${this.ns}/devices`, { id: hid.encode(node.key) })
-        const member =
-          device?.memberId && (await view.get(`@${this.ns}/members`, { id: device.memberId }))
-        if (can(member?.role, WRITE)) this._onfuture(op.version)
+        // anyone holding the key appends a node: each is replayed once this version reaches it, only a writer's freezes
+        this._skip(op.version)
+        if (can(await this.dispatcher.role(view, node.key), WRITE)) this._onfuture(op.version)
         continue
       }
       ready.push({ ...node, value: op.body })
     }
+    this._applied = true
     this._notify(await this.dispatcher.apply(ready, view, host))
   }
 
-  // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip
+  // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip. A batch
+  // that landed nothing wakes nobody: anyone holding the key appends nodes apply refuses
   /** @private */
   async _update(db) {
     await db.update()
     const touched = this._touched
+    const quiet = this._applied && touched.size === 0
     this._touched = new Set()
+    this._applied = false
+    if (quiet) return
     this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
     this._presence?.touch()
   }
@@ -1042,6 +1053,14 @@ export class Database extends ReadyResource {
   /** @private */
   _done(ctx) {
     return ctx ? { data: ctx.row } : null
+  }
+
+  // the lowest version skipped: the replay runs once this device reaches it, whoever sent the highest
+  /** @private */
+  _skip(version) {
+    if (this._skipped !== null && version >= this._skipped) return
+    this._skipped = version
+    this.bee.local.setUserData('cero/skipped', c.encode(c.uint, version)).catch(this._onerror)
   }
 
   // ops from a newer app version: emit behind once per version, the marker survives restarts
