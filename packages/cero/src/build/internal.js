@@ -28,6 +28,15 @@ export const defs = {
   }
 }
 
+// the fields Cero writes on every collection row, ahead of the app's
+export const base = [
+  { name: 'id', type: 'string', required: true },
+  { name: 'memberId', type: 'string', required: false },
+  { name: 'index', type: 'uint', required: false },
+  { name: 'createdAt', type: 'int', required: false },
+  { name: 'updatedAt', type: 'int', required: false }
+]
+
 // computed on the device, never stored: `get` and `watch` read them like any other ref
 const LIVE = {
   status: { type: 'status', kind: 'single' },
@@ -176,6 +185,27 @@ export function dispatches(ns) {
     { name: 'rotate-key', requestType: `@${ns}/epoch` },
     { name: 'del-refusal', requestType: `@${ns}/del-by-id` }
   ]
+}
+
+/**
+ * The names Cero takes in a scope, which an app ref would shadow: its refs and collections, its
+ * types and its routes.
+ *
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @param {boolean} root
+ * @returns {{ refs: Set<string>, types: Set<string>, routes: Set<string> }}
+ */
+export function reserved(ns, scope, root) {
+  const main = scope === 'main'
+  return {
+    refs: new Set([
+      ...collections(ns, scope).map((c) => c.name),
+      ...Object.keys(main ? live(ns, root) : {})
+    ]),
+    types: new Set(Object.keys({ ...schemas[scope], ...(main && schemas.rpc) })),
+    routes: new Set(main ? dispatches(ns).map((d) => d.name) : [])
+  }
 }
 
 // hrpc commands: name, request type, response type, streaming response
