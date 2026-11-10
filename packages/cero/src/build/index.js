@@ -13,8 +13,7 @@ import { CeroError } from '@cero-base/core/errors'
 
 import { NS } from '../lib/constants.js'
 import { extensionsOf } from '../extensions/index.js'
-import { reserved as worker } from '../handle/index.js'
-import { reserved as ui } from '../rpc/client.js'
+import { reserved } from '../lib/reserved.js'
 import * as internal from './internal.js'
 
 /**
@@ -154,8 +153,7 @@ function compile(root, ns, scope = 'main', top = false) {
   for (const [name, node] of Object.entries(root)) {
     if (!node.kind || node.kind === 'extend') continue
     if (ctx.taken.refs.has(name)) throw CeroError.INVALID(`'${name}' is a builtin ref, rename it`)
-    // a private field of either side is named with a leading _
-    if (name.startsWith('_') || worker.includes(name) || ui.includes(name)) {
+    if (name.startsWith('_') || reserved.includes(name)) {
       throw CeroError.INVALID(`'${name}' is taken by the handle or the client, rename it`)
     }
     if (node.kind === 'handle') {

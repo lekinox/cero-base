@@ -180,16 +180,12 @@ The build throws `INVALID` on a name Cero takes, and says which one to rename:
 - A field of a collection named `id`, `memberId`, `index`, `createdAt` or `updatedAt`: Cero
   writes these on every row. A single takes any field name.
 - A ref named like a builtin of its scope: `members`, `devices`, `invites`, `requests`,
-  `handles`, `files`, `counters`, `epochs`, `removals`, `refusals`, `spent` and `status` at the
-  root and in a handle type, and `joins`, `nearby` and `topics` at the root. In `local`, the
-  names listed [above](#keep-data-on-this-device).
-- A ref named like one of Cero's types: `member`, `device`, `invite`, `handle`, `file`,
-  `request`, `writer`, `counter`, `epoch`, `join`, `accept`, `deny`, `removal`, `refusal`,
-  `spent`, `status`, `joining`, `peer`, `topic`, `del-by-id` and the `req-` and `res-` names of
-  its messages. In `local`: `master`, `device`, `keypair`, `handle-keypair`, `serving`, `join`,
-  `mail`, `environment` and `subscription`.
-- A ref whose writes would take one of Cero's: an action named `rotate-key` or `add-writer`, or a
-  name such as `add-member` that one of Cero's writes already has.
+  `handles`, `files` and `status` at the root and in a handle type, and `joins`, `nearby` and
+  `topics` at the root. In `local`, the names listed [above](#keep-data-on-this-device).
+- A ref named like something Cero stores or sends under that name, such as `member`, `invite`,
+  `epoch` or `counter`.
+- A ref whose writes would take one of Cero's: an action named `accept`, or a collection named
+  `member`, whose `add-member` Cero already has.
 - A name the root, a handle, the local store or the client in a UI carries, such as `id`, `name`,
   `type`, `store`, `parent`, `children`, `device`, `identity`, `network`, `spec`, `signal`,
   `root`, `close`, `on` or the operators `put`, `set`, `get`, `del`, `watch` and `call`, and any
@@ -240,18 +236,19 @@ const v2 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool, due
 ```
 
 Fields are stored by position, so add new ones at the end. Removing a field, or changing its type
-or `required`, fails the build. Reordering two fields of the same type builds, and swaps their
+or `required`, fails the build, and so does turning `own` on or off for a collection that shipped:
+a new rule needs a new collection. Reordering two fields of the same type builds, and swaps their
 data on every row. Keep `spec/` in git and rebuild over it after every change: it records what
 shipped.
 
 The build keeps one contract version for the app in `spec/contract.json`, and every database stamps
 it on its writes, the root's and every handle's. It rises by one in a build that changes what is
 stored, a type, a collection or an action, at the root or in any handle type, and never goes down.
-A build that changes nothing stored keeps it, and so does an upgrade of Cero that changes only how a
-UI talks to its worker. An upgrade of Cero that changes what a write means raises it on the next
-build, as a stored change does. A device on an older build skips writes from a newer one until it
-updates, and `status.behind` says so. An index added by a rebuild fills on the next open: the rows
-written before it are found through it.
+A build that changes nothing stored keeps it, and so does an upgrade of Cero that changes only what
+a device computes on read, such as `status`, or how a UI talks to its worker. An upgrade of Cero
+that changes what a write means raises it on the next build, as a stored change does. A device on
+an older build skips writes from a newer one until it updates, and `status.behind` says so. An
+index added by a rebuild fills on the next open: the rows written before it are found through it.
 
 ## Next
 

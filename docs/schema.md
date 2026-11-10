@@ -182,16 +182,12 @@ The build throws `INVALID` on a name Cero takes, and says which one to rename:
 - A field of a collection named `id`, `memberId`, `index`, `createdAt` or `updatedAt`: Cero
   writes these on every row. A single takes any field name.
 - A ref named like a builtin of its scope: `members`, `devices`, `invites`, `requests`,
-  `handles`, `files`, `counters`, `epochs`, `removals`, `refusals`, `spent` and `status` at the
-  root and in a handle type, and `joins`, `nearby` and `topics` at the root. In `local`, the
-  names listed [above](#keep-data-on-this-device).
-- A ref named like one of Cero's types: `member`, `device`, `invite`, `handle`, `file`,
-  `request`, `writer`, `counter`, `epoch`, `join`, `accept`, `deny`, `removal`, `refusal`,
-  `spent`, `status`, `joining`, `peer`, `topic`, `del-by-id` and the `req-` and `res-` names of
-  its messages. In `local`: `master`, `device`, `keypair`, `handle-keypair`, `serving`, `join`,
-  `mail`, `environment` and `subscription`.
-- A ref whose writes would take one of Cero's: an action named `rotate-key` or `add-writer`, or a
-  name such as `add-member` that one of Cero's writes already has.
+  `handles`, `files` and `status` at the root and in a handle type, and `joins`, `nearby` and
+  `topics` at the root. In `local`, the names listed [above](#keep-data-on-this-device).
+- A ref named like something Cero stores or sends under that name, such as `member`, `invite`,
+  `epoch` or `counter`.
+- A ref whose writes would take one of Cero's: an action named `accept`, or a collection named
+  `member`, whose `add-member` Cero already has.
 - A name the root, a handle, the local store or the client in a UI carries, such as `id`, `name`,
   `type`, `store`, `parent`, `children`, `device`, `identity`, `network`, `spec`, `signal`,
   `root`, `close`, `on` or the operators `put`, `set`, `get`, `del`, `watch` and `call`, and any

@@ -7,10 +7,10 @@ import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { reserved as worker } from '../../src/handle/index.js'
 import { Ref } from '../../src/lib/refs.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect, reserved as ui } from '../../src/rpc/client.js'
+import { connect } from '../../src/rpc/client.js'
+import { reserved } from '../../src/lib/reserved.js'
 import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
 import { rpc, contract, main } from '../../src/build/schemas.js'
@@ -262,20 +262,23 @@ test('build: the members the build refuses cover every field a handle and a clie
   const client = await connect(down, spec)
   a.teardown(() => client.close().catch(() => {}), { order: 3 })
 
-  // a private field is refused by its leading _, every other one by name
-  const fields = (o) => Object.keys(o).filter((k) => !k.startsWith('_') && !(o[k] instanceof Ref))
-  for (const o of [me, await open(me.team), me.local]) {
-    a.alike(
-      fields(o).filter((k) => !worker.includes(k)),
-      [],
-      `worker ${o.constructor.name}`
-    )
+  // every name `in` finds on the object, its own and its prototypes'. A ref it attached is no member, and a
+  // private one is refused by its leading _
+  const members = (o) => {
+    const names = new Set()
+    for (let p = o; p; p = Object.getPrototypeOf(p)) {
+      for (const k of Object.getOwnPropertyNames(p)) names.add(k)
+    }
+    const ref = (k) => Object.getOwnPropertyDescriptor(o, k)?.value instanceof Ref
+    return [...names].filter((k) => !k.startsWith('_') && !ref(k))
   }
-  for (const o of [client, await open(client.team), client.local]) {
+  const worker = [me, await open(me.team), me.local]
+  const ui = [client, await open(client.team), client.local]
+  for (const o of [...worker, ...ui]) {
     a.alike(
-      fields(o).filter((k) => !ui.includes(k)),
+      members(o).filter((k) => !reserved.includes(k)),
       [],
-      `client ${o.constructor.name}`
+      `${worker.includes(o) ? 'worker' : 'client'} ${o.constructor.name}`
     )
   }
 })

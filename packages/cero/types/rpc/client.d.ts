@@ -225,12 +225,6 @@ export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?
     push?: import('./push.js').Messaging;
 }): Promise<Client>;
 /**
- * The names a schema ref cannot take in the UI, where its client, handles and local refs carry them.
- *
- * @type {string[]}
- */
-export declare const reserved: string[];
-/**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
  * server (via `connect`) instead of opening a local store.
  *

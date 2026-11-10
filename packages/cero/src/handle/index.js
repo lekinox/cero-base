@@ -24,15 +24,16 @@ import { FileServer } from '@cero-base/core/blobs/server'
 
 import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
 
-import { Ref, inherited } from '../lib/refs.js'
+import { Ref } from '../lib/refs.js'
 import { Join, wait } from './join.js'
-import { Local, box } from '../local/index.js'
+import { box } from '../local/index.js'
 import { extensionsOf } from '../extensions/index.js'
 
 export { Ref } from '../lib/refs.js'
 
 /**
  * @typedef {import('@cero-base/core/network').Network} Network
+ * @typedef {import('../local/index.js').Local} Local
  * @typedef {import('../lib/spec.js').Spec} Spec
  * @typedef {import('@cero-base/core/identity').KeyPair} KeyPair
  *
@@ -1240,18 +1241,6 @@ export class Handle extends ReadyResource {
     }
   }
 }
-
-/**
- * The names a schema ref cannot take in the worker, where its handles and local store carry them.
- *
- * @type {string[]}
- */
-export const reserved = [
-  ...inherited(Handle.prototype),
-  ...inherited(Local.prototype),
-  ...['opening', 'closing', 'opened', 'closed', 'identity', 'network', 'spec', 'parent', 'local'],
-  ...['mailbox', 'extensions', 'children', 'store', 'name', 'dir']
-]
 
 // the keys a pairing reply delivered, as a handle opens with them
 function delivered({ key, encryptionKey, epochs, writer }) {

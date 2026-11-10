@@ -1,10 +1,3 @@
-/**
- * Every name `in` finds on an instance through its prototype chain, its methods and getters.
- *
- * @param {object} proto
- * @returns {string[]}
- */
-export declare function inherited(proto: object): string[];
 export type RefKind = 'collection' | 'single' | 'action' | 'handle';
 export type RefInfo = import('./spec.js').RefInfo;
 export type Spec = import('./spec.js').Spec;
