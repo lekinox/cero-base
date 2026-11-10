@@ -73,6 +73,41 @@ test('close: mirroring stops before any database closes', async (t) => {
   t.exception(() => me.network.peering(), /CLOSED/, 'and takes no more work')
 })
 
+test('close: a root suspended with a write in flight closes', async (t) => {
+  const { me, errors } = await device(t)
+  const room = await cero.open(me.team, { name: 'clinic' })
+  const writing = put(room.messages, { text: 'racing' }).then(
+    () => 'written',
+    (e) => e.code
+  )
+  await cero.suspend(me)
+  const resumes = []
+  const resume = me.network.resume.bind(me.network)
+  me.network.resume = () => resumes.push('network') && resume()
+  let closed = false
+  me.close().then(() => (closed = true))
+  await waitUntil(() => closed, 20000)
+  t.ok(['written', 'CLOSED'].includes(await writing), 'the write settles')
+  t.alike(resumes, [], 'the network stays down')
+  t.alike(
+    errors.map((e) => e.message),
+    [],
+    'nothing reaches onerror'
+  )
+})
+
+test('close: a root suspended with nothing in flight closes', async (t) => {
+  const { me } = await device(t)
+  const room = await cero.open(me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'before' })
+  await cero.invite(room)
+  await cero.suspend(me)
+  let closed = false
+  me.close().then(() => (closed = true))
+  await waitUntil(() => closed, 20000)
+  t.ok(me.closed, 'closed')
+})
+
 test('close: it still opens again on the same storage', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()

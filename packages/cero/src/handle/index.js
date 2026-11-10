@@ -299,6 +299,8 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _close() {
+    // a write that raced the suspend holds the close until the storage resumes; the network stays down
+    if (this._sus?.suspended) await this.store.store.resume().catch(safetyCatch)
     this.root._coreKeys.delete(b4a.toHex(this.store.key))
     if (this._blobs?.key) this.root._coreKeys.delete(b4a.toHex(this._blobs.key))
     for (const b of this._epochBlobs?.values() || []) {
