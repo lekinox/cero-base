@@ -62,19 +62,20 @@ function exclusive(store, key, fn) {
 /**
  * Erase the core a message travelled in, once nothing reads it. Corestore leaves a core that
  * still has a session open, and that is an error here, not silence. Nothing is erased once `live`
- * says no, or the store is closing.
+ * says no, or the store is closing. Resolves true once no such core is stored.
  *
  * @param {import('corestore')} store
  * @param {Uint8Array} key
  * @param {() => boolean} [live]
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>}
  */
 export function erase(store, key, live = () => true) {
   return exclusive(store, key, async () => {
-    if (!live() || store.closing) return
-    if (!(await store.storage.hasCore(crypto.discoveryKey(key)))) return
+    if (!live() || store.closing) return false
+    if (!(await store.storage.hasCore(crypto.discoveryKey(key)))) return true
     const [gone] = await store.purge(key)
     if (!gone) throw CeroError.CONFLICT(`mailbox: ${b4a.toHex(key)} is still open, not erased`)
+    return true
   })
 }
 
@@ -290,7 +291,7 @@ export class Inbox extends ReadyResource {
     const erasing = erase(this.network.store, key, () => !this.closing)
     this._erasing.add(erasing)
     try {
-      await erasing
+      return await erasing
     } finally {
       this._erasing.delete(erasing)
     }
@@ -318,8 +319,10 @@ export class Inbox extends ReadyResource {
       }
       // on a handled row, `fetched` is a core still to erase: the next start does it if this cannot
       const erasing = (!taken || !this.keep) && fetched
-      await this._remember(id, erasing)
-      if (erasing) await this._erase(b4a.from(id, 'hex'))
+      const handled = await this._remember(id, erasing)
+      if (erasing && (await this._erase(b4a.from(id, 'hex')))) {
+        await this.box.put({ id, address: this.address, message: EMPTY, handled })
+      }
       this._settle(id)
     } catch (err) {
       this.onerror(err)
@@ -333,6 +336,7 @@ export class Inbox extends ReadyResource {
     await this.box.put({ id, address: this.address, message: EMPTY, handled, fetched })
     this._handled.set(id, handled)
     await this._prune()
+    return handled
   }
 
   // the oldest go once HANDLED_FOR old, or past the ceiling

@@ -884,6 +884,33 @@ test('Inbox: nothing is erased once the inbox closed', async (t) => {
   t.is(purged, 0, 'the read it cut short erases nothing')
 })
 
+test('Inbox: an erase done is not owed again: a core stored again since stays at the next start', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = watched()
+  const net = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const before = new Mailbox(net, { inbox: box })
+  t.teardown(() => before.close())
+  before.receive(secret, () => {}, { keep: false })
+  await a.send(Mailbox.getAddress(secret), b4a.from('gone'))
+  await waitFor(() => box.keys.length > 0 && box.pending() === 0, { timeout: 30000 })
+  const [key] = box.keys
+  await waitFor(async () => !(await holds(net, key)))
+  await waitFor(() => !box.mail.get(b4a.toHex(key)).fetched)
+  t.pass('no erase owed once it was done')
+  await before.close()
+
+  // the same key, stored again for some other reason
+  const core = net.store.get({ key })
+  await core.ready()
+  await core.close()
+  const after = new Mailbox(net, { inbox: box })
+  t.teardown(() => after.close())
+  await after.ready()
+  t.ok(await holds(net, key), 'not erased again')
+})
+
 test('Inbox: turned away as its inbox closed, the next start erases it', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await mailbox(t, testnet)
@@ -905,6 +932,15 @@ test('Inbox: turned away as its inbox closed, the next start erases it', async (
   t.teardown(() => after.close())
   await after.ready()
   t.absent(await holds(net, key), 'erased at the next start')
+  await after.close()
+
+  const core = net.store.get({ key })
+  await core.ready()
+  await core.close()
+  const later = new Mailbox(net, { inbox: box })
+  t.teardown(() => later.close())
+  await later.ready()
+  t.ok(await holds(net, key), 'and not again: a core stored since stays')
 })
 
 test('Inbox: close waits for an erase under way, so its store outlives it', async (t) => {

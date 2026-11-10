@@ -84,9 +84,7 @@ export class Mailbox extends ReadyResource {
     // inbox had to leave as it closed is erased
     for (const mail of await this.inbox.list()) {
       if (aged(mail)) await this.inbox.del(mail.id)
-      else if (mail.handled && mail.fetched) {
-        await this._erase(b4a.from(mail.id, 'hex')).catch(this.onerror)
-      }
+      else if (mail.handled && mail.fetched) await this._owed(mail)
     }
     for (const mail of await this.outbox.list()) this._deliver(mail)
   }
@@ -167,6 +165,18 @@ export class Mailbox extends ReadyResource {
   /** @private */
   _erase(key) {
     return erase(this.network.store, key, () => !this.closing)
+  }
+
+  // an erase its inbox had to leave, done once and then no longer owed
+  /** @private */
+  async _owed({ id, address, handled }) {
+    try {
+      if (await this._erase(b4a.from(id, 'hex'))) {
+        await this.inbox.put({ id, address, message: b4a.alloc(0), handled })
+      }
+    } catch (err) {
+      this.onerror(err)
+    }
   }
 
   /** @private */
