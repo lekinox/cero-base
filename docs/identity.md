@@ -164,11 +164,13 @@ that way: anyone with the phrase is you.
 
 ```js
 const storageKey = await keychain.get('cero') // 32 bytes; keychain is your OS keychain binding
+const fresh = !(await cero.peek('./data', spec, { storageKey }))
 const me = await cero('./data', spec, { storageKey })
 ```
 
 The seed and this device's keys sit in the data directory unencrypted unless you pass `storageKey`.
-Cero never stores the key: source it from the OS keychain and pass the same one on every open.
+Cero never stores the key: source it from the OS keychain and pass the same one on every open, and to
+`cero.peek`.
 
 ## Next
 

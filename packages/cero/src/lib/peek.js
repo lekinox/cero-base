@@ -15,9 +15,10 @@ import { current } from './swap.js'
  *
  * @param {string} dir   Cero data directory.
  * @param {import('./spec.js').Spec} spec  Built spec, the value passed to `cero(dir, spec)`.
+ * @param {{ storageKey?: Uint8Array }} [opts]  The key `cero()` encrypts the local store with, if any.
  * @returns {Promise<boolean>}  `true` if a device of an identity exists on disk.
  */
-export async function peek(dir, spec) {
+export async function peek(dir, spec, { storageKey } = {}) {
   if (typeof dir !== 'string' || !dir) throw CeroError.INVALID('dir must be a non-empty string')
   if (!spec) throw CeroError.REQUIRED('spec')
 
@@ -25,7 +26,7 @@ export async function peek(dir, spec) {
   // a swap killed between its renames: the store a launch will open, never a new empty one
   const root = new HypercoreStorage(await current(dir))
   const store = new Corestore(root, { manifestVersion: 2 })
-  const local = new Local(null, spec, { store })
+  const local = new Local(null, spec, { store, storageKey })
   try {
     await root.ready()
     await store.ready()

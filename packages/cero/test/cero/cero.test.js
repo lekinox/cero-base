@@ -912,6 +912,16 @@ test("cero(): the identity's secret key is not on disk", async (t) => {
   t.alike(b.store.key, me.store.key, 'and a recovery reads the pointer it wrote')
 })
 
+test('peek: reads a store opened with a storageKey', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const storageKey = b4a.alloc(32, 7)
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey })
+  await me.close()
+  t.is(await peek(dir, spec, { storageKey }), true, 'an identity, read with its key')
+  t.is(await peek(await t.tmp(), spec, { storageKey }), false, 'a fresh dir holds none')
+})
+
 test('peek(): rejects bad dir', async (t) => {
   await t.exception.all(() => peek(null, spec), /dir/)
   await t.exception.all(() => peek('', spec), /dir/)
