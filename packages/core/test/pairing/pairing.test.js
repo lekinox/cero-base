@@ -157,6 +157,17 @@ test('invite: ttl is ms or a duration', async (t) => {
   await t.exception(pairing.invite({ ttl: 'soon' }), /not a duration/)
 })
 
+test('invite: a ttl is a positive whole number of ms the clock reaches, or INVALID and nothing is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  for (const ttl of [-1000, '-1h', '0s', 0.5, Infinity, Number.MAX_SAFE_INTEGER, 2 ** 53, 1e20]) {
+    t.is(await code(pairing.invite({ ttl })), 'INVALID', `ttl ${ttl}`)
+    t.exception(() => Invite.create({ ...sample(), ttl }), /INVALID/)
+  }
+  t.alike(await invites(db), [], 'no invite was written')
+  t.ok(Invite.parse(await pairing.invite({ ttl: 1 })).expires > 0, 'one ms is a ttl')
+})
+
 test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing, db } = await makeHost(t, testnet)
@@ -170,7 +181,8 @@ test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
     if (verb === 'del-invite') await pairing.close()
     return call(verb, ...args)
   }
-  await pairing.invite({ ttl: -1000 }).catch(() => {})
+  await pairing.invite({ ttl: 1 }).catch(() => {})
+  await waitFor(() => pairing.closed)
   await Promise.allSettled(syncs)
   t.ok(pairing.closed, 'closed mid-sync')
   t.is(pairing._expiry, null, 'nothing left to wake it')
@@ -384,6 +396,42 @@ test('expiry: a joiner admitted but gone is removed at expiry, even while offere
   t.ok(Date.now() < Invite.parse(invite).expires, 'offered before the invite ran out')
   const gone = async () => !(await member(host.db, joiner.identity))
   t.ok(await waitFor(gone, { timeout: 8000 }).catch(() => false), 'removed once it ran out')
+})
+
+test('expiry: an extra device that never read its keys costs its member nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ reuse: true, ttl: 4000 })
+  const first = await joiner.join(invite)
+  const owed = async () => (await host.db.get('requests')).data
+  await waitFor(async () => (await owed()).length === 0)
+
+  // nobody answers while a second device of the member lands, and it leaves before reading its keys
+  await host.pairing.close()
+  const device = await makeMailbox(t, testnet)
+  const writer = crypto.keyPair()
+  const opts = { identity: joiner.identity, spec, writer, timeout: 0 }
+  const joining = Pairing.join(device.mailbox, invite, opts).catch((e) => e)
+  await waitFor(async () => (await owed()).length === 1)
+  await device.mailbox.close()
+  await joining
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  await waitFor(async () => (await owed()).length === 0, { timeout: 10000 })
+  t.ok(await member(host.db, joiner.identity), 'the member stays')
+  const seat = (pair) =>
+    hid.encode(Hypercore.key({ version: 2, signers: [{ publicKey: pair.publicKey }] }))
+  t.ok((await host.db.get('devices', seat(first.writer))).data, 'with the device that read them')
+  t.ok((await host.db.get('devices', seat(writer))).data, 'and the unread one keeps its seat')
+
+  // the same device, back with a fresh invite, reads its keys this time
+  const again = new Mailbox(device.net)
+  t.teardown(() => again.close().catch(() => {}), { order: 1 })
+  const fresh = await pairing.invite()
+  const result = await Pairing.join(again, fresh, { ...opts, timeout: 30000 })
+  t.alike(result.key, host.db.key)
 })
 
 // ─── confirm invites: a member accepts ─────────────────────────────────────
@@ -619,6 +667,34 @@ test('confirm: only a waiting join is answered, any other id is UNKNOWN', async 
   t.alike((await joining).key, host.db.key, 'the accept stands')
 })
 
+test('confirm: a request whose invite was revoked is UNKNOWN to accept and deny', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true })
+  const joining = joiner.join(invite).catch((e) => e)
+  const { id } = await asked(host.db)
+  await host.pairing.revoke(invite)
+
+  t.is(await code(host.pairing.accept(id)), 'UNKNOWN')
+  t.is(await code(host.pairing.deny(id)), 'UNKNOWN')
+  t.is((await joining).reason, 'revoked', 'the joiner hears the revoke')
+  t.absent(await member(host.db, joiner.identity))
+})
+
+test('confirm: a request whose invite ran out and was dropped is UNKNOWN to accept and deny', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true, ttl: 2000 })
+  const joining = joiner.join(invite, { timeout: 0 }).catch((e) => e)
+  const { id } = await asked(host.db)
+  await waitFor(async () => (await invites(host.db)).length === 0)
+
+  t.is(await code(host.pairing.accept(id)), 'UNKNOWN')
+  t.is(await code(host.pairing.deny(id)), 'UNKNOWN')
+  t.is((await joining).code, 'EXPIRED')
+  t.absent(await member(host.db, joiner.identity))
+})
+
 test('confirm: accept checks the role and the expiry first', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
@@ -743,8 +819,18 @@ test('join: invalid invite → INVALID_INVITE, expired → EXPIRED', async (t) =
   const { host, joiner } = await makeHostJoiner(t, testnet)
   t.is((await joiner.join('not-an-invite').catch((e) => e)).code, 'INVALID_INVITE')
   t.is((await joiner.join(unsealable()).catch((e) => e)).code, 'INVALID_INVITE')
-  const invite = await host.pairing.invite({ ttl: -1000 })
+  const invite = await host.pairing.invite({ ttl: 1 })
+  await waitFor(() => Invite.parse(invite).expired)
   t.is((await joiner.join(invite).catch((e) => e)).code, 'EXPIRED')
+})
+
+test('join: an expired invite fails first, before the mailbox is touched', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ ttl: 1 })
+  await waitFor(() => Invite.parse(invite).expired)
+  await joiner.mailbox.close()
+  t.is(await code(joiner.join(invite)), 'EXPIRED', 'not CLOSED: no join is written')
 })
 
 test('join: reads its reply with a timeout no longer than its own', async (t) => {

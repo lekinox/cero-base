@@ -10,6 +10,10 @@ import Autobee from 'autobee'
 import ProtomuxWakeup from 'protomux-wakeup'
 import crypto from 'hypercore-crypto'
 import { EpochAutobee, Keyring } from '../../src/database/encryption.js'
+import { Database } from '../../src/database/index.js'
+import { Identity } from '../../src/identity/index.js'
+import { makeStore } from '../helpers/index.js'
+import { spec } from '../fixtures/spec/index.js'
 
 const encode = (v) => b4a.from(JSON.stringify(v))
 
@@ -260,4 +264,40 @@ test('P6: boot opts on a swap-reopen (prior bee on same store, cero recovery sha
   ])
   console.log(`[P6 swap-reopen] ${moved ? 'BOOTED' : 'WEDGED'}`)
   t.ok(moved, 'boot opts work on a reopened store with a new keyPair')
+})
+
+test('open: a failed open closes its bee, and a retry opens', async (t) => {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const opts = {
+    store,
+    identity,
+    spec,
+    encryptionKey: Identity.randomBytes(32),
+    keyPair: Identity.randomKeyPair()
+  }
+  const first = new Database(opts)
+  await first.ready()
+  await first.bootstrap({ name: 'a' })
+  await first.put('messages', { text: 'one' })
+  const key = first.key
+  await first.close()
+
+  const failing = new Database({ ...opts, key })
+  failing.rotation.hydrate = async () => {
+    throw new Error('disk')
+  }
+  await t.exception(failing.ready(), /disk/)
+  t.ok(!failing.bee || failing.bee.closed, 'the failed open left no bee running')
+
+  const retry = new Database({ ...opts, key })
+  t.teardown(() => retry.close().catch(() => {}), { order: 4 })
+  let timer = null
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), 15000)
+  })
+  const opened = await Promise.race([retry.ready().then(() => 'opened'), bound])
+  clearTimeout(timer)
+  t.is(opened, 'opened', 'a retry in the same process opens')
+  if (opened === 'opened') t.is((await retry.get('messages')).data.length, 1, 'with its rows')
 })

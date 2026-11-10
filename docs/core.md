@@ -336,11 +336,11 @@ await local.put('drafts', { text: 'hi' })
 const { data } = await local.get('drafts', { limit: 10 })
 ```
 
-| Member                                                | Does                                                                                                      |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `Storage.bee(dir, { spec, root, store, storageKey })` | A Hyperbee in its own Corestore under `dir`, or in `store`. `storageKey`, 32 bytes, encrypts it at rest.  |
-| `Storage.rocks(dir, { spec, root })`                  | A RocksDB column family in `dir`'s storage. No `storageKey`.                                              |
-| `put`, `set`, `get`, `del`, `watch`                   | As on a `Database`, with the same queries; `total` is always counted. No hooks, actions, `tx` or indexes. |
+| Member                                                | Does                                                                                                                                                            |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Storage.bee(dir, { spec, root, store, storageKey })` | A Hyperbee in its own Corestore under `dir`, or in `store`. `storageKey`, 32 bytes, encrypts it at rest.                                                        |
+| `Storage.rocks(dir, { spec, root })`                  | A RocksDB column family in `dir`'s storage. No `storageKey`.                                                                                                    |
+| `put`, `set`, `get`, `del`, `watch`                   | As on a `Database`, with the same queries; `total` can be `null` when `limit` filled the page, and `total: true` counts it. No hooks, actions, `tx` or indexes. |
 
 From a Cero build, its `spec` is `{ database: spec.local.database, meta: spec.meta.local }`. In Cero, the device's local `Storage` is a bee in the same Corestore under `dir/main`, holding the seed, the handle writer keypairs, pending joins, mail, the channel and the `local` scope.
 

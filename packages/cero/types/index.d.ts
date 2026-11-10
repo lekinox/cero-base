@@ -136,7 +136,9 @@ export type CeroOpts = {
  */
 declare function start(dir: string, spec: import('./lib/spec.js').Spec, opts?: CeroOpts): Promise<Context>;
 /**
- * Restore a cero instance from a recovery phrase.
+ * Switch this device to the identity of a recovery phrase. That identity opens beside `me` and
+ * recovers from a device of it; once it has opened, `me` closes and its data is deleted. A failure
+ * leaves `me` as it was, and the phrase of `me`'s own identity resolves `me`.
  *
  * @param {Context} me  The root to restore.
  * @param {string} phrase  The identity's BIP-39 phrase, as `cero.phrase(me)` gives it.
@@ -144,8 +146,9 @@ declare function start(dir: string, spec: import('./lib/spec.js').Spec, opts?: C
  */
 export declare function restore(me: Context, phrase: string): Promise<Handle>;
 /**
- * Link this device to the identity behind a device invite: closes `me`, deletes `dir/main` and
- * opens the directory with `invite`, as a new device of that identity, with no phrase on it.
+ * Link this device to the identity behind a device invite, as a new device of it with no phrase on
+ * it. It opens beside `me`; once accepted, `me` closes and its data is deleted. A denial or a failure
+ * leaves `me` as it was.
  *
  * @param {Context} me  The root to replace.
  * @param {string} invite  A device invite, as `cero.invite(me)` gives it on a device of that identity.

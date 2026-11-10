@@ -80,8 +80,8 @@ export type HandleStub = {
 };
 export type Context = (Client | Handle) & Record<string, Ref>;
 /**
- * Re-initialize a `Client` from a recovery phrase. Closes the existing
- * local state and reseeds identity from the phrase.
+ * Switch the app to the identity of a recovery phrase, as `cero.restore` does in the worker: the
+ * client is then that identity.
  *
  * @param {Client} me
  * @param {string} phrase

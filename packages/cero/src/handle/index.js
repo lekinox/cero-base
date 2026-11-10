@@ -299,6 +299,8 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _close() {
+    // a write that raced a suspend holds the close until the storage resumes, once a suspend still running settled
+    if (this._sus) await this._sus.resume()
     this.root._coreKeys.delete(b4a.toHex(this.store.key))
     if (this._blobs?.key) this.root._coreKeys.delete(b4a.toHex(this._blobs.key))
     for (const b of this._epochBlobs?.values() || []) {
@@ -458,10 +460,6 @@ export class Handle extends ReadyResource {
     return Promise.resolve()
   }
 
-  /**
-   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
-   * @private
-   */
   /** @private one more holder: a lingering handle is kept */
   _hold() {
     clearTimeout(this._idle)
@@ -469,6 +467,10 @@ export class Handle extends ReadyResource {
     this._refs++
   }
 
+  /**
+   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+   * @private
+   */
   _end() {
     clearTimeout(this._idle)
     this._idle = null
@@ -1129,8 +1131,10 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _wake() {
-    if (this.closing || this.closed) return
+    if (this.closed) return
     await this.store.store.resume().catch(this._onerror)
+    // a close takes its storage back and nothing else: the network stays down
+    if (this.closing) return
     await this.network.resume().catch(this._onerror)
     await this._bluetooth?.resume().catch(this._onerror)
   }
@@ -1167,11 +1171,11 @@ export class Handle extends ReadyResource {
   // handles are told by whichever device of the identity has them open
   /** @private */
   async _prune(child) {
-    const { data: mine } = await this.store.get('devices')
-    const kept = new Set(mine.filter((d) => d.key).map((d) => b4a.toHex(d.key)))
     const { data: rows } = await child.store.get('devices')
     for (const row of rows) {
-      if (row.memberId !== this.identity.id || !row.key || kept.has(b4a.toHex(row.key))) continue
+      if (row.memberId !== this.identity.id || !row.key) continue
+      // a sibling this root has not heard of yet is no removal: only its record is
+      if ((await this.store.removed(hid.encode(row.key))) !== 'removed') continue
       if (child.closing || child.closed) return
       await child.store.del('devices', row.id)
     }
@@ -1223,7 +1227,7 @@ export class Handle extends ReadyResource {
       }
     }
     this._typeHooks.add(hook)
-    for (const child of this.children) hook.apply(child)
+    for (const child of [...this.children, ...this._pending]) hook.apply(child)
     const off = () => {
       this._typeHooks.delete(hook)
       for (const o of offs.values()) o()

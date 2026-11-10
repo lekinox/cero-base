@@ -297,13 +297,13 @@ export declare class Handle extends ReadyResource {
      * @returns {Promise<void>}
      */
     close(): Promise<void>;
+    /** @private one more holder: a lingering handle is kept */
+    private _hold;
     /**
      * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
      * @private
      */
-    /** @private one more holder: a lingering handle is kept */
-    private _hold;
-    _end(): Promise<void>;
+    private _end;
     /** @private */
     private _suspend;
     /** @private */

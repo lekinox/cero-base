@@ -1,14 +1,19 @@
 import test from 'brittle'
 import process from 'process'
+import { Duplex } from 'streamx'
 import { promises as fs, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
 import { cero, put, set, get, open, schema, t } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
+import { Ref } from '../../src/lib/refs.js'
+import { serve } from '../../src/rpc/server.js'
+import { connect } from '../../src/rpc/client.js'
+import { reserved } from '../../src/lib/reserved.js'
 import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
-import { rpc, contract } from '../../src/build/schemas.js'
+import { rpc, contract, main } from '../../src/build/schemas.js'
 import { makeTestnet } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -46,6 +51,13 @@ async function buildInto(t, sub, sch = fixture) {
   t.teardown(() => fs.rm(specDir, { recursive: true, force: true }))
   await build(specDir, sch)
   return specDir
+}
+
+function pair() {
+  let a, b
+  a = new Duplex({ write: (data, cb) => (b.push(data), cb(null)) })
+  b = new Duplex({ write: (data, cb) => (a.push(data), cb(null)) })
+  return [a, b]
 }
 
 async function importSpec(specDir) {
@@ -128,6 +140,172 @@ test('build: status and joins are computed builtins an app cannot declare', asyn
   const dir = join(buildRoot, 'live-taken')
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
   await t.exception.all(() => build(dir, takenSchema), /'status' is a builtin/)
+})
+
+async function refused(t, sub, sch, message) {
+  const dir = join(buildRoot, sub)
+  t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  await t.exception.all(() => build(dir, sch, { extensions: [] }), message)
+}
+
+test('build: a collection field named like one Cero writes on every row is refused', async (a) => {
+  const reports = t.collection({ score: t.uint, updatedAt: t.uint, by: t.string })
+  await refused(a, 'base-handle', schema({ group: { reports } }), /'updatedAt' in 'reports'/)
+  const notes = t.collection({ id: t.string, text: t.string })
+  await refused(a, 'base-root', schema({ notes }), /'id' in 'notes'/)
+  const drafts = t.collection({ index: t.string })
+  await refused(a, 'base-local', schema({ local: { drafts } }), /'index' in 'drafts'/)
+})
+
+test('build: a single keeps the other names Cero writes on a collection row', async (a) => {
+  const settings = t.single({ id: t.string, index: t.uint, updatedAt: t.int })
+  const specDir = await buildInto(a, 'base-single', schema({ settings }))
+  const { spec, meta } = await importSpec(specDir)
+  a.alike(meta.refs.settings.fields, ['id', 'index', 'updatedAt'])
+  const testnet = await makeTestnet(a)
+  const me = await cero(await a.tmp(), spec, { bootstrap: testnet.bootstrap })
+  a.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await set(me.settings, { id: 'mine', index: 7, updatedAt: 3 })
+  const { data } = await get(me.settings)
+  a.alike([data.id, data.index, data.updatedAt], ['mine', 7, 3], 'and reads them back as written')
+})
+
+test('build: an app ref named like a builtin ref of its scope is refused', async (a) => {
+  const text = t.collection({ text: t.string })
+  await refused(a, 'ref-root', schema({ members: text }), /'members' is a builtin ref/)
+  await refused(a, 'ref-handle', schema({ room: { devices: text } }), /'devices' is a builtin/)
+  await refused(a, 'ref-type', schema({ members: { notes: text } }), /'members' is a builtin/)
+  await refused(a, 'ref-epochs', schema({ epochs: text }), /'epochs' is a builtin ref/)
+  await refused(a, 'ref-local', schema({ local: { topics: text } }), /'topics' is a builtin/)
+  const device = t.single({ theme: t.string })
+  await refused(a, 'ref-local-single', schema({ local: { device } }), /'device' is a builtin/)
+})
+
+test('build: a name only the root computes is free in a handle type', async (a) => {
+  const text = t.collection({ text: t.string })
+  const specDir = await buildInto(a, 'ref-free', schema({ room: { topics: text, nearby: text } }))
+  const { meta } = await importSpec(specDir)
+  a.is(meta.handles.room.refs.topics.kind, 'collection')
+  a.is(meta.handles.room.refs.nearby.kind, 'collection')
+})
+
+test('build: an app ref named like a builtin type is refused', async (a) => {
+  const text = t.collection({ text: t.string })
+  await refused(a, 'type-counter', schema({ counter: text }), /'counter' is a builtin type/)
+  const peer = t.single({ name: t.string })
+  await refused(a, 'type-peer', schema({ room: { peer } }), /'peer' is a builtin type/)
+  await refused(a, 'type-rpc', schema({ 'res-data': text }), /'res-data' is a builtin type/)
+  await refused(a, 'type-local', schema({ local: { mail: text } }), /'mail' is a builtin type/)
+})
+
+test('build: an app ref that makes one of Cero routes is refused', async (a) => {
+  // the same fields as Cero's accept
+  const accept = t.action({ id: t.required(t.string), role: t.string, proof: t.bytes })
+  await refused(a, 'route-accept', schema({ accept }), /'accept' makes Cero's route 'accept'/)
+  const join = t.action({ code: t.string })
+  await refused(a, 'route-join', schema({ room: { join } }), /'join' makes Cero's route 'join'/)
+  const refusal = t.collection({ text: t.string })
+  await refused(
+    a,
+    'route-refusal',
+    schema({ refusal }),
+    /'refusal' makes Cero's route 'del-refusal'/
+  )
+  const rotate = t.action({ x: t.string })
+  await refused(
+    a,
+    'route-rotate',
+    schema({ 'rotate-key': rotate }),
+    /makes Cero's route 'rotate-key'/
+  )
+})
+
+test('build: an action named near a route of Cero builds', async (a) => {
+  const specDir = await buildInto(a, 'route-free', schema({ accepted: t.action({ id: t.string }) }))
+  const { meta } = await importSpec(specDir)
+  a.is(meta.refs.accepted.kind, 'action')
+})
+
+test('build: a handle name that is not an identifier is refused', async (a) => {
+  const room = { notes: t.collection({ text: t.string }) }
+  await refused(
+    a,
+    'shape-hyphen',
+    schema({ 'chat-room': room }),
+    /'chat-room' is not a handle name/
+  )
+  await refused(a, 'shape-digit', schema({ '2room': room }), /'2room' is not a handle name/)
+})
+
+test('build: a handle name of letters, digits and _ builds and imports', async (a) => {
+  const room = { notes: t.collection({ text: t.string }) }
+  const named = schema({ chatRoom2: room, Room: room, room_2: room })
+  const { spec } = await importSpec(await buildInto(a, 'shape-names', named))
+  for (const name of ['chatRoom2', 'Room', 'room_2']) a.ok(spec.handles[name].database, name)
+})
+
+test('build: a ref named like a member of the handle or the client is refused', async (a) => {
+  const text = t.collection({ text: t.string })
+  // a name only the UI's client carries, and one only the worker's handle does
+  await refused(a, 'member-ui', schema({ watch: text }), /'watch' is taken by the handle/)
+  await refused(a, 'member-worker', schema({ signal: text }), /'signal' is taken by the handle/)
+  await refused(a, 'member-child', schema({ room: { name: text } }), /'name' is taken/)
+  await refused(a, 'member-local', schema({ local: { schemaOf: text } }), /'schemaOf' is taken/)
+  await refused(a, 'member-private', schema({ _pair: text }), /'_pair' is taken/)
+  await refused(a, 'member-handle', schema({ store: { notes: text } }), /'store' is taken/)
+})
+
+test('build: the members the build refuses cover every field a handle and a client carry', async (a) => {
+  const specDir = await buildInto(a, 'members')
+  const { spec } = await importSpec(specDir)
+  const testnet = await makeTestnet(a)
+  const me = await cero(await a.tmp(), spec, { bootstrap: testnet.bootstrap })
+  a.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const [up, down] = pair()
+  const server = await serve(up, spec, { storage: await a.tmp(), bootstrap: testnet.bootstrap })
+  a.teardown(() => server.close().catch(() => {}), { order: 4 })
+  const client = await connect(down, spec)
+  a.teardown(() => client.close().catch(() => {}), { order: 3 })
+
+  // every name `in` finds on the object, its own and its prototypes'. A ref it attached is no member, and a
+  // private one is refused by its leading _
+  const members = (o) => {
+    const names = new Set()
+    for (let p = o; p; p = Object.getPrototypeOf(p)) {
+      for (const k of Object.getOwnPropertyNames(p)) names.add(k)
+    }
+    const ref = (k) => Object.getOwnPropertyDescriptor(o, k)?.value instanceof Ref
+    return [...names].filter((k) => !k.startsWith('_') && !ref(k))
+  }
+  const worker = [me, await open(me.team), me.local]
+  const ui = [client, await open(client.team), client.local]
+  for (const o of [...worker, ...ui]) {
+    a.alike(
+      members(o).filter((k) => !reserved.includes(k)),
+      [],
+      `${worker.includes(o) ? 'worker' : 'client'} ${o.constructor.name}`
+    )
+  }
+})
+
+test('build: a schema with names near the reserved ones builds and opens', async (a) => {
+  const near = schema({
+    notes: t.collection({ title: t.string, memberIds: t.string, created: t.int }),
+    watched: t.collection({ text: t.string }),
+    acceptAll: t.action({ id: t.string }),
+    room: { profile: t.single({ name: t.string }), files2: t.collection({ text: t.string }) },
+    local: { devices: t.collection({ name: t.string }) }
+  })
+  const specDir = await buildInto(a, 'near', near)
+  const { spec } = await importSpec(specDir)
+  const testnet = await makeTestnet(a)
+  const me = await cero(await a.tmp(), spec, { bootstrap: testnet.bootstrap })
+  a.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const { data } = await put(me.notes, { title: 'a', memberIds: 'x', created: 1 })
+  a.is(data.title, 'a')
+  const room = await open(me.room)
+  await put(room.files2, { text: 'b' })
+  a.is((await get(room.files2)).data.length, 1)
 })
 
 test('build: t.extend on a non-builtin throws', async (t) => {
@@ -243,6 +421,49 @@ test('build: a field added to a builtin goes after the ones a built spec has', a
   await importSpec(specDir)
 })
 
+// a row is stored by position: a field gone from a built type would hand its slot to the next one
+const titled = schema({ notes: t.collection({ title: t.string, body: t.string }) })
+
+test('build: a field removed while another is added is refused', async (a) => {
+  const due = schema({ notes: t.collection({ body: t.string, due: t.string }) })
+  await a.exception.all(
+    () => rebuilt(a, 'remove-add', titled, due),
+    /'title' was removed from 'notes': fields are stored by position/
+  )
+})
+
+test('build: a renamed field is refused', async (a) => {
+  const named = schema({ notes: t.collection({ name: t.string, body: t.string }) })
+  await a.exception.all(
+    () => rebuilt(a, 'rename', titled, named),
+    /'title' was removed from 'notes'/
+  )
+})
+
+test('build: a field an app added to a builtin cannot be removed', async (a) => {
+  const pin = schema({ handles: t.extend({ pin: t.string }) })
+  await a.exception.all(
+    () => rebuilt(a, 'remove-extend', noted, pin),
+    /'note' was removed from 'handle'/
+  )
+})
+
+test('build: a field appended keeps every stored row', async (a) => {
+  const due = schema({ notes: t.collection({ title: t.string, body: t.string, due: t.string }) })
+  const { spec: before } = await importSpec(await rebuilt(a, 'append-v1', titled))
+  const { spec: after } = await importSpec(await rebuilt(a, 'append-v2', titled, due))
+
+  const testnet = await makeTestnet(a)
+  const dir = await a.tmp()
+  const me = await cero(dir, before, { bootstrap: testnet.bootstrap, extensions: [] })
+  await put(me.notes, { id: 'n1', title: 'Groceries', body: 'milk' })
+  await me.close()
+  const again = await cero(dir, after, { bootstrap: testnet.bootstrap, extensions: [] })
+  a.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const { data } = await get(again.notes, 'n1')
+  a.alike([data.title, data.body, data.due], ['Groceries', 'milk', null])
+})
+
 // a built spec keeps its route numbers, so the routes cero registers ahead of the app's are
 // frozen: one more there takes the id an app route shipped with
 test('build: the app routes start at the id they shipped with', async (t) => {
@@ -356,6 +577,199 @@ test('build: a Cero release that changes what a write means raises the contract'
   await build(dir, plain, { extensions: [] })
   const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
   t.is(kept.version, 2, 'and the next build holds it')
+})
+
+// apply reads `own` from the reader's spec, so a shipped collection that changes it applies one log
+// by two rules: a new rule needs a new collection
+const loose = schema({
+  notes: t.collection({ text: t.string }),
+  room: { messages: t.collection({ text: t.string }) }
+})
+const ownNotes = schema({
+  notes: t.collection({ text: t.string }, { own: true }),
+  room: { messages: t.collection({ text: t.string }) }
+})
+const ownMessages = schema({
+  notes: t.collection({ text: t.string }),
+  room: { messages: t.collection({ text: t.string }, { own: true }) }
+})
+const ownAdded = schema({
+  notes: t.collection({ text: t.string }),
+  todos: t.collection({ text: t.string }, { own: true }),
+  room: {
+    messages: t.collection({ text: t.string }),
+    pins: t.collection({ text: t.string }, { own: true })
+  }
+})
+
+test('build: own added to a shipped collection fails the build', async (t) => {
+  const dir = await rebuilt(t, 'own-on', loose)
+  const err = await build(dir, ownNotes, { extensions: [] }).catch((e) => e)
+  t.is(err?.code, 'INVALID', err?.message)
+  t.ok(/'notes'/.test(err?.message), 'it names the collection')
+  const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
+  t.is(kept.own?.main?.notes, false, 'the shipped rule stays recorded')
+})
+
+test('build: own added to a shipped collection of a handle type fails the build', async (t) => {
+  const dir = await rebuilt(t, 'own-on-handle', loose)
+  const err = await build(dir, ownMessages, { extensions: [] }).catch((e) => e)
+  t.is(err?.code, 'INVALID', err?.message)
+  t.ok(/'messages'/.test(err?.message), 'it names the collection')
+})
+
+test('build: own taken off a shipped collection fails the build', async (t) => {
+  const dir = await rebuilt(t, 'own-off', ownNotes)
+  const err = await build(dir, loose, { extensions: [] }).catch((e) => e)
+  t.is(err?.code, 'INVALID', err?.message)
+})
+
+test('build: own on a shipped collection dropped and declared again fails the build', async (a) => {
+  const dir = await rebuilt(a, 'own-again', ownAdded, loose)
+  const err = await build(dir, ownAdded, { extensions: [] }).catch((e) => e)
+  a.absent(err, 'declared again with the rule it shipped with')
+  await build(dir, loose, { extensions: [] })
+  const flipped = schema({ ...loose.defs, todos: t.collection({ text: t.string }) })
+  const again = await build(dir, flipped, { extensions: [] }).catch((e) => e)
+  a.is(again?.code, 'INVALID', again?.message)
+})
+
+test('build: own on a new collection builds', async (t) => {
+  const dir = await rebuilt(t, 'own-new', loose, ownAdded)
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.refs.todos.own, true, 'at the root')
+  t.is(spec.meta.handles.room.refs.pins.own, true, 'in a handle type')
+  const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
+  t.alike(kept.own?.main, { notes: false, todos: true })
+  t.alike(kept.own?.[join('handles', 'room')], { messages: false, pins: true })
+})
+
+test('build: an unchanged rebuild with own is quiet', async (t) => {
+  const dir = await rebuilt(t, 'own-keep', ownNotes, ownNotes)
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.refs.notes.own, true)
+  t.is(spec.meta.version, 1, 'and the contract stays')
+})
+
+test('build: a refused build leaves the spec as it was, and what it held builds again', async (a) => {
+  const dir = await rebuilt(a, 'refused-whole', loose)
+  const file = join(dir, 'main/schema/schema.json')
+  const before = await fs.readFile(file, 'utf-8')
+  const more = schema({
+    notes: t.collection({ text: t.string, due: t.int }, { own: true }),
+    room: { messages: t.collection({ text: t.string }) }
+  })
+  await a.exception(build(dir, more, { extensions: [] }), /shipped without own/)
+  a.is(await fs.readFile(file, 'utf-8'), before, 'nothing of the refused build is on disk')
+  await a.execution(build(dir, loose, { extensions: [] }), 'the schema it held builds again')
+})
+
+test('build: a spec built before own was kept builds, and keeps it from then on', async (t) => {
+  const dir = await rebuilt(t, 'own-unrecorded', loose)
+  const file = join(dir, 'contract.json')
+  const { own, ...old } = JSON.parse(await fs.readFile(file, 'utf-8'))
+  t.ok(own, 'this release records it')
+  await fs.writeFile(file, JSON.stringify(old))
+  await build(dir, loose, { extensions: [] })
+  const kept = JSON.parse(await fs.readFile(file, 'utf-8'))
+  t.is(kept.own?.main?.notes, false, 'recorded on the first build that finds none')
+  t.is(kept.version, old.version, 'and the contract holds')
+})
+
+// a type nothing stores is bound by hyperschema alone, which compares fields by position and type
+test('build: a Cero release that renames the last field of an unstored type still builds', async (t) => {
+  const dir = await rebuilt(t, 'unstored-rename', plain)
+  const renamed = (type) => {
+    const fields = Object.entries(type)
+    return Object.fromEntries([...fields.slice(0, -1), ['renamed', fields.at(-1)[1]]])
+  }
+  const verb = rpc['req-verb']
+  const status = main.status
+  rpc['req-verb'] = renamed(verb)
+  main.status = renamed(status)
+  t.teardown(() => {
+    rpc['req-verb'] = verb
+    main.status = status
+  })
+  await t.execution(build(dir, plain, { extensions: [] }))
+  t.is(await contractOf(dir), 1, 'and nothing stored changed')
+})
+
+test("build: memberId is Cero's in a single and in a field added to a builtin", async (a) => {
+  const settings = t.single({ theme: t.string, memberId: t.string })
+  await refused(a, 'member-single', schema({ settings }), /'memberId' in 'settings'/)
+  const handles = t.extend({ memberId: t.string })
+  await refused(a, 'member-extend', schema({ handles }), /'memberId'/)
+})
+
+async function contractOf(dir) {
+  return JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8')).version
+}
+
+async function typesOf(dir) {
+  return JSON.parse(await fs.readFile(join(dir, 'main/schema/schema.json'), 'utf-8')).schema
+}
+
+test('build: a field a Cero release adds to a computed type keeps the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-live', plain)
+  main.status.battery = probe.note
+  t.teardown(() => delete main.status.battery)
+  await build(dir, plain, { extensions: [] })
+  const status = (await typesOf(dir)).find((x) => x.name === 'status')
+  t.ok(
+    status.fields.some((f) => f.name === 'battery'),
+    'the computed type gained it'
+  )
+  t.is(await contractOf(dir), 1, 'but not the contract: nothing stored changed')
+})
+
+test('build: an RPC type a Cero release drops keeps the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-rpc-gone', plain)
+  rpc['req-gone'] = probe
+  t.teardown(() => delete rpc['req-gone'])
+  await build(dir, plain, { extensions: [] })
+  delete rpc['req-gone']
+  await build(dir, plain, { extensions: [] })
+  const kept = (await typesOf(dir)).some((x) => x.name === 'req-gone')
+  t.ok(kept, 'the dropped type stays in schema.json')
+  t.is(await contractOf(dir), 1, 'and the contract stays')
+})
+
+// the contract shapes the types the collections and routes name; one embedded in them would escape it
+test('build: no stored type embeds another type', async (t) => {
+  const specDir = await buildInto(t, 'embeds')
+  const read = async (rel) => JSON.parse(await fs.readFile(join(specDir, rel), 'utf-8'))
+  const dirs = [
+    'main',
+    ...(await fs.readdir(join(specDir, 'handles'))).map((n) => join('handles', n))
+  ]
+  for (const dir of dirs) {
+    const types = (await read(join(dir, 'schema', 'schema.json'))).schema
+    const db = await read(join(dir, 'db', 'db.json'))
+    const routes = await read(join(dir, 'dispatch', 'dispatch.json'))
+    const named = new Set([
+      ...db.schema.map((x) => x.schema),
+      ...routes.schema.map((x) => x.requestType)
+    ])
+    const embedded = types
+      .filter((type) => named.has(`@${type.namespace}/${type.name}`))
+      .flatMap((type) => type.fields.filter((f) => f.type.startsWith('@')).map((f) => f.type))
+    t.alike(embedded, [], `${dir}: shape a type it embeds too, in shapeOf, before adding one`)
+  }
+})
+
+test('build: a field appended to a stored type at the root raises the contract', async (a) => {
+  const more = schema({ ...plain.defs, notes: t.collection({ text: t.string, tag: t.string }) })
+  const dir = await rebuilt(a, 'contract-root', plain, more)
+  a.is(await contractOf(dir), 2)
+})
+
+test('build: a field a Cero release adds to a stored builtin raises the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-builtin', plain)
+  main.member.probe = probe.note
+  t.teardown(() => delete main.member.probe)
+  await build(dir, plain, { extensions: [] })
+  t.is(await contractOf(dir), 2)
 })
 
 // an index added by a rebuild: the rows written before it must be found through it, so a reopen

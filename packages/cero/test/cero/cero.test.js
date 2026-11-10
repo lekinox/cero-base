@@ -5,6 +5,8 @@ import path from 'path'
 import b4a from 'b4a'
 import c from 'compact-encoding'
 import { discoveryKey } from 'hypercore-crypto'
+import HypercoreStorage from 'hypercore-storage'
+import Corestore from 'corestore'
 
 import { Identity } from '@cero-base/core/identity'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -26,7 +28,8 @@ import {
   deny,
   rotate,
   peek,
-  restore
+  restore,
+  Local
 } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
@@ -539,6 +542,39 @@ test('invites: a denial reaches the caller, or onerror once nobody waits', async
   t.alike(await joinsOf(back), [])
 })
 
+// a join whose caller stopped waiting, landing once the owner is back
+async function unclaimed(t, opts) {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  await cero.suspend(owner)
+
+  const { me: joiner } = await ceroOpen(t, { testnet, ...opts })
+  const err = await joiner._join(invite, 'team', { timeout: 300 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT', 'the caller stops waiting')
+  const landed = new Promise((resolve) => joiner.once('handle', resolve))
+  await cero.resume(owner)
+  return { joiner, room: await landed }
+}
+
+test('invites: a join that lands with nobody waiting lingers and closes', async (t) => {
+  const { room } = await unclaimed(t, { linger: 50 })
+  await waitUntil(() => room.closed, 10000)
+  t.pass('nobody opened it, so it closed')
+})
+
+test("invites: a join that lands with nobody waiting is the app's once it opens it", async (t) => {
+  const { joiner, room } = await unclaimed(t, { linger: 2000 })
+  const mine = await open(joiner.team, { id: room.id })
+  t.is(mine, room, 'opened within the linger, the same handle')
+  t.ok(!mine._idle, 'and kept')
+  await mine.close()
+  t.ok(mine._idle, 'its close starts the linger')
+  await waitUntil(() => mine.closed, 10000)
+  t.pass('and it closes')
+})
+
 // the joiner's store hangs on one write, as a device that stops mid-write does
 function stall(store, method, when) {
   const call = store[method].bind(store)
@@ -783,6 +819,110 @@ test('cero(): a storage from before device keys is refused, to be recreated', as
   await me.close()
   t.is(await peek(dir, spec), false, 'no device, no identity to open')
   await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }), /predates device keys/)
+})
+
+// the rows a first launch had written when it was killed between its seed and its device row
+async function killedAfterSeed(dir, setup, seed) {
+  const storage = new HypercoreStorage(`${dir}/main`)
+  const store = new Corestore(storage, { manifestVersion: 2 })
+  const local = new Local(null, spec, { store })
+  await local.ready()
+  const keyPair = Identity.randomKeyPair()
+  await local.store.set('keypair', { ...keyPair, setup })
+  await local.store.set('master', { seed })
+  await local.close()
+  await store.close()
+  await storage.close()
+  return keyPair
+}
+
+test('cero(): a first launch killed between its seed and its device row resumes', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+
+  const dir = await t.tmp()
+  const seed = Identity.randomBytes(16)
+  const writer = await killedAfterSeed(dir, 'create', seed)
+  const me = await cero(dir, spec, opts)
+  t.is(me.id, (await Identity.create({ seed })).id, 'the identity of the stored seed')
+  t.alike(me.store.keyPair.publicKey, writer.publicKey, 'with the device key it began with')
+  t.ok(me.store.writable, 'created')
+  await me.close()
+  const again = await cero(dir, spec, opts)
+  t.is(again.id, me.id, 'and the launch after keeps it')
+  await again.close()
+
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const phrase = owner.identity.toPhrase()
+  const fresh = await t.tmp()
+  await killedAfterSeed(fresh, 'recover', Identity.toSeed(phrase))
+  const b = await cero(fresh, spec, { ...opts, phrase })
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  t.is(b.id, owner.id, 'a phrase recovery resumes as the identity of the phrase')
+  t.alike(b.store.key, owner.store.key, 'into its database')
+})
+
+test('cero(): a phrase recovery killed before its device row resumes with no phrase, never creates', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const dir = await t.tmp()
+  await killedAfterSeed(dir, 'recover', Identity.toSeed(owner.identity.toPhrase()))
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.is(me.id, owner.id, 'the identity of the stored seed')
+  t.alike(me.store.key, owner.store.key, 'recovered into its database')
+})
+
+test('cero(): a relaunch with no reachable bootstrap opens as fast as one with', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  await put(first.messages, { text: 'x' })
+  await first.close()
+
+  async function relaunch(bootstrap) {
+    const start = Date.now()
+    const me = await cero(dir, spec, { bootstrap })
+    const took = Date.now() - start
+    await me.close()
+    return took
+  }
+  // the best of three each: one slow launch under load is no wait
+  const best = async (bootstrap) =>
+    Math.min(await relaunch(bootstrap), await relaunch(bootstrap), await relaunch(bootstrap))
+  const online = await best(testnet.bootstrap)
+  const offline = await best([{ host: '127.0.0.1', port: 9 }])
+  t.comment(`online ${online} ms, offline ${offline} ms`)
+  t.ok(offline < online + 300, 'no wait on a network that is not there')
+})
+
+test("cero(): the identity's secret key is not on disk", async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap, storageKey: b4a.alloc(32, 5) }
+  const me = await cero(dir, spec, opts)
+  const { secretKey } = await Identity.keyPair(me.identity.seed)
+  const phrase = me.identity.toPhrase()
+  await me.close()
+  // a sodium secret key is its seed then its public key: the first half is the secret
+  t.absent(await diskContains(dir, secretKey.subarray(0, 32)), 'not under the dir')
+
+  const again = await cero(dir, spec, opts)
+  t.ok(again.store.writable, 'the creating device relaunches')
+  const b = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap, phrase })
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  await again.close()
+  t.alike(b.store.key, me.store.key, 'and a recovery reads the pointer it wrote')
+})
+
+test('peek: reads a store opened with a storageKey', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const storageKey = b4a.alloc(32, 7)
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey })
+  await me.close()
+  t.is(await peek(dir, spec, { storageKey }), true, 'an identity, read with its key')
+  t.is(await peek(await t.tmp(), spec, { storageKey }), false, 'a fresh dir holds none')
 })
 
 test('peek(): rejects bad dir', async (t) => {
@@ -1345,6 +1485,79 @@ test('link: a removed device loses its seats in every handle, and the root re-ke
   t.pass('and the root re-keyed')
   await waitUntil(() => (b.me.store.writable ? null : true))
   t.pass('the device writes nowhere')
+})
+
+// a new device accepted on `a` that stops waiting before its keys, left unread past the invite
+async function unread(t, a) {
+  const invite = await cero.invite(a.me, { ttl: '6s' })
+  const dir = await t.tmp()
+  const opts = { bootstrap: a.testnet.bootstrap, invite, recoveryTimeout: 1500 }
+  await t.exception(cero(dir, spec, opts), /TIMEOUT/)
+  await cero.accept(a.me, await asked(a.me))
+  await waitUntil(async () => (await get(a.me.requests)).data.find((r) => r.admitted) || null)
+  await waitUntil(async () => ((await get(a.me.requests)).data.length === 0 ? true : null))
+  return dir
+}
+
+test('link: an accepted device that never reads its keys leaves the root writable', async (t) => {
+  const a = await ceroOpen(t)
+  await set(a.me.profile, { name: 'ana' })
+  await unread(t, a)
+  t.ok(a.me.store.writable, 'the accepting device still writes to its root')
+  t.is((await get(a.me.devices)).data.length, 2, 'and the unread device keeps its seat')
+  await set(a.me.profile, { name: 'still ana' })
+  t.is((await get(a.me.profile)).data?.name, 'still ana')
+})
+
+test('link: that device links later with a new invite', async (t) => {
+  const a = await ceroOpen(t)
+  const dir = await unread(t, a)
+  const invite = await cero.invite(a.me)
+  const linking = cero(dir, spec, { bootstrap: a.testnet.bootstrap, invite })
+  linking.catch(() => {})
+  await cero.accept(a.me, await asked(a.me))
+  const b = await linking
+  t.teardown(() => b.close().catch(() => {}), { order: 1 })
+  t.is(b.id, a.me.id, 'let in as a device of the same identity')
+  await waitUntil(() => (b.store.writable ? true : null))
+  t.pass('and writes to the root')
+})
+
+test('link: a device whose root lags prunes no sibling', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b1 = await ceroOpen(t, { testnet: a.testnet })
+  const id = b1.me.identity.id
+  await open(b1.me.team, await cero.invite(room))
+  const phrase = await cero.phrase(b1.me)
+  const listed = (me) =>
+    waitUntil(async () => ((await get(me.team)).data.length === 1 ? true : null))
+  const seats = async (handle) =>
+    (await get(handle.devices)).data.filter((d) => d.memberId === id && d.key).map((d) => d.id)
+
+  // b2 last runs before b3 is added: its root never hears of b3
+  const b2 = await ceroOpen(t, { testnet: a.testnet, phrase })
+  await listed(b2.me)
+  await b2.me.close()
+  const b3 = await ceroOpen(t, { testnet: a.testnet, phrase })
+  await listed(b3.me)
+  await open(b3.me.team, { id: room.id })
+  await waitUntil(async () => ((await seats(room)).length === 2 ? true : null))
+  const before = await seats(room)
+  await b1.me.close()
+  await b3.me.close()
+
+  // b2 comes back while its siblings are away, and opens the room
+  const back = await cero(b2.dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => back.close().catch(() => {}), { order: 1 })
+  const mine = await open(back.team, { id: room.id })
+  const kept = async () => {
+    const now = await seats(mine)
+    return before.every((d) => now.includes(d))
+  }
+  await waitUntil(kept)
+  await back._pruneAll()
+  t.ok(await kept(), 'b1 and b3 keep their seats')
 })
 
 test('cero(): a second device auto-claims', async (t) => {

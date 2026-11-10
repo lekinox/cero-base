@@ -233,6 +233,10 @@ export declare class Database extends ReadyResource {
     version: number;
     /** @type {number | null} */
     behind: number | null;
+    /** @private */
+    _skipped;
+    /** @private */
+    _applied;
     namespace: string;
     _writable: boolean;
     encryptionKey: Uint8Array<ArrayBufferLike>;
@@ -253,10 +257,14 @@ export declare class Database extends ReadyResource {
     bee: EpochAutobee;
     dispatcher: {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
+        role: (view: object, writer: Uint8Array) => Promise<string | null>;
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
-        }>, view: object, host: object) => Promise<void>;
+        }>, view: object, host: object) => Promise<Array<{
+            value: Buffer;
+            key: Buffer;
+        }>>;
     };
     /** @private */
     _presence;
@@ -555,6 +563,8 @@ export declare class Database extends ReadyResource {
     private _append;
     /** @private */
     private _done;
+    /** @private */
+    private _skip;
     /** @private */
     private _onfuture;
     /** @private */
