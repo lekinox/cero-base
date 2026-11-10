@@ -4,6 +4,7 @@ import { Duplex } from 'streamx'
 import HypercoreStorage from 'hypercore-storage'
 
 import { encode, createNotification } from 'blind-push'
+import hid from 'hypercore-id-encoding'
 
 import { cero, put, set, get, del, open, leave, receive } from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
@@ -256,6 +257,32 @@ test('receive: a member seated after the topics row was written is accepted, ref
   await again.close()
   t.ok(await cold(b.dir, spec, own), 'cold, from the stored row, a writer reads')
   t.is(await cold(b.dir, spec, payload), null, 'and she does not')
+})
+
+test('receive: a member who removes one of her two devices: its push reads as nothing, the other still verifies', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const mine = await open(b.me.team, await cero.invite(room))
+  const two = await ceroOpen(t, { testnet: a.testnet, phrase: b.me.identity.toPhrase() })
+  await waitUntil(async () => (await get(two.me.topics)).data.length === 1)
+  const second = await open(two.me.team, { id: mine.id })
+  await waitUntil(async () => (await get(second.status)).data.writable)
+  await put(second.messages, { text: 'two' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const kept = await pushOf(mine, room)
+  const gone = await pushOf(second, room)
+  await waitUntil(async () => (await receive(b.me, kept)) && (await receive(b.me, gone)))
+
+  // with the owner away nobody re-keys, so the removal is the only update that lands
+  await a.me.close()
+  await del(mine.devices, hid.encode(second.store.writerKey))
+  await waitUntil(async () => (await receive(b.me, gone)) === null)
+  t.pass('the removed device reads as nothing')
+  t.ok(await receive(b.me, kept), 'her other device still verifies')
+  await b.me.close()
+  t.is(await cold(b.dir, spec, gone), null, 'cold, the removed one neither')
+  t.ok(await cold(b.dir, spec, kept), 'and the other still does')
 })
 
 // c is taken out of a room b holds, and b's handle or app closes in the same tick the removal applies there
