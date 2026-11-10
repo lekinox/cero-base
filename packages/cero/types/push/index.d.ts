@@ -5,7 +5,7 @@
  * @param {import('hypercore-storage')} storage
  * @param {import('../lib/spec.js').Spec} spec
  * @param {Uint8Array} payload
- * @param {Array<{ id: string, handle: string, type: string, key: Uint8Array, name: string | null, encryptionKey?: Uint8Array | null, epochs?: Uint8Array | null }>} rows  The root's `topics` rows.
+ * @param {Array<{ id: string, handle: string, type: string, key: Uint8Array, name: string | null, encryptionKey?: Uint8Array | null, epochs?: Uint8Array | null, writers?: Uint8Array | null }>} rows  The root's `topics` rows.
  * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export declare function read(storage: import('hypercore-storage'), spec: import('../lib/spec.js').Spec, payload: Uint8Array, rows: Array<{
@@ -16,6 +16,7 @@ export declare function read(storage: import('hypercore-storage'), spec: import(
     name: string | null;
     encryptionKey?: Uint8Array | null;
     epochs?: Uint8Array | null;
+    writers?: Uint8Array | null;
 }>): Promise<{
     id: string;
     type: string;

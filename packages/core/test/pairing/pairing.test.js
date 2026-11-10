@@ -122,6 +122,30 @@ test('ready() + close() lifecycle, both idempotent', async (t) => {
   t.ok(pairing.closed)
 })
 
+test('sync: one still reading as its database closes ends as closed', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  // its read of the requests resolves late, as from a slow disk
+  const get = db.get.bind(db)
+  let reached
+  let release
+  const parked = new Promise((resolve) => (reached = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  db.get = async (...args) => {
+    const read = await get(...args)
+    if (args[0] === 'requests') {
+      reached()
+      await held
+    }
+    return read
+  }
+  const syncing = pairing._sync()
+  await parked
+  await db.close()
+  release()
+  t.is(await code(syncing), 'CLOSED', 'as its other reads do, not on a view that is gone')
+})
+
 // ─── invites ───────────────────────────────────────────────────────────────
 
 test('invite: a z32 string, kept in the database', async (t) => {
@@ -454,6 +478,152 @@ test('confirm: a join waits as a request until a member accepts it', async (t) =
   t.pass('the request settles once the joiner read its keys')
 })
 
+function stored(net, key) {
+  return net.store.storage.hasCore(crypto.discoveryKey(key))
+}
+
+// the key of the core an outbox row travels in, without opening it
+async function sentKey(net, { name }) {
+  const { publicKey } = await net.store.createKeyPair(name)
+  return Hypercore.key({ version: net.store.manifestVersion, signers: [{ publicKey }] })
+}
+
+test('confirm: junk sealed to the reply address leaves nothing on the joiner, the reply still lands', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const received = []
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => received.push(b4a.from(m.id, 'hex')) && put(m)
+  const invite = await host.pairing.invite({ confirm: true })
+  const writer = crypto.keyPair()
+  const joining = joiner.join(invite, { writer })
+  const request = await asked(host.db)
+
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const other = { status: STATUS_ACCEPTED, reason: '', key: crypto.randomBytes(32) }
+  const junk = []
+  for (const message of [b4a.from('no response'), c.encode(Response, other)]) {
+    await host.mailbox.send(reply, message)
+    junk.push(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+  }
+  await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
+  for (const key of junk) await waitFor(async () => !(await stored(joiner.net, key)))
+  t.pass('no core kept')
+  t.alike(await joiner.mailbox.inbox.list(), [], 'no row kept')
+
+  await host.pairing.accept(request.id)
+  t.alike((await joining).key, host.db.key, 'the real reply settles the join')
+  // the join closes its inbox once answered, so the next start erases the reply's core
+  const key = received.find((k) => !junk.some((j) => b4a.equals(j, k)))
+  const again = new Mailbox(joiner.net, { inbox: joiner.mailbox.inbox })
+  t.teardown(() => again.close())
+  await again.ready()
+  t.absent(await stored(joiner.net, key), 'and the reply core is erased')
+})
+
+test('join: two replies racing settle it once, and nothing is kept after', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  let read = 0
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => {
+    if (!m.handled) read++
+    return put(m)
+  }
+  const kept = []
+  // the first answer is still being kept when the second is read
+  const keep = async (answer) => {
+    kept.push(answer)
+    await waitFor(() => read === 2, { timeout: 30000 })
+  }
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
+  await asked(host.db)
+
+  // as two member devices answer at once
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  const keys = []
+  for (let i = 0; i < 2; i++) {
+    await host.mailbox.send(reply, answer)
+    keys.push(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+  }
+  t.alike((await joining).key, host.db.key)
+  await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
+  await waitFor(async () => (await joiner.mailbox.inbox.list()).every((m) => m.handled))
+  t.is(kept.length, 1, 'kept once')
+  // the join closed its inbox as it settled, so the next start erases what it read
+  const again = new Mailbox(joiner.net, { inbox: joiner.mailbox.inbox })
+  t.teardown(() => again.close())
+  await again.ready()
+  for (const key of keys) t.absent(await stored(joiner.net, key), 'erased')
+})
+
+test('join: a reply its keep failed on leaves the next one to settle it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  let tries = 0
+  const keep = async () => {
+    if (tries++ === 0) throw new Error('disk full')
+  }
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
+  await asked(host.db)
+
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  await host.mailbox.send(reply, answer)
+  await waitFor(() => tries === 1, { timeout: 30000 })
+  await host.mailbox.send(reply, answer)
+  t.alike((await joining).key, host.db.key)
+  t.is(tries, 2)
+})
+
+test('offline: an old denial a mirror still announces does not settle the same writer joining again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeBlindPeer(t, testnet)
+  const host = await makeHost(t, testnet, { mirrors: [mirror.publicKey] })
+  const joiner = await makeJoiner(t, testnet, { mirrors: [mirror.publicKey] })
+  const writer = crypto.keyPair()
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const deposited = new Promise((resolve) => {
+    const onadd = (record) => {
+      if (!record.referrer || !b4a.equals(record.referrer, reply)) return
+      mirror.off('add-core', onadd)
+      resolve(record.key)
+    }
+    mirror.on('add-core', onadd)
+  })
+
+  const first = joiner.join(await host.pairing.invite({ confirm: true }), { writer })
+  await host.pairing.deny((await asked(host.db)).id, 'no')
+  t.is((await first.catch((e) => e)).code, 'DENIED')
+  const denial = await deposited
+  const held = mirror.store.get({ key: denial })
+  await held.ready()
+  await waitFor(() => held.length > 0 && held.contiguousLength === held.length, { timeout: 30000 })
+  await held.close()
+
+  let announced = null
+  const heard = new Promise((resolve) => (announced = resolve))
+  // passive, so the inbox's session is what wakes the topic and gets the mirror's announce
+  const spy = joiner.net.wakeup.session(reply, {
+    active: false,
+    discoveryKey: crypto.discoveryKey(reply),
+    onannounce: (entries) => entries.some((e) => b4a.equals(e.key, denial)) && announced()
+  })
+  t.teardown(() => spy.destroy())
+  const again = joiner.join(await host.pairing.invite({ confirm: true }), { writer })
+  await heard
+  const request = await asked(host.db)
+  await host.pairing.accept(request.id)
+  const res = await again.catch((e) => e)
+  t.absent(
+    res instanceof Error,
+    `settled by the accept${res instanceof Error ? `, not ${res.code}` : ''}`
+  )
+})
+
 test('link: a bare device joins, the accepter attests it, and the reply carries its chain', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await makeHost(t, testnet)
@@ -685,6 +855,18 @@ test('join: an expired invite fails first, before the mailbox is touched', async
   await waitFor(() => Invite.parse(invite).expired)
   await joiner.mailbox.close()
   t.is(await code(joiner.join(invite)), 'EXPIRED', 'not CLOSED: no join is written')
+})
+
+test('join: reads its reply with a timeout no longer than its own', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const seen = []
+  const receive = joiner.mailbox.receive.bind(joiner.mailbox)
+  joiner.mailbox.receive = (secret, fn, opts) =>
+    seen.push(opts.timeout) && receive(secret, fn, opts)
+  await joiner.join(await host.pairing.invite(), { timeout: 20000 })
+  await joiner.join(await host.pairing.invite(), { timeout: 0 })
+  t.alike(seen, [20000, undefined], 'its own, or the default when it waits for good')
 })
 
 test('join: times out when no member answers', async (t) => {

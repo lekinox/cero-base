@@ -2,10 +2,13 @@ import test from 'brittle'
 import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 
-import { encode } from 'blind-push'
+import { encode, createNotification } from 'blind-push'
 import crypto from 'hypercore-crypto'
 
 import { verify, decrypt } from '../../src/push/index.js'
+import { wrap } from '../../src/database/envelope.js'
+import { Invite } from '../../src/pairing/invite.js'
+import { sealJoin } from '../../src/pairing/index.js'
 import {
   makeTestnet,
   makeGateway,
@@ -19,7 +22,7 @@ import {
 
 test.configure({ timeout: 60000 })
 
-const handle = (db) => ({ id: 'room', key: db.key })
+const handle = (db) => ({ id: 'room', key: db.key, writers: [db.writerKey] })
 
 // a writer with a mirror behind a gateway, and a reader of its database that holds the writer's core
 async function pair(t, opts = {}) {
@@ -94,6 +97,11 @@ test('push: an unknown handle, a tampered payload and garbage all read as nothin
   const payload = last(gateway)
 
   t.is(await verify(b.store.storage, payload, []), null, 'not a handle of this device')
+  t.is(
+    await verify(b.store.storage, payload, [{ id: 'room', key: a.db.key }]),
+    null,
+    'a handle given with no writers accepts none'
+  )
   const tampered = b4a.from(payload)
   tampered[tampered.length - 1] ^= 1
   t.is(await verify(b.store.storage, tampered, [handle(a.db)]), null, 'tampered')
@@ -208,4 +216,41 @@ test('push: the block rides when it fits and decrypts to the op for a holder of 
   const big = await verify(b.store.storage, last(gateway), [handle(a.db)])
   t.is(big.block, null, 'a block that does not fit stays behind')
   t.is(await decrypt(b.store.storage, big, keys()), null, 'nothing to open then')
+})
+
+// a join from the joiner's own core, as Pairing.join appends it, once it has seen `row`
+async function join(db, invite, [name, id]) {
+  await waitFor(async () => (await db.get(name, id)).data)
+  const payload = sealJoin(invite, db.identity, db.writerKey, crypto.randomBytes(32))
+  const op = db.spec.dispatch.encode(`@${db.ns}/join`, payload)
+  await db.bee.append(wrap(db.version, op), { optimistic: true })
+}
+
+test('push: a core with no seat reads as nothing, a stranger with the key and a spent invite', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await makePeer(t, testnet)
+  await a.db.bootstrap({ name: 'a' })
+  const peer = () =>
+    makePeer(t, testnet, { topic: a.topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  const friend = await peer()
+  const stranger = await peer()
+  await Promise.all([a, friend, stranger].map((p) => waitForConnection(p.network)))
+  const invite = Invite.create({ key: a.db.key, address: a.db.address })
+  await a.db.call('add-invite', { id: b4a.toHex(invite.id), role: 'member', createdAt: 0 })
+  const spent = ['members', friend.identity.id]
+  await join(friend.db, invite, ['invites', b4a.toHex(invite.id)])
+  await waitFor(async () => (await a.db.get(...spent)).data)
+  await join(stranger.db, invite, spent)
+  const refusals = () => a.db.view.find(`@${a.db.ns}/refusals`, {}).toArray()
+  await waitFor(async () => (await refusals()).length === 1)
+
+  const room = { id: 'room', key: a.db.key, writers: [a.db.writerKey, friend.db.writerKey] }
+  const push = async (db) =>
+    encode(await createNotification(db.bee.local, { roomKey: a.db.key, extra: b4a.from('x') }))
+  t.ok(await verify(a.store.storage, await push(friend.db), [room]), 'a seated writer verifies')
+  t.is(
+    await verify(a.store.storage, await push(stranger.db), [room]),
+    null,
+    'her core is stored here, and still reads as nothing'
+  )
 })

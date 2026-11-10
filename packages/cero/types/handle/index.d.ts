@@ -181,6 +181,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _pending;
     /** @private */
+    _ending;
+    /** @private */
     _typeHooks;
     /** @private */
     _loading;
@@ -213,6 +215,10 @@ export declare class Handle extends ReadyResource {
     _live;
     /** @private */
     _ac;
+    _queued: {
+        all: boolean;
+        children: Set<any>;
+    };
     _indexing: any;
     /** @param {HandleOpts} [opts] */
     constructor(opts?: HandleOpts);
@@ -331,6 +337,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _index;
     /** @private */
+    private _seal;
+    /** @private */
     private _reindex;
     /** @private */
     private _receive;
@@ -436,6 +444,8 @@ export declare class Handle extends ReadyResource {
     private _wake;
     /** @private */
     private _adopt;
+    /** @private */
+    private _seats;
     /** @private */
     private _prune;
     /** @private */

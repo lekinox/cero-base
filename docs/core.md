@@ -200,9 +200,12 @@ await mailbox.send(address, b4a.from('hi'))
 await inbox.close() // stop receiving
 ```
 
-- **Nothing is lost.** The outbox keeps a message until someone reads it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, put, del }`, keep that across a restart. A message may arrive twice, never not at all.
+- **Kept until read.** The outbox keeps a message until someone reads it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, put, del }`, keep that across a restart. A message may arrive twice, never not at all; once handled, it is not handed over again, though a mirror still holds it. The inbox remembers what it handled at an address for 30 days: one a mirror still announces after that comes again.
+- **No message in the boxes.** The outbox keeps a message sealed to its address; the inbox keeps which core it came in, and reads it from there.
 - **A throwing `onmessage`** keeps the message and reports to `onerror`, the constructor option.
-- **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default.
+- **A slow `onmessage`.** Sixteen messages are read and handled at a time; one still being handled after 30 seconds stays in the inbox and makes room for the next. `receive(secret, onmessage, { timeout })` sets those 30 seconds, and how long an announced message has to arrive.
+- **An `onmessage` that resolves `false`** turns the message away: nothing of it stays on this device, as for one that does not open.
+- **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default. A mirror reading it counts as read, and a mirror hands over only the newest 32 messages waiting for one address: with more waiting while the owner is offline, the older ones are not delivered.
 - **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once someone read it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A mirror keeps its copy either way.
 - **Anonymous.** A message carries no sender. One that needs a sender signs itself.
 
@@ -299,12 +302,13 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 
 The receiving end of a blind push: a proof of one block of a writer's core, encrypted with the
 database key, that a mirror built and the platform delivered. Verified against the device's own
-storage, so it holds only for a writer the device already stores.
+storage, so it holds only for a writer the device already stores, and only for one of the handle's
+`writers`, the writer keys that may write to the database now.
 
 ```js
 import { verify, decrypt } from '@cero-base/core/push'
 
-// storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key }]
+// storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key, writers }]
 const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref, block } or null
 const op = await decrypt(storage, hit, { encryptionKey, epochs }) // the op's bytes, or null
 ```

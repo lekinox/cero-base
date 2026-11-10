@@ -324,6 +324,8 @@ export class Pairing extends ReadyResource {
 
   /** @private */
   _list(name) {
+    // a sync still running once its database closed ends as closed, as its other reads do
+    this.db.guard()
     return this.db.view.find(`@${this.db.ns}/${name}`, {}).toArray()
   }
 
@@ -382,17 +384,29 @@ export class Pairing extends ReadyResource {
       resolve = res
       fail = rej
     })
+    let settling = false
     const settle = async (answer, done) => {
-      await keep(answer)
+      settling = true
+      try {
+        await keep(answer)
+      } catch (err) {
+        settling = false
+        throw err
+      }
       done(answer)
     }
+    // anything else sealed to the reply address, a second answer too, is turned away, so the
+    // inbox keeps none of it
     const onreply = async (message) => {
+      if (settling) return false
       const response = decode(Response, message)
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
       } else if (response?.key && b4a.equals(response.key, parsed.key)) {
         const { key, encryptionKey, epochs, proof = null } = response
         await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
+      } else {
+        return false
       }
     }
 
@@ -403,7 +417,9 @@ export class Pairing extends ReadyResource {
       keyPair: writer,
       manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
     })
-    const inbox = mailbox.receive(writer.secretKey, onreply)
+    // a reply read no longer than the join waits for it
+    const reads = timeout > 0 ? { timeout: Math.min(timeout, 30000) } : {}
+    const inbox = mailbox.receive(writer.secretKey, onreply, { keep: false, ...reads })
     // the database pulls the join in like any optimistic append, from us or from a mirror
     const post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
 

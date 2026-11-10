@@ -3,7 +3,10 @@ import b4a from 'b4a'
 import { Duplex } from 'streamx'
 import HypercoreStorage from 'hypercore-storage'
 
-import { cero, put, get, open, leave, receive } from '../../src/index.js'
+import { encode, createNotification } from 'blind-push'
+import hid from 'hypercore-id-encoding'
+
+import { cero, put, set, get, del, open, leave, receive } from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
 import { connect } from '../../src/rpc/client.js'
 import { receive as cold, push as entry } from '../../src/push/index.js'
@@ -14,6 +17,14 @@ test.configure({ timeout: 90000 })
 
 const topicOf = (room) => b4a.toHex(room.store.discoveryKey)
 const payloadOf = (message) => b4a.from(message.android.data.payload, 'base64')
+// the push a mirror would build for a handle's writer core, at its length
+const pushOf = async (handle, room) =>
+  encode(
+    await createNotification(handle.store.bee.local, {
+      roomKey: room.store.key,
+      extra: b4a.from('messages')
+    })
+  )
 
 function pair() {
   let a, b
@@ -189,6 +200,136 @@ test('topics: after one failed reindex the next handles change still indexes', a
   )
 })
 
+test('topics: a pass that fails leaves the next one to run, and an unreadable handle costs its own row', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const store = me.local.store
+  const put = store.put.bind(store)
+  store.put = (name, value) => {
+    if (name !== 'topics') return put(name, value)
+    store.put = put
+    throw new Error('disk full')
+  }
+  const first = await open(me.team, { name: 'first' })
+  await waitUntil(() => errors.length > 0)
+  const second = await open(me.team, { name: 'second' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 2)
+  t.pass('the pass after the failed one wrote both rows')
+  const own = await pushOf(first, first)
+  await waitUntil(async () => await receive(me, own))
+
+  const read = first.store.get
+  first.store.get = async () => {
+    throw new Error('unreadable')
+  }
+  await open(me.team, { name: 'third' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 3)
+  first.store.get = read
+  t.is(await receive(me, own), null, 'the handle it could not read accepts nobody')
+  t.ok(await receive(me, await pushOf(second, second)), 'the others are written as ever')
+})
+
+test('topics: a failed pass that several updates joined reaches onerror once', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const room = await open(me.team, { name: 'clinic' })
+  await me._indexing
+
+  // the pass under way is slow, and the one queued behind it fails
+  const reindex = me._reindex.bind(me)
+  let release
+  const held = new Promise((resolve) => (release = resolve))
+  let passes = 0
+  me._reindex = async (...args) => {
+    passes++
+    if (passes === 1) await held
+    if (passes === 2) throw new Error('disk full')
+    return reindex(...args)
+  }
+  for (let i = 0; i < 6; i++) await set(room.members, { id: me.identity.id, name: `a${i}` })
+  release()
+  await waitUntil(() => errors.length > 0)
+  for (let p = null; p !== me._indexing;) await (p = me._indexing).catch(() => {})
+  t.is(passes, 2, 'the updates behind the slow pass joined one')
+  t.alike(
+    errors.map((e) => e.message),
+    ['disk full'],
+    'reported once'
+  )
+})
+
+test('topics: a burst of updates on one handle is a few passes that read only that handle, and the last one lands', async (t) => {
+  const a = await ceroOpen(t)
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const other = await open(a.me.team, { name: 'other' })
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(room.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  await waitUntil(async () => await receive(a.me, payload))
+  await a.me._indexing
+
+  // a pass that reads a handle's writers takes a while, as in a big room
+  const counts = { passes: 0, updates: 0, other: 0 }
+  const reindex = a.me._reindex.bind(a.me)
+  a.me._reindex = (...args) => {
+    counts.passes++
+    return reindex(...args)
+  }
+  room.store.on('update', (touched) => touched.has('members') && counts.updates++)
+  const slow = room.store.get.bind(room.store)
+  room.store.get = async (name, query) => {
+    const read = await slow(name, query)
+    if (query === undefined) await new Promise((resolve) => setTimeout(resolve, 100))
+    return read
+  }
+  const plain = other.store.get.bind(other.store)
+  other.store.get = (name, query) => {
+    if (query === undefined) counts.other++
+    return plain(name, query)
+  }
+  for (let i = 0; i < 20; i++) await set(room.members, { id: a.me.identity.id, name: `a${i}` })
+  await set(room.members, { id: c.me.identity.id, role: 'reader' })
+  await waitUntil(async () => (await receive(a.me, payload)) === null)
+  t.pass('the last update, her demotion, landed')
+  for (let p = null; p !== a.me._indexing;) await (p = a.me._indexing)
+  t.ok(counts.passes < counts.updates / 2, `${counts.passes} passes for ${counts.updates} updates`)
+  t.is(counts.other, 0, 'the other handle was not read')
+})
+
+test('topics: an update that lands while a handle closes leaves its row as it was sealed', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { linger: 0, onerror: (err) => errors.push(err) })
+  const room = await open(me.team, { name: 'clinic' })
+  const own = await pushOf(room, room)
+  await waitUntil(async () => await receive(me, own))
+  // an op of another member applies between the seal and the store closing
+  const seal = me._seal.bind(me)
+  me._seal = (child) => {
+    const sealing = seal(child)
+    child.store.emit('update', new Set(['members']))
+    return sealing
+  }
+  // the store is still closing when the pass that update asked for runs
+  const close = room.store._close.bind(room.store)
+  let closing
+  const held = new Promise((resolve) => (closing = resolve))
+  room.store._close = async () => {
+    await held
+    return close()
+  }
+  const closed = cero.close(room)
+  await waitUntil(() => !!room.store.closing)
+  for (let p = null; p !== me._indexing;) await (p = me._indexing).catch(() => {})
+  closing()
+  await closed
+  t.is(me._ending.size, 0, 'closed, it is no longer waited for')
+  t.alike(errors, [], 'nothing reaches onerror')
+  t.ok(await receive(me, own), 'its pushes still verify')
+})
+
 test('topics: a second device of the identity lists a handle it never opened', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
@@ -242,6 +383,101 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   await storage.close()
   t.pass('the cold read left the storage reopenable')
 })
+
+test('receive: a member seated after the topics row was written is accepted, refused while she reads and once her removal applied here', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet })
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const mine = await open(b.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(b.me.topics)).data.length === 1)
+
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  await waitUntil(async () => (await receive(b.me, payload))?.row?.text === 'from c')
+  t.pass('her seat reached b and her push reads as verified')
+  const role = (r) => set(room.members, { id: c.me.identity.id, role: r })
+  await role('reader')
+  await waitUntil(async () => (await receive(b.me, payload)) === null)
+  t.pass('set to reader she writes nothing, and her push reads as nothing')
+  await role('member')
+  await waitUntil(async () => await receive(b.me, payload))
+  t.pass('set back, it reads again')
+
+  await del(room.members, c.me.identity.id)
+  await waitUntil(async () => !(await get(mine.members, c.me.identity.id)).data)
+  await waitUntil(async () => (await receive(b.me, payload)) === null)
+  t.pass('her removal applied here, her push reads as nothing')
+  const own = await pushOf(mine, room)
+  t.ok(await receive(b.me, own), "b's own still does")
+  await b.me.close()
+  // a launch that leaves the handle closed keeps the writers it last had open
+  const again = await cero(b.dir, spec, { bootstrap: a.testnet.bootstrap })
+  await again.close()
+  t.ok(await cold(b.dir, spec, own), 'cold, from the stored row, a writer reads')
+  t.is(await cold(b.dir, spec, payload), null, 'and she does not')
+})
+
+test('receive: a member who removes one of her two devices: its push reads as nothing, the other still verifies', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const mine = await open(b.me.team, await cero.invite(room))
+  const two = await ceroOpen(t, { testnet: a.testnet, phrase: b.me.identity.toPhrase() })
+  await waitUntil(async () => (await get(two.me.topics)).data.length === 1)
+  const second = await open(two.me.team, { id: mine.id })
+  await waitUntil(async () => (await get(second.status)).data.writable)
+  await put(second.messages, { text: 'two' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const kept = await pushOf(mine, room)
+  const gone = await pushOf(second, room)
+  await waitUntil(async () => (await receive(b.me, kept)) && (await receive(b.me, gone)))
+
+  // with the owner away nobody re-keys, so the removal is the only update that lands
+  await a.me.close()
+  await del(mine.devices, hid.encode(second.store.writerKey))
+  await waitUntil(async () => (await receive(b.me, gone)) === null)
+  t.pass('the removed device reads as nothing')
+  t.ok(await receive(b.me, kept), 'her other device still verifies')
+  await b.me.close()
+  t.is(await cold(b.dir, spec, gone), null, 'cold, the removed one neither')
+  t.ok(await cold(b.dir, spec, kept), 'and the other still does')
+})
+
+// c is taken out of a room b holds, and b's handle or app closes in the same tick the removal applies there
+async function closedOnRemoval(t, close) {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet, linger: 0 })
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const mine = await open(b.me.team, await cero.invite(room))
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  const own = await pushOf(mine, room)
+  await waitUntil(async () => await receive(b.me, payload))
+
+  let closed = null
+  mine.store.on('update', (touched) => {
+    if (!closed && (touched.has('members') || touched.has('*'))) closed = close(b.me, mine)
+  })
+  await del(room.members, c.me.identity.id)
+  await waitUntil(() => !!closed)
+  await closed
+  t.is(await cold(b.dir, spec, payload), null, 'her push reads as nothing from the stored row')
+  t.ok(await cold(b.dir, spec, own), "b's own still does")
+}
+
+test('receive: a removal applied just before the handle closes is what its stored row keeps', (t) =>
+  closedOnRemoval(t, (me, room) => cero.close(room)))
+
+test('receive: a removal applied just before the app closes is what its stored row keeps', (t) =>
+  closedOnRemoval(t, (me) => me.close()))
 
 test('push: a write to a ref that declares no push sends nothing', async (t) => {
   const { gateway, room } = await scene(t)
@@ -306,7 +542,7 @@ test('push: a subscribe that fails is retried at the next change, the follower l
   const messaging = mockMessaging({ failFirst: true })
   const errors = []
   const { b } = await scene(t, { messaging, errors })
-  await waitUntil(() => errors.length === 1)
+  await waitUntil(() => errors.length > 0)
   t.is(messaging.topics.size, 0, 'the first subscribe failed, and was reported')
   const other = await open(b.client.team, { name: 'other' })
   await waitUntil(() => messaging.topics.size === 2)

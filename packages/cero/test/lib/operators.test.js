@@ -18,8 +18,12 @@ import { Identity } from '@cero-base/core/identity'
 import { Mailbox } from '@cero-base/core/mailbox'
 import hid from 'hypercore-id-encoding'
 import crypto from 'hypercore-crypto'
+import Hypercore from 'hypercore'
 import c from 'compact-encoding'
 import { seal, unseal } from '../../src/lib/mail.js'
+import { box } from '../../src/local/index.js'
+import HypercoreStorage from 'hypercore-storage'
+import Corestore from 'corestore'
 
 test.configure({ timeout: 30000 })
 
@@ -345,8 +349,23 @@ test('inbox: bytes that are no envelope are dropped', async (t) => {
 
   await waitUntil(() => got.length > 0)
   t.alike(got, ['signed'])
-  await waitUntil(async () => (await b.mailbox.inbox.list()).length === 0)
+  await waitUntil(async () => (await b.mailbox.inbox.list()).every((m) => m.handled))
   t.pass('nothing kept to hand over again')
+})
+
+test('inbox: a message that is no envelope leaves no core behind', async (t) => {
+  const { a, b, secret, address } = await mailPair(t)
+  const got = []
+  t.teardown(inbox(b, secret, (data) => got.push(data)))
+
+  await a.mailbox.send(hid.decode(address), b4a.from('not an envelope'))
+  const [{ name }] = await a.mailbox.outbox.list()
+  const { publicKey } = await a.network.store.createKeyPair(name)
+  const key = Hypercore.key({ version: a.network.store.manifestVersion, signers: [{ publicKey }] })
+  await waitUntil(async () => (await a.mailbox.outbox.list()).length === 0)
+  await waitUntil(async () => !(await holds(b, key)), 10000)
+  t.pass('the core it came in is gone')
+  t.alike(got, [], 'nothing handed over')
 })
 
 test('inbox: a tampered message is dropped', async (t) => {
@@ -422,6 +441,84 @@ test('unseal: an id of another length is dropped, however it was signed', async 
   const data = c.encode(c.any, 'shifted')
   const proof = identity.sign(b4a.concat([b4a.from('cero/mail'), to, id, data]))
   t.is(unseal(to, c.encode(c.any, { id, data, proof })), null)
+})
+
+// the blocks of a device's local store that hold the text, read off the disk once it closed
+async function inHistory(t, dir, text) {
+  const storage = new HypercoreStorage(join(dir, 'main'))
+  const store = new Corestore(storage, { manifestVersion: 2 })
+  const core = store.get({ name: 'local' })
+  await core.ready()
+  let hits = 0
+  for (let i = 0; i < core.length; i++) {
+    if (b4a.indexOf(await core.get(i, { raw: true }), b4a.from(text)) !== -1) hits++
+  }
+  t.ok(core.length > 0)
+  await core.close()
+  await store.close()
+  await storage.close()
+  return hits
+}
+
+test('send and inbox: a message is in neither local store, history included', async (t) => {
+  const { a, b, secret, address, dir } = await mailPair(t)
+  const text = 'words-that-stay-in-memory'
+  const got = []
+  const stop = inbox(b, secret, (data) => got.push(data), { keep: false })
+  await send(a, address, { text }, { keep: false })
+  await waitUntil(() => got.length > 0)
+  await waitUntil(async () => (await a.mailbox.outbox.list()).length === 0)
+  await waitUntil(async () => (await b.mailbox.inbox.list()).every((m) => m.handled))
+  await stop()
+  await a.close()
+  await b.close()
+  t.is(await inHistory(t, dir.b, text), 0, 'not on the receiver')
+  t.is(await inHistory(t, dir.a, text), 0, 'not on the sender')
+})
+
+test('send: an outbox row kept in the clear, as before rows said they are sealed, goes out sealed', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+  const to = hid.decode(address)
+  const name = b4a.toHex(crypto.randomBytes(32))
+  const message = seal(a.identity, to, 'from before')
+  const id = b4a.toHex(crypto.randomBytes(16))
+  await box(a.local.store, 'outbox').put({ id, name, address: to, message, keep: true })
+  await a.close()
+
+  const again = await cero(dir.a, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const got = await new Promise((resolve) => {
+    t.teardown(inbox(b, secret, resolve))
+  })
+  t.is(got, 'from before')
+  const core = again.network.store.get({ name })
+  await core.ready()
+  t.is(b4a.indexOf(await core.get(0), message), -1, 'not in the clear')
+  await core.close()
+})
+
+test('send: an outbox row kept sealed, its core not written yet, goes out sealed once', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+  const to = hid.decode(address)
+  const message = crypto.encrypt(seal(a.identity, to, 'sealed before'), to)
+  const name = b4a.toHex(crypto.randomBytes(32))
+  const id = b4a.toHex(crypto.randomBytes(16))
+  await box(a.local.store, 'outbox').put({
+    id,
+    name,
+    address: to,
+    message,
+    keep: true,
+    sealed: true
+  })
+  await a.close()
+
+  const again = await cero(dir.a, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const got = await new Promise((resolve) => {
+    t.teardown(inbox(b, secret, resolve))
+  })
+  t.is(got, 'sealed before')
 })
 
 test('inbox: keep false outlives a restart', async (t) => {

@@ -222,13 +222,18 @@ export const local = {
     name: string,
     erase: bool,
     // received: the inbox fetched the core, so it may erase it once handled
-    fetched: bool
+    fetched: bool,
+    // received and handled, when: the row stays so a mirror announcing it again is ignored
+    handled: uint,
+    // sent: the message is sealed to the address; absent, it is in the clear and sealed to go out
+    sealed: bool
   },
   environment: {
     channel: required(string)
   },
   // the handles rows a cold push process can read without the root: topic → handle, its keys and
-  // the epochs it learned, so a push's block opens there too
+  // the epochs it learned, so a push's block opens there too. `writers`, 32-byte keys back to back,
+  // are who may write to it as this device last had it open: a push from any other core is refused
   subscription: {
     id: required(string),
     handle: required(string),
@@ -236,7 +241,8 @@ export const local = {
     key: required(bytes),
     name: string,
     encryptionKey: bytes,
-    epochs: bytes
+    epochs: bytes,
+    writers: bytes
   }
 }
 

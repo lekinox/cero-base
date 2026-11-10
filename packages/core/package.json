@@ -148,7 +148,7 @@
     "test": "npm run test:bare",
     "test:bare": "find test -name '*.test.js' ! -name network.test.js | sort | xargs -P4 -n1 brittle-bare && brittle-bare test/network/network.test.js",
     "pretest:bare": "npm run build:test",
-    "test:node": "find test -name '*.test.js' | sort | xargs -P4 -n1 brittle-node"
+    "test:node": "find test -name '*.test.js' ! -name network.test.js | sort | xargs -P4 -n1 brittle-node && brittle-node test/network/network.test.js"
   },
   "dependencies": {
     "@hyperswarm/secret-stream": "^6.9.2",

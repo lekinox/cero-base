@@ -4,7 +4,10 @@ import { promises as fs } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
-import { cero, open, put, set, get, schema, t } from '../../src/index.js'
+import { encode, createNotification } from 'blind-push'
+
+import { cero, open, put, set, get, receive, schema, t } from '../../src/index.js'
+import { receive as cold } from '../../src/push/index.js'
 import { build } from '../../src/build/index.js'
 import { contract } from '../../src/build/schemas.js'
 import { makeMirror, makeTestnet, waitUntil } from '../helpers/index.js'
@@ -66,6 +69,32 @@ test('compat: a store the previous release wrote opens, reads and writes on this
   await put(room.messages, { text: 'second' })
   t.is((await get(room.messages)).data.length, 2, 'and it takes a write')
   t.is((await get(room.status)).data.behind, 0, 'nothing skipped')
+})
+
+test('compat: a push to a store the previous release wrote is refused until its handle opens on this one', async (t) => {
+  const { old, before, now } = await previous()
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+
+  const was = await old.cero(dir, before, { bootstrap: testnet.bootstrap })
+  const theirs = await old.open(was.room, { name: 'r' })
+  await old.put(theirs.messages, { text: 'first' })
+  const notification = await createNotification(theirs.store.bee.local, {
+    roomKey: theirs.store.key,
+    extra: b4a.from('messages')
+  })
+  const payload = encode(notification)
+  await was.close()
+
+  t.is(await cold(dir, now, payload), null, 'its topics row names no writer')
+  const me = await cero(dir, now, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.is(await receive(me, payload), null, 'nor once the app opened')
+  const room = await open(me.room, { id: theirs.id })
+  await waitUntil(async () => (await receive(me, payload))?.id === room.id)
+  t.pass('the handle opened here: its writers are kept')
+  await me.close()
+  t.is((await cold(dir, now, payload))?.row?.text, 'first', 'and read cold')
 })
 
 test('compat: a store the previous release wrote moves onto current cores once its mirror serves it', async (t) => {

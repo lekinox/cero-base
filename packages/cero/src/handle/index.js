@@ -16,7 +16,7 @@ import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { seal, unseal, decodeAddress } from '../lib/mail.js'
 import hid from 'hypercore-id-encoding'
-import { admission, onAbort, filter } from '@cero-base/core/utils'
+import { admission, onAbort, filter, can, WRITE } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -125,6 +125,9 @@ export class Handle extends ReadyResource {
     // children still opening, not adopted yet: a close must close them too
     /** @private */
     this._pending = parent ? null : new Set()
+    // children closing on their own, their linger over: a close waits for them, they still read its stores
+    /** @private */
+    this._ending = parent ? null : new Set()
     /** @private */
     this._typeHooks = parent ? null : new Set()
     /** @private */
@@ -321,6 +324,7 @@ export class Handle extends ReadyResource {
       ...[...(this._epochBlobs?.values() || [])].map((b) => () => b.close()),
       ...[...(this.children || [])].map((c) => () => c._end()),
       ...[...(this._pending || [])].map((c) => () => c._end()),
+      ...[...(this._ending || [])].map((c) => () => c.closing),
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -328,7 +332,11 @@ export class Handle extends ReadyResource {
 
     if (!root) {
       this.parent.children?.delete(this)
-      steps.push(() => this.store.close())
+      this.parent._ending?.add(this)
+      steps.push(
+        () => this.parent._seal(this).catch(this._onerror),
+        () => this.store.close()
+      )
     } else {
       const store = this.store.store
       steps.push(
@@ -344,7 +352,11 @@ export class Handle extends ReadyResource {
         () => this._storage?.close()
       )
     }
-    await settle(steps)
+    try {
+      await settle(steps)
+    } finally {
+      this.parent?._ending?.delete(this)
+    }
   }
 
   /**
@@ -608,25 +620,54 @@ export class Handle extends ReadyResource {
     return { data, total: data.length, size: data.length }
   }
 
-  // one pass at a time, failed or not: two overlapping could put back a row the later one deleted
+  // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
+  // pass waits to start joins it; `child` is the handle whose writers changed, none reads every open one
   /** @private */
-  _index() {
-    const run = () => this._reindex()
+  _index(child = null) {
+    if (this._queued) {
+      if (child) this._queued.children.add(child)
+      else this._queued.all = true
+      // a failed pass reaches onerror once, through the call that queued it: joined calls only wait for it
+      return this._indexing.catch(() => {})
+    }
+    const queued = (this._queued = { all: !child, children: new Set(child ? [child] : []) })
+    const run = () => {
+      this._queued = null
+      return this._reindex(null, queued.all ? null : queued.children)
+    }
+    this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
+    return this._indexing
+  }
+
+  // a handle on its way to closing writes the writers it last applied while its store still reads, so a removal that
+  // landed just before is kept; the root's local store closes after its handles
+  /** @private */
+  _seal(child) {
+    const run = () => this._reindex(child)
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }
 
   /** @private */
-  async _reindex() {
-    if (this.closing || this.closed) return
+  async _reindex(last = null, only = null) {
+    if (this.closed || (this.closing && !last)) return
     const { data: handles } = await this.store.get('handles')
     const { data: rows } = await this.local.store.get('topics')
     const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
     const have = new Map(rows.map((row) => [row.id, row]))
+    // an opened handle not adopted yet has its writers already: its row is written once
+    const reads = last ? [last] : (only ?? [...this.children, ...this._pending])
+    const open = new Map(
+      [...reads]
+        // a handle on its way out is its seal's to read: any other pass finds its store closed
+        .filter((child) => child.opened && (child === last || !child.closing))
+        .map((child) => [b4a.toHex(child.store.discoveryKey), child])
+    )
     for (const row of rows) {
       if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
     }
     for (const [id, h] of wanted) {
+      const child = open.get(id)
       const row = {
         id,
         handle: h.id,
@@ -634,7 +675,11 @@ export class Handle extends ReadyResource {
         key: h.key,
         name: h.name ?? null,
         encryptionKey: h.encryptionKey ?? null,
-        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null
+        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
+        // a handle not read in this pass keeps the writers it had when it last was
+        writers: child
+          ? await writersOf(child.store).catch(unread)
+          : (have.get(id)?.writers ?? null)
       }
       if (same(have.get(id), row)) continue
       await this.local.store.put('topics', row)
@@ -667,7 +712,8 @@ export class Handle extends ReadyResource {
     const to = Mailbox.getAddress(secret)
     const onmessage = async (bytes) => {
       const mail = unseal(to, bytes)
-      if (mail) await fn(mail.value, { id: mail.id, from: mail.from, device: mail.device })
+      if (!mail) return false
+      await fn(mail.value, { id: mail.id, from: mail.from, device: mail.device })
     }
     const inbox = this.root.mailbox.receive(secret, onmessage, { keep })
     return () => inbox.close()
@@ -1114,7 +1160,22 @@ export class Handle extends ReadyResource {
     this._serve(child)
     this._carry(child)
     this._prune(child).catch(this._onerror)
+    this._seats(child)
     this.emit('handle', child, info)
+  }
+
+  // a handle's topics row follows who may write to it while it is open, so a push is checked
+  // against the room as this device last applied it
+  /** @private */
+  _seats(child) {
+    const onchange = (touched) => {
+      if (touched.has('*') || touched.has('devices') || touched.has('members')) {
+        this._index(child).catch(this._onerror)
+      }
+    }
+    child.store.on('update', onchange)
+    child.once('close', () => child.store.off('update', onchange))
+    this._index(child).catch(this._onerror)
   }
 
   // a device removed from the root loses its seats in every handle: its chain is static, so the
@@ -1291,8 +1352,22 @@ function same(row, next) {
     (row.name ?? null) === next.name &&
     b4a.equals(row.key, next.key) &&
     sameBytes(row.encryptionKey, next.encryptionKey) &&
-    sameBytes(row.epochs, next.epochs)
+    sameBytes(row.epochs, next.epochs) &&
+    sameBytes(row.writers, next.writers)
   )
+}
+
+// the keys that may write to a handle now: the devices of its members whose role writes
+async function writersOf(db) {
+  const [devices, members] = await Promise.all([db.get('devices'), db.get('members')])
+  const writes = new Set(members.data.filter((m) => can(m.role, WRITE)).map((m) => m.id))
+  return b4a.concat(devices.data.filter((d) => writes.has(d.memberId)).map((d) => hid.decode(d.id)))
+}
+
+// a handle whose writers do not read accepts nobody
+function unread(err) {
+  safetyCatch(err)
+  return null
 }
 
 function sameBytes(a, b) {
