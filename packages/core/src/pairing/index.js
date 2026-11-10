@@ -246,8 +246,9 @@ export class Pairing extends ReadyResource {
   }
 
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
-  // online, until one is read. Past the invite's expiry the joiner has given up: a member who can
-  // remove drops an admitted one instead, and a refused one is forgotten
+  // online, until one is read. Past the invite's expiry the joiner has given up: the answer owed to
+  // an extra device of a member is dropped, a member who can remove drops a new one, and a refused
+  // one is forgotten
   /** @private */
   async _answer(owed, refused, role) {
     // a device linked under a member reads its chain off its row
@@ -271,8 +272,13 @@ export class Pairing extends ReadyResource {
       epochs: null
     })
     for (const row of this._offer(this._replies, owed, keys, 'del-request')) {
-      if (!can(role, REMOVE)) continue
-      await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
+      const id = hid.encode(row.identity)
+      const { data: devices } = await this.db.get('devices')
+      if (devices.some((d) => d.memberId === id && d.id !== row.id)) {
+        await this.db.call('del-request', { id: row.id }).catch(safetyCatch)
+      } else if (can(role, REMOVE)) {
+        await this.db.call('del-member', { id }).catch(safetyCatch)
+      }
     }
     for (const row of this._offer(this._denials, refused, denied, 'del-refusal')) {
       await this.db.call('del-refusal', { id: row.id }).catch(safetyCatch)

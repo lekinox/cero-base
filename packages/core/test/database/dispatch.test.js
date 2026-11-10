@@ -62,6 +62,22 @@ test('add-writer with a forged proof is rejected (no device row, writer not admi
   t.absent(device, 'no device row was created')
 })
 
+test("add-writer: a proof another identity signed seats nothing, the master's rank aside", async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const stranger = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const { seated, host } = seating()
+  const op = {
+    master: identity.publicKey,
+    writer,
+    proof: stranger.sign(admission(db.key, writer, writer)),
+    ts: 1
+  }
+  t.is(await apply(db, writer, 'add-writer', op, host), null, 'ignored')
+  t.alike(seated, [], 'no seat')
+  t.absent((await db.get('devices', hid.encode(writer))).data, 'no row')
+})
+
 // ─── writer/member authorization ──────────────────────────────────────────
 
 // another device of `identity`, with a writer of its own to seat
@@ -422,6 +438,19 @@ test('del-member: a rule on a removal sees her devices, and a refused one leaves
   )
 })
 
+test("del-device: a member cannot remove another member's device; its own it can", async (t) => {
+  const b = await second('member')
+  const { db, identity } = await withRole(t, 'member', { members: [b.row] })
+  await seat(db, b)
+  t.is((await apply(db, db.writerKey, 'del-device', { id: b.writer.id }))?.code, 'REFUSED')
+  t.ok((await db.get('devices', b.writer.id)).data, 'its device stays')
+
+  const phone = linked(identity)
+  await seat(db, phone)
+  t.is(await apply(db, db.writerKey, 'del-device', { id: phone.writer.id }), null)
+  t.absent((await db.get('devices', phone.writer.id)).data, 'its own device goes')
+})
+
 // ─── fast-forward trust ───────────────────────────────────────────────────
 
 // autobee trusts every fast-forward candidate unless a hook says otherwise —
@@ -503,6 +532,55 @@ test('fast-forward: an empty reference trusts only the genesis writer', async (t
     await fresh.bee.trusted.isTrusted(other.writerKey, fresh.view),
     'any other writer stays refused against an empty view'
   )
+})
+
+// the bound on a trust read: 2 s, as _isTrusted arms it
+function bounds(t) {
+  const armed = []
+  const { setTimeout: set, clearTimeout: clear } = globalThis
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const timer = set(fn, ms, ...args)
+    if (ms === 2000) armed.push(timer)
+    return timer
+  }
+  const cleared = new Set()
+  globalThis.clearTimeout = (timer) => {
+    cleared.add(timer)
+    return clear(timer)
+  }
+  const restore = () => {
+    globalThis.setTimeout = set
+    globalThis.clearTimeout = clear
+  }
+  t.teardown(restore)
+  return { armed, cleared, restore }
+}
+
+test('fast-forward: a trust read that settles clears its bound', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const { armed, cleared, restore } = bounds(t)
+  const trusted = await db._isTrusted(db.writerKey, db.view)
+  restore()
+  t.ok(trusted, 'the owner device is trusted')
+  t.ok(armed.length > 0, 'each read was bounded')
+  t.ok(
+    armed.every((timer) => cleared.has(timer)),
+    'and no bound is left armed'
+  )
+})
+
+test('fast-forward: a trust read that never settles keeps no process alive', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const { armed, restore } = bounds(t)
+  const stuck = { get: () => new Promise(() => {}) }
+  let trusted = null
+  db._isTrusted(db.writerKey, stuck).then((v) => (trusted = v))
+  restore()
+  t.is(armed.length, 1, 'the read is bounded')
+  t.absent(armed[0].hasRef(), 'by a timer that holds no ref')
+  // the poll holds the process open, the bound does not
+  await waitFor(() => trusted !== null)
+  t.is(trusted, false, 'untrusted once the bound passes')
 })
 
 // ─── encryption: wrong key cannot read ────────────────────────────────────
@@ -650,6 +728,16 @@ test('set-member: a member may still rename itself', async (t) => {
     updatedAt: Date.now()
   })
   t.is((await db.get('members', identity.id)).data.name, 'renamed')
+})
+
+test('set-member: a member renaming itself keeps the key it was admitted with', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const { data: me } = await db.get('members', identity.id)
+  const other = Identity.randomKeyPair().publicKey
+  t.is(await apply(db, db.writerKey, 'set-member', { ...me, key: other, name: 'renamed' }), null)
+  const { data: after } = await db.get('members', identity.id)
+  t.is(after.name, 'renamed')
+  t.alike(after.key, me.key, 'the key never comes off the wire')
 })
 
 // ─── `own` collections: the author's rows are the author's ────────────────
@@ -881,6 +969,13 @@ test('add-invite: a member may mint, but an existing invite is never overwritten
 
   const blank = await as('add-invite', inviteRow('blank', { role: '' }))
   t.is(blank?.code, 'REFUSED', 'an invite without a rank is refused')
+})
+
+test('add-invite: a reader mints none, not even at its own rank', async (t) => {
+  const { db } = await withRole(t, 'reader')
+  const err = await apply(db, db.writerKey, 'add-invite', inviteRow('mine', { role: 'reader' }))
+  t.is(err?.code, 'REFUSED')
+  t.absent((await db.get('invites', 'mine')).data, 'no invite')
 })
 
 test('del-invite / set-invite: revoking or altering a shared invite needs REMOVE', async (t) => {
@@ -1131,6 +1226,29 @@ test('confirm: accepting or denying needs INVITE; only a join writes a request',
   t.absent((await db.get('requests', id)).data, 'denied by the owner')
 })
 
+test('deny: a reader turns no join away', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  // minted first: a write through db rebuilds the view without the joins applied straight into it
+  const readers = await minted(db, { role: 'reader' })
+  const gated = await minted(db, { confirm: true })
+  const reader = await Identity.create()
+  const own = Identity.randomKeyPair().publicKey
+  await apply(db, own, 'join', joinOp(db, readers, { identity: reader, writer: own }))
+  t.is((await db.get('devices', hid.encode(own))).data?.memberId, reader.id, 'a reader device')
+
+  const joiner = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', joinOp(db, gated, { identity: joiner, writer }))
+  t.ok((await db.get('requests', id)).data, 'waiting')
+
+  t.is((await apply(db, own, 'deny', { id }))?.code, 'REFUSED')
+  t.ok((await db.get('requests', id)).data, 'still waiting')
+  t.absent(await refusal(db, id), 'and not turned away')
+  t.is(await apply(db, db.writerKey, 'deny', { id }), null)
+  t.ok(await refusal(db, id), 'the owner turns it away')
+})
+
 test('join: a reader writes nothing, not through an optimistic op either', async (t) => {
   const after = { promote: async () => {} }
   const { db } = await withRole(t, 'owner', { spec: spec.handles.team, after })
@@ -1258,6 +1376,24 @@ test("accept: a proof must chain the request's key to the accepter's own identit
   t.absent((await db.get('devices', id)).data, 'nothing seated')
 })
 
+test('accept: a proof through a device removed since the join seats nothing', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const invite = await minted(db, { confirm: true })
+  const phone = linked(identity)
+  await seat(db, phone)
+  const device = phone.identity.device
+  const bare = await Identity.bare(device)
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', joinOp(db, invite, { identity: bare, writer }))
+  t.ok((await db.get('requests', id)).data, 'waiting')
+
+  await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey))
+  const proof = identity.link(device.publicKey)
+  t.is((await apply(db, db.writerKey, 'accept', { id, proof }))?.code, 'REFUSED')
+  t.absent((await db.get('devices', id)).data, 'nothing seated')
+})
+
 test('del-refusal: answering a refused join needs INVITE', async (t) => {
   const { db, as } = await withMember(t, 'reader')
   const invite = await minted(db)
@@ -1356,6 +1492,23 @@ test('add-device: a writer cannot re-point its device row at another member', as
     ownerMemberId,
     'no escalation: the writer still resolves to its own member'
   )
+})
+
+test('add-device: the device key stays the one its admission proved', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const id = hid.encode(db.writerKey)
+  const { data: before } = await db.get('devices', id)
+  const row = {
+    id,
+    name: 'renamed',
+    key: Identity.randomKeyPair().publicKey,
+    createdAt: 1,
+    updatedAt: 2
+  }
+  t.is(await apply(db, db.writerKey, 'add-device', row), null)
+  const { data: after } = await db.get('devices', id)
+  t.is(after.name, 'renamed')
+  t.alike(after.key, before.key, 'the key never comes off the wire')
 })
 
 // ─── demotion: does lowering a role revoke the writer? ────────────────────
@@ -1812,4 +1965,21 @@ test('genesis: a room emptied of members is not new again', async (t) => {
   }
   t.is((await self('add-member', record))?.code, 'REFUSED')
   t.absent((await db.get('members', record.id)).data, 'nobody re-founds it')
+})
+
+test('rotate-key: an announcement whose commitment is not 32 bytes is no epoch', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const epochs = () => db.view.find(`@${db.ns}/epochs`, {}).toArray()
+  const announce = (stamp, commit) => ({
+    epoch: 0,
+    stamp,
+    wrapped: b4a.alloc(64, 1),
+    commit,
+    createdAt: 1
+  })
+  t.is(await apply(db, db.writerKey, 'rotate-key', announce(5, b4a.alloc(16, 1))), null)
+  t.is(await apply(db, db.writerKey, 'rotate-key', announce(6, null)), null)
+  t.is((await epochs()).length, 0, 'none landed')
+  t.is(await apply(db, db.writerKey, 'rotate-key', announce(7, b4a.alloc(32, 1))), null)
+  t.is((await epochs()).length, 1, 'a 32-byte one does')
 })

@@ -188,11 +188,12 @@ export class Server extends RPCServer {
    */
   _wireInit() {
     this.rpc.onErrors((stream) => {
+      closeWithWire(stream)
       this._errors.add(stream)
       stream.on('error', safetyCatch)
       stream.on('close', () => this._errors.delete(stream))
     })
-    this.rpc.onInit(async () => {
+    this._on('onInit', async () => {
       await this._booting
       // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end, and every open the old
       // page held is let go for it, as it never closes them
@@ -207,7 +208,7 @@ export class Server extends RPCServer {
    * @private
    */
   _wireRestore() {
-    this.rpc.onRestore(async ({ phrase }) => {
+    this._on('onRestore', async ({ phrase }) => {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
       this.me = await restore(this.me, phrase)
       this.handles = new Map([[this.me.id, this.me]])
@@ -222,6 +223,7 @@ export class Server extends RPCServer {
    */
   _wireLink() {
     this.rpc.onLink((stream) => {
+      closeWithWire(stream)
       stream.on('error', safetyCatch)
       const run = async () => {
         if (!this.me) throw CeroError.NOT_READY('Server', 'server')
@@ -246,42 +248,42 @@ export class Server extends RPCServer {
    * @private
    */
   _wireData() {
-    this.rpc.onAddFile(async ({ handle, data, name, type }) => {
+    this._on('onAddFile', async ({ handle, data, name, type }) => {
       const h = this._resolve(handle)
       const { data: file } = await put(h.files, { data, type: type || '', name: name || null })
       const { data: row } = await get(h.files, file.id)
       return { data: h.spec.codec.encodeRow(h.files.schema, row) }
     })
 
-    this.rpc.onAddRow(async ({ handle, ref, data, local }) => {
+    this._on('onAddRow', async ({ handle, ref, data, local }) => {
       const { ref: r, codec, info } = this._refOf(handle, ref, local)
       const { data: row } = await put(r, received(codec.decodeRow(r.schema, data), info))
       return { data: codec.encodeRow(r.schema, row) }
     })
 
-    this.rpc.onSet(async ({ handle, ref, data, fields, local, noUpsert }) => {
+    this._on('onSet', async ({ handle, ref, data, fields, local, noUpsert }) => {
       const { ref: r, codec, info } = this._refOf(handle, ref, local)
       const row = received(codec.decodeRow(r.schema, data), info, fields)
       const result = await set(r, row, { upsert: !noUpsert })
       return { data: result ? codec.encodeRow(r.schema, result.data) : null }
     })
 
-    this.rpc.onGet(async ({ handle, ref, query, local }) => {
+    this._on('onGet', async ({ handle, ref, query, local }) => {
       const { ref: r, codec } = this._refOf(handle, ref, local)
       const q = fromWire(query)
       return encodeGet(r, codec, q, await get(r, q))
     })
 
-    this.rpc.onDel(async ({ handle, ref, id, local }) => {
+    this._on('onDel', async ({ handle, ref, id, local }) => {
       await del(this._refOf(handle, ref, local).ref, id)
       return {}
     })
 
     this.rpc.onWatch((stream) => {
       const { handle, ref, local } = stream.data
-      const query = fromWire(stream.data.query)
-      let r, codec, live
+      let query, r, codec, live
       try {
+        query = fromWire(stream.data.query)
         ;({ ref: r, codec } = this._refOf(handle, ref, local))
         live = watch(r, query)
       } catch (err) {
@@ -317,6 +319,7 @@ export class Server extends RPCServer {
       // a watch ending with its handle ends the client's
       live.once('close', () => stream.destroy())
       // channel teardown destroys the stream with CHANNEL_CLOSED; 'close' cleans up
+      closeWithWire(stream)
       stream.on('error', safetyCatch)
       stream.on('close', () => {
         live.off('data', onData)
@@ -325,7 +328,7 @@ export class Server extends RPCServer {
       })
     })
 
-    this.rpc.onCall(async ({ handle, op, data }) => {
+    this._on('onCall', async ({ handle, op, data }) => {
       const h = this._resolve(handle)
       const r = h[op]
       if (!r) throw CeroError.UNKNOWN('ref', op)
@@ -339,7 +342,7 @@ export class Server extends RPCServer {
    * @private
    */
   _wireHandles() {
-    this.rpc.onAddHandle(async ({ handle, ref, data }) => {
+    this._on('onAddHandle', async ({ handle, ref, data }) => {
       const parent = this._resolve(handle)
       const info = parent.spec.meta.refs?.[ref] || parent.spec.handles?.[ref]
       if (!info) throw CeroError.UNKNOWN('handle type', ref)
@@ -351,7 +354,7 @@ export class Server extends RPCServer {
       return { id, type: ref, name: opts.name || '' }
     })
 
-    this.rpc.onOpenHandle(async ({ parent, row, type }) => {
+    this._on('onOpenHandle', async ({ parent, row, type }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       const { data } = await this.me.store.get('handles', row)
       if (!data) throw CeroError.UNKNOWN('handle', row)
@@ -360,7 +363,7 @@ export class Server extends RPCServer {
       return { id: row, type: data.type, name: data.name || '' }
     })
 
-    this.rpc.onJoin(async ({ parent, ref, invite }) => {
+    this._on('onJoin', async ({ parent, ref, invite }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       let child
       try {
@@ -374,14 +377,14 @@ export class Server extends RPCServer {
       return { id, type: ref, name: '' }
     })
 
-    this.rpc.onCloseHandle(async ({ handle }) => {
+    this._on('onCloseHandle', async ({ handle }) => {
       const h = this.handles.get(handle)
       if (!h || h === this.me) return {}
       await this._release(handle, h)
       return {}
     })
 
-    this.rpc.onLeave(async ({ handle }) => {
+    this._on('onLeave', async ({ handle }) => {
       await leave(this._resolve(handle))
       this._held.delete(handle)
       this._endWatches(handle)
@@ -422,17 +425,27 @@ export class Server extends RPCServer {
    * @private
    */
   _wireVerbs() {
-    this.rpc.onVerb(async ({ handle, verb, args }) => {
+    this._on('onVerb', async ({ handle, verb, args }) => {
       const run = VERBS.get(verb)
       if (!run) throw CeroError.UNKNOWN('verb', verb)
-      let data
-      try {
-        data = await run(this._resolve(handle), ...c.decode(c.any, args))
-      } catch (err) {
-        // bare-rpc rethrows a TypeError and ends the worker: a bad argument fails only the call
-        throw Object.assign(new Error(err.message), { code: err.code })
-      }
+      const data = await run(this._resolve(handle), ...c.decode(c.any, args))
       return { data: data === undefined ? null : c.encode(c.any, data) }
+    })
+  }
+
+  /**
+   * Register a request handler whose error fails only its call.
+   * @private
+   */
+  _on(name, fn) {
+    this.rpc[name](async (req) => {
+      try {
+        return await fn(req)
+      } catch (err) {
+        if (!CeroError.isCeroError(err)) this._onerror(err)
+        // bare-rpc rethrows a TypeError or a RangeError and ends the worker
+        throw Object.assign(new Error(err.message), { code: err.code, reason: err.reason })
+      }
     })
   }
 
@@ -467,9 +480,9 @@ export class Server extends RPCServer {
       return { ref: this.me.local[name], codec: this.spec.local.codec, info }
     }
     const h = this._resolve(id)
-    const r = h[name]
-    if (!r) throw CeroError.UNKNOWN('ref', name)
-    return { ref: r, codec: h.spec.codec, info: h.spec.meta?.refs?.[name] }
+    const info = h.spec.meta.refs?.[name]
+    if (!info) throw CeroError.UNKNOWN('ref', name)
+    return { ref: h[name], codec: h.spec.codec, info }
   }
 
   /**
@@ -502,6 +515,11 @@ export async function serve(ipc, spec, opts) {
   const server = new Server(ipc, spec, opts)
   await server.ready()
   return server
+}
+
+// hrpc destroys only the wire's stream when the client drops it, never the one a handler holds
+function closeWithWire(stream) {
+  stream.writeStream.once('close', () => stream.destroy())
 }
 
 // a query crosses as the client wrote it; no bytes is no query

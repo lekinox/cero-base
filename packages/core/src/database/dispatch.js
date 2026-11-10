@@ -71,7 +71,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<void> }}
+ * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<Array<{ value: Buffer, key: Buffer }>> }}  `apply` resolves to the nodes that landed.
  */
 export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }) {
   const router = new spec.dispatch.Router()
@@ -812,6 +812,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
 
   return {
     dispatch: (value, ctx) => router.dispatch(value, ctx),
+    role: getSignerRole,
     async apply(nodes, view, host) {
       const dbKey = key()
       // a batch is one writer's contiguous run, so a refusal discards only that writer's ops
@@ -823,6 +824,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       deferred.removeWriter = (...args) => void calls.push(['removeWriter', args])
       const epochs = []
       let refusal = null
+      const landed = []
       for (const node of nodes) {
         try {
           const seed = crypto.hash([node.key, c.encode(c.uint, node.length), node.value])
@@ -836,6 +838,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
             ts: node.timestamp,
             epochs
           })
+          landed.push(node)
         } catch (err) {
           // anything but a refusal skips one node, so an older peer never drops a batch its newer neighbour applies
           if (!isRefusal(err)) {
@@ -862,6 +865,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         }
       }
       await view.flush()
+      return refusal ? [] : landed
     }
   }
 }

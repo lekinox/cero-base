@@ -160,7 +160,7 @@ $ node device.js alice-laptop "<alice's twelve words>"
 
 Her handles arrive as they sync, which is why this watches `me.room` instead of reading it once. Stop it, and `node chat.js alice-laptop` opens the same handle as alice, from her second device.
 
-A phrase recovers only in a fresh directory, with the same `channel` and `mirrors` options as your other devices, while one of them is online. Otherwise `cero()` rejects with `TIMEOUT` after 30 seconds and creates nothing. The seed sits unencrypted in the data directory unless you pass `storageKey`. [Your devices](identity.md) has the full story.
+A phrase recovers only in a fresh directory, with the same `channel` and `mirrors` options as your other devices, while one of them is online. Otherwise `cero()` rejects with `TIMEOUT` after 30 seconds. The seed is stored before that wait, so a retry is plain `cero(dir, spec)`, and it recovers once one of your devices is reachable. The seed sits unencrypted in the data directory unless you pass `storageKey`. [Your devices](identity.md) has the full story.
 
 ## What you built
 

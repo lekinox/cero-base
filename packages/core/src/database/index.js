@@ -115,6 +115,10 @@ export class Database extends ReadyResource {
     this.rules = this.meta.rules || 1
     /** @type {number | null} */
     this.behind = null
+    /** @private */
+    this._skipped = null
+    /** @private */
+    this._applied = false
     this.namespace = opts.namespace || NAMESPACE
     this._writable = false
     this.encryptionKey = opts.encryptionKey
@@ -227,14 +231,20 @@ export class Database extends ReadyResource {
     })
 
     const known = !!this.key
-    await this._boot()
-    const replayed = await this._replay()
-    if (replayed) await this._boot()
+    try {
+      await this._boot()
+      const replayed = await this._replay()
+      if (replayed) await this._boot()
 
-    // before replication can deliver blocks at epochs we haven't learned yet
-    await this.rotation.hydrate()
-    // epochs handed over at join are sealed to nobody this device can read later: keep them
-    if (this._delivered) await this.rotation._save()
+      // before replication can deliver blocks at epochs we haven't learned yet
+      await this.rotation.hydrate()
+      // epochs handed over at join are sealed to nobody this device can read later: keep them
+      if (this._delivered) await this.rotation._save()
+    } catch (err) {
+      // ready-resource runs no _close for an open that failed
+      await this._close().catch(safetyCatch)
+      throw err
+    }
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())
@@ -436,7 +446,8 @@ export class Database extends ReadyResource {
   async write(ops) {
     // behind, a set merges from a view missing the newer writes and every device takes the stale
     // row: no writes until the update, but leaving, which touches nothing else
-    if (this.behind !== null && !leaving(ops, this.identity.id)) throw CeroError.BEHIND(this.behind)
+    const frozen = () => this.behind !== null && !leaving(ops, this.identity.id)
+    if (frozen()) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
       for (const op of ops) this.txQueue.push(op)
       return
@@ -454,6 +465,8 @@ export class Database extends ReadyResource {
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
       if (!(await this._dryRun(encoded)) && !action) return
+      // a newer op may have applied while this write awaited
+      if (frozen()) throw CeroError.BEHIND(this.behind)
       const wrapped = encoded.map((value) => wrap(this.version, value))
       await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
     } catch (err) {
@@ -778,7 +791,8 @@ export class Database extends ReadyResource {
   // the boot reads post-rotation state through the keyring, primed before the bee exists
   /** @private */
   async _preload() {
-    const local = this.store.namespace(this.namespace).get({
+    const ns = this.store.namespace(this.namespace)
+    const local = ns.get({
       keyPair: this.keyPair,
       manifest: {
         version: this.store.manifestVersion,
@@ -788,7 +802,8 @@ export class Database extends ReadyResource {
     })
     await local.ready()
     await loadEpochs(this.keyring, local)
-    await local.close()
+    // closing the session closes the core opened through it
+    await ns.close()
   }
 
   /** @private */
@@ -806,9 +821,9 @@ export class Database extends ReadyResource {
     })
     // swarm BEFORE boot so the boot has peers to pull from, not a cold open
     if (this.network && this.key) this._joinSwarm(bee, crypto.discoveryKey(this.key))
-    await bee.ready()
-    // apply-time hooks (rotation.learn, _onfuture) must never see this.bee null mid-drain
+    // apply-time hooks (rotation.learn, _onfuture) must never see this.bee null mid-drain, and a failed open closes it
     this.bee = bee
+    await bee.ready()
     this.key = bee.key
     await bee.update()
   }
@@ -821,7 +836,9 @@ export class Database extends ReadyResource {
     const local = this.bee.local
     const behind = await local.getUserData('cero/behind')
     this.behind = behind ? c.decode(c.uint, behind) : null
-    const caught = this.behind !== null && this.behind <= this.version
+    const skipped = await local.getUserData('cero/skipped')
+    this._skipped = skipped ? c.decode(c.uint, skipped) : null
+    const caught = [this._skipped, this.behind].some((v) => v !== null && v <= this.version)
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
     const view = built ? viewMarker(built) : null
@@ -833,8 +850,10 @@ export class Database extends ReadyResource {
     if (!caught && !grown) return false
     await local.setUserData('autobee/head', null)
     await local.setUserData('cero/behind', null)
+    await local.setUserData('cero/skipped', null)
     await this.bee.close()
     this.behind = null
+    this._skipped = null
     return true
   }
 
@@ -870,22 +889,27 @@ export class Database extends ReadyResource {
         continue
       }
       if (op.version > this.version) {
-        this._onfuture(op.version)
+        // anyone holding the key appends a node: each is replayed once this version reaches it, only a writer's freezes
+        this._skip(op.version)
+        if (can(await this.dispatcher.role(view, node.key), WRITE)) this._onfuture(op.version)
         continue
       }
       ready.push({ ...node, value: op.body })
     }
-    const result = await this.dispatcher.apply(ready, view, host)
-    this._notify(ready)
-    return result
+    this._applied = true
+    this._notify(await this.dispatcher.apply(ready, view, host))
   }
 
-  // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip
+  // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip. A batch
+  // that landed nothing wakes nobody: anyone holding the key appends nodes apply refuses
   /** @private */
   async _update(db) {
     await db.update()
     const touched = this._touched
+    const quiet = this._applied && touched.size === 0
     this._touched = new Set()
+    this._applied = false
+    if (quiet) return
     this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
     this._presence?.touch()
   }
@@ -1036,6 +1060,14 @@ export class Database extends ReadyResource {
     return ctx ? { data: ctx.row } : null
   }
 
+  // the lowest version skipped: the replay runs once this device reaches it, whoever sent the highest
+  /** @private */
+  _skip(version) {
+    if (this._skipped !== null && version >= this._skipped) return
+    this._skipped = version
+    this.bee.local.setUserData('cero/skipped', c.encode(c.uint, version)).catch(this._onerror)
+  }
+
   // ops from a newer app version: emit behind once per version, the marker survives restarts
   /** @private */
   _onfuture(version) {
@@ -1166,10 +1198,12 @@ function viewMarker(buf) {
 
 // an unbounded read of an old checkout wedges autobee's drain; null means untrusted
 function bounded(promise, ms = 2000) {
-  return Promise.race([
-    promise.then((v) => ({ v })),
-    new Promise((resolve) => setTimeout(() => resolve(null), ms))
-  ])
+  let timer = null
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), ms)
+    timer.unref()
+  })
+  return Promise.race([promise.then((v) => ({ v })), bound]).finally(() => clearTimeout(timer))
 }
 
 const NO_HOOKS = []

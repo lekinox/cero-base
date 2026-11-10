@@ -116,6 +116,14 @@ test('a grant still never takes away the last owner', async (t) => {
   t.is(await roleOf(db, identity.id), 'owner')
 })
 
+test('a grant never lets another member take the last owner out', async (t) => {
+  const owner = someone('owner')
+  const { db } = await withRole(t, 'admin', { members: [owner] })
+  db.before('del', (ctx) => (ctx.name === 'members' ? 'grant' : undefined))
+  await t.exception(db.del('members', owner.id), /last owner/)
+  t.is(await roleOf(db, owner.id), 'owner')
+})
+
 test('grant means nothing on other writes: only false refuses there', async (t) => {
   const { db } = await withRole(t, 'member')
   db.before('put', () => 'grant')
