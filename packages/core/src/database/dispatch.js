@@ -35,11 +35,20 @@ import { getEncoding } from '../lib/spec/index.js'
 import { decodeId } from '../blobs/codec.js'
 import { Identity } from '../identity/index.js'
 import { Invite } from '../pairing/invite.js'
+import { wraps } from './encryption.js'
 
 const Join = getEncoding('@cero/join')
 
 // wire fields are variable-length: reject wrong sizes before sodium and hid throw on them
 const isKey = (b) => b?.byteLength === 32
+
+function sealed(wrapped) {
+  try {
+    return c.decode(wraps, wrapped).length > 0
+  } catch {
+    return false
+  }
+}
 
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
@@ -484,6 +493,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     if (op.commit?.byteLength !== 32) return
     // the stamp is picked before any block is written, so epochs reorder freely; uniqueness is enforced here
     if (!Number.isInteger(op.stamp) || op.stamp <= 0 || op.stamp > 0xffffffff) return
+    // envelopes nobody can open would stop every later audit
+    if (!sealed(op.wrapped)) return
     if (!can(await getSignerRole(ctx.view, ctx.key), REMOVE)) {
       throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
     }
@@ -500,14 +511,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
     touch(EPOCHS)
-    // never in a dry run: the announcement itself is appended under the old epoch
-    if (!ctx.dryRun) {
-      try {
-        await onepoch(row)
-      } catch (err) {
-        onerror(err)
-      }
-    }
+    // learned once its batch commits: a refused batch teaches no epoch, and a dry run commits nothing
+    ctx.epochs?.push(row)
   })
 
   add('del-device', async (op, ctx) => {
@@ -805,6 +810,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       const deferred = Object.create(host)
       deferred.addWriter = (...args) => void calls.push(['addWriter', args])
       deferred.removeWriter = (...args) => void calls.push(['removeWriter', args])
+      const epochs = []
       let refusal = null
       for (const node of nodes) {
         try {
@@ -816,7 +822,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
             key: node.key,
             dbKey,
             seed,
-            ts: node.timestamp
+            ts: node.timestamp,
+            epochs
           })
         } catch (err) {
           // anything but a refusal skips one node, so an older peer never drops a batch its newer neighbour applies
@@ -835,6 +842,13 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         await tx.flush()
         // before apply() returns: autobee clears host.applying right after, and addWriter reads it
         for (const [fn, args] of calls) await host[fn](...args)
+        for (const row of epochs) {
+          try {
+            await onepoch(row)
+          } catch (err) {
+            onerror(err)
+          }
+        }
       }
       await view.flush()
     }

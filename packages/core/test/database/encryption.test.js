@@ -5,7 +5,8 @@ import autobeeEncryption from 'autobee/lib/encryption.js'
 import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 
-import { Keyring, EpochAutobee, wraps } from '../../src/database/encryption.js'
+import { Keyring, EpochAutobee, wraps, seal } from '../../src/database/encryption.js'
+import { wrap } from '../../src/database/envelope.js'
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { CeroError } from '../../src/lib/errors.js'
@@ -1034,4 +1035,81 @@ test('rotate: the first device removal re-keys by itself, sealing the removed on
   await a.db.put('messages', { text: 'post' })
   await new Promise((r) => setTimeout(r, 1500))
   t.alike(await texts(dev.db), ['pre'], 'the removed device reads nothing written after')
+})
+
+// an admin's own batch: what apply reads, without the dry run an honest write goes through
+function batch(db, ops) {
+  return db.bee.append(ops.map(([name, op]) => wrap(db.version, db.spec.dispatch.encode(name, op))))
+}
+
+test('rotate: epochs announced in a batch apply refuses are learned by no one', async (t) => {
+  const {
+    a,
+    members: [x, b]
+  } = await makeRoom(t, ['admin', 'member'])
+  await waitFor(async () => x.db.writable && b.db.writable)
+  await waitFor(async () => (await x.db.get('devices')).data.length === 3)
+
+  const { data: devices } = await x.db.get('devices')
+  const others = devices.filter((d) => d.id !== hid.encode(x.db.writerKey))
+  const stamps = [1000, 1001, 1002]
+  const rotations = stamps.map((stamp) => {
+    const entropy = Identity.randomBytes(32)
+    const wrapped = c.encode(wraps, seal(others, entropy))
+    return [
+      '@cero/rotate-key',
+      { epoch: 0, stamp, wrapped, createdAt: 1, commit: crypto.hash(entropy) }
+    ]
+  })
+  const invite = { id: 'ff', role: 'owner', reuse: false, confirm: false, expires: 0, createdAt: 1 }
+  await batch(x.db, [...rotations, ['@cero/add-invite', invite]])
+
+  const refused = (p) => p.errors.some((e) => e.code === 'REFUSED')
+  await waitFor(() => refused(a) && refused(b))
+  t.is(
+    (await a.db.view.find('@cero/epochs', {}).toArray()).length,
+    0,
+    'an admin cannot mint an owner: nothing landed'
+  )
+  for (const p of [a, b]) {
+    t.absent(
+      stamps.some((stamp) => p.db.keyring.entropy(stamp)),
+      'and no secret of the batch is held'
+    )
+  }
+
+  await a.db.call('del-member', { id: x.identity.id })
+  await waitFor(() => a.db.keyring.seq >= 1 && b.db.keyring.current === a.db.keyring.current, {
+    timeout: 30000
+  })
+  await a.db.put('messages', { text: 'after' })
+  const raw = await a.db.bee.local.get(a.db.bee.local.length - 1, { raw: true })
+  t.is(b4a.readUInt32LE(raw, 4), a.db.keyring.current, 'the owner writes under the heal')
+  t.absent(stamps.includes(a.db.keyring.current), 'never under an epoch the removed admin minted')
+})
+
+test('rotate: an announcement whose envelopes do not decode never lands, so a later removal still re-keys', async (t) => {
+  const {
+    a,
+    members: [x]
+  } = await makeRoom(t, ['admin'])
+  await waitFor(async () => x.db.writable)
+
+  const wrapped = b4a.from([0xff, 0xff, 0xff])
+  await batch(x.db, [
+    [
+      '@cero/rotate-key',
+      { epoch: 0, stamp: 4242, wrapped, createdAt: 1, commit: crypto.randomBytes(32) }
+    ]
+  ])
+  await x.db.put('messages', { text: 'after it' })
+  await waitFor(async () => (await texts(a.db)).includes('after it'))
+  t.is((await a.db.view.find('@cero/epochs', {}).toArray()).length, 0, 'no epoch row')
+
+  await a.db.call('del-member', { id: x.identity.id })
+  const healed = await waitFor(() => a.db.keyring.seq >= 1, { timeout: 15000 }).then(
+    () => true,
+    () => false
+  )
+  t.ok(healed, 'the removal re-keys')
 })
