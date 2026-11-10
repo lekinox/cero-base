@@ -1,4 +1,4 @@
-import { watch, get, open, activate, receive } from '../lib/operators.js'
+import { watch, get, open, close, activate, receive } from '../lib/operators.js'
 
 /**
  * @typedef {object} Messaging  The platform's messaging service, as `connect` takes it for push.
@@ -48,10 +48,13 @@ export function follow(me, messaging) {
   }
 }
 
-// while the app sleeps the OS shows the push; the handle syncs first once it wakes on its own
+// while the app sleeps the OS shows the push; the handle syncs first once it wakes on its own, for
+// as long as it lingers after this close
 async function wake(me, payload) {
   if ((await get(me.status)).data.suspended) return
   const hit = await receive(me, payload)
   if (!hit?.newer) return
-  await activate(await open(me[hit.type], { id: hit.id }))
+  const h = await open(me[hit.type], { id: hit.id })
+  await activate(h)
+  await close(h)
 }

@@ -59,7 +59,7 @@ function mockMessaging({ failFirst = false } = {}) {
 
 // a writes to a room through a mirror behind a gateway; b, served over RPC to a client with a
 // messaging service, joined that room
-async function scene(t, { messaging, errors } = {}) {
+async function scene(t, { messaging, errors, linger = 0 } = {}) {
   const testnet = await makeTestnet(t)
   const gateway = await makeGateway(t, testnet)
   const mirror = await makeMirror(t, testnet, { pushGatewayKeys: [gateway.key] })
@@ -72,7 +72,7 @@ async function scene(t, { messaging, errors } = {}) {
   const server = await serve(serverStream, spec, {
     storage: dir,
     bootstrap: testnet.bootstrap,
-    linger: 0
+    linger
   })
   const client = await connect(clientStream, spec, {
     onerror: (err) => errors?.push(err),
@@ -95,6 +95,40 @@ async function scene(t, { messaging, errors } = {}) {
   await waitUntil(() => !room.store.pushing)
   gateway.before = gateway.sent.length
   return { gateway, a, room, b: { me: server.me, client, joined, dir } }
+}
+
+// a worker served to a client with a messaging service, whose pushes all verify as newer for `id`
+async function woken(t, { linger }) {
+  const testnet = await makeTestnet(t)
+  const [serverStream, clientStream] = pair()
+  const server = await serve(serverStream, spec, {
+    storage: await t.tmp(),
+    bootstrap: testnet.bootstrap,
+    linger
+  })
+  const messaging = mockMessaging()
+  const client = await connect(clientStream, spec, { push: messaging })
+  t.teardown(
+    async () => {
+      try {
+        await client.close()
+      } catch {}
+      try {
+        await server.close()
+      } catch {}
+    },
+    { order: 5 }
+  )
+  const room = await open(client.team, { name: 'clinic' })
+  client._receive = async () => ({ id: room.id, type: 'team', name: 'clinic', newer: true })
+  const release = server._release.bind(server)
+  const released = { count: 0 }
+  server._release = async (...args) => {
+    await release(...args)
+    released.count++
+  }
+  const served = () => [...server.me.children].find((c) => c.id === room.id)
+  return { server, client, messaging, room, served, released }
 }
 
 test('topics: the root lists a topic per handle, kept with the handles rows', async (t) => {
@@ -272,16 +306,19 @@ test('push: the bare-kit entry answers every push, a bad one with nothing and sh
 test('push: the messaging service follows the topics, and a push activates the handle', async (t) => {
   const messaging = mockMessaging()
   const errors = []
-  const { gateway, room, b } = await scene(t, { messaging, errors })
+  // a wake lets go of the handle it opened: the linger keeps it on the swarm meanwhile
+  const { gateway, room, b } = await scene(t, { messaging, errors, linger: 2000 })
   await waitUntil(() => messaging.topics.has(topicOf(room)))
   t.is(messaging.topics.size, 1, 'subscribed to the joined room')
 
   await b.me.network.suspend()
   await put(room.messages, { text: 'wake up' })
   await waitUntil(() => gateway.sent.length === gateway.before + 1)
-  await b.me.network.resume()
   const dk = room.store.discoveryKey
+  // closed before it syncs the write, so the push is newer
   await cero.close(b.joined)
+  await waitUntil(() => ![...b.me.children].some((c) => c.id === b.joined.id))
+  await b.me.network.resume()
   await waitUntil(() => b.me.network.presence.mode(dk) === null)
   messaging.push(payloadOf(gateway.sent.at(-1)))
   await waitUntil(() => b.me.network.presence.mode(dk) === 'active')
@@ -297,6 +334,31 @@ test('push: the messaging service follows the topics, and a push activates the h
   await leave(reopened)
   await waitUntil(() => messaging.topics.size === 0)
   t.pass('unsubscribed on leave')
+})
+
+test('push: a wake lets go of the handle it opened', async (t) => {
+  const { server, messaging, room, served, released } = await woken(t, { linger: 500 })
+  await cero.close(room)
+  await waitUntil(() => !served())
+  for (let i = 0; i < 3; i++) messaging.push(new Uint8Array(1))
+  // the app's close, then one per wake
+  await waitUntil(() => released.count === 4)
+  t.absent(server._held.has(room.id), 'three wakes hold nothing')
+  t.absent(server.handles.has(room.id), 'the app holds nothing')
+  await waitUntil(() => !served())
+  t.pass('the room closes once it lingered')
+})
+
+test('push: a wake leaves a room the app holds open', async (t) => {
+  const { server, messaging, room, served, released } = await woken(t, { linger: 500 })
+  messaging.push(new Uint8Array(1))
+  await waitUntil(() => released.count === 1)
+  t.is(server._held.get(room.id), 1, "the app's own hold")
+  t.ok(served(), 'still open on the worker')
+  t.is((await put(room.messages, { text: 'hi' })).data.text, 'hi', 'the app still writes to it')
+  await cero.close(room)
+  await waitUntil(() => !served())
+  t.absent(server._held.has(room.id), 'let go with the app')
 })
 
 test('receive: a rotated room still opens its pushes, with the epochs the root carries', async (t) => {
