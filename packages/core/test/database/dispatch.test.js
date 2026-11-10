@@ -412,6 +412,55 @@ test('fast-forward: an empty reference trusts only the genesis writer', async (t
   )
 })
 
+// the bound on a trust read: 2 s, as _isTrusted arms it
+function bounds(t) {
+  const armed = []
+  const { setTimeout: set, clearTimeout: clear } = globalThis
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const timer = set(fn, ms, ...args)
+    if (ms === 2000) armed.push(timer)
+    return timer
+  }
+  const cleared = new Set()
+  globalThis.clearTimeout = (timer) => {
+    cleared.add(timer)
+    return clear(timer)
+  }
+  const restore = () => {
+    globalThis.setTimeout = set
+    globalThis.clearTimeout = clear
+  }
+  t.teardown(restore)
+  return { armed, cleared, restore }
+}
+
+test('fast-forward: a trust read that settles clears its bound', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const { armed, cleared, restore } = bounds(t)
+  const trusted = await db._isTrusted(db.writerKey, db.view)
+  restore()
+  t.ok(trusted, 'the owner device is trusted')
+  t.ok(armed.length > 0, 'each read was bounded')
+  t.ok(
+    armed.every((timer) => cleared.has(timer)),
+    'and no bound is left armed'
+  )
+})
+
+test('fast-forward: a trust read that never settles keeps no process alive', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const { armed, restore } = bounds(t)
+  const stuck = { get: () => new Promise(() => {}) }
+  let trusted = null
+  db._isTrusted(db.writerKey, stuck).then((v) => (trusted = v))
+  restore()
+  t.is(armed.length, 1, 'the read is bounded')
+  t.absent(armed[0].hasRef(), 'by a timer that holds no ref')
+  // the poll holds the process open, the bound does not
+  await waitFor(() => trusted !== null)
+  t.is(trusted, false, 'untrusted once the bound passes')
+})
+
 // ─── encryption: wrong key cannot read ────────────────────────────────────
 
 test("opening a bee with the wrong encryption key cannot decode another peer's rows", async (t) => {

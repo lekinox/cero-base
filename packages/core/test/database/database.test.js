@@ -126,6 +126,21 @@ test('ready/close: opens and closes cleanly', async (t) => {
   t.is(db.bee, null)
 })
 
+test('close: a database leaves no store session open', async (t) => {
+  const { store } = await makeStore(t)
+  const before = store.corestores.size
+  const db = new Database({
+    store,
+    identity: await Identity.create(),
+    spec,
+    encryptionKey: Identity.randomBytes(32)
+  })
+  await db.ready()
+  await db.bootstrap({ name: 'a' })
+  await db.close()
+  t.is(store.corestores.size, before, 'every session it opened is closed')
+})
+
 // the wakeup protocol is shared by every open database; closing one must not
 // tear it down for the others
 test('close: one database does not destroy the network-shared wakeup', async (t) => {

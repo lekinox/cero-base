@@ -786,7 +786,8 @@ export class Database extends ReadyResource {
   // the boot reads post-rotation state through the keyring, primed before the bee exists
   /** @private */
   async _preload() {
-    const local = this.store.namespace(this.namespace).get({
+    const ns = this.store.namespace(this.namespace)
+    const local = ns.get({
       keyPair: this.keyPair,
       manifest: {
         version: this.store.manifestVersion,
@@ -796,7 +797,8 @@ export class Database extends ReadyResource {
     })
     await local.ready()
     await loadEpochs(this.keyring, local)
-    await local.close()
+    // closing the session closes the core opened through it
+    await ns.close()
   }
 
   /** @private */
@@ -1165,10 +1167,12 @@ export class Database extends ReadyResource {
 
 // an unbounded read of an old checkout wedges autobee's drain; null means untrusted
 function bounded(promise, ms = 2000) {
-  return Promise.race([
-    promise.then((v) => ({ v })),
-    new Promise((resolve) => setTimeout(() => resolve(null), ms))
-  ])
+  let timer = null
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), ms)
+    timer.unref()
+  })
+  return Promise.race([promise.then((v) => ({ v })), bound]).finally(() => clearTimeout(timer))
 }
 
 const NO_HOOKS = []
