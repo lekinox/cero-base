@@ -96,6 +96,34 @@ test('close: a root suspended with a write in flight closes', async (t) => {
   )
 })
 
+test('close: a root closed while its suspend is still running closes', async (t) => {
+  const { me, errors } = await device(t)
+  const room = await cero.open(me.team, { name: 'clinic' })
+  const writing = put(room.messages, { text: 'racing' }).then(
+    () => 'written',
+    (e) => e.code
+  )
+  // the suspend is past its first step, the storage not yet down, when the close starts
+  const suspend = me.network.suspend.bind(me.network)
+  const reached = new Promise((resolve) => {
+    me.network.suspend = () => {
+      resolve()
+      return suspend()
+    }
+  })
+  cero.suspend(me).catch(() => {})
+  await reached
+  let closed = false
+  me.close().then(() => (closed = true))
+  await waitUntil(() => closed, 20000)
+  t.ok(['written', 'CLOSED'].includes(await writing), 'the write settles')
+  t.alike(
+    errors.map((e) => e.message),
+    [],
+    'nothing reaches onerror'
+  )
+})
+
 test('close: a root suspended with nothing in flight closes', async (t) => {
   const { me } = await device(t)
   const room = await cero.open(me.team, { name: 'clinic' })

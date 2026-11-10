@@ -299,8 +299,8 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _close() {
-    // a write that raced the suspend holds the close until the storage resumes; the network stays down
-    if (this._sus?.suspended) await this.store.store.resume().catch(safetyCatch)
+    // a write that raced a suspend holds the close until the storage resumes, once a suspend still running settled
+    if (this._sus) await this._sus.resume()
     this.root._coreKeys.delete(b4a.toHex(this.store.key))
     if (this._blobs?.key) this.root._coreKeys.delete(b4a.toHex(this._blobs.key))
     for (const b of this._epochBlobs?.values() || []) {
@@ -1096,8 +1096,10 @@ export class Handle extends ReadyResource {
 
   /** @private */
   async _wake() {
-    if (this.closing || this.closed) return
+    if (this.closed) return
     await this.store.store.resume().catch(this._onerror)
+    // a close takes its storage back and nothing else: the network stays down
+    if (this.closing) return
     await this.network.resume().catch(this._onerror)
     await this._bluetooth?.resume().catch(this._onerror)
   }
