@@ -742,6 +742,18 @@ test('join: invalid invite → INVALID_INVITE, expired → EXPIRED', async (t) =
   t.is((await joiner.join(invite).catch((e) => e)).code, 'EXPIRED')
 })
 
+test('join: reads its reply with a timeout no longer than its own', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const seen = []
+  const receive = joiner.mailbox.receive.bind(joiner.mailbox)
+  joiner.mailbox.receive = (secret, fn, opts) =>
+    seen.push(opts.timeout) && receive(secret, fn, opts)
+  await joiner.join(await host.pairing.invite(), { timeout: 20000 })
+  await joiner.join(await host.pairing.invite(), { timeout: 0 })
+  t.alike(seen, [20000, undefined], 'its own, or the default when it waits for good')
+})
+
 test('join: times out when no member answers', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)

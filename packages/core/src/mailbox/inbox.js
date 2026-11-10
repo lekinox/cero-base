@@ -6,9 +6,8 @@ import b4a from 'b4a'
 import { CeroError } from '../lib/errors.js'
 
 const NS = b4a.from('cero/mailbox')
-const READ_TIMEOUT = 30000
-// a read holds its slot until its message was handled, READ_TIMEOUT at most to open it and as
-// long again to handle it: a peer announcing keys nobody serves holds PER_PEER of the READS at
+// a read holds its slot until its message was handled, `timeout` at most to open it and as long
+// again to handle it: a peer announcing keys nobody serves holds PER_PEER of the READS at
 // most, however often it reconnects, and the peers take their turns, so mail from the others
 // reads in the slots left
 const READS = 16
@@ -70,9 +69,9 @@ export class Inbox extends ReadyResource {
   /**
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} secret
-   * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean }} opts
+   * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number }} opts
    */
-  constructor(network, secret, { box, onmessage, onerror, keep = true }) {
+  constructor(network, secret, { box, onmessage, onerror, keep = true, timeout = 30000 }) {
     super()
     this.network = network
     this.keyPair = keyPair(secret)
@@ -81,6 +80,7 @@ export class Inbox extends ReadyResource {
     this.onmessage = onmessage
     this.onerror = onerror
     this.keep = keep
+    this.timeout = timeout
     /** @private */
     this._mail = new Map() // id → { key, queued, busy }: queued by peers, or read or handled now
     /** @private */
@@ -218,13 +218,13 @@ export class Inbox extends ReadyResource {
     const { store } = this.network
     // a core this device already holds is not the inbox's to erase, whatever is announced here
     const fetched = !(await store.storage.hasCore(crypto.discoveryKey(key)))
-    const message = await this._unseal(key, { timeout: READ_TIMEOUT })
+    const message = await this._unseal(key, { timeout: this.timeout })
     // one that lands after close is dropped as if it timed out, for the next start to read
     if (!message || this.closing) return this._drop(id, fetched, true)
     await this.box.put({ id, address: this.address, message: EMPTY, fetched })
     // past it the slot is free, and the message stays in the box until its handler resolves
     await new Promise((resolve) => {
-      const timer = setTimeout(resolve, READ_TIMEOUT)
+      const timer = setTimeout(resolve, this.timeout)
       timer.unref()
       this._handle({ id, message, fetched }).finally(() => {
         clearTimeout(timer)

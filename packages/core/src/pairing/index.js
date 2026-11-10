@@ -409,7 +409,9 @@ export class Pairing extends ReadyResource {
       keyPair: writer,
       manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
     })
-    const inbox = mailbox.receive(writer.secretKey, onreply, { keep: false })
+    // a reply read no longer than the join waits for it
+    const reads = timeout > 0 ? { timeout: Math.min(timeout, 30000) } : {}
+    const inbox = mailbox.receive(writer.secretKey, onreply, { keep: false, ...reads })
     // the database pulls the join in like any optimistic append, from us or from a mirror
     const post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
 

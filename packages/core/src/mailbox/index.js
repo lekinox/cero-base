@@ -100,15 +100,16 @@ export class Mailbox extends ReadyResource {
    *
    * @param {Uint8Array} secret
    * @param {(message: Uint8Array) => unknown} onmessage
-   * @param {{ keep?: boolean }} [opts]  False erases each message from this device once handled.
+   * @param {{ keep?: boolean, timeout?: number }} [opts]  `keep`: false erases each message from this device once handled. `timeout`: ms a message has to arrive once announced, and again to be handled, 30 s by default.
    * @returns {{ close: () => Promise<void> }}
    */
-  receive(secret, onmessage, { keep = true } = {}) {
+  receive(secret, onmessage, { keep = true, timeout } = {}) {
     const inbox = new Inbox(this.network, secret, {
       box: this.inbox,
       onmessage,
       onerror: this.onerror,
-      keep
+      keep,
+      timeout
     })
     this._track(inbox)
     inbox.ready().catch(this.onerror)

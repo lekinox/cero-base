@@ -778,14 +778,14 @@ test('Inbox: a key nobody serves leaves no core behind once its read times out',
   const testnet = await makeTestnet(t)
   const b = await mailbox(t, testnet)
   const secret = crypto.randomBytes(32)
-  b.receive(secret, () => {})
+  b.receive(secret, () => {}, { timeout: 500 })
 
   const keys = [crypto.randomBytes(32), crypto.randomBytes(32)]
   announce(t, await peer(t, testnet), Mailbox.getAddress(secret), keys)
 
   await waitFor(async () => (await counted(b.network, keys)) > 0, { timeout: 30000 })
   t.pass('read')
-  await waitFor(async () => (await counted(b.network, keys)) === 0, { timeout: 45000 })
+  await waitFor(async () => (await counted(b.network, keys)) === 0, { timeout: 10000 })
   t.pass('nothing stored once the reads gave up')
 })
 
@@ -855,10 +855,14 @@ test('Inbox: a message handled past the read timeout gives its slot back and sta
   const b = await mailbox(t, testnet, { inbox: box })
   const secret = crypto.randomBytes(32)
   let calls = 0
-  b.receive(secret, () => {
-    calls++
-    return new Promise(() => {})
-  })
+  b.receive(
+    secret,
+    () => {
+      calls++
+      return new Promise(() => {})
+    },
+    { timeout: 1000 }
+  )
 
   for (let i = 0; i < 4; i++) {
     const sender = await mailbox(t, testnet)
@@ -867,7 +871,7 @@ test('Inbox: a message handled past the read timeout gives its slot back and sta
   await waitFor(() => calls === 16, { timeout: 30000 })
   const late = await mailbox(t, testnet)
   await late.send(Mailbox.getAddress(secret), b4a.from('next'))
-  await waitFor(() => calls === 17, { timeout: 45000 })
+  await waitFor(() => calls === 17, { timeout: 10000 })
   t.is(box.pending(), 17, 'none of them marked handled')
 })
 
@@ -935,7 +939,7 @@ test('Inbox: a key whose read gave up is read again through another peer that an
   const secret = crypto.randomBytes(32)
   const address = Mailbox.getAddress(secret)
   const got = []
-  const inbox = b.receive(secret, (message) => got.push(b4a.toString(message)))
+  const inbox = b.receive(secret, (message) => got.push(b4a.toString(message)), { timeout: 3000 })
   let reads = 0
   const read = inbox._read
   inbox._read = (...args) => {
@@ -956,7 +960,7 @@ test('Inbox: a key whose read gave up is read again through another peer that an
   announce(t, await peer(t, testnet), address, [core.key])
   await waitFor(() => reads === 1, { timeout: 30000 })
   announce(t, honest, address, [core.key])
-  await waitFor(() => reads === 2, { timeout: 45000 })
+  await waitFor(() => reads === 2, { timeout: 10000 })
   await core.append(crypto.encrypt(b4a.from('real'), address))
   await waitFor(() => got.length > 0, { timeout: 30000 })
   t.alike(got, ['real'])
