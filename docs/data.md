@@ -212,8 +212,9 @@ const { data: file } = await cero.put(me.files, {
 ```
 
 The root and every handle have a `files` builtin. `data` is bytes, or a Readable in the worker
-process; `type` is required, a media type such as `image/jpeg`, `name` optional. To put a file on
-a row, store its id in a `t.file` field, which reads back as `{ id, type, size, url }`:
+process; `type` is required, a media type such as `image/jpeg` in printable ASCII, `name`
+optional. To put a file on a row, store its id in a `t.file` field, which reads back as
+`{ id, type, size, url }`:
 
 ```js
 // room from cero.open(me.room), bytes a Buffer of the photo

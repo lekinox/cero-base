@@ -2,7 +2,9 @@ import test from 'brittle'
 import b4a from 'b4a'
 import z32 from 'z32'
 
+import c from 'compact-encoding'
 import { Blobs, encodeId, decodeId } from '../../src/blobs/index.js'
+import { getEncoding } from '../../src/lib/spec/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import {
@@ -238,6 +240,7 @@ test('open existing blob store by key on a separate store', async (t) => {
 
 // ─── id codec (coreKey + raw blobId + type) ──────────────────────────────
 
+const BlobId = getEncoding('@cero/blob-id')
 const sampleKey = () => b4a.alloc(32, 0xab)
 const sampleBlobId = () => ({ blockOffset: 3, blockLength: 1, byteOffset: 4096, byteLength: 128 })
 
@@ -284,20 +287,32 @@ test('decodeId rejects an id that is not valid z32', (t) => {
   t.exception.all(() => decodeId('!!!not-valid-z32!!!'), /valid z32/)
 })
 
-test('decodeId rejects a type that is no media type', (t) => {
-  const id = (type) => encodeId(sampleKey(), sampleBlobId(), type)
+test('decodeId reads an id whatever type it was stored with', (t) => {
+  t.is(decodeId(encodeId(sampleKey(), sampleBlobId(), 'image')).type, 'image')
+  // as earlier builds, which checked no type, stored them
+  for (const type of ['png', 'image/jpeg ', 'text/plain; name="résumé.txt"', 'image/png\r\n']) {
+    const raw = { coreKey: sampleKey(), ...sampleBlobId(), type }
+    t.is(decodeId(z32.encode(c.encode(BlobId, raw))).type, type, JSON.stringify(type))
+  }
+})
+
+test('encodeId refuses a type that is no printable text', (t) => {
   for (const type of [
+    undefined,
+    null,
+    1,
     'image/png\r\n',
     'image/png\nX-Evil: 1',
-    'png',
-    'image/',
-    'image/pn g',
+    'a\tb',
     'imagé/png'
   ]) {
-    t.exception.all(() => decodeId(id(type)), /media type/, JSON.stringify(type))
+    t.exception.all(
+      () => encodeId(sampleKey(), sampleBlobId(), type),
+      /INVALID/,
+      JSON.stringify(type)
+    )
   }
-  t.is(decodeId(id('text/plain; charset=utf-8')).type, 'text/plain; charset=utf-8')
-  t.is(decodeId(id('application/vnd.api+json')).type, 'application/vnd.api+json')
+  t.ok(encodeId(sampleKey(), sampleBlobId(), ''), 'an empty one is no type')
 })
 
 test('decodeId rejects a truncated payload', (t) => {

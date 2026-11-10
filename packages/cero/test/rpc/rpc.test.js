@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import { Duplex } from 'streamx'
 import c from 'compact-encoding'
+import z32 from 'z32'
 import { decodeId } from '@cero-base/core/blobs'
 import { Invite } from '@cero-base/core/invite'
 import { Identity } from '@cero-base/core/identity'
@@ -736,6 +737,15 @@ test('rpc: add-file uploads bytes and returns a file row with an id', async (t) 
   t.is(row.name, 'a.txt', 'name round-trips')
 })
 
+test('rpc: add-file with a type that is no printable text is INVALID, and no byte is stored', async (t) => {
+  const { client, me } = await openPair(t)
+  await me.blobs.ready()
+  const length = me.blobs.core.length
+  const err = await put(client.files, { data: b4a.from('x'), type: 'a\nb' }).catch((err) => err)
+  t.is(err?.code, 'INVALID')
+  t.is(me.blobs.core.length, length, 'the blob core did not grow')
+})
+
 // invite({ ttl, reuse }) must cross the wire, or a "1 hour" invite
 // minted through a client never expires
 test('rpc: invite carries ttl and data over the wire', async (t) => {
@@ -888,6 +898,21 @@ test('rpc: file read resolves a url that serves the bytes over http', async (t) 
   t.is(res.status, 200, 'url serves 200')
   const body = b4a.from(await res.arrayBuffer())
   t.alike(b4a.toBuffer(body), b4a.toBuffer(data), 'http body is byte-perfect')
+})
+
+test('rpc: a stored type a header cannot carry is left out of the url, and the file serves', async (t) => {
+  const { client, me } = await openPair(t)
+  const { data: file } = await put(client.files, { data: b4a.from('x'), type: 'text/plain' })
+  const { coreKey, blobId } = decodeId(file.id)
+  // as an earlier build could have stored it: the id's own layout, with a CR in its type
+  const fields = [blobId.blockOffset, blobId.blockLength, blobId.byteOffset, blobId.byteLength]
+  const raw = [coreKey, ...fields.map((n) => c.encode(c.uint, n)), c.encode(c.string, 'a\r\nb')]
+  const id = z32.encode(b4a.concat(raw))
+  await me.store.call('add-file', { id })
+  const { data: row } = await get(client.files, id)
+  t.absent(new URL(row.url).searchParams.get('type'), 'no type in the url')
+  const res = await fetch(row.url)
+  t.is(res.status, 200, 'the bytes are served')
 })
 
 test('rpc: a file field reads back as a file whose url serves the bytes', async (t) => {

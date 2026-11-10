@@ -1,6 +1,6 @@
 import { Readable } from 'streamx'
 
-import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
+import { encodeId, decodeId, checkType } from '@cero-base/core/blobs/codec'
 import { onAbort, subscribe } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 
@@ -48,6 +48,7 @@ async function putFile(ref, row) {
   const handle = ref.handle
   if (handle.rpc) return handle.put('files', row)
   const { data, type, name = null, from = null } = row
+  checkType(type)
   const blobs = handle.blobs // captured once — the instance carries its epoch stamp
   await blobs.ready()
   const blobId = await blobs.put(data)

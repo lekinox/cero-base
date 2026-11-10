@@ -14,9 +14,29 @@ import { CeroError } from '../lib/errors.js'
 
 const BlobId = getEncoding('@cero/blob-id')
 
-// type/subtype as RFC 9110 tokens, parameters in printable ASCII: the type is served as a header
-const TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
-const MEDIA_TYPE = new RegExp(`^${TOKEN}/${TOKEN}(;[ -~]*)?$`)
+// a type is served as a header, where anything but printable ASCII breaks it
+const PRINTABLE = /^[ -~]*$/
+
+/**
+ * Refuse a type a new file id cannot carry: one that is not printable text.
+ *
+ * @param {unknown} type
+ */
+export function checkType(type) {
+  if (typeof type !== 'string' || !PRINTABLE.test(type)) {
+    throw CeroError.INVALID('a file type is printable text')
+  }
+}
+
+/**
+ * The type to serve a file with: one an earlier build stored that a header cannot carry is left out.
+ *
+ * @param {string} type
+ * @returns {string}
+ */
+export function servedType(type) {
+  return PRINTABLE.test(type) ? type : ''
+}
 
 /**
  * Encode a coreKey + raw hyperblobs blobId + type into a durable string id.
@@ -27,6 +47,7 @@ const MEDIA_TYPE = new RegExp(`^${TOKEN}/${TOKEN}(;[ -~]*)?$`)
  * @returns {string}
  */
 export function encodeId(coreKey, blobId, type) {
+  checkType(type)
   return z32.encode(c.encode(BlobId, { coreKey, ...blobId, type }))
 }
 
@@ -53,6 +74,5 @@ export function decodeId(id) {
     throw CeroError.INVALID('id is malformed')
   }
   const { coreKey, blockOffset, blockLength, byteOffset, byteLength, type } = v
-  if (type !== '' && !MEDIA_TYPE.test(type)) throw CeroError.INVALID('id has no media type')
   return { coreKey, blobId: { blockOffset, blockLength, byteOffset, byteLength }, type }
 }

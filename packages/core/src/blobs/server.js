@@ -1,5 +1,5 @@
 import BlobServer from 'hypercore-blob-server'
-import { decodeId } from './index.js'
+import { decodeId, servedType } from './codec.js'
 
 /**
  * @typedef {{ key: Buffer, encryptionKey: Buffer | null }} Resolved
@@ -39,7 +39,7 @@ export class FileServer {
    */
   getLink(id) {
     const { coreKey, blobId, type } = decodeId(id)
-    return this.server.getLink(coreKey, { blob: blobId, type })
+    return this.server.getLink(coreKey, { blob: blobId, type: servedType(type) })
   }
 
   async close() {

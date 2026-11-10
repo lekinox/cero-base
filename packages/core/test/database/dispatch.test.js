@@ -1695,13 +1695,13 @@ test('files: an id that is no file id is refused at apply, as a file row and in 
   await t.exception(db.put('messages', { text: 'y', photo: bad }), /REFUSED/, 'the writer hears it')
 })
 
-test('files: a media type that is not one is refused at apply', async (t) => {
+test('files: an id lands at apply whatever type it holds', async (t) => {
   const { db, as } = await withMember(t, 'member')
-  const bad = fileId('image/png\r\n')
-  t.is((await as('add-file', { id: bad }))?.code, 'REFUSED', 'a file row')
-  t.is((await as('set-profile', { photo: bad }))?.code, 'REFUSED', 'a t.file field')
-  t.absent((await db.get('files', bad)).data)
-  t.is(await as('add-file', { id: fileId('') }), null, 'an empty type lands: the server picks one')
+  const old = fileId('image')
+  t.is(await as('add-file', { id: old }), null, 'a file row an earlier build made')
+  t.is(await as('set-profile', { photo: old }), null, 'in a t.file field')
+  t.is(await as('set-profile', { name: 'b', photo: old }), null, 'and a merge that carries it')
+  t.is((await db.get('profile')).data.name, 'b')
 })
 
 test('escalation: a self-admission cannot move a seated writer to another identity', async (t) => {
