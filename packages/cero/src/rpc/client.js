@@ -5,7 +5,7 @@ import { CeroError } from '@cero-base/core/errors'
 import { checkFields, checkRequired } from '@cero-base/core/utils'
 import c from 'compact-encoding'
 import z32 from 'z32'
-import { decodeId } from '@cero-base/core/blobs/codec'
+import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 
 import { Ref } from '../lib/refs.js'
 import { follow } from './push.js'
@@ -114,9 +114,10 @@ const operators = {
     const base = root._fileBase || ''
     const token = root._fileToken || ''
     const { coreKey, blobId, type } = decodeId(id)
+    const served = servedType(type)
     const key = z32.encode(coreKey)
     const blob = z32.encode(c.encode(blobIdEnc, blobId))
-    const tp = type ? `&type=${encodeURIComponent(type)}` : ''
+    const tp = served ? `&type=${encodeURIComponent(served)}` : ''
     const tok = token ? `&token=${token}` : ''
     return `${base}/?key=${key}&blob=${blob}${tp}${tok}`
   },

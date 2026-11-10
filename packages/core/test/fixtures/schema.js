@@ -3,13 +3,15 @@ import { schema, t } from '@cero-base/core/schema'
 export default schema({
   profile: t.single({
     name: t.string,
-    avatar: t.bytes
+    avatar: t.bytes,
+    photo: t.file
   }),
 
   messages: t.collection(
     {
       text: t.string,
-      attachment: t.bytes
+      attachment: t.bytes,
+      photo: t.file
     },
     { indexes: { 'by-text': ['text'] }, push: true }
   ),

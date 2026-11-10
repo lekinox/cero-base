@@ -82,12 +82,15 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
 
     const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
     const version = await contract(next, dirs, [main, ...Object.values(handles)])
+    // what a write means to Cero: a view applied under older rules applies its log again
+    const rules = internal.contract.version
     const meta = {
       ...main.meta,
       version,
+      rules,
       local: local.meta,
       handles: Object.fromEntries(
-        Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version }])
+        Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version, rules }])
       )
     }
 

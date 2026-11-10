@@ -157,7 +157,7 @@ and take `{ signal }` as a third argument. Hooks fire on the builtins too, such 
 
 The `cero.` operators throw inside a hook: use the ones on ctx. `ctx.put` mints the same id on
 every device, `ctx.set` needs an id on a collection, and `ctx.get` returns `t.file` fields as bare
-ids. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
+ids. A row written through ctx carries the time of the write that ran the hook. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
 not make refuses the whole write: a hook that writes on every join checks `ctx.role` first, or a
 reader's join is refused. A hook reads only ctx, never a clock, random numbers or local state, or
 devices store different rows; the writing device runs it twice, to check the write and to store it.
@@ -210,8 +210,9 @@ const { data: file } = await cero.put(me.files, {
 ```
 
 The root and every handle have a `files` builtin. `data` is bytes, or a Readable in the worker
-process; `type` is required, `name` optional. To put a file on a row, store its id in a `t.file`
-field, which reads back as `{ id, type, size, url }`:
+process; `type` is required, a media type such as `image/jpeg` in printable ASCII, `name`
+optional. To put a file on a row, store its id in a `t.file` field, which reads back as
+`{ id, type, size, url }`:
 
 ```js
 // room from cero.open(me.room), bytes a Buffer of the photo
@@ -225,7 +226,7 @@ const { data: messages } = await cero.get(room.messages) // messages[0].photo.ur
   the row again for a fresh url.
 - A `t.file` field resolves only for a file in the same handle's `files`, or the root's for a root
   row: to use a file in another handle, put its bytes there. profileSync and handleSync do that for
-  a `t.file` avatar. A string that is not a file id makes every read of that row throw `INVALID`.
+  a `t.file` avatar. A string that is not a file id is refused: the write rejects with `REFUSED`.
 - Files have no timestamps, they read `0`: order them by `index`.
 - `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
   admin or an owner deletes one.

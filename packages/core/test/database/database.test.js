@@ -1,6 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import z32 from 'z32'
+import c from 'compact-encoding'
 import { Readable } from 'streamx'
 
 import { Database } from '../../src/database/index.js'
@@ -666,13 +667,44 @@ test('call: rows an action hook writes get the same ids on every peer', async (t
   await waitForConnection(a.network)
   await waitForConnection(b.network)
   await a.db.call('promote', { memberId: 'm', role: 'admin' })
+  await a.db.call('promote', { memberId: 'm', role: 'admin' })
   const onA = (await a.db.get('notes')).data
   const onB = await waitFor(async () => {
     const { data } = await b.db.get('notes')
     return data.length === onA.length ? data : null
   })
-  t.is(onA.length, 1)
-  t.alike(onB, onA, 'identical row, id included, derived independently on B')
+  t.is(onA.length, 2)
+  t.alike(onB, onA, 'identical rows, ids included, derived independently on B')
+})
+
+test('call: the same action called twice derives two rows', async (t) => {
+  const db = await teamDb(t, {
+    promote: ({ row, put }) => put('notes', { text: `promoted ${row.memberId}` })
+  })
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  const { data } = await db.get('notes')
+  t.is(data.length, 2, 'a repeat mints a new id')
+})
+
+test('call: rows an action derives carry the time of its op', async (t) => {
+  const db = await teamDb(t, { promote: ({ row, put }) => put('notes', { text: row.memberId }) })
+  const before = Date.now()
+  await db.call('promote', { memberId: 'm', role: 'admin' })
+  const { data } = await db.get('notes')
+  t.ok(data[0].createdAt >= before && data[0].createdAt <= Date.now(), 'created at the op')
+  t.is(data[0].updatedAt, data[0].createdAt)
+})
+
+test('after("del"): a derived row carries the time of the delete, not of the deleted row', async (t) => {
+  const db = await teamDb(t, {
+    del: ({ name, id, put }) => (name === 'notes' ? put('messages', { text: id }) : undefined)
+  })
+  await db.write([['add-notes', { id: 'old', text: 'x', createdAt: 1, updatedAt: 1 }]])
+  const before = Date.now()
+  await db.del('notes', 'old')
+  const { data } = await db.get('messages')
+  t.ok(data[0].createdAt >= before, 'stamped at the delete')
 })
 
 test('call: an action hook cannot raise its caller’s role, ctx writes run the rank rules', async (t) => {
@@ -1537,15 +1569,16 @@ test('a ctx.put over an id keeps createdAt and ignores the timestamps it passes'
     if (ctx.name !== 'messages') return
     return ctx.put('records', { id: 'r', text: ctx.row.text, createdAt: 1, updatedAt: 1 })
   })
-  const { data: m1 } = await db.put('messages', { text: 'a' })
+  await db.put('messages', { text: 'a' })
   const { data: first } = await db.get('records', 'r')
-  t.is(first.createdAt, m1.updatedAt, 'stamped from its op, not by the hook')
+  t.not(first.createdAt, 1, 'stamped at its op, not by the hook')
 
-  await waitFor(() => Date.now() > m1.updatedAt)
-  const { data: m2 } = await db.put('messages', { text: 'b' })
+  // a row whose own times are long gone: the derived one takes the time its node was written
+  const before = Date.now()
+  await db.write([['add-messages', { id: 'm2', text: 'b', createdAt: 5, updatedAt: 5 }]])
   const { data: second } = await db.get('records', 'r')
   t.is(second.createdAt, first.createdAt, 'createdAt is when the id was first written')
-  t.is(second.updatedAt, m2.updatedAt, 'updatedAt is its op’s')
+  t.ok(second.updatedAt >= before, 'updatedAt is its node’s time, not the row’s')
 })
 
 test('a ctx write is held to the fields as a direct write is', async (t) => {
@@ -2956,6 +2989,43 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
   )
   const { data: after } = await again.put('messages', { text: 'after' })
   t.ok((await again.get('messages', after.id)).data, 'and the device writes again')
+})
+
+test('gate: a view applied under older rules applies its log again, once', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'old' })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  // the ids of the messages a hook saw while the database opened under these rules
+  const open = async (rules) => {
+    const seen = []
+    const meta = { ...spec.meta, rules }
+    const again = new Database({
+      store,
+      identity,
+      spec: { ...spec, meta },
+      key,
+      keyPair,
+      encryptionKey
+    })
+    again.after('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.id)))
+    await again.ready()
+    await again.close()
+    return seen
+  }
+  const rules = spec.meta.rules
+  t.ok(rules > 0, 'the build stamps its rules')
+  t.alike(await open(rules), [], 'the same rules apply nothing again')
+  t.alike(await open(rules + 1), [row.id], 'newer rules apply the old write again')
+  t.alike(await open(rules + 1), [], 'and only the first time')
+
+  // a view built before the marker held its rules
+  const old = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  await old.ready()
+  await old.bee.local.setUserData('cero/view', c.encode(c.uint, spec.database.versions.db))
+  await old.close()
+  t.alike(await open(rules), [row.id], 'a marker with no rules counts as the oldest')
 })
 
 test('gate: a database rebuilt past skipped ops still leaves its topic on close', async (t) => {

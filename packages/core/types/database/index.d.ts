@@ -31,6 +31,7 @@ export type DatabaseOpts = {
         meta?: {
             ns?: string;
             version?: number;
+            rules?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -156,7 +157,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
- * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -211,6 +212,7 @@ export declare class Database extends ReadyResource {
         meta?: {
             ns?: string;
             version?: number;
+            rules?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -220,6 +222,7 @@ export declare class Database extends ReadyResource {
     meta: {
         ns?: string;
         version?: number;
+        rules?: number;
         refs?: Record<string, {
             kind?: string;
             verb?: string;
@@ -231,6 +234,7 @@ export declare class Database extends ReadyResource {
         verb?: string;
     }>;
     version: number;
+    rules: number;
     /** @type {number | null} */
     behind: number | null;
     /** @private */

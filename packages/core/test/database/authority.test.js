@@ -162,6 +162,50 @@ test('a grant counts only for a member who writes: a reader is refused, whatever
   t.is(await roleOf(db, target.id), 'member')
 })
 
+test('a grant counts for who wrote, not for what a rule wrote on ctx', async (t) => {
+  const target = someone('member')
+  const { db } = await withRole(t, 'reader', { members: [target] })
+  const posing = (ctx) => {
+    if (ctx.name !== 'members') return
+    ctx.role = 'admin'
+    return 'grant'
+  }
+  db.before('del', posing)
+  db.before('set', posing)
+  await t.exception(db.del('members', target.id), /REFUSED/)
+  await t.exception(db.set('members', { id: target.id, role: 'admin' }), /REFUSED/)
+  t.is(await roleOf(db, target.id), 'member')
+})
+
+test('a rule that throws refuses a removal and a re-rank, and the member stays as she was', async (t) => {
+  const peer = someone('member')
+  const { db } = await withRole(t, 'owner', { members: [peer] })
+  const broken = (ctx) => {
+    if (ctx.name === 'members') throw new Error('broken rule')
+  }
+  db.before('del', broken)
+  db.before('set', broken)
+  const removed = await db.del('members', peer.id).catch((err) => err)
+  t.is(removed?.rule, 'hook', 'the removal is refused by the hook')
+  const reranked = await db.set('members', { id: peer.id, role: 'admin' }).catch((err) => err)
+  t.is(reranked?.rule, 'hook', 'and the re-rank')
+  t.is(await roleOf(db, peer.id), 'member')
+})
+
+test('a rule that rewrites the row of a re-rank changes the row that lands', async (t) => {
+  const peer = someone('member', 'peer')
+  const { db } = await withRole(t, 'owner', { members: [peer] })
+  db.before('set', (ctx) => {
+    if (ctx.name === 'members' && ctx.row.role !== ctx.existing.role) {
+      ctx.row = { ...ctx.row, name: 'promoted' }
+    }
+  })
+  await db.set('members', { id: peer.id, role: 'admin' })
+  const { data } = await db.get('members', peer.id)
+  t.is(data.role, 'admin')
+  t.is(data.name, 'promoted', 'the rewritten row landed')
+})
+
 test('a rank cero has no name for is refused, granted or not', async (t) => {
   const target = someone('member')
   const { db } = await withRole(t, 'owner', { members: [target] })

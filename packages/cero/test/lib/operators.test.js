@@ -263,6 +263,17 @@ test('open: an argument it does not know is INVALID, never a new handle', async 
   t.is((await get(me.team)).data.length, 2)
 })
 
+test('put(files): a type that is no printable text is INVALID, and no byte is stored', async (t) => {
+  const { me } = await ceroOpen(t)
+  await me.blobs.ready()
+  const length = me.blobs.core.length
+  for (const type of ['image/png\r\n', undefined]) {
+    const err = await put(me.files, { data: b4a.from('x'), type }).catch((err) => err)
+    t.is(err?.code, 'INVALID', JSON.stringify(type))
+  }
+  t.is(me.blobs.core.length, length, 'the blob core did not grow')
+})
+
 // two devices of two people on one testnet, and an address only the second can open
 async function mailPair(t) {
   const { me: a, testnet, dir: dirA } = await ceroOpen(t)

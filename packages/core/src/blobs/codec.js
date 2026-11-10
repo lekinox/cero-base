@@ -14,6 +14,30 @@ import { CeroError } from '../lib/errors.js'
 
 const BlobId = getEncoding('@cero/blob-id')
 
+// a type is served as a header, where anything but printable ASCII breaks it
+const PRINTABLE = /^[ -~]*$/
+
+/**
+ * Refuse a type a new file id cannot carry: one that is not printable text.
+ *
+ * @param {unknown} type
+ */
+export function checkType(type) {
+  if (typeof type !== 'string' || !PRINTABLE.test(type)) {
+    throw CeroError.INVALID('a file type is printable text')
+  }
+}
+
+/**
+ * The type to serve a file with: one an earlier build stored that a header cannot carry is left out.
+ *
+ * @param {string} type
+ * @returns {string}
+ */
+export function servedType(type) {
+  return PRINTABLE.test(type) ? type : ''
+}
+
 /**
  * Encode a coreKey + raw hyperblobs blobId + type into a durable string id.
  *
@@ -23,6 +47,7 @@ const BlobId = getEncoding('@cero/blob-id')
  * @returns {string}
  */
 export function encodeId(coreKey, blobId, type) {
+  checkType(type)
   return z32.encode(c.encode(BlobId, { coreKey, ...blobId, type }))
 }
 

@@ -23,6 +23,7 @@ import { genId } from '../../src/lib/ids.js'
 import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { Invite } from '../../src/pairing/invite.js'
+import { encodeId } from '../../src/blobs/codec.js'
 import { spec } from '../fixtures/spec/index.js'
 
 test.configure({ timeout: 60000 })
@@ -261,6 +262,66 @@ test('del-member: the last owner of a room others are in cannot leave it', async
   t.is((await db.get('members', identity.id)).data?.role, 'owner', 'still the owner')
 })
 
+test('del-member: every row one removal drops derives a row of its own', async (t) => {
+  const { db } = await withRole(t, 'owner', {
+    after: { del: ({ name, id, put }) => put('messages', { text: `gone ${name} ${id}` }) }
+  })
+  const other = await Identity.create()
+  const tx = db.view.transaction()
+  const ts = Date.now()
+  const member = { id: other.id, key: crypto.randomBytes(32), role: 'member', createdAt: ts }
+  await tx.insert(`@${db.ns}/members`, member)
+  for (let i = 0; i < 2; i++) {
+    const id = hid.encode(crypto.randomBytes(32))
+    const device = { id, memberId: other.id, createdAt: ts, key: crypto.randomBytes(32) }
+    await tx.insert(`@${db.ns}/devices`, device)
+  }
+  const value = db.spec.dispatch.encode(`@${db.ns}/del-member`, { id: other.id })
+  const ctx = { view: tx, host: noHost, key: db.writerKey, dbKey: db.key, seed: crypto.hash(value) }
+  await db.dispatcher.dispatch(value, ctx)
+  const rows = await tx.find(`@${db.ns}/messages`, {}).toArray()
+  await tx.close()
+  t.is(rows.length, 3, 'two devices and the member, a row each')
+})
+
+test('mint: a derived row never lands on an id another member already wrote', async (t) => {
+  const victim = await second('member')
+  const squatter = await second('member')
+  const { db } = await withRole(t, 'owner', {
+    members: [victim.row, squatter.row],
+    after: {
+      put: ({ name, put }) =>
+        name === 'messages' ? put('records', { text: 'derived' }) : undefined
+    }
+  })
+  const value = db.spec.dispatch.encode(`@${db.ns}/add-messages`, {
+    id: 'mine',
+    text: 'hi',
+    createdAt: 2,
+    updatedAt: 2
+  })
+  const seed = crypto.hash(value)
+  const next = z32.encode(crypto.hash([seed, c.encode(c.uint, 0)]).subarray(0, 16))
+  await seat(db, squatter)
+  const squat = { id: next, text: 'squat', createdAt: 1, updatedAt: 1 }
+  t.is(await apply(db, squatter.writer.publicKey, 'add-records', squat), null, 'the squat lands')
+
+  await seat(db, victim)
+  const tx = db.view.transaction()
+  const ctx = { view: tx, host: noHost, key: victim.writer.publicKey, dbKey: db.key, seed }
+  const err = await db.dispatcher.dispatch(value, ctx).then(
+    () => null,
+    (err) => err
+  )
+  t.is(err?.code, undefined, 'the write is not refused')
+  t.ok(await tx.get(`@${db.ns}/messages`, { id: 'mine' }), 'and lands')
+  const rows = await tx.find(`@${db.ns}/records`, {}).toArray()
+  await tx.close()
+  const derived = rows.find((r) => r.text === 'derived')
+  t.ok(derived, 'with its derived row')
+  t.not(derived?.id, next, 'under another id')
+})
+
 // ─── del-writer: removal hierarchy + self-removal ─────────────────────────
 
 function delWriterOp(writer) {
@@ -314,6 +375,67 @@ test("del-writer: a removed device's key stays out: no new writer, no device it 
   const join = joinOp(db, invite, { identity: phone.identity, writer })
   t.is(await apply(db, writer, 'join', join), null)
   t.is((await refusal(db, hid.encode(writer)))?.reason, 'removed', 'a join by it is turned away')
+})
+
+// a host that keeps the writers apply adds and removes
+function recording() {
+  const calls = []
+  return {
+    calls,
+    addWriter: async (key) => void calls.push(['add', hid.encode(key)]),
+    removeWriter: async (key) => void calls.push(['remove', hid.encode(key)])
+  }
+}
+
+test('del-writer: a writer with no device row is unseated by one who may remove, and no one else', async (t) => {
+  const stray = Identity.randomKeyPair().publicKey
+  const { db } = await withMember(t, 'member')
+  const host = recording()
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(stray), host), null)
+  t.alike(host.calls, [['remove', hid.encode(stray)]], 'the owner takes the seat')
+
+  const { db: member } = await withRole(t, 'member')
+  const refused = recording()
+  const err = await apply(member, member.writerKey, 'del-writer', delWriterOp(stray), refused)
+  t.is(err?.code, 'REFUSED', 'a member may not')
+  t.alike(refused.calls, [])
+})
+
+test('del-device: an unknown id is nothing, and another member device is not a member to take', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const host = recording()
+  t.is(await apply(db, db.writerKey, 'del-device', { id: genId() }, host), null, 'unknown')
+  t.alike(host.calls, [], 'no seat moves')
+
+  const owner = hid.encode(db.writerKey)
+  t.is((await as('del-device', { id: owner }))?.code, 'REFUSED', "the owner's device")
+  t.ok((await db.get('devices', owner)).data, 'stays')
+})
+
+test('del-member: a rule on a removal sees her devices, and a refused one leaves them and her seat', async (t) => {
+  const { db, id, writer, member } = await withMember(t, 'member')
+  await seat(db, { identity: member, writer })
+  const seen = []
+  let refuse = true
+  db.before('del', async (ctx) => {
+    if (ctx.name !== 'members') return
+    const { data } = await ctx.get('devices')
+    seen.push(data.filter((d) => d.memberId === id).length)
+    return refuse ? false : undefined
+  })
+  const host = recording()
+  const err = await apply(db, db.writerKey, 'del-member', { id }, host)
+  t.is(err?.rule, 'hook', 'refused')
+  t.ok((await db.get('devices', writer.id)).data, 'her device stays')
+  t.alike(host.calls, [], 'and her seat')
+
+  refuse = false
+  t.is(await apply(db, db.writerKey, 'del-member', { id }, host), null)
+  t.alike(seen, [1, 1], 'each time the rule saw her device')
+  t.ok(
+    host.calls.some(([op, key]) => op === 'remove' && key === writer.id),
+    'then she is unseated'
+  )
 })
 
 test("del-device: a member cannot remove another member's device; its own it can", async (t) => {
@@ -570,6 +692,29 @@ test('set-member: a member cannot rename another member or overwrite their key',
   const { data: after } = await db.get('members', identity.id)
   t.is(after.name, before.name, 'the name is untouched')
   t.alike(after.key, before.key, 'and so is the key the member was admitted with')
+})
+
+test('set-member: on another member row with no change of role nothing lands and no rule runs', async (t) => {
+  const b = await second('member')
+  const { db, identity } = await withRole(t, 'owner', { members: [b.row] })
+  await seat(db, b)
+  let ran = 0
+  db.before('set', (ctx) => {
+    if (ctx.name === 'members') ran++
+  })
+  const { data: before } = await db.get('members', identity.id)
+  const touch = { id: identity.id, key: before.key, role: 'owner', updatedAt: before.updatedAt + 5 }
+
+  await apply(db, b.writer.publicKey, 'set-member', touch)
+  await apply(db, Identity.randomKeyPair().publicKey, 'set-member', touch)
+
+  const { data: after } = await db.get('members', identity.id)
+  t.is(
+    after.updatedAt,
+    before.updatedAt,
+    'her row keeps its time, from a member and from a core with no seat'
+  )
+  t.is(ran, 0, 'and no rule on members ran')
 })
 
 test('set-member: a member may still rename itself', async (t) => {
@@ -1392,16 +1537,23 @@ test('set-member: demoting below WRITE revokes the writer seat', async (t) => {
 
 // ─── add-file: WRITE gate ─────────────────────────────────────────────────
 
+const fileId = (type = 'text/plain') =>
+  encodeId(
+    crypto.randomBytes(32),
+    { blockOffset: 0, blockLength: 1, byteOffset: 0, byteLength: 2 },
+    type
+  )
+
 test('add-file: a reader cannot add a file', async (t) => {
   const { db } = await withRole(t, 'reader')
-  const id = genId()
+  const id = fileId()
   await t.exception(db.call('add-file', { id, name: 'shot.png' }), /REFUSED/)
   t.absent((await db.get('files', id)).data, 'a reader has no WRITE — add-file rejected')
 })
 
 test('add-file: a member (WRITE) can add a file', async (t) => {
   const { db, identity } = await withRole(t, 'member')
-  const id = genId()
+  const id = fileId()
   await db.call('add-file', { id, name: 'shot.png' })
   const { data } = await db.get('files', id)
   t.ok(data, 'a member with WRITE added the file row')
@@ -1749,13 +1901,44 @@ test('add-member: an id that is not an identity is refused, even at genesis', as
 
 test('files: a member cannot overwrite or drop another member file record', async (t) => {
   const { db, as } = await withMember(t, 'member')
-  await db.call('add-file', { id: 'f', name: 'scan.pdf', stamp: 1 })
-  t.is((await as('add-file', { id: 'f', name: 'x', stamp: 9 }))?.code, 'REFUSED')
-  t.is((await as('set-file', { id: 'f', name: 'x', stamp: 9 }))?.code, 'REFUSED')
-  t.is((await as('del-file', { id: 'f' }))?.code, 'REFUSED')
-  const { data } = await db.get('files', 'f')
+  const id = fileId()
+  await db.call('add-file', { id, name: 'scan.pdf', stamp: 1 })
+  t.is((await as('add-file', { id, name: 'x', stamp: 9 }))?.code, 'REFUSED')
+  t.is((await as('set-file', { id, name: 'x', stamp: 9 }))?.code, 'REFUSED')
+  t.is((await as('del-file', { id }))?.code, 'REFUSED')
+  const { data } = await db.get('files', id)
   t.is(data.name, 'scan.pdf')
   t.is(data.stamp, 1)
+})
+
+test('files: an id that is no file id is refused at apply, as a file row and in a t.file field', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const bad = 'not-a-file-id'
+  const row = { id: 'm', text: 'x', createdAt: 1, updatedAt: 1 }
+  t.is((await as('add-file', { id: bad }))?.code, 'REFUSED', 'a file row')
+  t.is((await as('add-file', { id: '' }))?.code, 'REFUSED', 'an empty one')
+  t.is((await as('add-messages', { ...row, photo: bad }))?.code, 'REFUSED', 'a collection field')
+  t.is((await as('set-profile', { photo: bad }))?.code, 'REFUSED', 'a single field')
+  t.absent((await db.get('files', bad)).data)
+  t.absent((await db.get('messages', 'm')).data)
+  t.absent((await db.get('profile')).data)
+
+  const good = fileId()
+  t.is(await as('add-file', { id: good }), null, 'a file id lands')
+  t.is(await as('add-messages', { ...row, photo: good }), null, 'in a field too')
+  t.is(await as('add-messages', { ...row, id: 'n' }), null, 'and a field left out')
+  t.is((await as('set-messages', { id: 'm', photo: bad }))?.code, 'REFUSED', 'an edit to one')
+  t.is((await db.get('messages', 'm')).data.photo, good)
+  await t.exception(db.put('messages', { text: 'y', photo: bad }), /REFUSED/, 'the writer hears it')
+})
+
+test('files: an id lands at apply whatever type it holds', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const old = fileId('image')
+  t.is(await as('add-file', { id: old }), null, 'a file row an earlier build made')
+  t.is(await as('set-profile', { photo: old }), null, 'in a t.file field')
+  t.is(await as('set-profile', { name: 'b', photo: old }), null, 'and a merge that carries it')
+  t.is((await db.get('profile')).data.name, 'b')
 })
 
 test('escalation: a self-admission cannot move a seated writer to another identity', async (t) => {
