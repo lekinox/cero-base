@@ -226,14 +226,20 @@ export class Database extends ReadyResource {
     })
 
     const known = !!this.key
-    await this._boot()
-    const replayed = await this._replay()
-    if (replayed) await this._boot()
+    try {
+      await this._boot()
+      const replayed = await this._replay()
+      if (replayed) await this._boot()
 
-    // before replication can deliver blocks at epochs we haven't learned yet
-    await this.rotation.hydrate()
-    // epochs handed over at join are sealed to nobody this device can read later: keep them
-    if (this._delivered) await this.rotation._save()
+      // before replication can deliver blocks at epochs we haven't learned yet
+      await this.rotation.hydrate()
+      // epochs handed over at join are sealed to nobody this device can read later: keep them
+      if (this._delivered) await this.rotation._save()
+    } catch (err) {
+      // ready-resource runs no _close for an open that failed
+      await this._close().catch(safetyCatch)
+      throw err
+    }
 
     // REMOVE-capable devices re-key when the epoch drifts from the member set
     this.on('update', () => this.rotation.heal())
@@ -805,9 +811,9 @@ export class Database extends ReadyResource {
     })
     // swarm BEFORE boot so the boot has peers to pull from, not a cold open
     if (this.network && this.key) this._joinSwarm(bee, crypto.discoveryKey(this.key))
-    await bee.ready()
-    // apply-time hooks (rotation.learn, _onfuture) must never see this.bee null mid-drain
+    // apply-time hooks (rotation.learn, _onfuture) must never see this.bee null mid-drain, and a failed open closes it
     this.bee = bee
+    await bee.ready()
     this.key = bee.key
     await bee.update()
   }
