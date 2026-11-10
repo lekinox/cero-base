@@ -204,14 +204,23 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   }
 
   // hooks run inside the op's transaction on every peer, so their verdict is part of the op.
-  // Resolves to the row that landed, which a before hook may have changed
-  async function hooked(fns, { op, name, id = null, row = null, existing = null }, ctx, write) {
+  // Resolves to the row that landed, which a before hook may have changed. With a `rule`, a
+  // member's removal or change of rank: her rank allows it, as `meta.ranked` says, or a rule on
+  // members answers 'grant' (never a bare true, every rule's "no objection"), and a false refuses
+  // either. Decided before anything moves, so a refusal leaves her as she was
+  async function hooked(fns, meta, ctx, write, rule = null) {
     if (!fns) {
-      await write(row)
-      return row
+      if (rule && !meta.ranked) throw CeroError.REFUSED(rule)
+      await write(meta.row)
+      return meta.row
     }
-    const hctx = { op, name, row, existing, id, ...(await author(ctx)), ...operators(ctx) }
-    await fire(fns.before, hctx, true)
+    const base = { id: null, row: null, existing: null, ...meta }
+    const hctx = { ...base, ...(await author(ctx)), ...operators(ctx) }
+    const granted = await fire(fns.before, hctx, true)
+    // a grant widens rank among the room's writers only: never for a reader, nor for someone who
+    // is no member at all
+    const grant = granted && Boolean(hctx.memberId) && can(hctx.role, WRITE)
+    if (rule && !meta.ranked && !grant) throw CeroError.REFUSED(rule)
     await write(hctx.row)
     // once every row of the op landed: a join's after hooks write as a member
     ctx.later.push(async () => {
@@ -244,52 +253,10 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     await hooked(existing ? fns : null, meta, ctx, () => ctx.view.delete(col(name), { id }))
   }
 
-  // Who may remove a member, or change one's rank: by default her rank, as `ranked` says. An app's
-  // rule on members may grant what rank alone refuses, by answering 'grant' (never a bare true,
-  // which every rule answers for "no objection"), and refuse what rank allows, by answering false.
-  // Decided before anything moves, so a refusal leaves the member as she was. Resolves to what
-  // `landed` needs to fire the after hooks once the change lands
-  async function decide(ctx, op, { row = null, existing, ranked }, refusal) {
-    const fns = pick(op, ctx)
-    const hctx = {
-      op,
-      name: 'members',
-      row,
-      existing,
-      id: existing.id,
-      ranked,
-      ...(await author(ctx)),
-      ...operators(ctx)
-    }
-    // a grant widens rank among the room's writers only: never for a reader, nor for someone who
-    // is no member at all
-    const canGrant = Boolean(hctx.memberId) && can(hctx.role, WRITE)
-    let granted = false
-    for (const fn of fns?.before ?? []) {
-      let verdict
-      try {
-        verdict = await fn(hctx)
-      } catch (err) {
-        throw CeroError.REFUSED('hook', err.message)
-      }
-      if (verdict === false) throw CeroError.REFUSED('hook')
-      if (verdict === 'grant' && canGrant) granted = true
-    }
-    if (!ranked && !granted) throw refusal()
-    return { fns, hctx }
-  }
-
-  // a change decide judged: its before hooks already ran, its after hooks fire once it landed
-  function landed(ctx, { fns, hctx }) {
-    if (!fns) return
-    ctx.later.push(async () => {
-      Object.assign(hctx, await author(ctx))
-      await fire(fns.after, hctx, false)
-    })
-  }
-
-  // a rule that errors must not diverge peers: a throw refuses exactly like a false verdict
+  // a rule that errors must not diverge peers: a throw refuses exactly like a false verdict.
+  // Resolves to whether one granted
   async function fire(fns, hctx, vote) {
+    let granted = false
     for (const fn of fns) {
       let verdict
       try {
@@ -298,7 +265,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         throw CeroError.REFUSED('hook', err.message)
       }
       if (vote && verdict === false) throw CeroError.REFUSED('hook')
+      if (verdict === 'grant') granted = true
     }
+    return granted
   }
 
   // a demoted member keeps its writer seat, so rows are gated by role; a writer with no
@@ -379,17 +348,21 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     await seat(ctx, op.writer, memberId, op.ts || 0, signed.device)
   })
 
-  add('del-writer', async (op, ctx) => {
-    if (!isKey(op.writer)) return
-    const target = await getDevice(ctx.view, hid.encode(op.writer))
-    if (target?.memberId !== (await getSignerMember(ctx.view, ctx.key))) {
-      if (!(await canRemoveMember(ctx.view, ctx.key, target?.memberId))) {
+  // a device goes with its seat and its key: by its own member, or one who may remove her
+  async function unseat(ctx, id, device) {
+    if (device?.memberId !== (await getSignerMember(ctx.view, ctx.key))) {
+      if (!(await canRemoveMember(ctx.view, ctx.key, device?.memberId))) {
         throw CeroError.REFUSED('remove')
       }
     }
-    await ctx.host.removeWriter(op.writer)
-    await revoke(ctx, target)
-    await drop(ctx, 'devices', hid.encode(op.writer))
+    await ctx.host.removeWriter(hid.decode(id))
+    await revoke(ctx, device)
+    await drop(ctx, 'devices', id)
+  }
+  add('del-writer', async (op, ctx) => {
+    if (!isKey(op.writer)) return
+    const id = hid.encode(op.writer)
+    await unseat(ctx, id, await getDevice(ctx.view, id))
   })
 
   // a removed device's key, and any device it attests after, stays out: its chain is static, so
@@ -444,12 +417,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       const r = await getSignerRole(ctx.view, ctx.key)
       next.role = op.role
       const ranked = can(r, ASSIGN) && grants(r, op.role) && outranks(r, existing.role)
-      const decided = await decide(ctx, 'set', { row: next, existing, ranked }, () =>
-        CeroError.REFUSED('assign')
-      )
-      row = decided.hctx.row
-      await insert(ctx.view, 'members', row)
-      landed(ctx, decided)
+      const meta = { op: 'set', name: 'members', id: op.id, row: next, existing, ranked }
+      const write = (member) => insert(ctx.view, 'members', member)
+      row = await hooked(pick('set', ctx), meta, ctx, write, 'assign')
     } else {
       row = await save(ctx, 'set', 'members', next)
     }
@@ -467,10 +437,25 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   add('del-member', async (op, ctx) => {
     const existing = await getMember(ctx.view, op.id)
     if (!existing) return
-    let decided = null
     // leaving is hers: only someone else taking her out turns her older codes away
     const leaving = op.id === (await getSignerMember(ctx.view, ctx.key))
-    if (!leaving) {
+    // every device of the member goes with them, and any keys they were still owed
+    const vacate = async () => {
+      if (existing.key) await ctx.host.removeWriter(existing.key)
+      for (const device of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
+        if (device.memberId !== op.id) continue
+        await ctx.host.removeWriter(hid.decode(device.id))
+        await drop(ctx, 'devices', device.id)
+        await drop(ctx, 'requests', device.id)
+      }
+    }
+    if (leaving) {
+      if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
+        throw CeroError.INVALID('the last owner cannot leave: make another member an owner first')
+      }
+      await vacate()
+      await drop(ctx, 'members', op.id)
+    } else {
       // the last owner stays, whatever a rule grants: without her nobody outranks the rest
       if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
         throw CeroError.INVALID(
@@ -479,23 +464,12 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       }
       const r = await getSignerRole(ctx.view, ctx.key)
       const ranked = can(r, REMOVE) && outranks(r, existing.role)
-      decided = await decide(ctx, 'del', { existing, ranked }, () => CeroError.REFUSED('remove'))
-    } else if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
-      throw CeroError.INVALID('the last owner cannot leave: make another member an owner first')
-    }
-    if (existing.key) await ctx.host.removeWriter(existing.key)
-    // every device of the member goes with them, and any keys they were still owed
-    for (const device of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
-      if (device.memberId !== op.id) continue
-      await ctx.host.removeWriter(hid.decode(device.id))
-      await drop(ctx, 'devices', device.id)
-      await drop(ctx, 'requests', device.id)
-    }
-    if (decided) {
-      await ctx.view.delete(col('members'), { id: op.id })
-      landed(ctx, decided)
-    } else {
-      await drop(ctx, 'members', op.id)
+      const meta = { op: 'del', name: 'members', id: op.id, existing, ranked }
+      const write = async () => {
+        await vacate()
+        await ctx.view.delete(col('members'), { id: op.id })
+      }
+      await hooked(pick('del', ctx), meta, ctx, write, 'remove')
     }
     // an invite they could hold, or saw, does not bring them back on its own: after a removal it is turned away, after
     // leaving it waits for a member to accept her again, so leaving first never dodges a removal. Either row re-keys
@@ -537,16 +511,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   })
 
   add('del-device', async (op, ctx) => {
-    const existing = await getDevice(ctx.view, op.id)
-    if (!existing) return
-    if (existing.memberId !== (await getSignerMember(ctx.view, ctx.key))) {
-      if (!(await canRemoveMember(ctx.view, ctx.key, existing.memberId))) {
-        throw CeroError.REFUSED('remove')
-      }
-    }
-    await ctx.host.removeWriter(hid.decode(existing.id))
-    await revoke(ctx, existing)
-    await drop(ctx, 'devices', op.id)
+    const device = await getDevice(ctx.view, op.id)
+    if (device) await unseat(ctx, op.id, device)
   })
 
   // a device row is the writer→role mapping, so memberId never comes off the wire; a core no
