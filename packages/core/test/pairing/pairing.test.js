@@ -406,6 +406,46 @@ test('confirm: a join waits as a request until a member accepts it', async (t) =
   t.pass('the request settles once the joiner read its keys')
 })
 
+function stored(net, key) {
+  return net.store.storage.hasCore(crypto.discoveryKey(key))
+}
+
+// the key of the core an outbox row travels in, without opening it
+async function sentKey(net, { name }) {
+  const { publicKey } = await net.store.createKeyPair(name)
+  return Hypercore.key({ version: net.store.manifestVersion, signers: [{ publicKey }] })
+}
+
+test('confirm: junk sealed to the reply address leaves nothing on the joiner, the reply still lands', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const received = []
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => received.push(b4a.from(m.id, 'hex')) && put(m)
+  const invite = await host.pairing.invite({ confirm: true })
+  const writer = crypto.keyPair()
+  const joining = joiner.join(invite, { writer })
+  const request = await asked(host.db)
+
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const other = { status: STATUS_ACCEPTED, reason: '', key: crypto.randomBytes(32) }
+  const junk = []
+  for (const message of [b4a.from('no response'), c.encode(Response, other)]) {
+    await host.mailbox.send(reply, message)
+    junk.push(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+  }
+  await waitFor(async () => (await host.mailbox.outbox.list()).length === 0, { timeout: 30000 })
+  for (const key of junk) await waitFor(async () => !(await stored(joiner.net, key)))
+  t.pass('no core kept')
+  t.alike(await joiner.mailbox.inbox.list(), [], 'no row kept')
+
+  await host.pairing.accept(request.id)
+  t.alike((await joining).key, host.db.key, 'the real reply settles the join')
+  const key = received.find((k) => !junk.some((j) => b4a.equals(j, k)))
+  await waitFor(async () => !(await stored(joiner.net, key)))
+  t.pass('and its core is erased once the answer is kept')
+})
+
 test('link: a bare device joins, the accepter attests it, and the reply carries its chain', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await makeHost(t, testnet)

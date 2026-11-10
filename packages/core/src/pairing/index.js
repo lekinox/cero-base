@@ -380,6 +380,7 @@ export class Pairing extends ReadyResource {
       await keep(answer)
       done(answer)
     }
+    // anything else sealed to the reply address is turned away, so the inbox keeps none of it
     const onreply = async (message) => {
       const response = decode(Response, message)
       if (response?.status === STATUS_DENIED) {
@@ -387,6 +388,8 @@ export class Pairing extends ReadyResource {
       } else if (response?.key && b4a.equals(response.key, parsed.key)) {
         const { key, encryptionKey, epochs, proof = null } = response
         await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
+      } else {
+        return false
       }
     }
 
@@ -397,7 +400,7 @@ export class Pairing extends ReadyResource {
       keyPair: writer,
       manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
     })
-    const inbox = mailbox.receive(writer.secretKey, onreply)
+    const inbox = mailbox.receive(writer.secretKey, onreply, { keep: false })
     // the database pulls the join in like any optimistic append, from us or from a mirror
     const post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
 
