@@ -13,7 +13,7 @@ import { serve } from '../../src/rpc/server.js'
 import { connect, reserved as ui } from '../../src/rpc/client.js'
 import { bundled } from '../../src/extensions/index.js'
 import { fields } from '../../src/build/internal.js'
-import { rpc, contract } from '../../src/build/schemas.js'
+import { rpc, contract, main } from '../../src/build/schemas.js'
 import { makeTestnet } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -638,6 +638,55 @@ test('build: an unchanged rebuild with own is quiet', async (t) => {
   const { spec } = await importSpec(dir)
   t.is(spec.meta.refs.notes.own, true)
   t.is(spec.meta.version, 1, 'and the contract stays')
+})
+
+// the contract shapes only what is stored: the types the collections and routes name, never a
+// computed one or an RPC type that lingers in schema.json after a release dropped it
+async function contractOf(dir) {
+  return JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8')).version
+}
+
+async function typesOf(dir) {
+  return JSON.parse(await fs.readFile(join(dir, 'main/schema/schema.json'), 'utf-8')).schema
+}
+
+test('build: a field a Cero release adds to a computed type keeps the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-live', plain)
+  main.status.battery = probe.note
+  t.teardown(() => delete main.status.battery)
+  await build(dir, plain, { extensions: [] })
+  const status = (await typesOf(dir)).find((x) => x.name === 'status')
+  t.ok(
+    status.fields.some((f) => f.name === 'battery'),
+    'the computed type gained it'
+  )
+  t.is(await contractOf(dir), 1, 'but not the contract: nothing stored changed')
+})
+
+test('build: an RPC type a Cero release drops keeps the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-rpc-gone', plain)
+  rpc['req-gone'] = probe
+  t.teardown(() => delete rpc['req-gone'])
+  await build(dir, plain, { extensions: [] })
+  delete rpc['req-gone']
+  await build(dir, plain, { extensions: [] })
+  const kept = (await typesOf(dir)).some((x) => x.name === 'req-gone')
+  t.ok(kept, 'the dropped type stays in schema.json')
+  t.is(await contractOf(dir), 1, 'and the contract stays')
+})
+
+test('build: a field appended to a stored type at the root raises the contract', async (a) => {
+  const more = schema({ ...plain.defs, notes: t.collection({ text: t.string, tag: t.string }) })
+  const dir = await rebuilt(a, 'contract-root', plain, more)
+  a.is(await contractOf(dir), 2)
+})
+
+test('build: a field a Cero release adds to a stored builtin raises the contract', async (t) => {
+  const dir = await rebuilt(t, 'contract-builtin', plain)
+  main.member.probe = probe.note
+  t.teardown(() => delete main.member.probe)
+  await build(dir, plain, { extensions: [] })
+  t.is(await contractOf(dir), 2)
 })
 
 // an index added by a rebuild: the rows written before it must be found through it, so a reopen

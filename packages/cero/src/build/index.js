@@ -286,14 +286,18 @@ function owned(refs) {
   )
 }
 
-// what a spec directory stores: its types without the RPC ones, its collections and its routes
+// what a spec directory stores: its collections, its routes and the types they name. schema.json
+// also holds the computed and RPC types, and keeps every type it was ever given
 async function shapeOf(dir) {
   const read = async (rel) => JSON.parse(await fs.readFile(join(dir, rel), 'utf-8'))
-  const rpc = new Set(internal.types('rpc').map((type) => type.name))
   const { version: types, ...schema } = await read('schema/schema.json')
   const { version: db, ...collections } = await read('db/db.json')
   const { version: dispatch, ...routes } = await read('dispatch/dispatch.json')
-  schema.schema = schema.schema.filter((type) => !rpc.has(type.name))
+  const named = new Set([
+    ...collections.schema.map((x) => x.schema),
+    ...routes.schema.map((x) => x.requestType)
+  ])
+  schema.schema = schema.schema.filter((type) => named.has(`@${type.namespace}/${type.name}`))
   return { stored: [schema, collections, routes], versions: [types || 1, db || 1, dispatch || 1] }
 }
 
