@@ -258,6 +258,38 @@ test('receive: a member seated after the topics row was written is accepted, ref
   t.is(await cold(b.dir, spec, payload), null, 'and she does not')
 })
 
+// c is taken out of a room b holds, and b's handle or app closes in the same tick the removal applies there
+async function closedOnRemoval(t, close) {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet, linger: 0 })
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const mine = await open(b.me.team, await cero.invite(room))
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  const own = await pushOf(mine, room)
+  await waitUntil(async () => await receive(b.me, payload))
+
+  let closed = null
+  mine.store.on('update', (touched) => {
+    if (!closed && (touched.has('members') || touched.has('*'))) closed = close(b.me, mine)
+  })
+  await del(room.members, c.me.identity.id)
+  await waitUntil(() => !!closed)
+  await closed
+  t.is(await cold(b.dir, spec, payload), null, 'her push reads as nothing from the stored row')
+  t.ok(await cold(b.dir, spec, own), "b's own still does")
+}
+
+test('receive: a removal applied just before the handle closes is what its stored row keeps', (t) =>
+  closedOnRemoval(t, (me, room) => cero.close(room)))
+
+test('receive: a removal applied just before the app closes is what its stored row keeps', (t) =>
+  closedOnRemoval(t, (me) => me.close()))
+
 test('push: a write to a ref that declares no push sends nothing', async (t) => {
   const { gateway, room } = await scene(t)
   await put(room.notes, { text: 'quiet' })

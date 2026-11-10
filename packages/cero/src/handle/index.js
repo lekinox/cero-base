@@ -326,7 +326,10 @@ export class Handle extends ReadyResource {
 
     if (!root) {
       this.parent.children?.delete(this)
-      steps.push(() => this.store.close())
+      steps.push(
+        () => this.parent._seal(this).catch(this._onerror),
+        () => this.store.close()
+      )
     } else {
       const store = this.store.store
       steps.push(
@@ -614,17 +617,26 @@ export class Handle extends ReadyResource {
     return this._indexing
   }
 
+  // a handle on its way to closing writes the writers it last applied while its store still reads, so a removal that
+  // landed just before is kept; the root's local store closes after its handles
   /** @private */
-  async _reindex() {
-    if (this.closing || this.closed) return
+  _seal(child) {
+    const run = () => this._reindex(child)
+    this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
+    return this._indexing
+  }
+
+  /** @private */
+  async _reindex(last = null) {
+    if (this.closed || (this.closing && !last)) return
     const { data: handles } = await this.store.get('handles')
     const { data: rows } = await this.local.store.get('topics')
     const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
     const have = new Map(rows.map((row) => [row.id, row]))
     // an opened handle not adopted yet has its writers already: its row is written once
     const open = new Map(
-      [...this.children, ...this._pending]
-        .filter((child) => child.opened && !child.closing)
+      [...this.children, ...this._pending, last]
+        .filter((child) => child?.opened && (child === last || !child.closing))
         .map((child) => [b4a.toHex(child.store.discoveryKey), child])
     )
     for (const row of rows) {
