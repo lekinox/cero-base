@@ -1,6 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
 import z32 from 'z32'
+import c from 'compact-encoding'
 import { Readable } from 'streamx'
 
 import { Database } from '../../src/database/index.js'
@@ -2880,6 +2881,43 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
   )
   const { data: after } = await again.put('messages', { text: 'after' })
   t.ok((await again.get('messages', after.id)).data, 'and the device writes again')
+})
+
+test('gate: a view applied under older rules applies its log again, once', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'old' })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  // the ids of the messages a hook saw while the database opened under these rules
+  const open = async (rules) => {
+    const seen = []
+    const meta = { ...spec.meta, rules }
+    const again = new Database({
+      store,
+      identity,
+      spec: { ...spec, meta },
+      key,
+      keyPair,
+      encryptionKey
+    })
+    again.after('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.id)))
+    await again.ready()
+    await again.close()
+    return seen
+  }
+  const rules = spec.meta.rules
+  t.ok(rules > 0, 'the build stamps its rules')
+  t.alike(await open(rules), [], 'the same rules apply nothing again')
+  t.alike(await open(rules + 1), [row.id], 'newer rules apply the old write again')
+  t.alike(await open(rules + 1), [], 'and only the first time')
+
+  // a view built before the marker held its rules
+  const old = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  await old.ready()
+  await old.bee.local.setUserData('cero/view', c.encode(c.uint, spec.database.versions.db))
+  await old.close()
+  t.alike(await open(rules), [row.id], 'a marker with no rules counts as the oldest')
 })
 
 test('gate: a database rebuilt past skipped ops still leaves its topic on close', async (t) => {

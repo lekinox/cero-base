@@ -21,6 +21,7 @@ export { t, schema } from '@cero-base/core/schema'
  * @property {string} [ns]
  * @property {string} [type]     The handle type, on a handle's spec.
  * @property {number} [version]
+ * @property {number} [rules]    What a write means to Cero, raised by a release that changes it.
  * @property {Record<string, RefInfo>} refs
  * @property {{ refs: Record<string, RefInfo> }} [local]
  * @property {Record<string, SpecMeta>} [handles]

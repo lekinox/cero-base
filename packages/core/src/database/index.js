@@ -46,7 +46,7 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
- * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -112,6 +112,7 @@ export class Database extends ReadyResource {
     this.ns = this.meta.ns || NAMESPACE
     this.refs = this.meta.refs || {}
     this.version = this.meta.version || 1
+    this.rules = this.meta.rules || 1
     /** @type {number | null} */
     this.behind = null
     this.namespace = opts.namespace || NAMESPACE
@@ -813,8 +814,8 @@ export class Database extends ReadyResource {
   }
 
   // ops skipped as too new apply once this version caught up, and a view whose definition grew
-  // since it was built (an index added by a rebuild) fills from the log: wipe the boot record and
-  // reboot
+  // since it was built (an index added by a rebuild), or that was applied under older rules, fills
+  // from the log: wipe the boot record and reboot
   /** @private */
   async _replay() {
     const local = this.bee.local
@@ -823,8 +824,12 @@ export class Database extends ReadyResource {
     const caught = this.behind !== null && this.behind <= this.version
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
-    const grown = !!built && c.decode(c.uint, built) < db
-    if (!built || grown) await local.setUserData('cero/view', c.encode(c.uint, db))
+    const view = built ? viewMarker(built) : null
+    const grown = !!view && (view.db < db || view.rules < this.rules)
+    if (!view || grown) {
+      const marker = b4a.concat([c.encode(c.uint, db), c.encode(c.uint, this.rules)])
+      await local.setUserData('cero/view', marker)
+    }
     if (!caught && !grown) return false
     await local.setUserData('autobee/head', null)
     await local.setUserData('cero/behind', null)
@@ -1152,6 +1157,14 @@ export class Database extends ReadyResource {
 }
 
 // an unbounded read of an old checkout wedges autobee's drain; null means untrusted
+// the view's definition version, then the rules it was applied under: a marker that predates the
+// rules holds the first only
+function viewMarker(buf) {
+  const state = { start: 0, end: buf.byteLength, buffer: buf }
+  const db = c.uint.decode(state)
+  return { db, rules: state.start < state.end ? c.uint.decode(state) : 0 }
+}
+
 function bounded(promise, ms = 2000) {
   return Promise.race([
     promise.then((v) => ({ v })),
