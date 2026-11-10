@@ -568,6 +568,78 @@ test('build: a Cero release that changes what a write means raises the contract'
   t.is(kept.version, 2, 'and the next build holds it')
 })
 
+// apply reads `own` from the reader's spec, so a shipped collection that changes it applies one log
+// by two rules: a new rule needs a new collection
+const loose = schema({
+  notes: t.collection({ text: t.string }),
+  room: { messages: t.collection({ text: t.string }) }
+})
+const ownNotes = schema({
+  notes: t.collection({ text: t.string }, { own: true }),
+  room: { messages: t.collection({ text: t.string }) }
+})
+const ownMessages = schema({
+  notes: t.collection({ text: t.string }),
+  room: { messages: t.collection({ text: t.string }, { own: true }) }
+})
+const ownAdded = schema({
+  notes: t.collection({ text: t.string }),
+  todos: t.collection({ text: t.string }, { own: true }),
+  room: {
+    messages: t.collection({ text: t.string }),
+    pins: t.collection({ text: t.string }, { own: true })
+  }
+})
+
+test('build: own added to a shipped collection fails the build', async (t) => {
+  const dir = await rebuilt(t, 'own-on', loose)
+  const err = await build(dir, ownNotes, { extensions: [] }).catch((e) => e)
+  t.is(err?.code, 'INVALID', err?.message)
+  t.ok(/'notes'/.test(err?.message), 'it names the collection')
+  const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
+  t.is(kept.own?.main?.notes, false, 'the shipped rule stays recorded')
+})
+
+test('build: own added to a shipped collection of a handle type fails the build', async (t) => {
+  const dir = await rebuilt(t, 'own-on-handle', loose)
+  const err = await build(dir, ownMessages, { extensions: [] }).catch((e) => e)
+  t.is(err?.code, 'INVALID', err?.message)
+  t.ok(/'messages'/.test(err?.message), 'it names the collection')
+})
+
+test('build: own taken off a shipped collection fails the build', async (t) => {
+  const dir = await rebuilt(t, 'own-off', ownNotes)
+  const err = await build(dir, loose, { extensions: [] }).catch((e) => e)
+  t.is(err?.code, 'INVALID', err?.message)
+})
+
+test('build: own on a shipped collection dropped and declared again fails the build', async (a) => {
+  const dir = await rebuilt(a, 'own-again', ownAdded, loose)
+  const err = await build(dir, ownAdded, { extensions: [] }).catch((e) => e)
+  a.absent(err, 'declared again with the rule it shipped with')
+  await build(dir, loose, { extensions: [] })
+  const flipped = schema({ ...loose.defs, todos: t.collection({ text: t.string }) })
+  const again = await build(dir, flipped, { extensions: [] }).catch((e) => e)
+  a.is(again?.code, 'INVALID', again?.message)
+})
+
+test('build: own on a new collection builds', async (t) => {
+  const dir = await rebuilt(t, 'own-new', loose, ownAdded)
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.refs.todos.own, true, 'at the root')
+  t.is(spec.meta.handles.room.refs.pins.own, true, 'in a handle type')
+  const kept = JSON.parse(await fs.readFile(join(dir, 'contract.json'), 'utf-8'))
+  t.alike(kept.own?.main, { notes: false, todos: true })
+  t.alike(kept.own?.[join('handles', 'room')], { messages: false, pins: true })
+})
+
+test('build: an unchanged rebuild with own is quiet', async (t) => {
+  const dir = await rebuilt(t, 'own-keep', ownNotes, ownNotes)
+  const { spec } = await importSpec(dir)
+  t.is(spec.meta.refs.notes.own, true)
+  t.is(spec.meta.version, 1, 'and the contract stays')
+})
+
 // an index added by a rebuild: the rows written before it must be found through it, so a reopen
 // over a store the old build wrote fills the index
 const flat = schema({ notes: t.collection({ text: t.string, done: t.bool }) })

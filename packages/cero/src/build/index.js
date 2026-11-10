@@ -76,7 +76,7 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
   }
 
   const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
-  const version = await contract(specDir, dirs)
+  const version = await contract(specDir, dirs, [main, ...Object.values(handles)])
   const meta = {
     ...main.meta,
     version,
@@ -250,18 +250,40 @@ function register(name, node, ctx) {
 
 // one contract for the app, kept in contract.json: it rises once per build that changes what is
 // stored, at the root or in any handle type, or what a write means to Cero, never for RPC alone.
-// A spec without one starts from its builders' versions, so a shipped app's number never goes down
-async function contract(specDir, dirs) {
+// A spec without one starts from its builders' versions, so a shipped app's number never goes down.
+// It keeps each collection's own flag too: apply reads it from the reader's spec, so it never changes
+async function contract(specDir, dirs, compiled) {
   const file = join(specDir, 'contract.json')
+  const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
+  const own = { ...kept?.own }
+  dirs.forEach((dir, i) => {
+    const was = own[dir] || {}
+    const now = owned(compiled[i].meta.refs)
+    for (const [name, on] of Object.entries(now)) {
+      if (name in was && was[name] !== on) {
+        throw CeroError.INVALID(
+          `'${name}' in ${dir} shipped ${on ? 'without' : 'with'} own: a new rule needs a new collection`
+        )
+      }
+    }
+    own[dir] = { ...was, ...now }
+  })
   const shapes = await Promise.all(dirs.map((dir) => shapeOf(join(specDir, dir))))
   const json = JSON.stringify([internal.contract.version, ...shapes.map((s) => s.stored)])
   const shape = b4a.toString(crypto.hash(b4a.from(json)), 'hex')
-  const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
   const version = kept
     ? kept.version + (kept.shape === shape ? 0 : 1)
     : Math.max(...shapes.flatMap((s) => s.versions))
-  await fs.writeFile(file, JSON.stringify({ version, shape }, null, 2) + '\n')
+  await fs.writeFile(file, JSON.stringify({ version, shape, own }, null, 2) + '\n')
   return version
+}
+
+function owned(refs) {
+  return Object.fromEntries(
+    Object.entries(refs)
+      .filter(([, ref]) => ref.kind === 'collection' && !ref.internal)
+      .map(([name, ref]) => [name, ref.own === true])
+  )
 }
 
 // what a spec directory stores: its types without the RPC ones, its collections and its routes
