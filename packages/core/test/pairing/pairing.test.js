@@ -157,6 +157,17 @@ test('invite: ttl is ms or a duration', async (t) => {
   await t.exception(pairing.invite({ ttl: 'soon' }), /not a duration/)
 })
 
+test('invite: a ttl is a positive whole number of ms the clock reaches, or INVALID and nothing is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  for (const ttl of [-1000, '-1h', '0s', 0.5, Infinity, Number.MAX_SAFE_INTEGER, 2 ** 53, 1e20]) {
+    t.is(await code(pairing.invite({ ttl })), 'INVALID', `ttl ${ttl}`)
+    t.exception(() => Invite.create({ ...sample(), ttl }), /INVALID/)
+  }
+  t.alike(await invites(db), [], 'no invite was written')
+  t.ok(Invite.parse(await pairing.invite({ ttl: 1 })).expires > 0, 'one ms is a ttl')
+})
+
 test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing, db } = await makeHost(t, testnet)
@@ -170,7 +181,8 @@ test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
     if (verb === 'del-invite') await pairing.close()
     return call(verb, ...args)
   }
-  await pairing.invite({ ttl: -1000 }).catch(() => {})
+  await pairing.invite({ ttl: 1 }).catch(() => {})
+  await waitFor(() => pairing.closed)
   await Promise.allSettled(syncs)
   t.ok(pairing.closed, 'closed mid-sync')
   t.is(pairing._expiry, null, 'nothing left to wake it')
@@ -661,7 +673,8 @@ test('join: invalid invite → INVALID_INVITE, expired → EXPIRED', async (t) =
   const { host, joiner } = await makeHostJoiner(t, testnet)
   t.is((await joiner.join('not-an-invite').catch((e) => e)).code, 'INVALID_INVITE')
   t.is((await joiner.join(unsealable()).catch((e) => e)).code, 'INVALID_INVITE')
-  const invite = await host.pairing.invite({ ttl: -1000 })
+  const invite = await host.pairing.invite({ ttl: 1 })
+  await waitFor(() => Invite.parse(invite).expired)
   t.is((await joiner.join(invite).catch((e) => e)).code, 'EXPIRED')
 })
 

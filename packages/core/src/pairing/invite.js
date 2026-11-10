@@ -147,9 +147,11 @@ function sealable(address) {
 
 const EMPTY = b4a.alloc(0)
 
-// ms, or a duration like '12h' or '2d'
+// ms, or a duration like '12h' or '2d'; the expiry is a uint on the wire
 function toMs(ttl) {
   const value = typeof ttl === 'string' ? ms(ttl) : ttl
-  if (!Number.isFinite(value)) throw CeroError.INVALID(`ttl '${ttl}' is not a duration`)
+  if (!Number.isSafeInteger(value) || value <= 0 || !Number.isSafeInteger(Date.now() + value)) {
+    throw CeroError.INVALID(`ttl '${ttl}' is not a duration`)
+  }
   return value
 }
