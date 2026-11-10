@@ -17,14 +17,16 @@ export declare function keyPair(secret: Uint8Array): {
  */
 export declare function aged({ handled }: import('./index.js').Mail): boolean;
 /**
- * Erase the core a message travelled in. Corestore leaves a core that still has a session open,
- * and that is an error here, not silence.
+ * Erase the core a message travelled in, once nothing reads it. Corestore leaves a core that
+ * still has a session open, and that is an error here, not silence. Nothing is erased once `live`
+ * says no, or the store is closing. Resolves true once no such core is stored.
  *
  * @param {import('corestore')} store
  * @param {Uint8Array} key
- * @returns {Promise<void>}
+ * @param {() => boolean} [live]
+ * @returns {Promise<boolean>}
  */
-export declare function erase(store: import('corestore'), key: Uint8Array): Promise<void>;
+export declare function erase(store: import('corestore'), key: Uint8Array, live?: () => boolean): Promise<boolean>;
 /**
  * Receives at the address a secret owns, direct from the sender or from a mirror. A message
  * that does not open in time, or that `onmessage` resolves `false` on, is dropped; one that opens
@@ -44,6 +46,7 @@ export declare class Inbox extends ReadyResource {
     onmessage: (message: Uint8Array) => unknown;
     onerror: (err: Error) => void;
     keep: boolean;
+    timeout: number;
     /** @private */
     _mail;
     /** @private */
@@ -57,19 +60,22 @@ export declare class Inbox extends ReadyResource {
     /** @private */
     _handled;
     /** @private */
+    _erasing;
+    /** @private */
     _session;
     /** @private */
     _discovery;
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} secret
-     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean }} opts
+     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number }} opts
      */
-    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep }: {
+    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep, timeout }: {
         box: import('./index.js').Box;
         onmessage: (message: Uint8Array) => unknown;
         onerror: (err: Error) => void;
         keep?: boolean;
+        timeout?: number;
     });
     /** @private */
     private _open;
@@ -89,6 +95,8 @@ export declare class Inbox extends ReadyResource {
     private _resume;
     /** @private */
     private _unseal;
+    /** @private */
+    private _erase;
     /** @private */
     private _drop;
     /** @private */
