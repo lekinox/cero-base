@@ -299,12 +299,13 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 
 The receiving end of a blind push: a proof of one block of a writer's core, encrypted with the
 database key, that a mirror built and the platform delivered. Verified against the device's own
-storage, so it holds only for a writer the device already stores.
+storage, so it holds only for a writer the device already stores, and only for one of the handle's
+`writers`, the writer keys that may write to the database now.
 
 ```js
 import { verify, decrypt } from '@cero-base/core/push'
 
-// storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key }]
+// storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key, writers }]
 const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref, block } or null
 const op = await decrypt(storage, hit, { encryptionKey, epochs }) // the op's bytes, or null
 ```

@@ -228,7 +228,8 @@ export const local = {
     channel: required(string)
   },
   // the handles rows a cold push process can read without the root: topic → handle, its keys and
-  // the epochs it learned, so a push's block opens there too
+  // the epochs it learned, so a push's block opens there too. `writers`, 32-byte keys back to back,
+  // are who may write to it as this device last had it open: a push from any other core is refused
   subscription: {
     id: required(string),
     handle: required(string),
@@ -236,7 +237,8 @@ export const local = {
     key: required(bytes),
     name: string,
     encryptionKey: bytes,
-    epochs: bytes
+    epochs: bytes,
+    writers: bytes
   }
 }
 

@@ -16,7 +16,7 @@ import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { seal, unseal, decodeAddress } from '../lib/mail.js'
 import hid from 'hypercore-id-encoding'
-import { admission, onAbort, filter } from '@cero-base/core/utils'
+import { admission, onAbort, filter, can, WRITE } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -620,10 +620,17 @@ export class Handle extends ReadyResource {
     const { data: rows } = await this.local.store.get('topics')
     const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
     const have = new Map(rows.map((row) => [row.id, row]))
+    // an opened handle not adopted yet has its writers already: its row is written once
+    const open = new Map(
+      [...this.children, ...this._pending]
+        .filter((child) => child.opened)
+        .map((child) => [b4a.toHex(child.store.discoveryKey), child])
+    )
     for (const row of rows) {
       if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
     }
     for (const [id, h] of wanted) {
+      const child = open.get(id)
       const row = {
         id,
         handle: h.id,
@@ -631,7 +638,9 @@ export class Handle extends ReadyResource {
         key: h.key,
         name: h.name ?? null,
         encryptionKey: h.encryptionKey ?? null,
-        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null
+        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
+        // a handle that is not open keeps the writers it had when it last was
+        writers: child ? await writersOf(child.store) : (have.get(id)?.writers ?? null)
       }
       if (same(have.get(id), row)) continue
       await this.local.store.put('topics', row)
@@ -1109,7 +1118,22 @@ export class Handle extends ReadyResource {
     this._serve(child)
     this._carry(child)
     this._prune(child).catch(this._onerror)
+    this._seats(child)
     this.emit('handle', child, info)
+  }
+
+  // a handle's topics row follows who may write to it while it is open, so a push is checked
+  // against the room as this device last applied it
+  /** @private */
+  _seats(child) {
+    const onchange = (touched) => {
+      if (touched.has('*') || touched.has('devices') || touched.has('members')) {
+        this._index().catch(this._onerror)
+      }
+    }
+    child.store.on('update', onchange)
+    child.once('close', () => child.store.off('update', onchange))
+    this._index().catch(this._onerror)
   }
 
   // a device removed from the root loses its seats in every handle: its chain is static, so the
@@ -1286,8 +1310,16 @@ function same(row, next) {
     (row.name ?? null) === next.name &&
     b4a.equals(row.key, next.key) &&
     sameBytes(row.encryptionKey, next.encryptionKey) &&
-    sameBytes(row.epochs, next.epochs)
+    sameBytes(row.epochs, next.epochs) &&
+    sameBytes(row.writers, next.writers)
   )
+}
+
+// the keys that may write to a handle now: the devices of its members whose role writes
+async function writersOf(db) {
+  const [devices, members] = await Promise.all([db.get('devices'), db.get('members')])
+  const writes = new Set(members.data.filter((m) => can(m.role, WRITE)).map((m) => m.id))
+  return b4a.concat(devices.data.filter((d) => writes.has(d.memberId)).map((d) => hid.decode(d.id)))
 }
 
 function sameBytes(a, b) {

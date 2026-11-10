@@ -11,14 +11,15 @@ const { AutobeeEncryption, WriterEncryption } = autobeeEncryption
 const { decodeOplog } = autobeeEncoding
 
 /**
- * @typedef {{ id: string, key: Uint8Array }} Handle  A handle this device holds: its id and its database key.
+ * @typedef {{ id: string, key: Uint8Array, writers: Uint8Array[] }} Handle  A handle this device holds: its id, its database key and the writer keys that may write to it now.
  * @typedef {{ index: number, value: Uint8Array, writer: Uint8Array }} Block  The block a push carries when it fits: its index, its bytes as the writer's core holds them, and the writer's key.
  * @typedef {Handle & { length: number, newer: boolean, ref: string | null, block: Block | null }} Hit  The handle a push is about, the length it proves, whether this device is behind it, the ref the write was on, and the block when it rode along.
  */
 
 /**
  * Verify a push payload against this device's storage: the one the gateway sent, decoded from the
- * platform's message. Null when it is about no handle given, is forged, or does not decode.
+ * platform's message. Null when it is about no handle given, is forged, comes from a core that is
+ * not among the handle's writers, or does not decode.
  *
  * @param {import('hypercore-storage')} storage  The corestore's storage; may be opened read-only.
  * @param {Uint8Array} payload
@@ -43,6 +44,8 @@ export async function verify(storage, payload, handles) {
   if (!read) return null
   const ref = read.extra?.length ? b4a.toString(read.extra) : null
   const { block, key: writer } = read.result
+  // any core the device stores proves its blocks: a removed member's, or a stranger's join
+  if (!handle.writers.some((w) => b4a.equals(w, writer))) return null
   return {
     ...handle,
     length: read.result.length,

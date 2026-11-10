@@ -3,7 +3,9 @@ import b4a from 'b4a'
 import { Duplex } from 'streamx'
 import HypercoreStorage from 'hypercore-storage'
 
-import { cero, put, get, open, leave, receive } from '../../src/index.js'
+import { encode, createNotification } from 'blind-push'
+
+import { cero, put, set, get, del, open, leave, receive } from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
 import { connect } from '../../src/rpc/client.js'
 import { receive as cold, push as entry } from '../../src/push/index.js'
@@ -14,6 +16,14 @@ test.configure({ timeout: 90000 })
 
 const topicOf = (room) => b4a.toHex(room.store.discoveryKey)
 const payloadOf = (message) => b4a.from(message.android.data.payload, 'base64')
+// the push a mirror would build for a handle's writer core, at its length
+const pushOf = async (handle, room) =>
+  encode(
+    await createNotification(handle.store.bee.local, {
+      roomKey: room.store.key,
+      extra: b4a.from('messages')
+    })
+  )
 
 function pair() {
   let a, b
@@ -180,6 +190,43 @@ test('receive: cold, from the storage, with the app open and once it closed', as
   await storage.ready()
   await storage.close()
   t.pass('the cold read left the storage reopenable')
+})
+
+test('receive: a member seated after the topics row was written is accepted, refused while she reads and once her removal applied here', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet })
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const mine = await open(b.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(b.me.topics)).data.length === 1)
+
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  await waitUntil(async () => (await receive(b.me, payload))?.row?.text === 'from c')
+  t.pass('her seat reached b and her push reads as verified')
+  const role = (r) => set(room.members, { id: c.me.identity.id, role: r })
+  await role('reader')
+  await waitUntil(async () => (await receive(b.me, payload)) === null)
+  t.pass('set to reader she writes nothing, and her push reads as nothing')
+  await role('member')
+  await waitUntil(async () => await receive(b.me, payload))
+  t.pass('set back, it reads again')
+
+  await del(room.members, c.me.identity.id)
+  await waitUntil(async () => !(await get(mine.members, c.me.identity.id)).data)
+  await waitUntil(async () => (await receive(b.me, payload)) === null)
+  t.pass('her removal applied here, her push reads as nothing')
+  const own = await pushOf(mine, room)
+  t.ok(await receive(b.me, own), "b's own still does")
+  await b.me.close()
+  // a launch that leaves the handle closed keeps the writers it last had open
+  const again = await cero(b.dir, spec, { bootstrap: a.testnet.bootstrap })
+  await again.close()
+  t.ok(await cold(b.dir, spec, own), 'cold, from the stored row, a writer reads')
+  t.is(await cold(b.dir, spec, payload), null, 'and she does not')
 })
 
 test('push: a write to a ref that declares no push sends nothing', async (t) => {

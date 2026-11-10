@@ -18,16 +18,28 @@ import { current } from '../lib/swap.js'
  * @param {import('hypercore-storage')} storage
  * @param {import('../lib/spec.js').Spec} spec
  * @param {Uint8Array} payload
- * @param {Array<{ id: string, handle: string, type: string, key: Uint8Array, name: string | null, encryptionKey?: Uint8Array | null, epochs?: Uint8Array | null }>} rows  The root's `topics` rows.
+ * @param {Array<{ id: string, handle: string, type: string, key: Uint8Array, name: string | null, encryptionKey?: Uint8Array | null, epochs?: Uint8Array | null, writers?: Uint8Array | null }>} rows  The root's `topics` rows.
  * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export async function read(storage, spec, payload, rows) {
-  const handles = rows.map(({ handle, key, type, name }) => ({ id: handle, key, type, name }))
+  const handles = rows.map(({ handle, key, type, name, writers }) => ({
+    id: handle,
+    key,
+    type,
+    name,
+    writers: keysOf(writers)
+  }))
   const hit = await verify(storage, payload, handles)
   if (!hit) return null
   const keys = rows.find((r) => r.handle === hit.id)
   const row = await rowOf(storage, spec, hit, keys)
   return { id: hit.id, type: hit.type, name: hit.name, newer: hit.newer, ref: hit.ref, row }
+}
+
+function keysOf(bytes) {
+  const out = []
+  for (let i = 0; i < (bytes?.byteLength || 0); i += 32) out.push(bytes.subarray(i, i + 32))
+  return out
 }
 
 // the row a push's block holds: null when none rode along, or it does not decode with what we hold

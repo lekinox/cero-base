@@ -161,8 +161,10 @@ was too big to ride along. It answers one of three ways:
 | nothing           | shows nothing           |
 | throws            | shows nothing           |
 
-A forged push, or one about a handle this device is not in, never reaches the handler. The handler
-is the app's: its strings live with the app's other strings and translate with them. Without a
+A forged push, one about a handle this device is not in, or one from a device that may not write to
+the handle, a removed member's or a reader's, never reaches the handler. Who may write is what this
+device saw the last time it had the handle open, so a handle never opened here shows no push. The
+handler is the app's: its strings live with the app's other strings and translate with them. Without a
 handler `push` throws `INVALID`.
 
 For a push flow of your own: `status.topic` on a handle is the string to subscribe, `me.topics`
