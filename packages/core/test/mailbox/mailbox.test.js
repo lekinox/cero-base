@@ -1285,6 +1285,267 @@ test('Inbox: a message read as its inbox closes waits in the box for the next st
   t.alike(got, ['late'], 'handed over the next time its address is received')
 })
 
+test('Inbox: one opened at an address while another closes there finds the row that one left', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  // the closing inbox's row takes a while to write, as on a slow disk
+  const put = box.put
+  let slow = true
+  box.put = async (m) => {
+    if (slow) {
+      slow = false
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    return put(m)
+  }
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  let calls = 0
+  const first = b.receive(secret, () => calls++)
+  // the first closes the moment its block lands, and a second opens at the address at once
+  const unseal = first._unseal.bind(first)
+  let second = null
+  first._unseal = async (...args) => {
+    const read = await unseal(...args)
+    if (read.message && !second) {
+      first.close()
+      second = b.receive(secret, () => calls++)
+    }
+    return read
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await waitFor(async () => second && (await a.outbox.list()).length === 0, { timeout: 30000 })
+  t.pass('its sender counts it delivered, and offers it no more')
+  await waitFor(() => calls > 0, { timeout: 5000 }).catch(() => {})
+  t.is(calls, 1, 'handed over by the one that opened')
+  await waitFor(() => box.pending() === 0, { timeout: 5000 }).catch(() => {})
+  t.is(box.pending(), 0, 'nothing left to hand over again')
+})
+
+test('Inbox: one closed before it opened hands nothing over, and the next at its address gets the message', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  // the closing inbox's row takes a while to write, as on a slow disk
+  const put = box.put
+  let slow = true
+  box.put = async (m) => {
+    if (slow) {
+      slow = false
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    return put(m)
+  }
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  const calls = { first: 0, second: 0, third: 0 }
+  const first = b.receive(secret, () => calls.first++)
+  // the first closes the moment its block lands; a second opens at the address and is closed at once, as a
+  // join taken over and then cancelled
+  const unseal = first._unseal.bind(first)
+  let second = null
+  first._unseal = async (...args) => {
+    const read = await unseal(...args)
+    if (read.message && !second) {
+      first.close()
+      second = b.receive(secret, () => calls.second++)
+      second.close()
+    }
+    return read
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await waitFor(() => second?.closed && first.closed, { timeout: 30000 })
+  b.receive(secret, () => calls.third++)
+  await waitFor(() => calls.third > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(calls, { first: 0, second: 0, third: 1 }, 'handed to the one still listening')
+})
+
+// a box holding one message its first inbox read as it closed, and the mailbox it waits in
+async function waiting(t) {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  const calls = { first: 0, second: 0, third: 0 }
+  const first = b.receive(secret, () => calls.first++)
+  const unseal = first._unseal.bind(first)
+  first._unseal = async (...args) => {
+    const read = await unseal(...args)
+    if (read.message) first.close()
+    return read
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await waitFor(() => first.closed, { timeout: 30000 })
+  return { b, box, secret, calls }
+}
+
+test('Inbox: one that closes while it reads a row it found hands nothing over, and the next gets it', async (t) => {
+  const { b, box, secret, calls } = await waiting(t)
+  const second = b.receive(secret, () => calls.second++)
+  // it closes the moment the row's message is read back from its core, as a join stopped just after it started
+  const unseal = second._unseal.bind(second)
+  second._unseal = async (...args) => {
+    const read = await unseal(...args)
+    if (read.message) second.close()
+    return read
+  }
+  await waitFor(() => second.closed, { timeout: 5000 }).catch(() => {})
+  t.is(box.pending(), 1, 'still in the box')
+  b.receive(secret, () => calls.third++)
+  await waitFor(() => calls.third > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(calls, { first: 0, second: 0, third: 1 }, 'handed to the one still listening')
+})
+
+test('Inbox: one that closes while it reads back a row it found leaves the row, and the next gets it', async (t) => {
+  const { b, box, secret, calls } = await waiting(t)
+  const key = b4a.from([...box.mail.keys()][0], 'hex')
+  // the close comes while the read of the row's core is under way, and cuts it short
+  const { store } = b.network
+  const get = store.get.bind(store)
+  let second = null
+  store.get = (opts) => {
+    const core = get(opts)
+    if (second && !second.closing && opts?.key && b4a.equals(opts.key, key)) {
+      const read = core.get.bind(core)
+      core.get = (...args) => {
+        second.close()
+        return read(...args)
+      }
+    }
+    return core
+  }
+  second = b.receive(secret, () => calls.second++)
+  await waitFor(() => second.closed, { timeout: 5000 }).catch(() => {})
+  t.is(box.pending(), 1, 'still in the box')
+  b.receive(secret, () => calls.third++)
+  await waitFor(() => calls.third > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(calls, { first: 0, second: 0, third: 1 }, 'handed to the one still listening')
+})
+
+test('Inbox: one that closes once a message landed, before its handler ran, leaves it for the next', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  const calls = { first: 0, second: 0 }
+  const first = b.receive(secret, () => calls.first++)
+  // the close comes between its row reaching the box and its handler
+  const handle = first._handle.bind(first)
+  first._handle = (mail) => {
+    first.close()
+    return handle(mail)
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await waitFor(() => first.closed, { timeout: 30000 })
+  t.is(box.pending(), 1, 'still in the box')
+  b.receive(secret, () => calls.second++)
+  await waitFor(() => calls.second > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(calls, { first: 0, second: 1 }, 'handed to the next at its address')
+})
+
+test('Inbox: a close that comes while a read checks its storage lets go of that read', async (t) => {
+  const testnet = await makeTestnet(t)
+  const b = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const address = Mailbox.getAddress(secret)
+  const inbox = b.receive(secret, () => {}, { timeout: 20000 })
+
+  // announced while it is still empty, so a read that gets past the check waits on it
+  const sender = await peer(t, testnet)
+  const writer = crypto.keyPair()
+  const core = sender.store.get({
+    keyPair: writer,
+    manifest: { version: sender.store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+  })
+  t.teardown(() => core.close())
+  await core.ready()
+
+  const { storage } = b.network.store
+  const hasCore = storage.hasCore.bind(storage)
+  let reached
+  let release
+  const checking = new Promise((resolve) => (reached = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  storage.hasCore = async (dk) => {
+    const has = await hasCore(dk)
+    // the inbox's own check, its read under way
+    if (inbox._landing.size === 1 && b4a.equals(dk, crypto.discoveryKey(core.key))) {
+      reached()
+      await held
+    }
+    return has
+  }
+  announce(t, sender, address, [core.key])
+  await checking
+  inbox.close()
+  release()
+  await waitFor(() => inbox.closed, { timeout: 5000 }).catch(() => {})
+  t.ok(inbox.closed, 'closed without waiting for a block')
+})
+
+test('Inbox: one handled after its inbox closed, its box gone, reports nothing and comes again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  const errors = []
+  const b = await mailbox(t, testnet, { inbox: box, onerror: (err) => errors.push(err) })
+  const secret = crypto.randomBytes(32)
+  // its handler is still running when the inbox closes
+  let started
+  let release
+  const running = new Promise((resolve) => (started = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  const inbox = b.receive(secret, async () => {
+    started()
+    await held
+  })
+  await a.send(Mailbox.getAddress(secret), b4a.from('late'))
+  await running
+  await inbox.close()
+  // the box went with whatever kept it, as a local store goes with its app
+  const put = box.put
+  let refused = 0
+  box.put = async () => {
+    refused++
+    throw new Error('closed')
+  }
+  release()
+  await waitFor(() => refused > 0)
+  t.alike(errors, [], 'nothing reported')
+
+  box.put = put
+  const got = []
+  b.receive(secret, (message) => got.push(b4a.toString(message)))
+  await waitFor(() => got.length > 0, { timeout: 10000 }).catch(() => {})
+  t.alike(got, ['late'], 'handed over again the next time its address is received')
+})
+
+test('Inbox: a handler that throws after its inbox closed is still reported', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const errors = []
+  const b = await mailbox(t, testnet, { onerror: (err) => errors.push(err.message) })
+  const secret = crypto.randomBytes(32)
+  let started
+  let release
+  const running = new Promise((resolve) => (started = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  const inbox = b.receive(secret, async () => {
+    started()
+    await held
+    throw new Error('handler broke')
+  })
+  await a.send(Mailbox.getAddress(secret), b4a.from('late'))
+  await running
+  await inbox.close()
+  release()
+  await waitFor(() => errors.length > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(errors, ['handler broke'])
+})
+
 test('Inbox: a handled stamped ahead of now counts from now', async (t) => {
   const testnet = await makeTestnet(t)
   const box = kept()

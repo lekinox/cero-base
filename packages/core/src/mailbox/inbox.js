@@ -91,9 +91,13 @@ export class Inbox extends ReadyResource {
   /**
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} secret
-   * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number }} opts
+   * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number, after?: Promise<void>[] }} opts  `after`: closes to wait for before it opens.
    */
-  constructor(network, secret, { box, onmessage, onerror, keep = true, timeout = 30000 }) {
+  constructor(
+    network,
+    secret,
+    { box, onmessage, onerror, keep = true, timeout = 30000, after = [] }
+  ) {
     super()
     this.network = network
     this.keyPair = keyPair(secret)
@@ -122,6 +126,8 @@ export class Inbox extends ReadyResource {
     /** @private */
     this._waiting = new Set() // cores open for a block still to come
     /** @private */
+    this._after = after
+    /** @private */
     this._session = null
     /** @private */
     this._discovery = null
@@ -129,6 +135,8 @@ export class Inbox extends ReadyResource {
 
   /** @private */
   async _open() {
+    // one still closing at this address may yet leave a row: the box is read once it has
+    await Promise.allSettled(this._after)
     const handled = []
     for (const mail of await this.box.list()) {
       if (!b4a.equals(mail.address, this.address)) continue
@@ -273,10 +281,7 @@ export class Inbox extends ReadyResource {
       return null
     }
     await this.box.put({ id, address: this.address, message: EMPTY, fetched })
-    if (!this.closing) return { id, message, fetched }
-    // read as the inbox closed: it waits in the box for the next time its address is received
-    this._settle(id)
-    return null
+    return { id, message, fetched }
   }
 
   // kept from before a restart: the message is in its core, held here since it was read
@@ -284,6 +289,8 @@ export class Inbox extends ReadyResource {
   async _resume({ id, fetched }) {
     const { held, message } = await this._unseal(b4a.from(id, 'hex'), { wait: false })
     if (message) return this._handle({ id, message, fetched })
+    // a read its own close cut short says nothing of the row: it waits for the next inbox at its address
+    if (this.closing) return this._settle(id)
     await this.box.del(id)
     await this._drop(id, fetched && held, false)
   }
@@ -293,8 +300,9 @@ export class Inbox extends ReadyResource {
   _unseal(key, opts) {
     const { store } = this.network
     return exclusive(store, key, async () => {
-      if (this.closing) opts = { wait: false }
       const held = await store.storage.hasCore(crypto.discoveryKey(key))
+      // checked last before the core opens: a close from here on finds it among those waiting
+      if (this.closing) opts = { wait: false }
       if (!held && opts.wait === false) return { held, message: null }
       const core = store.get({ key })
       this._waiting.add(core)
@@ -334,8 +342,15 @@ export class Inbox extends ReadyResource {
   // dropped once handled; one that throws stays for the next time this address is received
   /** @private */
   async _handle({ id, message, fetched }) {
+    // closing, it hands nothing over: the message waits in the box for the next inbox at its address
+    if (this.closing) return this._settle(id)
+    let taken
     try {
-      const taken = (await this.onmessage(message)) !== false
+      taken = (await this.onmessage(message)) !== false
+    } catch (err) {
+      return this.onerror(err)
+    }
+    try {
       // turned away as the inbox closes, it is kept as handled for the next start to erase
       if (!taken && !(this.closing && fetched)) {
         await this.box.del(id)
@@ -349,7 +364,8 @@ export class Inbox extends ReadyResource {
       }
       this._settle(id)
     } catch (err) {
-      this.onerror(err)
+      // closed meanwhile, its box may be gone with it: unrecorded, it comes again the next time its address is received
+      if (!this.closed) this.onerror(err)
     }
   }
 
