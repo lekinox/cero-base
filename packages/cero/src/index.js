@@ -23,7 +23,7 @@ import * as verbs from './lib/operators.js'
 import { peek } from './lib/peek.js'
 import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
-import { FLUSH, TIMEOUT } from './lib/constants.js'
+import { TIMEOUT } from './lib/constants.js'
 import { commit, nextOf, settle, staging } from './lib/swap.js'
 
 export { Handle, Ref, Local }
@@ -154,13 +154,10 @@ async function start(dir, spec, opts = {}) {
       ? await ask(local, network, spec, { ...opts, writer: keyPair, timeout }, pending)
       : null
     const identity = linked ? linked.identity : resolved.identity
-    const fresh = resolved?.fresh === true
     // the radio before the pointer read: a phrase recovers from a device in range, no internet
     bluetooth = new Bluetooth(network, { ...bt, identity, keyPair })
     await bluetooth.ready()
     discovery = network.join(identity.topic)
-    // a fresh identity has no peers yet, flushing the announce would only delay onboarding
-    if (!fresh) await Promise.race([discovery.flush(), new Promise((r) => setTimeout(r, FLUSH))])
 
     // the pointer core: identity-signed, written once by the creating device, holds the root key
     const manifest = pointerManifest(store, identity)

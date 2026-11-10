@@ -873,6 +873,26 @@ test('cero(): a phrase recovery killed before its device row resumes with no phr
   t.alike(me.store.key, owner.store.key, 'recovered into its database')
 })
 
+test('cero(): a relaunch with no reachable bootstrap opens as fast as one with', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  await put(first.messages, { text: 'x' })
+  await first.close()
+
+  async function relaunch(bootstrap) {
+    const start = Date.now()
+    const me = await cero(dir, spec, { bootstrap })
+    const took = Date.now() - start
+    await me.close()
+    return took
+  }
+  const online = await relaunch(testnet.bootstrap)
+  const offline = await relaunch([{ host: '127.0.0.1', port: 9 }])
+  t.comment(`online ${online} ms, offline ${offline} ms`)
+  t.ok(offline < online + 300, 'no wait on a network that is not there')
+})
+
 test('peek(): rejects bad dir', async (t) => {
   await t.exception.all(() => peek(null, spec), /dir/)
   await t.exception.all(() => peek('', spec), /dir/)
