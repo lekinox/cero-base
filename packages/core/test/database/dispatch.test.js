@@ -23,6 +23,7 @@ import { genId } from '../../src/lib/ids.js'
 import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { Invite } from '../../src/pairing/invite.js'
+import { encodeId } from '../../src/blobs/codec.js'
 import { spec } from '../fixtures/spec/index.js'
 
 test.configure({ timeout: 60000 })
@@ -1239,16 +1240,23 @@ test('set-member: demoting below WRITE revokes the writer seat', async (t) => {
 
 // ─── add-file: WRITE gate ─────────────────────────────────────────────────
 
+const fileId = (type = 'text/plain') =>
+  encodeId(
+    crypto.randomBytes(32),
+    { blockOffset: 0, blockLength: 1, byteOffset: 0, byteLength: 2 },
+    type
+  )
+
 test('add-file: a reader cannot add a file', async (t) => {
   const { db } = await withRole(t, 'reader')
-  const id = genId()
+  const id = fileId()
   await t.exception(db.call('add-file', { id, name: 'shot.png' }), /REFUSED/)
   t.absent((await db.get('files', id)).data, 'a reader has no WRITE — add-file rejected')
 })
 
 test('add-file: a member (WRITE) can add a file', async (t) => {
   const { db, identity } = await withRole(t, 'member')
-  const id = genId()
+  const id = fileId()
   await db.call('add-file', { id, name: 'shot.png' })
   const { data } = await db.get('files', id)
   t.ok(data, 'a member with WRITE added the file row')
@@ -1596,13 +1604,35 @@ test('add-member: an id that is not an identity is refused, even at genesis', as
 
 test('files: a member cannot overwrite or drop another member file record', async (t) => {
   const { db, as } = await withMember(t, 'member')
-  await db.call('add-file', { id: 'f', name: 'scan.pdf', stamp: 1 })
-  t.is((await as('add-file', { id: 'f', name: 'x', stamp: 9 }))?.code, 'REFUSED')
-  t.is((await as('set-file', { id: 'f', name: 'x', stamp: 9 }))?.code, 'REFUSED')
-  t.is((await as('del-file', { id: 'f' }))?.code, 'REFUSED')
-  const { data } = await db.get('files', 'f')
+  const id = fileId()
+  await db.call('add-file', { id, name: 'scan.pdf', stamp: 1 })
+  t.is((await as('add-file', { id, name: 'x', stamp: 9 }))?.code, 'REFUSED')
+  t.is((await as('set-file', { id, name: 'x', stamp: 9 }))?.code, 'REFUSED')
+  t.is((await as('del-file', { id }))?.code, 'REFUSED')
+  const { data } = await db.get('files', id)
   t.is(data.name, 'scan.pdf')
   t.is(data.stamp, 1)
+})
+
+test('files: an id that is no file id is refused at apply, as a file row and in a t.file field', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const bad = 'not-a-file-id'
+  const row = { id: 'm', text: 'x', createdAt: 1, updatedAt: 1 }
+  t.is((await as('add-file', { id: bad }))?.code, 'REFUSED', 'a file row')
+  t.is((await as('add-file', { id: '' }))?.code, 'REFUSED', 'an empty one')
+  t.is((await as('add-messages', { ...row, photo: bad }))?.code, 'REFUSED', 'a collection field')
+  t.is((await as('set-profile', { photo: bad }))?.code, 'REFUSED', 'a single field')
+  t.absent((await db.get('files', bad)).data)
+  t.absent((await db.get('messages', 'm')).data)
+  t.absent((await db.get('profile')).data)
+
+  const good = fileId()
+  t.is(await as('add-file', { id: good }), null, 'a file id lands')
+  t.is(await as('add-messages', { ...row, photo: good }), null, 'in a field too')
+  t.is(await as('add-messages', { ...row, id: 'n' }), null, 'and a field left out')
+  t.is((await as('set-messages', { id: 'm', photo: bad }))?.code, 'REFUSED', 'an edit to one')
+  t.is((await db.get('messages', 'm')).data.photo, good)
+  await t.exception(db.put('messages', { text: 'y', photo: bad }), /REFUSED/, 'the writer hears it')
 })
 
 test('escalation: a self-admission cannot move a seated writer to another identity', async (t) => {

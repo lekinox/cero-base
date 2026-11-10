@@ -32,6 +32,7 @@ import {
 } from '../lib/utils.js'
 import { CeroError } from '../lib/errors.js'
 import { getEncoding } from '../lib/spec/index.js'
+import { decodeId } from '../blobs/codec.js'
 import { Identity } from '../identity/index.js'
 import { Invite } from '../pairing/invite.js'
 
@@ -113,7 +114,21 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     return value
   }
 
+  // every reader decodes a file id it renders: one that does not decode never lands
+  function checkFiles(name, row) {
+    const fields = name === 'files' ? ['id'] : (spec.meta?.refs?.[name]?.files ?? [])
+    for (const field of fields) {
+      if (row[field] == null) continue
+      try {
+        decodeId(row[field])
+      } catch (err) {
+        throw CeroError.REFUSED('file', err.message)
+      }
+    }
+  }
+
   async function insert(view, name, op) {
+    checkFiles(name, op)
     if (name !== COUNTERS) {
       const existing = op.id != null ? await view.get(col(name), op) : null
       // an overwrite keeps when the row was first written, whatever the op carries
@@ -306,7 +321,10 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       const fns = pick('set', ctx)
       const existing = fns ? await ctx.view.findOne(col(name), {}) : null
       const meta = { op: 'set', name, row: op, existing }
-      return hooked(fns, meta, ctx, (row) => ctx.view.insert(col(name), row))
+      return hooked(fns, meta, ctx, (row) => {
+        checkFiles(name, row)
+        return ctx.view.insert(col(name), row)
+      })
     }
     // add on an existing id is an overwrite, same ownership rule as set
     if (own) await requireOwn(ctx, await ctx.view.get(col(name), { id: op.id }))

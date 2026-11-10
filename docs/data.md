@@ -227,7 +227,7 @@ const { data: messages } = await cero.get(room.messages) // messages[0].photo.ur
   the row again for a fresh url.
 - A `t.file` field resolves only for a file in the same handle's `files`, or the root's for a root
   row: to use a file in another handle, put its bytes there. profileSync and handleSync do that for
-  a `t.file` avatar. A string that is not a file id makes every read of that row throw `INVALID`.
+  a `t.file` avatar. A string that is not a file id is refused: the write rejects with `REFUSED`.
 - Files have no timestamps, they read `0`: order them by `index`.
 - `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
   admin or an owner deletes one.
