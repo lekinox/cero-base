@@ -97,6 +97,11 @@ test('push: an unknown handle, a tampered payload and garbage all read as nothin
   const payload = last(gateway)
 
   t.is(await verify(b.store.storage, payload, []), null, 'not a handle of this device')
+  t.is(
+    await verify(b.store.storage, payload, [{ id: 'room', key: a.db.key }]),
+    null,
+    'a handle given with no writers accepts none'
+  )
   const tampered = b4a.from(payload)
   tampered[tampered.length - 1] ^= 1
   t.is(await verify(b.store.storage, tampered, [handle(a.db)]), null, 'tampered')
