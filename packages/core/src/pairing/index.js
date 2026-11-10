@@ -324,6 +324,8 @@ export class Pairing extends ReadyResource {
 
   /** @private */
   _list(name) {
+    // a sync still running once its database closed ends as closed, as its other reads do
+    this.db.guard()
     return this.db.view.find(`@${this.db.ns}/${name}`, {}).toArray()
   }
 

@@ -122,6 +122,30 @@ test('ready() + close() lifecycle, both idempotent', async (t) => {
   t.ok(pairing.closed)
 })
 
+test('sync: one still reading as its database closes ends as closed', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  // its read of the requests resolves late, as from a slow disk
+  const get = db.get.bind(db)
+  let reached
+  let release
+  const parked = new Promise((resolve) => (reached = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  db.get = async (...args) => {
+    const read = await get(...args)
+    if (args[0] === 'requests') {
+      reached()
+      await held
+    }
+    return read
+  }
+  const syncing = pairing._sync()
+  await parked
+  await db.close()
+  release()
+  t.is(await code(syncing), 'CLOSED', 'as its other reads do, not on a view that is gone')
+})
+
 // ─── invites ───────────────────────────────────────────────────────────────
 
 test('invite: a z32 string, kept in the database', async (t) => {
