@@ -284,6 +284,22 @@ test('decodeId rejects an id that is not valid z32', (t) => {
   t.exception.all(() => decodeId('!!!not-valid-z32!!!'), /valid z32/)
 })
 
+test('decodeId rejects a type that is no media type', (t) => {
+  const id = (type) => encodeId(sampleKey(), sampleBlobId(), type)
+  for (const type of [
+    'image/png\r\n',
+    'image/png\nX-Evil: 1',
+    'png',
+    'image/',
+    'image/pn g',
+    'imagé/png'
+  ]) {
+    t.exception.all(() => decodeId(id(type)), /media type/, JSON.stringify(type))
+  }
+  t.is(decodeId(id('text/plain; charset=utf-8')).type, 'text/plain; charset=utf-8')
+  t.is(decodeId(id('application/vnd.api+json')).type, 'application/vnd.api+json')
+})
+
 test('decodeId rejects a truncated payload', (t) => {
   const short = z32.encode(b4a.alloc(8))
   t.exception.all(() => decodeId(short), /malformed|id/)

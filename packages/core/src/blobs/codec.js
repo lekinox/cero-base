@@ -14,6 +14,10 @@ import { CeroError } from '../lib/errors.js'
 
 const BlobId = getEncoding('@cero/blob-id')
 
+// type/subtype as RFC 9110 tokens, parameters in printable ASCII: the type is served as a header
+const TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+"
+const MEDIA_TYPE = new RegExp(`^${TOKEN}/${TOKEN}(;[ -~]*)?$`)
+
 /**
  * Encode a coreKey + raw hyperblobs blobId + type into a durable string id.
  *
@@ -49,5 +53,6 @@ export function decodeId(id) {
     throw CeroError.INVALID('id is malformed')
   }
   const { coreKey, blockOffset, blockLength, byteOffset, byteLength, type } = v
+  if (type !== '' && !MEDIA_TYPE.test(type)) throw CeroError.INVALID('id has no media type')
   return { coreKey, blobId: { blockOffset, blockLength, byteOffset, byteLength }, type }
 }
