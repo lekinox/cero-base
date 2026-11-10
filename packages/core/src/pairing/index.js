@@ -376,8 +376,10 @@ export class Pairing extends ReadyResource {
       resolve = res
       fail = rej
     })
+    let over = false
     const settle = async (answer, done) => {
       await keep(answer)
+      over = true
       done(answer)
     }
     // anything else sealed to the reply address is turned away, so the inbox keeps none of it
@@ -423,7 +425,8 @@ export class Pairing extends ReadyResource {
       clearTimeout(expiry)
       signal?.removeEventListener('abort', onabort)
       mailbox.off('close', onabort)
-      await Promise.allSettled([inbox.close(), post.close()])
+      // a reply address serves one join: answered, nothing of it is kept
+      await Promise.allSettled([over ? inbox.forget() : inbox.close(), post.close()])
     }
   }
 }

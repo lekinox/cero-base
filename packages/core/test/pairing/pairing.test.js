@@ -446,6 +446,21 @@ test('confirm: junk sealed to the reply address leaves nothing on the joiner, th
   t.pass('and its core is erased once the answer is kept')
 })
 
+test('join: a settled join leaves no row in the box, accepted or denied', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  await joiner.join(await host.pairing.invite())
+  await waitFor(async () => (await joiner.mailbox.inbox.list()).length === 0)
+  t.pass('accepted')
+
+  const other = await makeJoiner(t, testnet)
+  const joining = other.join(await host.pairing.invite({ confirm: true })).catch((e) => e)
+  await host.pairing.deny((await asked(host.db)).id, 'no')
+  t.is((await joining).code, 'DENIED')
+  await waitFor(async () => (await other.mailbox.inbox.list()).length === 0)
+  t.pass('denied')
+})
+
 test('link: a bare device joins, the accepter attests it, and the reply carries its chain', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await makeHost(t, testnet)

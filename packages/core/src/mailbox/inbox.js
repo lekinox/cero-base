@@ -36,6 +36,16 @@ export function keyPair(secret) {
 }
 
 /**
+ * A handled row old enough to forget; one whose `handled` is no time is not.
+ *
+ * @param {import('./index.js').Mail} mail
+ * @returns {boolean}
+ */
+export function aged({ handled }) {
+  return isTime(handled) && Date.now() - handled >= HANDLED_FOR
+}
+
+/**
  * Erase the core a message travelled in. Corestore leaves a core that still has a session open,
  * and that is an error here, not silence.
  *
@@ -87,6 +97,21 @@ export class Inbox extends ReadyResource {
     this._session = null
     /** @private */
     this._discovery = null
+    /** @private */
+    this._forgotten = false
+  }
+
+  /**
+   * Close, and delete all the box keeps for this address: for one nothing is received at again.
+   *
+   * @returns {Promise<void>}
+   */
+  async forget() {
+    this._forgotten = true
+    await this.close()
+    for (const mail of await this.box.list()) {
+      if (b4a.equals(mail.address, this.address)) await this.box.del(mail.id)
+    }
   }
 
   /** @private */
@@ -95,7 +120,7 @@ export class Inbox extends ReadyResource {
     for (const mail of await this.box.list()) {
       if (!b4a.equals(mail.address, this.address)) continue
       if (mail.handled) {
-        if (!(mail.handled > EPOCH && mail.handled <= Date.now())) {
+        if (!isTime(mail.handled)) {
           mail.handled = Date.now()
           await this.box.put({
             id: mail.id,
@@ -276,6 +301,7 @@ export class Inbox extends ReadyResource {
   async _remember(id) {
     const handled = Date.now()
     await this.box.put({ id, address: this.address, message: EMPTY, handled })
+    if (this._forgotten) return this.box.del(id)
     this._handled.set(id, handled)
     await this._prune()
   }
@@ -289,6 +315,10 @@ export class Inbox extends ReadyResource {
       await this.box.del(id)
     }
   }
+}
+
+function isTime(handled) {
+  return handled > EPOCH && handled <= Date.now()
 }
 
 function idle(ids, mail) {

@@ -3,7 +3,7 @@ import safetyCatch from 'safety-catch'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 
-import { Inbox, keyPair, erase } from './inbox.js'
+import { Inbox, keyPair, erase, aged } from './inbox.js'
 import { Post } from './post.js'
 import { CeroError } from '../lib/errors.js'
 
@@ -80,6 +80,8 @@ export class Mailbox extends ReadyResource {
   /** @private */
   async _open() {
     await this.network.ready()
+    // an address no inbox receives at any more leaves its handled rows too
+    for (const mail of await this.inbox.list()) if (aged(mail)) await this.inbox.del(mail.id)
     for (const mail of await this.outbox.list()) this._deliver(mail)
   }
 
