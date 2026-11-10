@@ -13,8 +13,8 @@ const READ_TIMEOUT = 30000
 // reads in the slots left
 const READS = 16
 const PER_PEER = 4
-// a connection's keys waiting: what a mirror announces of one address at once. Past it the peer
-// is asked to announce again once its queue is empty
+// a connection's keys waiting: what a mirror announces of one address at once. Past it a sender's
+// posts are asked to announce again once its queue is empty; a mirror answers no such lookup
 const QUEUED = 32
 // a handled id is remembered this long, so a mirror announcing it again hands nothing over.
 // Nothing bounds how long a mirror holds a core: one it announces after this is handed over again
