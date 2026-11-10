@@ -60,7 +60,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<void> }}
+ * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<Array<{ value: Buffer, key: Buffer }>> }}  `apply` resolves to the nodes that landed.
  */
 export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }) {
   const router = new spec.dispatch.Router()
@@ -822,6 +822,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       deferred.addWriter = (...args) => void calls.push(['addWriter', args])
       deferred.removeWriter = (...args) => void calls.push(['removeWriter', args])
       let refusal = null
+      const landed = []
       for (const node of nodes) {
         try {
           const seed = crypto.hash([node.key, node.value])
@@ -832,6 +833,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
             dbKey,
             seed
           })
+          landed.push(node)
         } catch (err) {
           // anything but a refusal skips one node, so an older peer never drops a batch its newer neighbour applies
           if (!isRefusal(err)) {
@@ -851,6 +853,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         for (const [fn, args] of calls) await host[fn](...args)
       }
       await view.flush()
+      return refusal ? [] : landed
     }
   }
 }

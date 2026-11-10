@@ -256,7 +256,10 @@ export declare class Database extends ReadyResource {
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
-        }>, view: object, host: object) => Promise<void>;
+        }>, view: object, host: object) => Promise<Array<{
+            value: Buffer;
+            key: Buffer;
+        }>>;
     };
     /** @private */
     _presence;

@@ -763,6 +763,94 @@ test('apply event: fires for REMOTE ops with the remote writerKey (two-peer)', a
   t.ok(b4a.equals(e.writerKey, a.db.writerKey), "event carries A's writerKey, not B's")
 })
 
+test('apply: a refused op is not announced', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'owner' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db, 'reader')
+
+  const seen = []
+  const updates = []
+  a.db.on('apply', (e) => seen.push(e))
+  a.db.on('update', (touched) => updates.push(touched))
+  const { wrap } = await import('../../src/database/envelope.js')
+  const id = genId()
+  const op = spec.dispatch.encode('@cero/add-messages', { id, text: 'forged by a reader' })
+  await b.db.bee.append(wrap(a.db.version, op), { optimistic: true })
+  await waitFor(() => a.errors.some((e) => e.code === 'REFUSED'))
+
+  t.absent((await a.db.get('messages', id)).data, 'the row was refused')
+  t.absent(
+    seen.find((e) => e.row?.id === id),
+    'no apply event for it'
+  )
+  t.absent(
+    updates.find((touched) => touched.has('messages')),
+    'its ref is not touched'
+  )
+})
+
+test('apply: a batch a refused op discards is not announced, any of it', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const seen = []
+  db.on('apply', (e) => seen.push(e))
+  const { wrap } = await import('../../src/database/envelope.js')
+  const id = genId()
+  const put = spec.dispatch.encode('@cero/add-messages', { id, text: 'in the batch' })
+  const stranger = Identity.randomKeyPair().publicKey
+  const member = {
+    id: hid.encode(stranger),
+    key: stranger,
+    role: 'owner',
+    createdAt: 1,
+    updatedAt: 1
+  }
+  // past genesis nobody adds a member
+  const refused = spec.dispatch.encode('@cero/add-member', member)
+  await db.bee.append([wrap(db.version, put), wrap(db.version, refused)])
+  await db.bee.update()
+
+  t.ok(
+    errors.some((e) => e.code === 'REFUSED'),
+    'the batch was refused'
+  )
+  t.absent((await db.get('messages', id)).data, 'its row did not land')
+  t.absent(
+    seen.find((e) => e.row?.id === id),
+    'no apply event for the op beside the refusal'
+  )
+})
+
+test('apply: an op skipped for an error is not announced, the next one is', async (t) => {
+  const errors = []
+  const { db, identity } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const seen = []
+  db.on('apply', (e) => seen.push(e))
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { data: me } = await db.get('members', identity.id)
+  const op = spec.dispatch.encode('@cero/set-member', { ...me, role: 'emperor' })
+  await db.bee.append(wrap(db.version, op))
+  const { data: row } = await db.put('messages', { text: 'next' })
+
+  t.ok(
+    errors.some((e) => e.code === 'INVALID'),
+    'the bad rank was skipped'
+  )
+  t.absent(
+    seen.find((e) => e.name === 'member'),
+    'no apply event for it'
+  )
+  t.ok(
+    seen.find((e) => e.row?.id === row.id),
+    'the op after it is announced'
+  )
+})
+
 test('set on an existing row keeps its index (no reorder)', async (t) => {
   const { db } = await bootstrapped(t)
   for (const id of ['m0', 'm1', 'm2']) await db.put('messages', { id, text: id })
@@ -2024,9 +2112,10 @@ test('replication: a before hook refuses replicated writes on the peer that has 
   const { data: blocked } = await a.db.put('messages', { text: 'blocked' })
   t.ok((await a.db.get('messages', blocked.id)).data, 'a applied its own write, it has no rule')
 
-  await waitFor(() => applied.includes('blocked') || null)
+  await waitFor(() => b.errors.some((e) => e.code === 'REFUSED') || null)
   t.absent((await b.db.get('messages', blocked.id)).data, 'b refused what its rule rejects')
   t.absent(rows.includes('blocked'), 'and never handed it to a subscriber')
+  t.absent(applied.includes('blocked'), 'nor announced it')
 
   // with the rule on both peers the writer learns at its own dry run
   a.db.before('put', (ctx) => ctx.row.text !== 'blocked')
@@ -3281,4 +3370,39 @@ test("gate: a reader's far-future node raises nothing", async (t) => {
   t.is(b.db.behind, null, 'nor is the reader')
   const put = await a.db.put('messages', { text: 'owner write' }).catch((e) => e)
   t.ok(put.data, 'the owner writes')
+})
+
+test('gate: a newer op applied during a write stops it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+
+  const { data: row } = await a.db.put('messages', { text: 'first' })
+  await waitFor(async () => (await b.db.get('messages', row.id)).data)
+
+  // a's set is past the entry check when b's newer write lands in the drain it awaits
+  const updated = a.db.bee.updated.bind(a.db.bee)
+  let first = true
+  a.db.bee.updated = async () => {
+    if (first) {
+      first = false
+      t.is(a.db.behind, null, 'not behind when the set starts')
+      b.db.version = spec.meta.version + 1
+      await b.db.set('messages', { id: row.id, text: 'newer' })
+      await waitFor(() => a.db.behind === b.db.version)
+    }
+    return updated()
+  }
+
+  const length = a.db.bee.local.length
+  const err = await a.db.set('messages', { id: row.id, text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'the write is refused once behind')
+  t.is(a.db.bee.local.length, length, 'nothing reached the log')
+  t.is((await b.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
 })

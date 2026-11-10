@@ -441,7 +441,8 @@ export class Database extends ReadyResource {
   async write(ops) {
     // behind, a set merges from a view missing the newer writes and every device takes the stale
     // row: no writes until the update, but leaving, which touches nothing else
-    if (this.behind !== null && !leaving(ops, this.identity.id)) throw CeroError.BEHIND(this.behind)
+    const frozen = () => this.behind !== null && !leaving(ops, this.identity.id)
+    if (frozen()) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
       for (const op of ops) this.txQueue.push(op)
       return
@@ -459,6 +460,8 @@ export class Database extends ReadyResource {
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
       if (!(await this._dryRun(encoded)) && !action) return
+      // a newer op may have applied while this write awaited
+      if (frozen()) throw CeroError.BEHIND(this.behind)
       const wrapped = encoded.map((value) => wrap(this.version, value))
       await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
     } catch (err) {
@@ -880,9 +883,7 @@ export class Database extends ReadyResource {
       }
       ready.push({ ...node, value: op.body })
     }
-    const result = await this.dispatcher.apply(ready, view, host)
-    this._notify(ready)
-    return result
+    this._notify(await this.dispatcher.apply(ready, view, host))
   }
 
   // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip
