@@ -330,15 +330,17 @@ async function resolveIdentity(opts, local, done) {
   const provided = opts.phrase ? Identity.toSeed(opts.phrase) : null
   const seed = (await local.store.get('master')).data?.seed ?? null
   const row = (await local.store.get('device')).data
-  if (seed && !row) throw CeroError.INVALID('this storage predates device keys: recreate it')
+  if (done && seed && !row)
+    throw CeroError.INVALID('this storage predates device keys: recreate it')
   const same =
     row && provided ? b4a.equals((await Identity.keyPair(provided)).publicKey, row.identity) : true
   // another identity comes in only through restore, which wipes this one first
   if (done && !same) throw CeroError.INVALID('dir holds another identity: switch with cero.restore')
   // a phrase given to an unfinished setup takes over from the identity it minted
   if (row && same) return { identity: unpack(row, seed), fresh: false, minted: false }
-  const identity = await Identity.create({ seed: provided, words: opts.words })
-  return { identity, fresh: !provided, minted: true }
+  // a launch killed before its device row goes on from the seed it stored
+  const identity = await Identity.create({ seed: provided ?? seed, words: opts.words })
+  return { identity, fresh: !provided && !seed, minted: true }
 }
 
 // the root's own join in the joins rows

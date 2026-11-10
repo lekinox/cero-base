@@ -5,6 +5,8 @@ import path from 'path'
 import b4a from 'b4a'
 import c from 'compact-encoding'
 import { discoveryKey } from 'hypercore-crypto'
+import HypercoreStorage from 'hypercore-storage'
+import Corestore from 'corestore'
 
 import { Identity } from '@cero-base/core/identity'
 import { decodeId } from '@cero-base/core/blobs/codec'
@@ -26,7 +28,8 @@ import {
   deny,
   rotate,
   peek,
-  restore
+  restore,
+  Local
 } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
@@ -816,6 +819,58 @@ test('cero(): a storage from before device keys is refused, to be recreated', as
   await me.close()
   t.is(await peek(dir, spec), false, 'no device, no identity to open')
   await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }), /predates device keys/)
+})
+
+// the rows a first launch had written when it was killed between its seed and its device row
+async function killedAfterSeed(dir, setup, seed) {
+  const storage = new HypercoreStorage(`${dir}/main`)
+  const store = new Corestore(storage, { manifestVersion: 2 })
+  const local = new Local(null, spec, { store })
+  await local.ready()
+  const keyPair = Identity.randomKeyPair()
+  await local.store.set('keypair', { ...keyPair, setup })
+  await local.store.set('master', { seed })
+  await local.close()
+  await store.close()
+  await storage.close()
+  return keyPair
+}
+
+test('cero(): a first launch killed between its seed and its device row resumes', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+
+  const dir = await t.tmp()
+  const seed = Identity.randomBytes(16)
+  const writer = await killedAfterSeed(dir, 'create', seed)
+  const me = await cero(dir, spec, opts)
+  t.is(me.id, (await Identity.create({ seed })).id, 'the identity of the stored seed')
+  t.alike(me.store.keyPair.publicKey, writer.publicKey, 'with the device key it began with')
+  t.ok(me.store.writable, 'created')
+  await me.close()
+  const again = await cero(dir, spec, opts)
+  t.is(again.id, me.id, 'and the launch after keeps it')
+  await again.close()
+
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const phrase = owner.identity.toPhrase()
+  const fresh = await t.tmp()
+  await killedAfterSeed(fresh, 'recover', Identity.toSeed(phrase))
+  const b = await cero(fresh, spec, { ...opts, phrase })
+  t.teardown(() => b.close().catch(() => {}), { order: 5 })
+  t.is(b.id, owner.id, 'a phrase recovery resumes as the identity of the phrase')
+  t.alike(b.store.key, owner.store.key, 'into its database')
+})
+
+test('cero(): a phrase recovery killed before its device row resumes with no phrase, never creates', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const dir = await t.tmp()
+  await killedAfterSeed(dir, 'recover', Identity.toSeed(owner.identity.toPhrase()))
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.is(me.id, owner.id, 'the identity of the stored seed')
+  t.alike(me.store.key, owner.store.key, 'recovered into its database')
 })
 
 test('peek(): rejects bad dir', async (t) => {
