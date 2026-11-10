@@ -361,6 +361,67 @@ test("del-writer: a removed device's key stays out: no new writer, no device it 
   t.is((await refusal(db, hid.encode(writer)))?.reason, 'removed', 'a join by it is turned away')
 })
 
+// a host that keeps the writers apply adds and removes
+function recording() {
+  const calls = []
+  return {
+    calls,
+    addWriter: async (key) => void calls.push(['add', hid.encode(key)]),
+    removeWriter: async (key) => void calls.push(['remove', hid.encode(key)])
+  }
+}
+
+test('del-writer: a writer with no device row is unseated by one who may remove, and no one else', async (t) => {
+  const stray = Identity.randomKeyPair().publicKey
+  const { db } = await withMember(t, 'member')
+  const host = recording()
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(stray), host), null)
+  t.alike(host.calls, [['remove', hid.encode(stray)]], 'the owner takes the seat')
+
+  const { db: member } = await withRole(t, 'member')
+  const refused = recording()
+  const err = await apply(member, member.writerKey, 'del-writer', delWriterOp(stray), refused)
+  t.is(err?.code, 'REFUSED', 'a member may not')
+  t.alike(refused.calls, [])
+})
+
+test('del-device: an unknown id is nothing, and another member device is not a member to take', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const host = recording()
+  t.is(await apply(db, db.writerKey, 'del-device', { id: genId() }, host), null, 'unknown')
+  t.alike(host.calls, [], 'no seat moves')
+
+  const owner = hid.encode(db.writerKey)
+  t.is((await as('del-device', { id: owner }))?.code, 'REFUSED', "the owner's device")
+  t.ok((await db.get('devices', owner)).data, 'stays')
+})
+
+test('del-member: a rule on a removal sees her devices, and a refused one leaves them and her seat', async (t) => {
+  const { db, id, writer, member } = await withMember(t, 'member')
+  await seat(db, { identity: member, writer })
+  const seen = []
+  let refuse = true
+  db.before('del', async (ctx) => {
+    if (ctx.name !== 'members') return
+    const { data } = await ctx.get('devices')
+    seen.push(data.filter((d) => d.memberId === id).length)
+    return refuse ? false : undefined
+  })
+  const host = recording()
+  const err = await apply(db, db.writerKey, 'del-member', { id }, host)
+  t.is(err?.rule, 'hook', 'refused')
+  t.ok((await db.get('devices', writer.id)).data, 'her device stays')
+  t.alike(host.calls, [], 'and her seat')
+
+  refuse = false
+  t.is(await apply(db, db.writerKey, 'del-member', { id }, host), null)
+  t.alike(seen, [1, 1], 'each time the rule saw her device')
+  t.ok(
+    host.calls.some(([op, key]) => op === 'remove' && key === writer.id),
+    'then she is unseated'
+  )
+})
+
 // ─── fast-forward trust ───────────────────────────────────────────────────
 
 // autobee trusts every fast-forward candidate unless a hook says otherwise —
