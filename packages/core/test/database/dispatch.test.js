@@ -616,6 +616,29 @@ test('set-member: a member cannot rename another member or overwrite their key',
   t.alike(after.key, before.key, 'and so is the key the member was admitted with')
 })
 
+test('set-member: on another member row with no change of role nothing lands and no rule runs', async (t) => {
+  const b = await second('member')
+  const { db, identity } = await withRole(t, 'owner', { members: [b.row] })
+  await seat(db, b)
+  let ran = 0
+  db.before('set', (ctx) => {
+    if (ctx.name === 'members') ran++
+  })
+  const { data: before } = await db.get('members', identity.id)
+  const touch = { id: identity.id, key: before.key, role: 'owner', updatedAt: before.updatedAt + 5 }
+
+  await apply(db, b.writer.publicKey, 'set-member', touch)
+  await apply(db, Identity.randomKeyPair().publicKey, 'set-member', touch)
+
+  const { data: after } = await db.get('members', identity.id)
+  t.is(
+    after.updatedAt,
+    before.updatedAt,
+    'her row keeps its time, from a member and from a core with no seat'
+  )
+  t.is(ran, 0, 'and no rule on members ran')
+})
+
 test('set-member: a member may still rename itself', async (t) => {
   const { db, identity } = await withRole(t, 'owner')
   await db.call('set-member', {

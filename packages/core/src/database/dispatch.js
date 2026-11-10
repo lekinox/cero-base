@@ -416,6 +416,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     // whose row it is decides what may change: your own is writable, another member's only
     // for an authorised role change. Key and provenance never come off the wire
     const isSelf = op.id === (await getSignerMember(ctx.view, ctx.key))
+    const ranks = Boolean(op.role) && op.role !== existing.role
+    if (!isSelf && !ranks) return
     const next = isSelf ? { ...op } : { ...existing }
     next.key = existing.key
     next.role = existing.role
@@ -423,7 +425,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     next.updatedAt = op.updatedAt || existing.updatedAt
 
     let row
-    if (op.role && op.role !== existing.role) {
+    if (ranks) {
       // a rank cero has no name for is no rank, granted or not
       if (!isRank(op.role)) throw CeroError.INVALID(`'${op.role}' is not a role`)
       // the last owner keeps her rank, whatever a rule grants, as she is never removed
