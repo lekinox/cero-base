@@ -1813,6 +1813,35 @@ test('promised: a linked device gets its chain in the answer, claims, and keeps 
   t.is((await host.db.get('members')).data.length, 1, 'no member was added')
 })
 
+test('promised: a promise to a device key recorded removed is offered nothing, and deleted', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  // she asks on an invite that waits for a member, then comes in through another
+  const answers = heard(joiner.mailbox)
+  const stop = new AbortController()
+  const asking = joiner.join(await host.pairing.invite({ confirm: true }), { signal: stop.signal })
+  asking.catch(() => {})
+  const request = await asked(host.db)
+  const other = await makeMailbox(t, testnet)
+  const { identity } = joiner
+  const reply = await Pairing.join(other.mailbox, await host.pairing.invite(), {
+    identity,
+    spec: built
+  })
+  const db = await opened(t, { net: other.net, identity }, reply)
+  await db.claim()
+  const id = hid.encode(db.writerKey)
+  await waitFor(async () => (await host.db.get('devices', id)).data)
+
+  // her device is removed, and the join that waited is accepted all the same
+  await host.db.call('del-device', { id })
+  await host.db.call('accept', { id: request.id, role: 'member' })
+  await waitFor(async () => !(await host.db.get('requests', request.id)).data)
+  t.pass('the promise is deleted')
+  t.is(answers.length, 0, 'and its join was offered nothing')
+  stop.abort()
+})
+
 test('promised: one never kept leaves no member, and past its invite nobody offers its keys or settles it', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })

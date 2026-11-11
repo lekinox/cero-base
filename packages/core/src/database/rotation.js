@@ -168,7 +168,16 @@ export class Rotation {
     const keyed = devices.filter((d) => d.key)
     if (keyed.length === 0) throw CeroError.INVALID('cannot rotate a database with no devices')
     const { data: requests } = await this.db.get('requests')
-    return [...keyed, ...requests.filter((row) => row.promised)]
+    const promised = []
+    for (const row of requests) if (await this._stands(row)) promised.push(row)
+    return [...keyed, ...promised]
+  }
+
+  // a promise stands while its invite lasts and its device key is not one removed
+  /** @private */
+  async _stands({ promised, expires, key }) {
+    if (!promised || (expires > 0 && Date.now() > expires)) return false
+    return !(await this.db.view.get(`@${this.db.ns}/removals`, { id: hid.encode(key) }))
   }
 
   // resolves the sequence apply assigned, 0 if it never applied

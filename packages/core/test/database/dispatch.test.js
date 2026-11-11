@@ -1409,6 +1409,30 @@ test('promise: one never kept leaves no member, a spent invite leaves it, and a 
   t.absent((await db.get('members', b.id)).data)
 })
 
+test("promise: a device removed takes its writer's request with it, and what its device key was promised", async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db, { reuse: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  // the same device let in once more on another writer, and another device of the member
+  await apply(db, again, 'join', named(db, invite, { identity, writer: again }))
+  const tablet = linked(identity)
+  const other = tablet.writer.publicKey
+  await apply(db, other, 'join', named(db, invite, { identity: tablet.identity, writer: other }))
+  t.ok(await promise(db, writer), 'seated, its promise not settled yet')
+
+  t.is(await apply(db, db.writerKey, 'del-device', { id: hid.encode(writer) }), null)
+  t.absent(await promise(db, writer), "its writer's promise goes with the seat")
+  t.absent(await promise(db, again), 'and the one made to its device key on another writer')
+  t.ok(await promise(db, other), "another device's stays")
+
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(other)), null)
+  t.absent(await promise(db, other), 'a writer unseated before it sat loses what it was owed')
+})
+
 test('join: a removed member comes back only through an invite minted after its removal', async (t) => {
   const { db } = await withRole(t, 'owner')
   const before = await minted(db, { reuse: true })

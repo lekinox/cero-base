@@ -67,6 +67,8 @@ export declare class Rotation {
     /** @private */
     private _devices;
     /** @private */
+    private _stands;
+    /** @private */
     private _announce;
     /** @private */
     private _mint;

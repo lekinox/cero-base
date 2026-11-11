@@ -1253,8 +1253,8 @@ async function promised(t, testnet) {
   const mailbox = new Mailbox(network)
   t.teardown(() => mailbox.close().catch(() => {}), { order: 1 })
   const identity = await Identity.create()
-  const join = async () => {
-    const reply = await Pairing.join(mailbox, await pairing.invite(), { identity, spec })
+  const join = async (opts) => {
+    const reply = await Pairing.join(mailbox, await pairing.invite(opts), { identity, spec })
     const { key, encryptionKey, epochs, writer: keyPair } = reply
     return { key, encryptionKey, epochs, keyPair }
   }
@@ -1264,7 +1264,7 @@ async function promised(t, testnet) {
     t.teardown(() => db.close().catch(() => {}), { order: 5 })
     return db
   }
-  return { host, join, open }
+  return { host, pairing, join, open }
 }
 
 const named = async (db) => {
@@ -1307,6 +1307,61 @@ test('rotate: a promise made since the last rotation is no reason to rotate, one
   await host.db.call('del-request', { id })
   await host.db.rotation._audit()
   t.is(host.db.keyring.seq, 3, 'dropped with no seat, the room rotates away from it')
+})
+
+test('rotate: a device that claimed its seat and is removed before its promise was settled is not sealed, and reads nothing written since', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, pairing, join, open } = await promised(t, testnet)
+  const keys = await join()
+  // the host answers no more: nobody settles the promise
+  await pairing.close()
+  const db = await open(keys)
+  await db.claim()
+  const id = hid.encode(db.writerKey)
+  await waitFor(async () => (await host.db.get('devices', id)).data)
+  t.ok((await host.db.get('requests', id)).data?.promised, 'seated, its promise not settled')
+
+  await host.db.call('del-device', { id })
+  await host.db.rotate()
+  t.absent((await named(host.db)).includes(id), 'the rotation does not name it')
+  await host.db.put('messages', { text: 'after the removal' })
+  await waitFor(async () => (await db.rotation._epochs()).length > 0)
+  t.is(db.keyring.seq, 0, 'it reads the announcement and opens no envelope')
+  t.absent((await texts(db)).includes('after the removal'), 'nor anything written since')
+})
+
+test('rotate: a promise never kept whose invite ran out is not sealed', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, join } = await promised(t, testnet)
+  await join({ ttl: 1500 })
+  const [{ id, expires }] = (await host.db.get('requests')).data
+  await host.db.rotate()
+  t.ok((await named(host.db)).includes(id), 'named while its invite lasts')
+  await waitFor(() => Date.now() > expires)
+  await host.db.rotate()
+  t.absent((await named(host.db)).includes(id), 'and no more once it ran out')
+})
+
+test('rotate: a promise to a device key recorded removed is not sealed', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, pairing, join, open } = await promised(t, testnet)
+  // she asks on an invite that waits for a member, then comes in through another
+  join({ confirm: true }).catch(() => {})
+  const waiting = async () => (await host.db.get('requests', { admitted: false })).data[0]
+  const request = await waitFor(waiting)
+  const db = await open(await join())
+  await db.claim()
+  const id = hid.encode(db.writerKey)
+  await waitFor(async () => (await host.db.get('devices', id)).data)
+  await waitFor(async () => !(await host.db.get('requests', id)).data)
+
+  // her device is removed, and the join that waited is accepted all the same
+  await pairing.close()
+  await host.db.call('del-device', { id })
+  await host.db.call('accept', { id: request.id, role: 'member' })
+  t.ok((await host.db.get('requests', request.id)).data?.promised, 'promised to a removed key')
+  await host.db.rotate()
+  t.absent((await named(host.db)).includes(request.id), 'a rotation does not name it')
 })
 
 function batch(db, ops) {

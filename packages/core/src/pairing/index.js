@@ -14,7 +14,7 @@ import { wrap } from '../database/envelope.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE, MEMBER, REFUSALS, SPENT } from '../lib/constants.js'
+import { NAMESPACE, MEMBER, REFUSALS, REMOVALS, SPENT } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
 const MAX_DELAY = 2 ** 31 - 1
@@ -243,11 +243,11 @@ export class Pairing extends ReadyResource {
     this._arm([...invites, ...requests, ...spent])
     // behind, this device's view of the room is stale: it answers no join until it updates
     const inviter = can(role, INVITE) && this.db.behind === null
-    // a promise is settled here once it is kept, never by a read of its keys
-    const kept = inviter ? await this._kept(requests) : []
-    for (const { id } of kept) await this.db.call('del-request', { id }).catch(safetyCatch)
-    // an admission is owed its keys until they are read; a promise, until kept or past its invite
-    const over = (row) => row.promised && (kept.includes(row) || expired(row))
+    // a promise is settled here once it is kept or void, never by a read of its keys
+    const done = inviter ? await this._done(requests) : []
+    for (const { id } of done) await this.db.call('del-request', { id }).catch(safetyCatch)
+    // an admission is owed its keys until they are read; a promise, until done or past its invite
+    const over = (row) => row.promised && (done.includes(row) || expired(row))
     const owed = inviter ? requests.filter((row) => row.admitted && !over(row)) : []
     const refused = inviter ? refusals : []
     const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
@@ -257,9 +257,10 @@ export class Pairing extends ReadyResource {
     this.emit('serving', this.serving)
   }
 
-  // the promises kept: the device each was made to sits under the member it was made to
+  // the promises kept, the device each was made to sits under the member it was made to, and
+  // those void, made to a device key since removed
   /** @private */
-  async _kept(requests) {
+  async _done(requests) {
     const promised = requests.filter((row) => row.promised)
     if (promised.length === 0) return []
     const { data: devices } = await this.db.get('devices')
@@ -267,7 +268,8 @@ export class Pairing extends ReadyResource {
       const id = hid.encode(identity)
       return devices.some((d) => d.memberId === id && d.key && b4a.equals(d.key, key))
     }
-    return promised.filter(seated)
+    const removed = new Set((await this._list(REMOVALS)).map((row) => row.id))
+    return promised.filter((row) => removed.has(hid.encode(row.key)) || seated(row))
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it

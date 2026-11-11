@@ -511,6 +511,13 @@ export function makeDispatcher({
     await ctx.host.removeWriter(hid.decode(id))
     await revoke(ctx, device)
     await drop(ctx, 'devices', id)
+    // with the seat go the keys its writer was still owed, and what its device key was promised:
+    // a rotation is sealed to the promised
+    await drop(ctx, 'requests', id)
+    if (!device?.key) return
+    for (const row of await ctx.view.find(requests, {}).toArray()) {
+      if (row.promised && b4a.equals(row.key, device.key)) await drop(ctx, 'requests', row.id)
+    }
   }
   add('del-writer', async (op, ctx) => {
     if (!isKey(op.writer)) return
