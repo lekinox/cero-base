@@ -5,7 +5,7 @@ import HypercoreStorage from 'hypercore-storage'
 import { encode, createNotification } from 'blind-push'
 import crypto from 'hypercore-crypto'
 
-import { verify, decrypt } from '../../src/push/index.js'
+import { verify, decrypt, topic } from '../../src/push/index.js'
 import { wrap } from '../../src/database/envelope.js'
 import { Invite } from '../../src/pairing/invite.js'
 import { sealJoin } from '../../src/pairing/index.js'
@@ -116,6 +116,13 @@ test('push: an unknown handle, a tampered payload and garbage all read as nothin
     null,
     'a payload too short to hold a proof'
   )
+})
+
+test('push: a payload names its topic, one that does not decode names none', (t) => {
+  const discoveryKey = crypto.discoveryKey(b4a.alloc(32, 1))
+  const payload = encode({ discoveryKey, payload: b4a.alloc(3), version: 3 })
+  t.is(topic(payload), b4a.toHex(discoveryKey), 'the string a device subscribes to')
+  t.is(topic(b4a.from('garbage')), null)
 })
 
 test('push: a burst of writes is at most two pushes, the last at the latest block', async (t) => {
