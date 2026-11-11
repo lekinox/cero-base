@@ -1286,13 +1286,16 @@ export class Database extends ReadyResource {
     try {
       for (const [op, payload] of ops) {
         stamp = await this._stamp(tx)
+        // closed while it was stamped: Bare ends the process on a hash of no key, where Node throws
+        const key = this.writerKey
+        if (!key) throw CeroError.CLOSED('Database')
         const value = this.dispatcher.encode(`@${this.ns}/${op}`, payload, stamp)
         await this.dispatcher.dispatch(value, {
           host,
           view: tx,
-          key: this.writerKey,
+          key,
           dbKey: this.key,
-          seed: crypto.hash([this.writerKey, value]),
+          seed: crypto.hash([key, value]),
           stamp
         })
         wrapped.push(wrap(stamp, value))

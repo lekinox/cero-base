@@ -4776,6 +4776,18 @@ test('write: sets racing close reject cleanly instead of crashing', async (t) =>
   t.pass('every racing write settled with a clean cero error or success')
 })
 
+test('write: one stamped as the database closes rejects CLOSED', async (t) => {
+  const { db } = await bootstrapped(t)
+  const stamp = db._stamp.bind(db)
+  // the close lands between an op's stamp and its seed
+  db._stamp = async (view) => {
+    const at = await stamp(view)
+    await db.close()
+    return at
+  }
+  await t.exception(db.set('messages', { id: 'late', text: 'late' }), /CLOSED/)
+})
+
 // a device behind merges a set from a view that lacks the newer writes and appends the whole row:
 // every device would then take its stale copy. So a device behind reads, syncs and leaves, but
 // does not write
