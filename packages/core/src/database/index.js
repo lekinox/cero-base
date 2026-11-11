@@ -599,6 +599,8 @@ export class Database extends ReadyResource {
    */
   async get(name, query) {
     this.guard()
+    // a view being applied again is empty meanwhile: a read waits for it, as a write does
+    while (this._rebuilding) await this._rebuilding
     return this._read(this.view, name, query)
   }
 
@@ -910,35 +912,12 @@ export class Database extends ReadyResource {
     await bee.update()
   }
 
-  // ops skipped as too new apply once this version caught up, and a view whose definition grew
-  // since it was built (an index added by a rebuild), or that was applied under older rules or an
-  // older contract, fills from the log: wipe the boot record and reboot
+  // a view another build applied, one with ops skipped this build now reaches among them, fills
+  // from the log
   /** @private */
   async _replay() {
-    const local = this.bee.local
-    const caught = this._skipped !== null && this._skipped <= this.version
-    const built = await local.getUserData('cero/view')
-    const { db } = this.spec.database.versions
-    const view = built ? viewMarker(built) : null
-    // or a view another build applied, landed on as a close cut its check short
-    const grown =
-      (!!view && (view.db < db || view.rules < this.rules || view.contract < this.version)) ||
-      (await this._foreign(this.view))
-    const marker = b4a.concat([db, this.rules, this.version].map((n) => c.encode(c.uint, n)))
-    if (!caught && !grown) {
-      if (!view) await local.setUserData('cero/view', marker)
-      return false
-    }
-    // the bee closes first: open, a batch it applied meanwhile would store what it applied again,
-    // and the rebuild would not run
-    await this.bee.close()
-    await this._onWriter(async (writer) => {
-      await writer.setUserData('autobee/head', null)
-      await writer.setUserData('cero/skipped', null)
-      // once the applied log is wiped: cut short before that, the next open still finds a view to rebuild
-      if (!view || grown) await writer.setUserData('cero/view', marker)
-    })
-    this._skipped = null
+    if (!(await this._foreign(this.view))) return false
+    await this._wipe()
     return true
   }
 
@@ -1203,17 +1182,22 @@ export class Database extends ReadyResource {
     const heads = []
     for await (const { key, length } of this.bee.system.list()) heads.push({ key, length })
     await Promise.allSettled(this._writes)
-    // the bee closes first: open, a batch it applied meanwhile would store what it applied again
+    await this._wipe()
+    if (this.closing) return
+    await this._boot({ land: false })
+    this.bee.hintWakeup(heads)
+    this._wire()
+  }
+
+  // the bee closes first: open, a batch it applied meanwhile would store what it applied again
+  /** @private */
+  async _wipe() {
     await this.bee.close()
     await this._onWriter(async (writer) => {
       await writer.setUserData('autobee/head', null)
       await writer.setUserData('cero/skipped', null)
     })
     this._skipped = null
-    if (this.closing) return
-    await this._boot({ land: false })
-    this.bee.hintWakeup(heads)
-    this._wire()
   }
 
   // the lowest version skipped: the replay runs once this device reaches it, whoever sent the highest
@@ -1370,14 +1354,6 @@ export class Database extends ReadyResource {
     const writer = Hypercore.key({ version: this.store.manifestVersion, signers: [{ publicKey }] })
     await this.write([[verb, this._admission(writer)]])
   }
-}
-
-// the view's definition version, then the rules and the contract it was applied under: a marker
-// that predates either holds what came before it
-function viewMarker(buf) {
-  const state = { start: 0, end: buf.byteLength, buffer: buf }
-  const next = () => (state.start < state.end ? c.uint.decode(state) : 0)
-  return { db: c.uint.decode(state), rules: next(), contract: next() }
 }
 
 // an unbounded read of an old checkout wedges autobee's drain; null means untrusted

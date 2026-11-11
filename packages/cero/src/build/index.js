@@ -312,8 +312,7 @@ async function contract(specDir, prior, dirs, compiled, extend) {
 
   const rules = internal.contract.version
   const start = kept?.history ? kept.start : (kept?.version ?? version)
-  const floor = await floorOf(kept, prior, dirs, version, start)
-  const history = kept?.history ? { ...kept.history } : { [start]: await builders(prior, dirs) }
+  const { floor, history } = await past(kept, prior, dirs, version, start)
   history[version] = Object.fromEntries(dirs.map((dir, i) => [dir, shapes[i].builders]))
 
   const contracts = Object.keys(history).map(Number)
@@ -362,32 +361,27 @@ function hash(shapes) {
   return b4a.toString(crypto.hash(b4a.from(json)), 'hex')
 }
 
-// a spec with no history kept no rules: hashed under today's, its own spec gives the shape it
-// kept only when Cero's rules did not change since
-async function floorOf(kept, prior, dirs, version, start) {
-  if (!kept) return start
-  if (kept.history) return kept.rules === internal.contract.version ? kept.floor : version
+// a spec with no history starts one at its contract, from the builders its own spec was at. It
+// kept no rules: hashed under today's, its spec gives the shape it kept only when Cero's rules did
+// not change since
+async function past(kept, prior, dirs, version, start) {
+  if (kept?.history) {
+    const floor = kept.rules === internal.contract.version ? kept.floor : version
+    return { floor, history: { ...kept.history } }
+  }
   const had = dirs.filter((dir) => existsSync(join(prior, dir)))
   const shapes = await Promise.all(had.map((dir) => shapeOf(join(prior, dir))))
-  return hash(shapes) === kept.shape ? start : version
+  const floor = !kept || hash(shapes) === kept.shape ? start : version
+  return {
+    floor,
+    history: { [start]: Object.fromEntries(had.map((d, i) => [d, shapes[i].builders])) }
+  }
 }
 
 function routeOf({ kind, path, verb }, ns) {
   if (kind === 'action') return `@${ns}/${path[0]}`
   if (kind === 'single') return `@${ns}/set-${path[0]}`
   return `@${ns}/add-${verb || path[0]}`
-}
-
-// [schema, dispatch] builder versions of each directory the spec has
-async function builders(specDir, dirs) {
-  const read = (dir, rel) =>
-    fs.readFile(join(specDir, dir, rel), 'utf-8').then((json) => JSON.parse(json).version || 1)
-  const out = {}
-  for (const dir of dirs) {
-    if (!existsSync(join(specDir, dir))) continue
-    out[dir] = [await read(dir, 'schema/schema.json'), await read(dir, 'dispatch/dispatch.json')]
-  }
-  return out
 }
 
 // every thing the app declares in a directory, with its since and whether t.later holds it back

@@ -3490,13 +3490,6 @@ test('gate: a view applied under older rules applies its log again, once', async
   t.alike(await open(rules), [], 'the same rules apply nothing again')
   t.alike(await open(rules + 1), [row.id], 'newer rules apply the old write again')
   t.alike(await open(rules + 1), [], 'and only the first time')
-
-  // a view built before the marker held its rules
-  const old = new Database({ store, identity, spec, key, keyPair, encryptionKey })
-  await old.ready()
-  await old.bee.local.setUserData('cero/view', c.encode(c.uint, spec.database.versions.db))
-  await old.close()
-  t.alike(await open(rules), [row.id], 'a marker with no rules counts as the oldest')
 })
 
 test('gate: a device whose contract rose applies its log again, once', async (t) => {
@@ -3525,24 +3518,6 @@ test('gate: a device whose contract rose applies its log again, once', async (t)
   t.alike(await open(version), [], 'the same contract applies nothing again')
   t.alike(await open(version + 1), [row.id], 'a raised one applies the old write again')
   t.alike(await open(version + 1), [], 'and only the first time')
-
-  // a view built before the marker held its contract
-  const old = new Database({
-    store,
-    identity,
-    spec: rebuilt({ version: version + 1 }),
-    key,
-    keyPair,
-    encryptionKey
-  })
-  await old.ready()
-  const { db: definition } = spec.database.versions
-  await old.bee.local.setUserData(
-    'cero/view',
-    b4a.concat([c.encode(c.uint, definition), c.encode(c.uint, spec.meta.rules)])
-  )
-  await old.close()
-  t.alike(await open(version + 1), [row.id], 'a marker with no contract counts as the oldest')
 })
 
 // the build that applied a database's view, as the view holds it
@@ -3651,6 +3626,27 @@ test('gate: a batch applied between a landing and its check leaves the row of th
       return built(view)
     }
   })
+})
+
+test('gate: a read while a landed view is applied again waits for it, and never sees a row missing', async (t) => {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const db = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}))
+  await db.bootstrap({ name: 'a' })
+  await db.set('profile', { name: 'kept' })
+  // a landing on a view another build applied: the log is applied again from an empty view
+  db.version += 1
+  db._onmove()
+  let rebuilt = false
+  db._rebuilding.then(() => (rebuilt = true))
+  const seen = new Set()
+  while (!rebuilt) {
+    seen.add((await db.get('profile')).data?.name ?? null)
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  t.alike([...seen], ['kept'], 'every read in between found the row')
 })
 
 test('gate: a landing on a view of the same contract under other rules is applied again', async (t) => {
