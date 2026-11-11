@@ -791,6 +791,19 @@ export class Database extends ReadyResource {
   // the boot reads post-rotation state through the keyring, primed before the bee exists
   /** @private */
   async _preload() {
+    await this._onWriter(async (local) => {
+      await loadEpochs(this.keyring, local)
+      // read before the bee applies anything: an op applied as it opens adds to these, never over them
+      const behind = await local.getUserData('cero/behind')
+      this.behind = behind ? c.decode(c.uint, behind) : null
+      const skipped = await local.getUserData('cero/skipped')
+      this._skipped = skipped ? c.decode(c.uint, skipped) : null
+    })
+  }
+
+  // this device's writer core on its own, with no bee over it to apply a batch meanwhile
+  /** @private */
+  async _onWriter(fn) {
     const ns = this.store.namespace(this.namespace)
     const local = ns.get({
       keyPair: this.keyPair,
@@ -801,9 +814,12 @@ export class Database extends ReadyResource {
       active: false
     })
     await local.ready()
-    await loadEpochs(this.keyring, local)
-    // closing the session closes the core opened through it
-    await ns.close()
+    try {
+      await fn(local)
+    } finally {
+      // closing the session closes the core opened through it
+      await ns.close()
+    }
   }
 
   /** @private */
@@ -834,24 +850,26 @@ export class Database extends ReadyResource {
   /** @private */
   async _replay() {
     const local = this.bee.local
-    const behind = await local.getUserData('cero/behind')
-    this.behind = behind ? c.decode(c.uint, behind) : null
-    const skipped = await local.getUserData('cero/skipped')
-    this._skipped = skipped ? c.decode(c.uint, skipped) : null
     const caught = [this._skipped, this.behind].some((v) => v !== null && v <= this.version)
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
     const view = built ? viewMarker(built) : null
     const grown = !!view && (view.db < db || view.rules < this.rules)
-    if (!view || grown) {
-      const marker = b4a.concat([c.encode(c.uint, db), c.encode(c.uint, this.rules)])
-      await local.setUserData('cero/view', marker)
+    const marker = b4a.concat([c.encode(c.uint, db), c.encode(c.uint, this.rules)])
+    if (!caught && !grown) {
+      if (!view) await local.setUserData('cero/view', marker)
+      return false
     }
-    if (!caught && !grown) return false
-    await local.setUserData('autobee/head', null)
-    await local.setUserData('cero/behind', null)
-    await local.setUserData('cero/skipped', null)
+    // the bee closes first: open, a batch it applied meanwhile would store what it applied again,
+    // and the rebuild would not run
     await this.bee.close()
+    await this._onWriter(async (writer) => {
+      await writer.setUserData('autobee/head', null)
+      await writer.setUserData('cero/behind', null)
+      await writer.setUserData('cero/skipped', null)
+      // once the applied log is wiped: cut short before that, the next open still finds a view to rebuild
+      if (!view || grown) await writer.setUserData('cero/view', marker)
+    })
     this.behind = null
     this._skipped = null
     return true
