@@ -333,6 +333,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _onLocal;
     /** @private */
+    private _onTopics;
+    /** @private */
     private _topics;
     /** @private */
     private _index;
@@ -340,6 +342,8 @@ export declare class Handle extends ReadyResource {
     private _seal;
     /** @private */
     private _follow;
+    /** @private */
+    private _drop;
     /** @private */
     private _topic;
     /** @private */

@@ -6,7 +6,7 @@ import HypercoreStorage from 'hypercore-storage'
 import { encode, createNotification } from 'blind-push'
 import hid from 'hypercore-id-encoding'
 
-import { cero, put, set, get, del, open, leave, receive } from '../../src/index.js'
+import { cero, put, set, get, del, open, leave, receive, watch } from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
 import { connect } from '../../src/rpc/client.js'
 import { Handle } from '../../src/handle/index.js'
@@ -143,6 +143,20 @@ async function woken(t, { linger }) {
   }
   const served = () => [...server.me.children].find((c) => c.id === room.id)
   return { server, client, messaging, room, served, released }
+}
+
+// every read of all the topics rows, from here on
+function topicLists(t) {
+  const lists = []
+  const get = Storage.prototype.get
+  Storage.prototype.get = function (name, query) {
+    if (name === 'topics' && query === undefined) lists.push(name)
+    return get.call(this, name, query)
+  }
+  t.teardown(() => {
+    Storage.prototype.get = get
+  })
+  return lists
 }
 
 test('topics: the root lists a topic per handle, kept with the handles rows', async (t) => {
@@ -576,6 +590,48 @@ test('topics: an update that lands while a handle closes leaves its row as it wa
   t.ok(await receive(me, own), 'its pushes still verify')
 })
 
+test('topics: a topic asked by its id reads its own row, on the worker and over RPC', async (t) => {
+  const { room, b } = await scene(t)
+  await waitUntil(async () => (await get(b.me.topics)).data.length === 1)
+  const lists = topicLists(t)
+  const id = topicOf(room)
+  const { data: row } = await get(b.me.topics, id)
+  t.alike(
+    { id: row.id, handle: row.handle, type: row.type },
+    { id, handle: b.joined.id, type: 'team' }
+  )
+  t.alike((await get(b.client.topics, id)).data, row, 'the same over RPC')
+  t.is((await get(b.me.topics, 'f'.repeat(64))).data, null, 'none for a topic of no handle here')
+  t.alike(lists, [], 'no list of every handle')
+})
+
+test('topics: a write to another local collection does not wake the topics watch, on the worker and over RPC', async (t) => {
+  const { room, b } = await scene(t)
+  const seen = { worker: 0, client: 0 }
+  const worker = watch(b.me.topics)
+  const client = watch(b.client.topics)
+  t.teardown(() => {
+    worker.destroy()
+    client.destroy()
+  })
+  worker.on('data', ({ data }) => (seen.worker = data.length))
+  client.on('data', ({ data }) => (seen.client = data.length))
+  await waitUntil(() => seen.worker === 1 && seen.client === 1)
+
+  const lists = topicLists(t)
+  await put(b.me.local.drafts, { text: 'on the worker' })
+  await put(b.client.local.drafts, { text: 'over RPC' })
+  t.is((await get(b.client.topics, topicOf(room))).data.handle, b.joined.id)
+  t.alike(lists, [], 'neither watch read the rows again')
+
+  const other = await open(b.client.team, { name: 'other' })
+  await waitUntil(() => seen.worker === 2 && seen.client === 2)
+  t.ok(lists.length > 0, 'a new handle wakes both')
+  await leave(other)
+  await waitUntil(() => seen.worker === 1 && seen.client === 1)
+  t.pass('and so does one that left')
+})
+
 test('topics: a second device of the identity lists a handle it never opened', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
@@ -604,6 +660,26 @@ test('receive: a push about a joined room verifies as newer, on the worker and o
   await cero.suspend(b.client)
   await t.exception(receive(b.client, payload), /suspended/, 'no read from a suspended storage')
   await cero.resume(b.client)
+})
+
+test("receive: a push is verified from its handle's topics row alone, on the worker, over RPC and cold", async (t) => {
+  const { gateway, a, room, b } = await scene(t)
+  await waitUntil(async () => (await get(b.me.topics)).data.length === 1)
+  await b.me.network.suspend()
+  await put(room.messages, { text: 'hi' })
+  await waitUntil(() => gateway.sent.length === gateway.before + 1)
+  const payload = payloadOf(gateway.sent.at(-1))
+  const other = await open(a.me.team, { name: 'elsewhere' })
+  const stray = await pushOf(other, other)
+
+  const lists = topicLists(t)
+  t.is((await receive(b.me, payload))?.id, b.joined.id)
+  t.is((await receive(b.client, payload))?.id, b.joined.id, 'the same over RPC')
+  t.is((await cold(b.dir, spec, payload))?.id, b.joined.id, 'and from the storage')
+  t.is(await receive(b.me, stray), null, 'a push about a handle this device does not hold')
+  t.is(await cold(b.dir, spec, stray), null, 'nor cold')
+  t.alike(lists, [], 'no list of every handle')
+  await b.me.network.resume()
 })
 
 test('receive: cold, from the storage, with the app open and once it closed', async (t) => {

@@ -1,23 +1,14 @@
 /**
- * A push verified against the handles the topics rows name, with the row it wrote when the block
- * rode along and this device holds the handle's keys.
+ * A push verified against the handle its topic names, read from that handle's `topics` row alone,
+ * with the row it wrote when the block rode along and this device holds the handle's keys.
  *
  * @param {import('hypercore-storage')} storage
  * @param {import('../lib/spec.js').Spec} spec
  * @param {Uint8Array} payload
- * @param {Array<{ id: string, handle: string, type: string, key: Uint8Array, name: string | null, encryptionKey?: Uint8Array | null, epochs?: Uint8Array | null, writers?: Uint8Array | null }>} rows  The root's `topics` rows.
+ * @param {import('@cero-base/core/storage').Storage} store  The root's local store, which keeps the `topics` rows.
  * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
-export declare function read(storage: import('hypercore-storage'), spec: import('../lib/spec.js').Spec, payload: Uint8Array, rows: Array<{
-    id: string;
-    handle: string;
-    type: string;
-    key: Uint8Array;
-    name: string | null;
-    encryptionKey?: Uint8Array | null;
-    epochs?: Uint8Array | null;
-    writers?: Uint8Array | null;
-}>): Promise<{
+export declare function read(storage: import('hypercore-storage'), spec: import('../lib/spec.js').Spec, payload: Uint8Array, store: import('@cero-base/core/storage').Storage): Promise<{
     id: string;
     type: string;
     name: string | null;

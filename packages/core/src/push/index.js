@@ -17,6 +17,21 @@ const { decodeOplog } = autobeeEncoding
  */
 
 /**
+ * The topic a push names: its handle's discovery key in hex, the string a device subscribes to.
+ * Null when the payload does not decode.
+ *
+ * @param {Uint8Array} payload
+ * @returns {string | null}
+ */
+export function topic(payload) {
+  try {
+    return b4a.toHex(decode(payload).discoveryKey)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Verify a push payload against this device's storage: the one the gateway sent, decoded from the
  * platform's message. Null when it is about no handle given, is forged, comes from a core that is
  * not among the handle's writers, or does not decode.

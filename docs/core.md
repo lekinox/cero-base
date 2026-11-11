@@ -311,14 +311,16 @@ storage, so it holds only for a writer the device already stores, and only for o
 `writers`, the writer keys that may write to the database now.
 
 ```js
-import { verify, decrypt } from '@cero-base/core/push'
+import { topic, verify, decrypt } from '@cero-base/core/push'
 
+const id = topic(payload) // the topic the push names, the database's discovery key in hex, or null
 // storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key, writers }]
 const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref, block } or null
 const op = await decrypt(storage, hit, { encryptionKey, epochs }) // the op's bytes, or null
 ```
 
-`newer` is whether the device is behind the proved length, `ref` the ref the write was on, as the
+`topic` reads which database a push is about before anything is verified, so a device with many
+looks up that one. `newer` is whether the device is behind the proved length, `ref` the ref the write was on, as the
 sender's meta names it, `block` the written block when it fit the push. `decrypt` opens that block
 as the writer's core would, with the database's encryption key and the rotation epochs it has
 learned (`keyring.all()`), and strips the envelope: the op bytes, for the spec's dispatch to

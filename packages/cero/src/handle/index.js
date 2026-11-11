@@ -190,7 +190,7 @@ export class Handle extends ReadyResource {
       ...(!this.parent && {
         joins: { get: (q) => this._joins(q), watch: (fn) => this._onLocal(fn) },
         nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) },
-        topics: { get: (q) => this._topics(q), watch: (fn) => this._onLocal(fn) }
+        topics: { get: (q) => this._topics(q), watch: (fn) => this._onTopics(fn) }
       })
     }
   }
@@ -617,12 +617,19 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
+  _onTopics(fn) {
+    this.on('topics', fn)
+    return () => this.off('topics', fn)
+  }
+
+  /** @private */
   async _topics(query) {
+    if (typeof query === 'string') {
+      const { data } = await this.local.store.get('topics', query)
+      return { data: data && listing(data) }
+    }
     const rows = (await this.local.store.get('topics')).data
-    return listed(
-      rows.map(({ id, handle, type, name }) => ({ id, handle, type, name })),
-      query
-    )
+    return listed(rows.map(listing), query)
   }
 
   // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
@@ -670,14 +677,27 @@ export class Handle extends ReadyResource {
       const wanted = new Set(changes.map(({ next }) => topicOf(next)))
       rows = new Map((await this.local.store.get('topics')).data.map((row) => [row.id, row]))
       for (const id of rows.keys()) {
-        if (!wanted.has(id)) await this.local.store.del('topics', id)
+        if (!wanted.has(id)) await this._drop(id)
       }
     }
     for (const { prev, next } of changes) {
-      if (!next) await this.local.store.del('topics', topicOf(prev))
+      if (!next) await this._drop(topicOf(prev))
       else await this._row(next, rows ? (rows.get(topicOf(next)) ?? null) : undefined)
     }
     await settle()
+  }
+
+  // a topics row written or dropped wakes what watches them
+  /** @private */
+  async _put(row) {
+    await this.local.store.put('topics', row)
+    this.root.emit('topics')
+  }
+
+  /** @private */
+  async _drop(id) {
+    await this.local.store.del('topics', id)
+    this.root.emit('topics')
   }
 
   // who may write to an open handle, on the row the root's pass wrote for it; a handle on its way out is its
@@ -694,8 +714,7 @@ export class Handle extends ReadyResource {
       if (!have) return
     }
     const writers = await writersOf(child.store).catch(unread)
-    if (sameBytes(have.writers, writers)) return
-    await this.local.store.put('topics', { ...have, writers })
+    if (!sameBytes(have.writers, writers)) await this._put({ ...have, writers })
   }
 
   // one handle's topics row, written when it differs from `have`, the row there is, read when not given. Who may
@@ -718,7 +737,7 @@ export class Handle extends ReadyResource {
       epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
       writers: child ? await writersOf(child.store).catch(unread) : (have?.writers ?? null)
     }
-    if (!same(have, row)) await this.local.store.put('topics', row)
+    if (!same(have, row)) await this._put(row)
   }
 
   // a push about one of this device's handles, verified against its own cores
@@ -726,8 +745,7 @@ export class Handle extends ReadyResource {
   async _receive(payload) {
     // a suspended storage answers no read: the cold entry serves a push while the app sleeps
     if (this._sus.suspended) throw CeroError.INVALID('receive: the app is suspended')
-    const { data: rows } = await this.local.store.get('topics')
-    return read(this.store.store.storage, this.spec, payload, rows)
+    return read(this.store.store.storage, this.spec, payload, this.local.store)
   }
 
   /** @private */
@@ -1415,6 +1433,9 @@ function randomNs() {
 
 // the push topic of a handles row, which keys its topics row
 const topicOf = ({ key }) => b4a.toHex(discoveryKey(key))
+
+// what me.topics shows of a topics row: none of the keys it keeps
+const listing = ({ id, handle, type, name }) => ({ id, handle, type, name })
 
 // a topics row still describes its handle
 function same(row, next) {
