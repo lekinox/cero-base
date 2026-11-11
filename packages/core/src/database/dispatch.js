@@ -65,7 +65,8 @@ const REQUESTS = {
   join: 'join',
   accept: 'accept',
   deny: 'deny',
-  'rotate-key': 'epoch'
+  'rotate-key': 'epoch',
+  revoke: 'revoke'
 }
 
 // the device keys a request stands on: its own, and those of the chain its join proved or a link
@@ -78,6 +79,16 @@ export const linkOf = (proof) => (Identity.verify(proof, null) ? proof : null)
 
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
+
+// what an identity's devices told a room of its device keys, in the removals too
+export const toldId = (memberId) => `told:${memberId}`
+
+// 32-byte keys back to back, or none when they are not that
+function keysOf(buf) {
+  if (!buf?.byteLength || buf.byteLength % 32) return []
+  return Array.from({ length: buf.byteLength / 32 }, (_, i) => buf.subarray(i * 32, i * 32 + 32))
+}
+const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
 
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
@@ -391,11 +402,15 @@ export function makeDispatcher({
     return hooked(fns, meta, ctx, (r) => insert(ctx.view, name, r))
   }
 
-  // a seat taken again, as a linked device's own claim does, keeps the chain its link wrote
-  async function seat(ctx, writer, memberId, ts, key, proof = null) {
+  // a seat taken again, as a linked device's own claim does, keeps the chain its link wrote. With
+  // it go the device keys of the proof it was `verified` with, which a removal told later is read by
+  async function seat(ctx, writer, memberId, ts, key, proof, verified) {
     const id = hid.encode(writer)
     proof ??= (await getDevice(ctx.view, id))?.proof ?? null
-    return save(ctx, 'put', 'devices', { id, memberId, createdAt: ts, updatedAt: ts, key, proof })
+    const keys = Identity.chain(verified).slice(1)
+    const chain = keys.length ? b4a.concat(keys) : null
+    const row = { id, memberId, createdAt: ts, updatedAt: ts, key, proof, chain }
+    return save(ctx, 'put', 'devices', row)
   }
 
   // deleting a row that is not there changes nothing, and fires nothing
@@ -487,7 +502,7 @@ export function makeDispatcher({
     if (!b4a.equals(op.writer, ctx.key)) return
     const signed = Identity.verify(op.proof, admission(ctx.dbKey, op.writer, ctx.key), op.master)
     if (!signed) return
-    if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
+    if (!(await stands(ctx.view, Identity.chain(op.proof)))) throw CeroError.REFUSED('removed')
     const { genesis } = ctx.host
     const memberId = hid.encode(op.master)
     const ts = op.ts || 0
@@ -513,7 +528,7 @@ export function makeDispatcher({
     if (genesis || can(role, WRITE)) await ctx.host.addWriter(op.writer, { isIndexer: true })
     // a linked device's seat keeps the chain its promise carries. The promises stay: a member
     // who may invite settles one once it sees it kept
-    await seat(ctx, op.writer, memberId, ts, signed.device, linkOf(mine?.proof))
+    await seat(ctx, op.writer, memberId, ts, signed.device, linkOf(mine?.proof), op.proof)
   })
 
   // a device goes with its seat and its key: by its own member, or one who may remove her
@@ -580,15 +595,43 @@ export function makeDispatcher({
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by })
   }
-  // the devices of the chain, not the identity it starts with: a member's removal is ordered by
-  // its invites, a device's is for good
-  const revoked = (view, proof) => gone(view, Identity.chain(proof).slice(1))
-  async function gone(view, keys) {
-    for (const key of keys) {
-      if (await view.get(removals, { id: hid.encode(key) })) return true
+  // a chain, its identity first, stands unless it passes a removed device key with no key after it
+  // that the identity's devices told stands: with nothing told, no chain through a removed key does
+  async function stands(view, [identity, ...keys]) {
+    const told = await view.get(removals, { id: toldId(hid.encode(identity)) })
+    const removed = keysOf(told?.removed)
+    let cut = -1
+    for (const [i, key] of keys.entries()) {
+      if (has(removed, key) || (await view.get(removals, { id: hid.encode(key) }))) cut = i
     }
-    return false
+    const standing = keysOf(told?.standing)
+    return cut < 0 || keys.slice(cut + 1).some((key) => has(standing, key))
   }
+  const seatChain = (device) => [hid.decode(device.memberId), ...keysOf(device.chain), device.key]
+
+  // a device tells the room which device keys of its identity are removed and which stand. For
+  // its identity alone: the removed add up, the standing replace those told before, and the seats
+  // of the identity whose chain no longer stands go
+  add('revoke', async (op, ctx) => {
+    const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
+    if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
+    if (!(await stands(ctx.view, seatChain(device)))) throw CeroError.REFUSED('removed')
+    const { memberId } = device
+    const id = toldId(memberId)
+    const before = keysOf((await ctx.view.get(removals, { id }))?.removed)
+    const removed = [...before, ...keysOf(op.removed).filter((key) => !has(before, key))]
+    const standing = b4a.concat(keysOf(op.standing))
+    const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing }
+    await ctx.view.insert(removals, row)
+    for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
+      if (seated.memberId !== memberId || !seated.key) continue
+      if (await stands(ctx.view, seatChain(seated))) continue
+      await ctx.host.removeWriter(hid.decode(seated.id))
+      await drop(ctx, 'devices', seated.id)
+      await owe(ctx.view)
+      await forget(ctx, await ctx.view.get(requests, { id: seated.id }))
+    }
+  })
 
   // the genesis batch names the creator; everyone after comes in through a signed join
   add('add-member', async (op, ctx) => {
@@ -762,11 +805,12 @@ export function makeDispatcher({
   const selfOnly = (op, ctx) => {
     if (!ctx.key || op.id !== hid.encode(ctx.key)) throw CeroError.REFUSED('device')
   }
-  // the device key stays what the admission proved, never what the row says
+  // the device key and the chain stay what the admission proved, never what the row says
   add('add-device', async (op, ctx) => {
     selfOnly(op, ctx)
     const existing = await getDevice(ctx.view, op.id)
-    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), key: existing?.key })
+    const kept = { key: existing?.key, chain: existing?.chain }
+    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), ...kept })
   })
   add('set-device', async (op, ctx) => {
     selfOnly(op, ctx)
@@ -777,6 +821,7 @@ export function makeDispatcher({
       ...op,
       memberId,
       key: existing?.key,
+      chain: existing?.chain,
       createdAt: existing?.createdAt || op.createdAt || ts,
       updatedAt: ts
     })
@@ -867,7 +912,7 @@ export function makeDispatcher({
         updatedAt: ts
       }))
     if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
-    await seat(ctx, writer, memberId, ts, key)
+    await seat(ctx, writer, memberId, ts, key, null, proof)
     await save(ctx, 'put', 'requests', {
       ...request(invite, identity, key, writer, reply, ts),
       role,
@@ -887,7 +932,7 @@ export function makeDispatcher({
       return promise(ctx, { invite, identity, key, writer, reply, role, ts, proof })
     }
     if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
-    await seat(ctx, writer, memberId, ts, key, proof)
+    await seat(ctx, writer, memberId, ts, key, proof, proof)
     await save(ctx, 'put', 'requests', {
       ...request(invite, hid.decode(memberId), key, writer, reply, ts),
       role: member.role,
@@ -970,7 +1015,8 @@ export function makeDispatcher({
     const known = await getMember(ctx.view, memberId)
     const removal = known ? null : await ctx.view.get(removals, { id: memberId })
     const out =
-      (removal && (invite.index ?? 0) <= removal.index) || (await revoked(ctx.view, join.proof))
+      (removal && (invite.index ?? 0) <= removal.index) ||
+      !(await stands(ctx.view, Identity.chain(join.proof)))
     if (out) {
       const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
       return refuse(ctx, turned, 'removed')
@@ -1008,13 +1054,15 @@ export function makeDispatcher({
     }
     const { identity, key, reply, proof, createdAt: ts = 0 } = waiting
     // a key removed since the join was made lets nobody in
-    if (await gone(ctx.view, chainOf(waiting))) throw CeroError.REFUSED('removed')
+    if (!(await stands(ctx.view, [identity, ...chainOf(waiting)]))) {
+      throw CeroError.REFUSED('removed')
+    }
     const writer = hid.decode(op.id)
     if (op.proof) {
       const memberId = await getSignerMember(ctx.view, ctx.key)
       const linked = Identity.verify(op.proof, null, hid.decode(memberId))
       if (!linked || !b4a.equals(linked.device, key)) throw CeroError.REFUSED('device')
-      if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
+      if (!(await stands(ctx.view, Identity.chain(op.proof)))) throw CeroError.REFUSED('removed')
       return admitDevice(ctx, { invite, memberId, key, proof: op.proof, writer, reply, ts })
     }
     await admit(ctx, { invite, identity, key, writer, reply, role, ts, proof })
@@ -1046,9 +1094,8 @@ export function makeDispatcher({
     const row = await ctx.view.get(requests, { id: op.id })
     if (!row) return
     const open = row.promised && !(await sat(ctx.view, row))
-    if (open && !can(r, REMOVE) && !(await gone(ctx.view, chainOf(row)))) {
-      throw CeroError.REFUSED('remove')
-    }
+    const cut = open && !(await stands(ctx.view, [row.identity, ...chainOf(row)]))
+    if (open && !can(r, REMOVE) && !cut) throw CeroError.REFUSED('remove')
     await drop(ctx, 'requests', op.id)
     if (open) await owe(ctx.view)
   })

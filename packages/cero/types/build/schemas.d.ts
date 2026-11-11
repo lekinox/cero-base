@@ -34,6 +34,7 @@ export declare const main: {
         index: import("@cero-base/core").Prim;
         key: import("@cero-base/core").Prim;
         proof: import("@cero-base/core").Prim;
+        chain: import("@cero-base/core").Prim;
     };
     invite: {
         id: import("@cero-base/core").Prim;
@@ -100,6 +101,8 @@ export declare const main: {
         id: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         by: import("@cero-base/core").Prim;
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
     };
     status: {
         role: import("@cero-base/core").Prim;
@@ -148,6 +151,10 @@ export declare const main: {
     };
     upgrade: {
         version: import("@cero-base/core").Prim;
+    };
+    revoke: {
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {

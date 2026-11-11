@@ -42,7 +42,9 @@ export const main = {
     // the device key its admission proved: rotation seals to it
     key: bytes,
     // the chain to the identity, when a device of the member linked it here
-    proof: bytes
+    proof: bytes,
+    // the device keys of the chain its seat was verified with, 32 bytes each, back to back
+    chain: bytes
   },
   invite: {
     id: required(string),
@@ -127,7 +129,11 @@ export const main = {
     id: required(string),
     index: required(uint),
     // the member whose device wrote it: herself when she left
-    by: string
+    by: string,
+    // what an identity's devices told of its device keys, 32 bytes each, back to back: those
+    // removed, and those that stand whatever linked them
+    removed: bytes,
+    standing: bytes
   },
   // this device's live view of a context: computed on read, never stored
   status: {
@@ -191,6 +197,12 @@ export const main = {
   // an owner raises the database's version to this; a lower one changes nothing
   upgrade: {
     version: required(uint)
+  },
+  // a device tells the room of its identity's device keys, 32 bytes each, back to back: those
+  // removed, and those that stand
+  revoke: {
+    removed: bytes,
+    standing: bytes
   }
 }
 

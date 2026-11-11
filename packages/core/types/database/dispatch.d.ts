@@ -5,6 +5,7 @@ export declare const chainOf: ({ key, proof }: {
 }) => any[];
 export declare const linkOf: (proof: any) => any;
 export declare const leftId: (memberId: any) => string;
+export declare const toldId: (memberId: any) => string;
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
