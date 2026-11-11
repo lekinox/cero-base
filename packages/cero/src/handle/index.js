@@ -19,7 +19,7 @@ import hid from 'hypercore-id-encoding'
 import { admission, onAbort, filter, can, WRITE } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
-import { decodeId } from '@cero-base/core/blobs/codec'
+import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
 import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
@@ -602,13 +602,12 @@ export class Handle extends ReadyResource {
 
   // the joins this device waits on, without the keys the local store keeps for them
   /** @private */
-  async _joins(query = {}) {
+  async _joins(query) {
     const rows = (await this.local.store.get('joins')).data
-    const data = filter(
+    return listed(
       rows.map(({ id, type, invite }) => ({ id, type, invite })),
       query
     )
-    return { data, total: data.length, size: data.length }
   }
 
   /** @private */
@@ -618,13 +617,12 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
-  async _topics(query = {}) {
+  async _topics(query) {
     const rows = (await this.local.store.get('topics')).data
-    const data = filter(
+    return listed(
       rows.map(({ id, handle, type, name }) => ({ id, handle, type, name })),
       query
     )
-    return { data, total: data.length, size: data.length }
   }
 
   // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
@@ -733,8 +731,11 @@ export class Handle extends ReadyResource {
    * @private
    */
   _resolveCore(coreKey, info) {
-    const hex = b4a.toHex(coreKey)
-    const encryptionKey = this.root._coreKeys.get(hex)
+    const keys = this.root._coreKeys
+    const file = (type) => (info.blob ? keys.get(fileEntry(coreKey, info.blob, type)) : undefined)
+    // a row typed '' keys its file ahead of one whose type no header carries, served as '' too
+    const encryptionKey =
+      file(info.type) ?? (info.type ? undefined : file(UNSERVED)) ?? keys.get(b4a.toHex(coreKey))
     if (encryptionKey !== undefined) return { key: coreKey, encryptionKey }
     return null
   }
@@ -776,9 +777,12 @@ export class Handle extends ReadyResource {
   _registerBlobCore(id, stamp) {
     if (!id || !this.root?._coreKeys) return
     try {
-      const { coreKey } = decodeId(id)
-      const hex = b4a.toHex(coreKey)
-      if (!this.root._coreKeys.has(hex)) {
+      // a row's stamp keys its own file: a member's row cannot pick the key of another's on the same core
+      const { coreKey, blobId, type } = decodeId(id)
+      // a core this device keys itself serves every file on it
+      if (this.root._coreKeys.has(b4a.toHex(coreKey))) return
+      const entry = fileEntry(coreKey, blobId, servedType(type) === type ? type : UNSERVED)
+      if (!this.root._coreKeys.has(entry)) {
         // no stamp on a file-field value, look it up (fire-and-forget, idempotent)
         if (stamp === undefined) {
           this.store
@@ -791,10 +795,10 @@ export class Handle extends ReadyResource {
         }
         const key = this._blobCoreKey(stamp)
         if (!key) return // unknown epoch — this device is not entitled to the core
-        this.root._coreKeys.set(hex, key)
+        this.root._coreKeys.set(entry, key)
       }
       // remember which handle read it, so close prunes the entry
-      if (this !== this.root) (this._blobKeys ??= new Set()).add(hex)
+      if (this !== this.root) (this._blobKeys ??= new Set()).add(entry)
     } catch {
       // ignore invalid ids
     }
@@ -929,16 +933,11 @@ export class Handle extends ReadyResource {
     if (known) return known
 
     const join = this._start(invite, type)
-    join.waiting++
-    try {
-      const child = await wait(join.done, timeout)
-      // every caller holds the room: the first takes the open the join made, each other one its own
-      if (join.claimed) child._hold()
-      join.claimed = true
-      return child
-    } finally {
-      join.waiting--
-    }
+    const child = await wait(join, timeout)
+    // every caller holds the room: the first takes the open the join made, each other one its own
+    if (join.claimed) child._hold()
+    join.claimed = true
+    return child
   }
 
   /** @private */
@@ -1284,7 +1283,7 @@ export class Handle extends ReadyResource {
   /** @private */
   async _reserve() {
     for (const { id, type } of (await this.local.store.get('serving')).data) {
-      this._load(type, id).catch((err) => {
+      this._load(type, id).then(reserved, (err) => {
         if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
         // a close cut it short: the room is served again at the next launch
         if (err.code === 'CLOSED') return
@@ -1326,6 +1325,32 @@ export class Handle extends ReadyResource {
 // the keys a pairing reply delivered, as a handle opens with them
 function delivered({ key, encryptionKey, epochs, writer }) {
   return { key, encryptionKey, epochs, keyPair: writer }
+}
+
+// the hold a boot took on a handle to serve its invites goes back once it serves none
+function reserved(child) {
+  const release = (serving) => {
+    if (serving) return
+    child._pair.off('serving', release)
+    child.close().catch(child._onerror)
+  }
+  child._pair.on('serving', release)
+  release(child._pair.serving)
+}
+
+// the entry type of a row whose type no header carries: no file server url builds it
+const UNSERVED = '\n'
+
+// a file as its url names it to the file server
+function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {
+  return [b4a.toHex(coreKey), blockOffset, blockLength, byteOffset, byteLength, type].join('/')
+}
+
+// a local list read as a collection reads: one row by id, or the rows a query keeps
+function listed(rows, query = {}) {
+  if (typeof query === 'string') return { data: rows.find((row) => row.id === query) ?? null }
+  const data = filter(rows, query)
+  return { data, total: data.length, size: data.length }
 }
 
 function admitted(db, id) {

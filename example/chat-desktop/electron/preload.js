@@ -16,8 +16,7 @@ contextBridge.exposeInMainWorld('bridge', {
     return ipcRenderer.sendSync('pkg')
   },
   isInitialized: () => ipcRenderer.invoke('pear:isInitialized'),
-  startWorker: (specifier, extraArgs = []) =>
-    ipcRenderer.invoke('pear:startWorker', specifier, extraArgs),
+  startWorker: (specifier) => ipcRenderer.invoke('pear:startWorker', specifier),
   writeWorkerIPC: (specifier, data) =>
     ipcRenderer.invoke('pear:worker:writeIPC:' + specifier, data),
   onWorkerIPC: (specifier, listener) => {

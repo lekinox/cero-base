@@ -174,7 +174,7 @@ export class Inbox extends ReadyResource {
     this._session?.destroy()
     // the unannounce is a DHT round trip, never waited on
     this._discovery?.destroy().catch(safetyCatch)
-    // nothing more is fetched: its sender counts a message delivered once its block is read
+    // nothing more is fetched: its sender counts a message delivered once its block is stored
     for (const core of this._waiting) core.close().catch(safetyCatch)
     await Promise.allSettled([...this._landing, ...this._erasing])
   }
@@ -270,7 +270,7 @@ export class Inbox extends ReadyResource {
     })
   }
 
-  // in the box before anything else: its sender has it as delivered from the moment it was read
+  // in the box before anything else: its sender has it as delivered from the moment it was stored
   /** @private */
   async _land(id, key) {
     const { held, message } = await this._unseal(key, { timeout: this.timeout })

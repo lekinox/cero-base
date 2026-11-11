@@ -595,6 +595,57 @@ test('expiry: an extra device that never read its keys costs its member nothing'
   t.alike(result.key, host.db.key)
 })
 
+test('expiry: two devices of a new member that never read their keys do not keep each other in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ reuse: true, ttl: 3000 })
+  // nobody answers while both land, and neither reads its keys
+  await host.pairing.close()
+  const other = await makeMailbox(t, testnet)
+  const opts = { identity: joiner.identity, spec, timeout: 0 }
+  const joins = [joiner.mailbox, other.mailbox].map((mailbox) =>
+    Pairing.join(mailbox, invite, { ...opts, writer: crypto.keyPair() }).catch((e) => e)
+  )
+  const owed = async () => (await host.db.get('requests')).data
+  await waitFor(async () => (await owed()).length === 2)
+  for (const joining of joins) t.is((await joining).code, 'EXPIRED', 'each gives up at expiry')
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  const gone = async () => !(await member(host.db, joiner.identity))
+  t.ok(await waitFor(gone, { timeout: 10000 }).catch(() => false), 'she is removed')
+  t.alike(await owed(), [], 'nothing left owed')
+})
+
+test('expiry: a device still within its invite keeps its member in while another has run out', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const short = await host.pairing.invite({ reuse: true, ttl: 2000 })
+  const long = await host.pairing.invite({ reuse: true, ttl: 600000 })
+  // nobody answers while both land, and neither reads its keys
+  await host.pairing.close()
+  const other = await makeMailbox(t, testnet)
+  const opts = { identity: joiner.identity, spec, timeout: 0 }
+  const join = (mailbox, invite) =>
+    Pairing.join(mailbox, invite, { ...opts, writer: crypto.keyPair() }).catch((e) => e)
+  const first = join(joiner.mailbox, short)
+  join(other.mailbox, long)
+  const owed = async () => (await host.db.get('requests')).data
+  await waitFor(async () => (await owed()).length === 2)
+  t.is((await first).code, 'EXPIRED', 'the first gives up at expiry')
+  // the second never reads its keys either, and its invite is still good
+  await other.mailbox.close()
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  const synced = new Promise((resolve) => pairing.once('serving', resolve))
+  await pairing.ready()
+  await synced
+  t.ok(await member(host.db, joiner.identity), 'she stays')
+  t.is((await owed()).length, 2, 'and both are still owed')
+})
+
 // ─── confirm invites: a member accepts ─────────────────────────────────────
 
 test('confirm: a join waits as a request until a member accepts it', async (t) => {
@@ -658,6 +709,38 @@ test('confirm: junk sealed to the reply address leaves nothing on the joiner, th
   t.absent(await stored(joiner.net, key), 'and the reply core is erased')
 })
 
+test('confirm: a reply whose encryption key does not own the invite address is ignored, the real one settles the join', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const read = new Set()
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => read.add(m.id) && put(m)
+  const writer = crypto.keyPair()
+  const kept = []
+  const keep = async (answer) => kept.push(answer)
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
+  const request = await asked(host.db)
+
+  // the database key is no secret: every mirror holds it
+  const { key } = host.db
+  const rows = () => joiner.mailbox.inbox.list()
+  const unread = async (id) => (await rows()).some((m) => m.id === id && !m.handled)
+  for (const [name, encryptionKey] of [
+    ['a made-up', crypto.randomBytes(32)],
+    ['no', null]
+  ]) {
+    const forged = { status: STATUS_ACCEPTED, reason: '', key, encryptionKey, epochs: [] }
+    await host.mailbox.send(Mailbox.getAddress(writer.secretKey), c.encode(Response, forged))
+    const id = b4a.toHex(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+    // a reply that settled the join closed its inbox, so nothing reads the next one
+    const turned = await waitFor(async () => read.has(id) && !(await unread(id))).catch(() => false)
+    t.ok(turned && !kept.length, `a reply with ${name} encryption key is read and settles nothing`)
+  }
+
+  await host.pairing.accept(request.id)
+  t.alike((await joining).encryptionKey, host.db.encryptionKey)
+})
+
 test('join: two replies racing settle it once, and nothing is kept after', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
@@ -679,7 +762,12 @@ test('join: two replies racing settle it once, and nothing is kept after', async
 
   // as two member devices answer at once
   const reply = Mailbox.getAddress(writer.secretKey)
-  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  const answer = c.encode(Response, {
+    status: STATUS_ACCEPTED,
+    reason: '',
+    key: host.db.key,
+    encryptionKey: host.db.encryptionKey
+  })
   const keys = []
   for (let i = 0; i < 2; i++) {
     await host.mailbox.send(reply, answer)
@@ -708,7 +796,12 @@ test('join: a reply its keep failed on leaves the next one to settle it', async 
   await asked(host.db)
 
   const reply = Mailbox.getAddress(writer.secretKey)
-  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  const answer = c.encode(Response, {
+    status: STATUS_ACCEPTED,
+    reason: '',
+    key: host.db.key,
+    encryptionKey: host.db.encryptionKey
+  })
   await host.mailbox.send(reply, answer)
   await waitFor(() => tries === 1, { timeout: 30000 })
   await host.mailbox.send(reply, answer)

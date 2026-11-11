@@ -43,6 +43,23 @@ export declare class Rotation {
      * rotation's append and its save, is learned from the epochs collection.
      */
     hydrate(): Promise<void>;
+    /**
+     * The secret held for a row, if it meets the row's commitment.
+     *
+     * @param {{ stamp: number, commit: Uint8Array }} row
+     * @returns {Uint8Array | null}
+     */
+    held(row: {
+        stamp: number;
+        commit: Uint8Array;
+    }): Uint8Array | null;
+    /**
+     * Write under the newest landed epoch whose secret this device holds, so a rotation a reorder
+     * dropped is never written under.
+     *
+     * @param {object} [view]
+     */
+    pick(view?: object): Promise<void>;
     /** Debounced key check, with the owner's raise beside it, run at open and after every update. */
     heal(): void;
     /** @private */

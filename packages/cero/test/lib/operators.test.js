@@ -564,6 +564,34 @@ test('inbox: keep false outlives a restart', async (t) => {
   t.pass('erased once handled, after the restart')
 })
 
+test('send: a message its owner closes on as it goes out is handed over once it opens again', async (t) => {
+  const { a, b, secret, address, testnet, dir } = await mailPair(t)
+  const got = []
+  inbox(b, secret, (data) => got.push(data))
+  // the owner closes the moment its sender puts the block on the wire
+  const get = a.network.store.get.bind(a.network.store)
+  let closing = null
+  a.network.store.get = (opts) => {
+    const core = get(opts)
+    if (opts?.name) core.on('upload', () => (closing ??= b.close()))
+    return core
+  }
+  await send(a, address, 'hello')
+  await waitUntil(() => !!closing)
+  await closing
+  t.is(got.length, 0, 'not handed to the closed owner')
+  t.is((await a.mailbox.outbox.list()).length, 1, 'its sender still holds it')
+
+  const again = await cero(dir.b, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const after = []
+  t.teardown(inbox(again, secret, (data) => after.push(data)))
+  await waitUntil(() => after.length > 0, 10000).catch(() => {})
+  t.alike(after, ['hello'], 'handed over once it opens again')
+  await waitUntil(async () => (await a.mailbox.outbox.list()).length === 0)
+  t.pass('then its sender counts it delivered')
+})
+
 test('send: a message sent before a restart goes once, on its core, erased once read', async (t) => {
   const { a, b, secret, address, testnet, dir } = await mailPair(t)
 

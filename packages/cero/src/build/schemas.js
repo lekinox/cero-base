@@ -217,14 +217,14 @@ export const local = {
     device: bytes,
     proof: bytes
   },
-  // mail the device's mailbox keeps: received until handled, sent until read. `mirrors` are
+  // mail the device's mailbox keeps: received until handled, sent until stored. `mirrors` are
   // 32-byte keys back to back
   mail: {
     id: required(string),
     address: required(bytes),
     message: required(bytes),
     mirrors: bytes,
-    // sent: the core it travels in, and whether it goes once someone read it
+    // sent: the core it travels in, and whether it goes once it is stored
     name: string,
     erase: bool,
     // received: the inbox fetched the core, so it may erase it once handled

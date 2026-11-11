@@ -1,3 +1,4 @@
+export declare const MAX_FRAME: number;
 /**
  * Length-prefixed JSON framing over a Duplex `stream`. Buffers incoming chunks
  * and delivers each decoded frame to `onMessage`; `send` writes a framed frame.
@@ -5,6 +6,7 @@
 export declare class Framed {
     stream: import("streamx").Duplex<import("streamx").DuplexEvents>;
     onMessage: (msg: unknown) => void;
+    max: number;
     buf: Uint8Array<ArrayBufferLike>;
     /**
      * @param {import('streamx').Duplex} stream

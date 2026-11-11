@@ -167,7 +167,9 @@ const fresh = !(await cero.peek('./data', spec, { storageKey }))
 const me = await cero('./data', spec, { storageKey })
 ```
 
-The seed and this device's keys sit in the data directory unencrypted unless you pass `storageKey`.
+The seed and this device's key sit in the data directory unencrypted unless you pass `storageKey`.
+The keys of the root and of every room stay readable there either way, so keep the directory private
+to the app.
 Cero never stores the key: source it from the OS keychain and pass the same one on every open, and to
 `cero.peek`.
 

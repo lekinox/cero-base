@@ -11,7 +11,7 @@ import hid from 'hypercore-id-encoding'
 import Hypercore from 'hypercore'
 import Autobee from 'autobee'
 import { genId } from '../../src/lib/ids.js'
-import { admission } from '../../src/lib/utils.js'
+import { admission, searchHit } from '../../src/lib/utils.js'
 import { wrap, unwrap } from '../../src/database/envelope.js'
 import { encodeId } from '../../src/blobs/codec.js'
 import {
@@ -553,6 +553,47 @@ test('get: reverse/limit reads push down to the order index (bounded read)', asy
     ['m0', 'm1', 'm2', 'm3', 'm4'],
     'default order unchanged'
   )
+})
+
+test('get: an unlimited read returns the order index rows, in its order', async (t) => {
+  const { db } = await bootstrapped(t)
+  for (const id of ['c', 'a', 'e', 'b', 'd']) await db.put('messages', { id, text: id })
+  await db.put('messages', { id: 'a', text: 'again' })
+  await db.set('messages', { id: 'e', text: 'merged' })
+  const col = db.col(db.ref('messages'))
+  for (const reverse of [false, true]) {
+    const indexed = await db.view.find(`${col}-index`, { reverse }).toArray()
+    const { data, total, size } = await db.get('messages', reverse ? { reverse } : undefined)
+    t.alike(data, indexed, `same rows, same order${reverse ? ', reversed' : ''}`)
+    t.is(total, 5)
+    t.is(size, 5)
+  }
+  const { data } = await db.get('messages')
+  t.alike(
+    data.map((m) => m.id),
+    ['c', 'a', 'e', 'b', 'd'],
+    'an overwrite keeps its place'
+  )
+  await db.del('messages', 'b')
+  const indexed = await db.view.find(`${col}-index`).toArray()
+  const page = await db.get('messages', { limit: 1, total: true })
+  t.is(page.total, indexed.length, 'a page counts the rows the index holds')
+  for (const query of [{ reverse: 1 }, { reverse: 1, limit: 9 }]) {
+    t.alike(
+      (await db.get('messages', query)).data,
+      indexed,
+      'a reverse that is not true is ignored'
+    )
+  }
+})
+
+test('get: a fields that is not a list is refused on a full list as on a page', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { text: 'a' })
+  for (const query of [{ fields: 'text' }, { fields: 'text', limit: 3 }]) {
+    const err = await db.get('messages', query).catch((e) => e)
+    t.is(err.code, 'INVALID', JSON.stringify(query))
+  }
 })
 
 // ─── field validation ───────────────────────────────────────────────────────
@@ -1118,6 +1159,29 @@ test('get search: composes with limit (pagination)', async (t) => {
   t.is(r.total, 6, 'total counts the matches, not the page')
 })
 
+test('get search: the matches of the whole list, in index order, reversed and paged', async (t) => {
+  const { db } = await bootstrapped(t)
+  const texts = ['Room b', 'other', 'room A', 'rooM c', 'none', 'Róom d', 'room e']
+  for (const [i, text] of texts.entries()) await db.put('messages', { id: `${7 - i}`, text })
+  await db.put('messages', { id: '5', text: 'room again' })
+  const all = (await db.get('messages')).data
+  const hits = all.filter((m) => searchHit(m, 'ROOM'))
+  t.alike(
+    hits.map((m) => m.text),
+    ['Room b', 'room again', 'rooM c', 'Róom d', 'room e'],
+    'the matches, in index order'
+  )
+  for (const reverse of [false, true]) {
+    const want = reverse ? [...hits].reverse() : hits
+    const r = await db.get('messages', { search: 'ROOM', reverse })
+    t.alike(r.data, want, `same rows, same order${reverse ? ', reversed' : ''}`)
+    t.is(r.total, 5)
+    const page = await db.get('messages', { search: 'ROOM', reverse, limit: 2 })
+    t.alike(page.data, want.slice(0, 2), 'a page is the first matches')
+    t.is(page.total, 5)
+  }
+})
+
 test('get search: no match returns an empty page', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { id: 'm1', text: 'hello' })
@@ -1552,6 +1616,30 @@ test('tx: a rolled-back transaction does not swallow unrelated concurrent writes
   t.absent(
     data.find((m) => m.text === 'doomed'),
     'the transaction write was discarded'
+  )
+})
+
+test('tx: a write through the handle after its fn returned is refused', async (t) => {
+  const { db } = await bootstrapped(t)
+  let committed, failed
+  await db.tx(async (tx) => {
+    committed = tx
+    await tx.put('messages', { text: 'in' })
+  })
+  await t.exception(
+    db.tx(async (tx) => {
+      failed = tx
+      throw new Error('oops')
+    }),
+    /oops/
+  )
+  await t.exception(committed.put('messages', { text: 'late' }), /after its fn returned/)
+  await t.exception(failed.put('messages', { text: 'late' }), /after its fn returned/)
+  const { data } = await db.get('messages', {})
+  t.alike(
+    data.map((m) => m.text),
+    ['in'],
+    'only the batch landed'
   )
 })
 
@@ -4768,4 +4856,85 @@ test('gate: a raise applied during a write stops it', async (t) => {
   t.is(err?.code, 'BEHIND', 'the write is refused once behind')
   t.is(b.db.bee.local.length, length, 'nothing reached the log')
   t.is((await a.db.get('messages', row.id)).data?.text, 'first', 'the row stands')
+})
+
+// a joiner writes its join before it holds the key, and nothing else: a seat is no key
+test('apply: a block written without the room key lands a join and nothing else', async (t) => {
+  const errors = []
+  const { db, store } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', { id: b4a.toHex(invite.id), role: 'member', createdAt: 1 })
+
+  const identity = await Identity.create()
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const op = (verb, value) => wrap(db.version, spec.dispatch.encode(`@cero/${verb}`, value))
+  const join = op('join', sealJoin(invite, identity, core.key, Identity.randomBytes(32)))
+  await core.append(Autobee.encodeValue(join, { optimistic: true, encrypted: true, links: [] }))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await db.get('members', identity.id)).data)
+  t.pass('the join lands')
+
+  const add = op('add-messages', { id: 'plain', text: 'no key', createdAt: 1, updatedAt: 1 })
+  await core.append(b4a.concat([b4a.alloc(8), Autobee.encodeValue(add, {})]))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => errors.length > 0 || (await db.get('messages', 'plain')).data)
+  t.absent((await db.get('messages', 'plain')).data, 'a write from the seat it took does not')
+})
+
+test('apply: a join written without the room key at a newer version freezes nobody', async (t) => {
+  const { db, store } = await bootstrapped(t, { onerror: () => {} })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', {
+    id: b4a.toHex(invite.id),
+    role: 'member',
+    createdAt: 1,
+    reuse: true
+  })
+
+  const identity = await Identity.create()
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const join = (version) =>
+    wrap(
+      version,
+      spec.dispatch.encode(
+        '@cero/join',
+        sealJoin(invite, identity, core.key, Identity.randomBytes(32))
+      )
+    )
+  await core.append(
+    Autobee.encodeValue(join(db.version), { optimistic: true, encrypted: true, links: [] })
+  )
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await db.get('members', identity.id)).data)
+
+  // the seat it took holds WRITE, but not the key
+  await core.append(b4a.concat([b4a.alloc(8), Autobee.encodeValue(join(db.version + 1), {})]))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  const { plainId } = await import('../../src/database/encryption.js')
+  await waitFor(() => db.bee.plain.has(plainId(core.key, 1)))
+  await db.bee.update()
+  t.is(db.behind, null, 'nobody is held behind')
+  const err = await db.put('messages', { id: 'mine', text: 'mine' }).then(
+    () => null,
+    (e) => e
+  )
+  t.is(err?.code, undefined, 'the owner still writes')
 })

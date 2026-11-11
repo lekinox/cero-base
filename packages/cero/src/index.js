@@ -24,7 +24,7 @@ import { peek } from './lib/peek.js'
 import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
 import { TIMEOUT } from './lib/constants.js'
-import { commit, nextOf, settle, staging } from './lib/swap.js'
+import { commit, nextOf, settle, staging, sweep } from './lib/swap.js'
 
 export { Handle, Ref, Local }
 export * from './lib/operators.js'
@@ -89,6 +89,7 @@ async function start(dir, spec, opts = {}) {
   // any failure during open must close what opened, or the storage lock leaks
   try {
     await storage.ready()
+    await sweep(dir)
     await fs.promises.chmod(`${dir}/main`, 0o700)
     store = new Corestore(storage, { manifestVersion: 2 })
     await store.ready()
@@ -108,7 +109,9 @@ async function start(dir, spec, opts = {}) {
       throw CeroError.INVALID('dir holds an identity: a device invite needs a fresh one')
     }
     // a device invite, this launch's or the one a killed launch was waiting on
-    const pending = done || opts.phrase ? null : await pendingLink(local)
+    const left = await pendingLink(local)
+    if (done && left) await local.store.del('joins', left.id)
+    const pending = done || opts.phrase ? null : left
     const linking = !done && !opts.phrase && !!(opts.invite || pending)
     const resolved = linking ? null : await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
@@ -203,11 +206,10 @@ async function start(dir, spec, opts = {}) {
         const signer = await Identity.keyPair(identity.seed)
         await pointer.append(c.encode(c.fixed32, me.store.key), { keyPair: signer })
       }
-      if (linked) {
-        await local.store.set('device', pack(identity))
-        await local.store.del('joins', linked.id)
-      }
+      if (linked) await local.store.set('device', pack(identity))
+      // the join row goes last: until the setup clears, a killed launch resumes the link from it
       await local.store.set('keypair', { setup: null })
+      if (linked) await local.store.del('joins', linked.id)
     }
 
     for (const off of await setups) {

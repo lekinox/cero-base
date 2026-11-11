@@ -594,6 +594,8 @@ export declare class Database extends ReadyResource {
     /** @param {string} name @param {() => void} fn @returns {() => void} */
     onUpdate(name: string, fn: () => void): () => void;
     /** @private */
+    private _joins;
+    /** @private */
     private _opOf;
     /** @private */
     private _notify;

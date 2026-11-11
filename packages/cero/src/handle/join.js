@@ -117,22 +117,30 @@ export class Join {
 }
 
 /**
- * Wait for a join, but stop waiting after `ms`; the join itself goes on.
+ * Wait for a join as one of its waiters, but stop waiting after `ms`; the join itself goes on.
  *
- * @param {Promise<import('./index.js').Handle>} done
+ * @param {Join} join
  * @param {number} ms  `0` waits as long as the join takes.
  * @returns {Promise<import('./index.js').Handle>}
  */
-export async function wait(done, ms) {
-  if (!ms) return done
-  let timer
+export async function wait(join, ms) {
+  join.waiting++
+  let counted = true
+  let timer = null
   const timeout = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(CeroError.TIMEOUT('join')), ms)
+    if (!ms) return
+    timer = setTimeout(() => {
+      // uncounted at once: a join landing in this same turn gives its open back itself
+      counted = false
+      join.waiting--
+      reject(CeroError.TIMEOUT('join'))
+    }, ms)
   })
   try {
-    return await Promise.race([done, timeout])
+    return await Promise.race([join.done, timeout])
   } finally {
     clearTimeout(timer)
+    if (counted) join.waiting--
   }
 }
 

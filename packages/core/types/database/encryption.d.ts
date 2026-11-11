@@ -7,6 +7,12 @@ import Autobee from 'autobee';
  */
 export declare function blobEpochKey(entropy: Uint8Array): Uint8Array;
 /**
+ * @param {Uint8Array} key  The writer core's key.
+ * @param {number} index
+ * @returns {string}
+ */
+export declare function plainId(key: Uint8Array, index: number): string;
+/**
  * Prime a keyring from a local core's persisted epoch stash.
  *
  * @param {Keyring} keyring
@@ -59,12 +65,10 @@ export declare class Keyring {
     entropies: Map<number, Uint8Array>;
     /** @type {Map<number, number>} stamp → apply-order sequence */
     seqs: Map<number, number>;
-    /** stamp used for new blocks — the adopted epoch with the highest seq */
+    /** stamp used for new blocks, picked from the epoch rows (rotation.js) */
     current: number;
-    /** highest adopted apply-order sequence (0 = base era) */
+    /** sequence of the current epoch (0 = base era) */
     seq: number;
-    /** bumped on every add/remove — cheap change detection */
-    version: number;
     /** @type {(() => void) | null} called when an epoch is learned or dropped */
     onchange: (() => void) | null;
     constructor();
@@ -77,7 +81,7 @@ export declare class Keyring {
     /**
      * @param {number} stamp
      * @param {Uint8Array} entropy
-     * @param {number} [seq]  Apply-order sequence; drives `current` selection.
+     * @param {number} [seq]  Apply-order sequence.
      */
     add(stamp: number, entropy: Uint8Array, seq?: number): void;
     /**
@@ -100,6 +104,8 @@ export declare class Keyring {
 export declare class EpochAutobee extends Autobee {
     /** @type {Keyring | null} */
     keyring: Keyring | null;
+    /** @type {Set<string>} the writer blocks read in plain, by `plainId` */
+    plain: Set<string>;
     /** @private */
     _epochStalled;
     /** @private */

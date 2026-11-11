@@ -125,11 +125,19 @@ const fold = (s) =>
 const IDS = new Set(['id', 'memberId'])
 
 export function searchHit(row, term, fields) {
-  const terms = String(term).split(/\s+/).map(fold).filter(Boolean)
+  return hits(row, terms(term), fields)
+}
+
+function terms(term) {
+  return String(term).split(/\s+/).map(fold).filter(Boolean)
+}
+
+/** @param {Record<string, unknown>} row @param {string[]} folded @param {string[]} [fields] */
+function hits(row, folded, fields) {
   // ids are random z32: any term can occur in one
   const keys = fields && fields.length ? fields : Object.keys(row).filter((k) => !IDS.has(k))
   const hay = keys.map((k) => (typeof row[k] === 'string' ? fold(row[k]) : '')).join(' ')
-  return terms.every((t) => hay.includes(t))
+  return folded.every((t) => hay.includes(t))
 }
 
 /**
@@ -155,7 +163,10 @@ export function filter(rows, query) {
   if (query.gte !== undefined) out = out.filter((r) => r.id >= query.gte)
   if (query.lt !== undefined) out = out.filter((r) => r.id < query.lt)
   if (query.lte !== undefined) out = out.filter((r) => r.id <= query.lte)
-  if (query.search) out = out.filter((r) => searchHit(r, query.search, query.fields))
+  if (query.search) {
+    const folded = terms(query.search)
+    out = out.filter((r) => hits(r, folded, query.fields))
+  }
   if (query.reverse) out = [...out].reverse()
   if (query.limit !== undefined) out = out.slice(0, query.limit)
   return out

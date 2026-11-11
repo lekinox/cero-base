@@ -30,7 +30,7 @@ import {
   stamp
 } from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
-import { EpochAutobee, Keyring, loadEpochs } from './encryption.js'
+import { EpochAutobee, Keyring, loadEpochs, plainId } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 import { Rotation } from './rotation.js'
@@ -263,6 +263,7 @@ export class Database extends ReadyResource {
       // epochs handed over at join are sealed to nobody this device can read later: keep them
       if (this._delivered) await this.rotation._save()
       this._track(await this.dispatcher.version(this.view))
+      await this.rotation.pick()
     } catch (err) {
       // ready-resource runs no _close for an open that failed
       await this._close().catch(safetyCatch)
@@ -452,7 +453,12 @@ export class Database extends ReadyResource {
     const batch = Object.create(this)
     batch.txQueue = []
     try {
-      const result = await fn(batch)
+      let result
+      try {
+        result = await fn(batch)
+      } finally {
+        batch.spent = true
+      }
       if (batch.txQueue.length) await this._chain(() => this.write(batch.txQueue))
       return result
     } catch (err) {
@@ -482,6 +488,7 @@ export class Database extends ReadyResource {
     const frozen = () => this.behind !== null && !leaving(ops, this.identity.id)
     if (frozen()) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
+      if (this.spent) throw CeroError.INVALID('a write through tx after its fn returned')
       for (const op of ops) this.txQueue.push(op)
       return
     }
@@ -626,12 +633,13 @@ export class Database extends ReadyResource {
       return { data: await view.get(col, { id: query }) }
     }
 
-    const { path, range, rest, sorted } = this._plan(name, query)
+    const { path, range, rest, sorted, count = path } = this._plan(name, query)
     const rows = await view.find(path, range).toArray()
-    if (!sorted) rows.sort(byIndex)
-    const matched = filter(rows, { ...rest, limit: undefined })
+    const matched = filter(rows, { ...rest, reverse: undefined, limit: undefined })
+    if (!sorted) matched.sort(byIndex)
+    if (rest.reverse) matched.reverse()
     const data = rest.limit === undefined ? matched : matched.slice(0, rest.limit)
-    return { data, total: await this._total(view, path, range, matched, query), size: data.length }
+    return { data, total: await this._total(view, count, range, matched, query), size: data.length }
   }
 
   /**
@@ -786,13 +794,15 @@ export class Database extends ReadyResource {
     const rows = await this.rotation._epochs()
     let added = false
     for (const e of epochs) {
-      if (this.keyring.entropy(e.stamp)) continue
       const row = rows.find((r) => r.stamp === e.stamp)
-      if (!row?.commit || !b4a.equals(crypto.hash(e.entropy), row.commit)) continue
+      if (!row?.commit || this.rotation.held(row)) continue
+      if (!b4a.equals(crypto.hash(e.entropy), row.commit)) continue
       this.keyring.add(e.stamp, e.entropy, e.epoch)
       added = true
     }
-    if (added) await this.rotation._save()
+    if (!added) return
+    await this.rotation.pick()
+    await this.rotation._save()
   }
 
   /**
@@ -963,10 +973,20 @@ export class Database extends ReadyResource {
         this._onerror(CeroError.INVALID('an op with no envelope'))
         continue
       }
+      // written without the key: a seat that holds none writes nothing
+      const plain = this.bee.plain.has(plainId(node.key, node.length - 1))
+      if (plain && !this._joins(op.body)) {
+        this._onerror(
+          CeroError.REFUSED('key', 'a block written without the key carries a join only')
+        )
+        continue
+      }
       ready.push({ ...node, value: op.body, version: op.version })
     }
     this._applied = true
     const { landed, changed } = await this.dispatcher.apply(ready, view, host)
+    // a reorder may have dropped the epoch written under
+    await this.rotation.pick(view)
     if (landed.length > 0) this._landed = true
     this._notify(landed, changed)
   }
@@ -1054,6 +1074,15 @@ export class Database extends ReadyResource {
     }
     this.on('update', tick)
     return () => this.off('update', tick)
+  }
+
+  /** @private */
+  _joins(body) {
+    try {
+      return this.spec.dispatch.decode(body).name === `@${this.ns}/join`
+    } catch {
+      return false
+    }
   }
 
   // '@cero/set-messages' → { op: 'set', name: 'messages' }; an action has no dash
@@ -1285,7 +1314,11 @@ export class Database extends ReadyResource {
     if (ref?.orderIndex) {
       const range = {}
       pushWindow(range, rest)
-      return { path: `${col}-index`, range, rest, sorted: true }
+      // a full read, and a count, scan the collection in about half the time the order index takes to walk
+      if (range.limit !== undefined) {
+        return { path: `${col}-index`, range, rest, sorted: true, count: col }
+      }
+      return { path: col, range: {}, rest: { ...rest, reverse: range.reverse }, sorted: false }
     }
     return { path: col, range: {}, rest, sorted: false }
   }

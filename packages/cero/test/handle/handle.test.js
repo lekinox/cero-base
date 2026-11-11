@@ -1,11 +1,16 @@
 import test from 'brittle'
 import b4a from 'b4a'
+import c from 'compact-encoding'
+import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
+import { Invite } from '@cero-base/core/invite'
+import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero } from '../../src/index.js'
 import { put, set, get, del, open, rotate, accept, watch, after } from '../../src/lib/operators.js'
+import { Response, STATUS_ACCEPTED } from '../../../core/src/pairing/response.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
   makeStore,
@@ -51,6 +56,48 @@ test('invite: a confirm invite waits for the app to accept', async (t) => {
   const joined = await joining
   t.teardown(() => joined.close().catch(() => {}))
   t.is((await get(room.members, peer.identity.id)).data.role, 'reader')
+})
+
+test('invite: made-up keys a reader sends a confirm join are not kept, the accept still lets it in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'gated' })
+  const reader = await openHandle(t, { testnet })
+  const seen = await open(reader.me.team, await cero.invite(room, { role: 'reader' }))
+  const invite = await cero.invite(room, { confirm: true })
+
+  const peer = await openHandle(t, { testnet })
+  const joining = open(peer.me.team, invite)
+  // a reader sees where the reply goes
+  const { reply } = await nextRequest(seen)
+  const read = new Set()
+  const put = peer.me.mailbox.inbox.put
+  peer.me.mailbox.inbox.put = async (m) => {
+    if (b4a.equals(m.address, reply)) read.add(m.id)
+    return put(m)
+  }
+  const forged = {
+    status: STATUS_ACCEPTED,
+    reason: '',
+    key: Invite.parse(invite).key,
+    encryptionKey: Identity.randomBytes(32),
+    epochs: []
+  }
+  await reader.me.mailbox.send(reply, c.encode(Response, forged))
+  const rows = () => peer.me.mailbox.inbox.list()
+  await waitUntil(
+    async () => read.size && !(await rows()).some((m) => read.has(m.id) && !m.handled)
+  )
+  const { data: joins } = await peer.me.local.store.get('joins')
+  t.absent(
+    joins.find((row) => row.key),
+    'the made-up keys are not kept'
+  )
+
+  await accept(room, await nextRequest(room))
+  const joined = await joining
+  t.teardown(() => joined.close().catch(() => {}))
+  t.ok((await get(room.members, peer.identity.id)).data)
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {
@@ -1063,6 +1110,17 @@ test('files: get(handle.files, id) resolves a single file row', async (t) => {
 
 // ─── Phase 4: WRITE gate ──────────────────────────────────────────────────────
 
+test('Handle: me.topics and me.joins read one row by id, as a collection does', async (t) => {
+  const { me } = await ceroOpen(t)
+  await open(me.team, { name: 'clinic' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 1)
+  const [row] = (await get(me.topics)).data
+  t.alike((await get(me.topics, row.id)).data, row, 'a topic by its id')
+  t.alike((await get(me.topics, { name: 'clinic' })).data, [row], 'a filter still lists')
+  t.is((await get(me.topics, 'unknown')).data, null, 'an unknown topic reads null')
+  t.is((await get(me.joins, 'unknown')).data, null, 'an unknown join reads null')
+})
+
 test('files: a reader cannot add a file', async (t) => {
   const { room, join } = await hosted(t, 'files')
   const { room: reader } = await join(await cero.invite(room, { role: 'reader' }))
@@ -1088,6 +1146,94 @@ test('files: a file resolves in its own handle whatever a room on the device doe
   t.is(await read(file.id), 'root file', 'while a room holds files too')
   await room.close()
   t.is(await read(file.id), 'root file', 'and once the room closed')
+})
+
+test("files: a row naming another member's blob with the wrong epoch leaves that member's file readable", async (t) => {
+  const { room, join } = await hosted(t, 'files')
+  const { room: mallory } = await join(await cero.invite(room))
+  const { room: olive } = await join(await cero.invite(room))
+  await rotate(room)
+  await waitUntil(() => olive.store.keyring.seq === 1 && mallory.store.keyring.seq === 1)
+  const want = 'the host file after the rotation'
+  const { data: real } = await put(room.files, { data: b4a.from(want), type: 'text/plain' })
+
+  // the same core and blob under another type, stamped with the base epoch
+  await waitUntil(async () => (await get(mallory.files, real.id)).data)
+  const { coreKey, blobId } = decodeId(real.id)
+  const forged = encodeId(coreKey, blobId, 'text/html')
+  await mallory.store.call('add-file', { id: forged, name: 'hi', stamp: 0, from: null })
+
+  // olive reads the forged row first
+  await waitUntil(async () => (await get(olive.files, forged)).data)
+  await waitUntil(async () => (await get(olive.files, real.id)).data)
+  const { data: row } = await get(olive.files, real.id)
+  const read = await waitUntil(async () => {
+    const res = await fetch(row.url)
+    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
+  })
+  t.is(read, want, 'the host file decrypts on olive')
+})
+
+test("files: a row whose type no header carries leaves another member's untyped file readable", async (t) => {
+  const { room, join } = await hosted(t, 'files')
+  const { room: mallory } = await join(await cero.invite(room))
+  const { room: olive } = await join(await cero.invite(room))
+  await rotate(room)
+  await waitUntil(() => olive.store.keyring.seq === 1 && mallory.store.keyring.seq === 1)
+  const want = 'the host file after the rotation'
+  const { data: real } = await put(room.files, { data: b4a.from(want), type: '' })
+
+  // the same core and blob under the type '\x01', served as '' like the real one, stamped with the base epoch
+  await waitUntil(async () => (await get(mallory.files, real.id)).data)
+  const { coreKey, blobId } = decodeId(real.id)
+  const bytes = z32.decode(encodeId(coreKey, blobId, 'x'))
+  bytes[bytes.length - 1] = 1
+  const forged = z32.encode(bytes)
+  await mallory.store.call('add-file', { id: forged, name: 'hi', stamp: 0, from: null })
+
+  // olive reads the forged row first
+  await waitUntil(async () => (await get(olive.files, forged)).data)
+  await waitUntil(async () => (await get(olive.files, real.id)).data)
+  const { data: row } = await get(olive.files, real.id)
+  const read = await waitUntil(async () => {
+    const res = await fetch(row.url)
+    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
+  })
+  t.is(read, want, 'the host file decrypts on olive')
+})
+
+test("files: a stored type a header cannot carry serves another member's file", async (t) => {
+  const { room, join } = await hosted(t, 'files')
+  const { room: olive } = await join(await cero.invite(room))
+  const want = 'an earlier build stored it'
+  const { data: file } = await put(room.files, { data: b4a.from(want), type: 'x' })
+  // the same blob under the type '\x01', as an earlier build could have stored it
+  const bytes = z32.decode(file.id)
+  bytes[bytes.length - 1] = 1
+  const id = z32.encode(bytes)
+  await room.store.call('add-file', { id, name: null, stamp: 0, from: null })
+
+  const { data: row } = await waitUntil(async () => {
+    const got = await get(olive.files, id)
+    return got.data && got
+  })
+  const read = await waitUntil(async () => {
+    const res = await fetch(row.url)
+    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
+  }, 10000).catch(() => null)
+  t.is(read, want, 'the bytes decrypt on olive')
+})
+
+test('files: reading its own files adds nothing to the root registry', async (t) => {
+  const { me } = await openHandle(t)
+  await me.store.bootstrap({ name: 'desktop' })
+  const { data: first } = await put(me.files, { data: b4a.from('0'), type: 'text/plain' })
+  await get(me.files, first.id)
+  const size = me._coreKeys.size
+  for (let i = 1; i < 20; i++) await put(me.files, { data: b4a.from(`${i}`), type: 'text/plain' })
+  const { data: rows } = await get(me.files)
+  t.is(rows.length, 20, 'every file read')
+  t.is(me._coreKeys.size, size, 'one entry for the core, none per file')
 })
 
 test('watch: changes carry file fields resolved on both sides', async (t) => {

@@ -81,6 +81,7 @@ test('canary: every provider construction path is epoch-aware (incl. ActiveWrite
   // lib/writers.js news WriterEncryption directly: only the base-prototype patch reaches it
   const auto = fakeAuto()
   auto.keyring.add(1, crypto.hash(b4a.from('canary')))
+  auto.keyring.current = 1
   const upstream = new WriterEncryption(auto)
   const ctx = fakeCtx()
   t.is((await upstream.getKeys(1, ctx)).id, 1, 'upstream class sees epochs')
@@ -150,7 +151,7 @@ test('epoch keys: distinct per epoch, deterministic across peers, unknown throws
   await t.exception(a.getKeys(2, ctx), /unknown encryption epoch/, 'missing entropy is an error')
 })
 
-test('writes follow the latest keyring epoch', async (t) => {
+test("writes follow the keyring's current epoch", async (t) => {
   const provider = new WriterEncryption(fakeAuto())
   const ctx = fakeCtx()
   const stamped = async () => {
@@ -161,7 +162,9 @@ test('writes follow the latest keyring epoch', async (t) => {
 
   t.is(await stamped(), 0, 'starts on the base era')
   provider.auto.keyring.add(1, crypto.hash(b4a.from('e1')))
-  t.is(await stamped(), 1, 'advances when the keyring does')
+  t.is(await stamped(), 0, 'holding a secret is not writing under it')
+  provider.auto.keyring.current = 1
+  t.is(await stamped(), 1, 'advances when the current epoch does')
 })
 
 // ─── the security property, at the crypto layer ─────────────────────────────
@@ -174,6 +177,7 @@ test('a peer without the epoch entropy cannot decrypt post-rotation blocks', asy
 
   const writer = new WriterEncryption(auto)
   writer.auto.keyring.add(1, entropy)
+  writer.auto.keyring.current = 1
 
   const block = b4a.alloc(WriterEncryption.PADDING + text.length)
   block.set(b4a.from(text), WriterEncryption.PADDING)
@@ -212,19 +216,21 @@ test('pre-rotation blocks stay readable after the keyring advances', async (t) =
 
 // ─── keyring ────────────────────────────────────────────────────────────────
 
-test('keyring validates stamps and entropy, orders by sequence', (t) => {
+test('keyring validates stamps and entropy, lists by sequence, never picks the write epoch', (t) => {
   const ring = new Keyring()
   t.exception(() => ring.add(0, b4a.alloc(32)), /epoch stamp/)
   t.exception(() => ring.add(1, b4a.alloc(16)), /32 bytes/)
   ring.add(900, b4a.alloc(32, 2), 2)
   ring.add(700, b4a.alloc(32, 1), 1)
-  t.is(ring.current, 900, 'current follows the highest sequence, not the stamp value')
-  t.is(ring.seq, 2)
+  t.alike(
+    ring.all().map((e) => e.stamp),
+    [700, 900],
+    'ordered by sequence, not the stamp value'
+  )
+  t.is(ring.current, 0, 'the write epoch is picked from the rows, not by adding')
   t.alike(ring.entropy(700), b4a.alloc(32, 1))
   t.is(ring.entropy(3), null)
   ring.remove(900)
-  t.is(ring.current, 700, 'remove recomputes current from remaining sequences')
-  t.is(ring.seq, 1)
   t.is(ring.entropy(900), null)
 })
 
@@ -791,9 +797,126 @@ test('epochs reload: a primed keyring skips re-processing known rotations', asyn
   await a.db.rotate()
   await a.db.rotate()
 
-  const { version } = a.db.keyring
+  let learned = 0
+  const learn = a.db.rotation.learn.bind(a.db.rotation)
+  a.db.rotation.learn = (row) => {
+    learned++
+    return learn(row)
+  }
   await a.db.rotation.hydrate()
-  t.is(a.db.keyring.version, version, 'known epochs are skipped, the keyring untouched')
+  t.is(learned, 0, 'known epochs are skipped')
+})
+
+test('rotate: a rotation a reorder drops is no longer the write key', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const encryptionKey = Identity.randomBytes(32)
+  const a = await makePeer(t, testnet, { topic, encryptionKey })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
+  await admit(a.db, b.db, 'admin')
+  await waitFor(async () => b.db.writable)
+  await a.db.put('messages', { text: 'pre' })
+  await waitFor(async () => (await texts(b.db)).includes('pre'))
+
+  const keyPair = b.db.keyPair
+  await b.db.close()
+  await b.network.close().catch(() => {})
+
+  // demoted while away, B still sees itself an admin and rotates
+  await a.db.set('members', { id: b.identity.id, role: 'member' })
+  await a.db.put('messages', { text: 'a-post' })
+  const off = new Database({
+    store: b.store,
+    identity: b.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey
+  })
+  await off.ready()
+  await off.rotate()
+  await off.close()
+
+  const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
+  await net.ready()
+  const disc = net.join(topic)
+  await disc.flush()
+  const back = new Database({
+    store: b.store,
+    identity: b.identity,
+    network: net,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey
+  })
+  await back.ready()
+  t.teardown(
+    async () => {
+      await back.close().catch(() => {})
+      await disc.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 4 }
+  )
+  await waitFor(async () => (await texts(back)).includes('a-post'), { timeout: 20000 })
+  await waitFor(() => back.keyring.current === 0, { timeout: 5000 }).catch(() => {})
+  t.absent(
+    await back.view.findOne('@cero/epochs', {}),
+    'the demotion sorts first: the rotation never lands'
+  )
+  t.is(back.keyring.current, 0, 'B writes under the key every member holds')
+})
+
+test('rotate: a secret that fails its row commitment is never the write key, and the right one replaces it', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  await a.db.rotate()
+  const [e] = a.db.keyring.all()
+  const joiner = await makePeer(t, testnet, {
+    topic,
+    encryptionKey,
+    key: a.db.key,
+    epochs: [{ ...e, entropy: Identity.randomBytes(32) }]
+  })
+  await waitFor(async () => !!(await joiner.db.view.findOne('@cero/epochs', {})))
+  t.is(joiner.db.keyring.current, 0, 'nothing is written under a secret its row does not commit to')
+  await joiner.db.learn(a.db.keyring.all())
+  t.alike(joiner.db.keyring.entropy(e.stamp), e.entropy, 'the handed-over secret replaces it')
+  t.is(joiner.db.keyring.current, e.stamp, 'and is the write key')
+})
+
+test('rotate: a member holding a wrong secret for a rotation sealed to it opens its box', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  const learn = b.db.rotation.learn.bind(b.db.rotation)
+  b.db.rotation.learn = (row) => {
+    b.db.keyring.add(row.stamp, Identity.randomBytes(32), row.epoch)
+    return learn(row)
+  }
+  await a.db.rotate()
+  const [e] = a.db.keyring.all()
+  await waitFor(async () => !!(await b.db.view.findOne('@cero/epochs', {})))
+  t.alike(b.db.keyring.entropy(e.stamp), e.entropy, 'the secret in its box replaces the held one')
+  t.is(b.db.keyring.current, e.stamp)
+})
+
+test('rotate: a reopen replaces a stashed secret that fails its row commitment', async (t) => {
+  const { a } = await makeRoom(t, [])
+  await a.db.rotate()
+  const [e] = a.db.keyring.all()
+  a.db.keyring.add(e.stamp, Identity.randomBytes(32), e.epoch)
+  await a.db.rotation._save()
+  const { store, key, keyPair, encryptionKey } = a.db
+  await a.db.close()
+
+  const again = new Database({ store, identity: a.identity, spec, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.alike(again.keyring.entropy(e.stamp), e.entropy, 'the secret in its box is learned again')
+  t.is(again.keyring.current, e.stamp)
 })
 
 test('rotate: no tx batching; concurrent rotations run one after the other', async (t) => {

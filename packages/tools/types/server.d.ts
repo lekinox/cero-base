@@ -107,6 +107,8 @@ export declare class TapServer {
     /** @private */
     private _resolveRef;
     /** @private */
+    private _mask;
+    /** @private */
     private _source;
     /** @private */
     private _track;
