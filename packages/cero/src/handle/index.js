@@ -461,7 +461,12 @@ export class Handle extends ReadyResource {
    * @returns {Promise<void>}
    */
   close() {
-    if (!this.parent) return this._end()
+    if (!this.parent) {
+      // a link or a restore still waiting stops with the root, one taking its place finishes first
+      const swap = this._swap
+      if (swap) return (swap.committing ? swap.done : swap.abort()).then(() => this._end())
+      return this._end()
+    }
     if (this._refs > 1) {
       this._refs--
       return Promise.resolve()

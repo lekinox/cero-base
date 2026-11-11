@@ -592,6 +592,27 @@ test('rpc: a mistyped link keeps the worker serving this identity', async (t) =>
   t.is((await get(client.messages)).data[0]?.text, 'mine', 'still reads')
 })
 
+test('rpc: the root closing while a link waits ends it CLOSED on the client', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+  let request = null
+  const linking = link(client, await cero.invite(other), { onrequest: (r) => (request = r) })
+  linking.catch(() => {})
+  await waitUntil(() => request)
+  await me.close()
+  await t.exception(linking, /CLOSED/)
+})
+
+test('rpc: the root closing while a restore looks for a device ends it CLOSED on the client', async (t) => {
+  const { me, client } = await openPair(t, { recoveryTimeout: 0 })
+  const restoring = restore(client, Identity.toPhrase(Identity.randomBytes(32)))
+  restoring.catch(() => {})
+  await waitUntil(() => existsSync(`${me._dir}/main.next/main`))
+  await me.close()
+  await t.exception(restoring, /CLOSED/)
+})
+
 test("rpc: the worker's background errors reach the client's onerror", async (t) => {
   let report
   const seen = new Promise((resolve) => (report = resolve))

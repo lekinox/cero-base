@@ -122,6 +122,82 @@ test('link: a second link while one waits replaces it, and the second goes throu
   t.is(linked.id, a.me.id, 'linked')
 })
 
+test('link: a close while it waits ends it CLOSED, and the next launch opens this identity', async (t) => {
+  const a = await ceroOpen(t)
+  const { me, dir } = await mine(t, { bootstrap: a.testnet.bootstrap })
+  const id = me.id
+  let request = null
+  const linking = cero.link(me, await cero.invite(a.me), { onrequest: (r) => (request = r) })
+  linking.catch(() => {})
+  await waitUntil(() => request)
+  await me.close()
+  await t.exception(linking, /CLOSED/)
+  t.absent(fs.existsSync(`${dir}/main.next`), 'nothing left beside it')
+  const again = await cero(dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await kept(t, again, id)
+})
+
+test('restore: a close while it looks for a device ends it CLOSED, and the next launch opens this identity', async (t) => {
+  // no timeout: only the close ends the wait
+  const { me, dir, testnet, phrase } = await mine(t, { recoveryTimeout: 0 })
+  const id = me.id
+  const restoring = restore(me, phrase)
+  restoring.catch(() => {})
+  await waitUntil(() => fs.existsSync(`${dir}/main.next/main`))
+  await me.close()
+  await t.exception(restoring, /CLOSED/)
+  t.absent(fs.existsSync(`${dir}/main.next`), 'nothing left beside it')
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await kept(t, again, id)
+})
+
+test('link: a close as the incoming identity closes ends it CLOSED, and this identity stays', async (t) => {
+  const a = await ceroOpen(t)
+  let closing = null
+  // the incoming identity starting to close: the swap is one step from its commit
+  const hook = (root) => {
+    root.own({ destroy: () => root !== me && (closing = me.close()) })
+  }
+  const { me, dir } = await mine(t, { bootstrap: a.testnet.bootstrap, extensions: [hook] })
+  const id = me.id
+  const linking = cero.link(me, await cero.invite(a.me))
+  linking.catch(() => {})
+  await cero.accept(a.me, await asked(a.me))
+  await t.exception(linking, /CLOSED/)
+  await closing
+  t.absent(fs.existsSync(`${dir}/main.next`), 'nothing left beside it')
+  const again = await cero(dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await kept(t, again, id)
+})
+
+test('link: a close once the swap commits lets it finish, and the next launch opens the new identity', async (t) => {
+  const a = await ceroOpen(t)
+  let signal = null
+  // what stops the incoming identity while it opens
+  const hook = (root) => {
+    signal = root._opts.signal ?? signal
+  }
+  const { me, dir } = await mine(t, { bootstrap: a.testnet.bootstrap, extensions: [hook] })
+  let closing = null
+  // this identity closing under the swap: the commit is under way
+  me.own({ destroy: () => (closing = me.close()) })
+  const linking = cero.link(me, await cero.invite(a.me))
+  await cero.accept(a.me, await asked(a.me))
+  const linked = await linking
+  t.ok(closing, 'closed under the commit')
+  await closing
+  t.absent(signal.aborted, 'not stopped')
+  t.is(linked.id, a.me.id, 'linked')
+  await linked.close()
+  const again = await cero(dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(again.id, a.me.id, 'the new identity')
+  t.absent(fs.existsSync(`${dir}/main.next`), 'nothing left beside it')
+})
+
 test('swap: a launch after a swap killed while it waited drops the half-made identity', async (t) => {
   const { me, dir, testnet } = await mine(t)
   const id = me.id
