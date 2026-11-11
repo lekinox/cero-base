@@ -448,6 +448,8 @@ export class Handle extends ReadyResource {
   /** @private */
   async _leave() {
     if (!this.parent) throw CeroError.INVALID('the root cannot be left')
+    // leaving drops it from the root list too: behind there, nothing is done
+    if (this.parent.store.behind !== null) throw CeroError.BEHIND(this.parent.store.behind)
     await this.store.del('members', this.identity.id)
     await this.parent.store.call('del-handle', { id: hid.encode(this.store.key) })
     await this._end()
@@ -1193,8 +1195,6 @@ export class Handle extends ReadyResource {
   // handles are told by whichever device of the identity has them open
   /** @private */
   async _prune(child) {
-    // behind, the root's removals are not all on this device yet
-    if (this.store.behind !== null) return
     const { data: rows } = await child.store.get('devices')
     for (const row of rows) {
       if (row.memberId !== this.identity.id || !row.key) continue

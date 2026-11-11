@@ -646,7 +646,7 @@ test('rpc: a write of what the version holds back is refused with UNSUPPORTED in
   t.is(collection?.code, 'UNSUPPORTED', collection?.message)
 })
 
-test('rpc: a room whose root is behind reports it and does not write, in the UI', async (t) => {
+test('rpc: a room whose root is behind reports it, does not write and does not leave, in the UI', async (t) => {
   const { me, client } = await openPair(t)
   const room = await open(client.team, { name: 'clinic' })
   const behind = me.store.version + 1
@@ -654,6 +654,10 @@ test('rpc: a room whose root is behind reports it and does not write, in the UI'
   await waitUntil(async () => (await get(room.status)).data.behind === behind || null)
   const err = await put(room.messages, { text: 'stale' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', err?.message)
+  const left = await cero.leave(room).catch((e) => e)
+  t.is(left?.code, 'BEHIND', 'nor leaves')
+  t.ok((await get(room.members, me.id)).data, 'still a member')
+  t.is((await get(client.team)).data.length, 1, 'still in the list')
 })
 
 test('rpc: removed reads in the worker, the answer back in the UI', async (t) => {

@@ -264,9 +264,9 @@ version its release asks for ([Schema](schema.md#a-handles-version)). A device o
 that version is behind: it reads and syncs, `status.behind` holds the version, and `put`, `set`,
 `del`, `call`, `tx`, `invite`, `accept`, `deny`, `revoke` and `rotate` throw `BEHIND` until the
 update, since a write from a view missing the newer rows would overwrite them for everyone. Only
-`leave` goes through. Once the app upgrades, the next open applies what it skipped. A device behind
-in its root is behind in every handle, so watch `me.status` as well as `room.status` for each open
-handle.
+`leave` goes through, unless the root is behind. Once the app upgrades, the next open applies what
+it skipped. A device behind in its root is behind in every handle, so watch `me.status` as well as
+`room.status` for each open handle.
 
 ## Next
 

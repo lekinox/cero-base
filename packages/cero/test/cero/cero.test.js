@@ -2126,8 +2126,20 @@ test('status: a room whose root is behind prunes no device from it', async (t) =
   await waitUntil(() => room.store.behind !== null || null)
   // the root, past this build, reads this device as removed
   me.store.removed = async () => 'removed'
-  await me._prune(room)
+  await t.exception(me._prune(room), /BEHIND/, 'the room does not write')
   t.alike((await get(room.devices)).data, rows, 'a removal it cannot follow is not taken')
+})
+
+test('status: a device behind in its root leaves no room: nothing is half done', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  await me.store.write([['upgrade', { version: me.store.version + 1 }]])
+  await waitUntil(() => room.store.behind !== null || null)
+  const err = await cero.leave(room).catch((e) => e)
+  t.is(err?.code, 'BEHIND', err?.message)
+  t.ok((await get(room.members, me.id)).data, 'still a member')
+  t.is((await get(me.team)).data.length, 1, 'still in the list')
+  t.absent(room.closed, 'and open')
 })
 
 test("status: version is the room's, and supports answers from it and the spec, before and after a raise", async (t) => {
