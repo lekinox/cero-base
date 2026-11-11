@@ -271,12 +271,15 @@ export class Pairing extends ReadyResource {
       encryptionKey: null,
       epochs: null
     })
+    // only a device that read its keys covers another: unread ones would keep each other in
+    const unread = new Map(owed.map((row) => [row.id, row]))
     for (const row of this._offer(this._replies, owed, keys, 'del-request')) {
       const id = hid.encode(row.identity)
       const { data: devices } = await this.db.get('devices')
-      if (devices.some((d) => d.memberId === id && d.id !== row.id)) {
+      const others = devices.filter((d) => d.memberId === id && d.id !== row.id)
+      if (others.some((d) => !unread.has(d.id))) {
         await this.db.call('del-request', { id: row.id }).catch(safetyCatch)
-      } else if (can(role, REMOVE)) {
+      } else if (others.every((d) => expired(unread.get(d.id))) && can(role, REMOVE)) {
         await this.db.call('del-member', { id }).catch(safetyCatch)
       }
     }

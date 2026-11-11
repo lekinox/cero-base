@@ -508,6 +508,29 @@ test('expiry: an extra device that never read its keys costs its member nothing'
   t.alike(result.key, host.db.key)
 })
 
+test('expiry: two devices of a new member that never read their keys do not keep each other in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ reuse: true, ttl: 3000 })
+  // nobody answers while both land, and neither reads its keys
+  await host.pairing.close()
+  const other = await makeMailbox(t, testnet)
+  const opts = { identity: joiner.identity, spec, timeout: 0 }
+  const joins = [joiner.mailbox, other.mailbox].map((mailbox) =>
+    Pairing.join(mailbox, invite, { ...opts, writer: crypto.keyPair() }).catch((e) => e)
+  )
+  const owed = async () => (await host.db.get('requests')).data
+  await waitFor(async () => (await owed()).length === 2)
+  for (const joining of joins) t.is((await joining).code, 'EXPIRED', 'each gives up at expiry')
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  const gone = async () => !(await member(host.db, joiner.identity))
+  t.ok(await waitFor(gone, { timeout: 10000 }).catch(() => false), 'she is removed')
+  t.alike(await owed(), [], 'nothing left owed')
+})
+
 // ─── confirm invites: a member accepts ─────────────────────────────────────
 
 test('confirm: a join waits as a request until a member accepts it', async (t) => {
