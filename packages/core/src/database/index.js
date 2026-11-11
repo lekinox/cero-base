@@ -246,8 +246,8 @@ export class Database extends ReadyResource {
       throw err
     }
 
-    // REMOVE-capable devices re-key when the epoch drifts from the member set, as it may have
-    // while this one was closed, or as a close cut its re-key short
+    // REMOVE-capable devices rotate when the epoch drifts from the member set, as it may have
+    // while this one was closed, or as a close cut its rotation short
     this.on('update', () => this.rotation.heal())
     this.rotation.heal()
     this._writable = this.bee.writable
