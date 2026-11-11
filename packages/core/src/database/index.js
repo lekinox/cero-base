@@ -125,6 +125,11 @@ export class Database extends ReadyResource {
     this._applied = false
     /** @private */
     this._landed = false
+    // a fast-forward landed and the build that applied its view is not checked yet
+    /** @private */
+    this._landing = false
+    /** @private */
+    this._rebuilding = null
     this.namespace = opts.namespace || NAMESPACE
     this._writable = false
     this.encryptionKey = opts.encryptionKey
@@ -230,6 +235,8 @@ export class Database extends ReadyResource {
       start: this.start,
       contract: () => this.version,
       onskip: (stamp) => this._skip(stamp),
+      // a view a fast-forward landed on keeps the row of the build that applied it until it is checked
+      build: () => (this._landing ? null : this._build()),
       onerror: this._onerror,
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
@@ -262,6 +269,14 @@ export class Database extends ReadyResource {
     this.on('update', () => this.rotation.heal())
     this.rotation.heal()
     this._writable = this.bee.writable
+    this._wire()
+
+    // a fresh db has no key until boot mints it
+    if (this.network && !known) this._joinSwarm(this.bee, this.bee.discoveryKey)
+  }
+
+  /** @private */
+  _wire() {
     this.bee.on('writable', () => this._onwritable())
     // falling edge: apps freeze the UI the moment access ends
     this.bee.on('unwritable', () => {
@@ -273,15 +288,13 @@ export class Database extends ReadyResource {
     // a failed background remap is only a warning: the store reads its old cores until a reopen or a fast-forward
     // tries again
     this.bee.on('warning', this._onerror)
+    this.bee.on('move-to', () => this._onmove().catch(safetyCatch))
 
     // with no mirror to hold the database, every member holds it: any member serves a joiner, offline
     if (this.network && !this.network.mirrors.length) {
       this.bee.on('move-to', () => this._holdRoom().catch(safetyCatch))
       this._holdRoom().catch(safetyCatch)
     }
-
-    // a fresh db has no key until boot mints it
-    if (this.network && !known) this._joinSwarm(this.bee, this.bee.discoveryKey)
   }
 
   /** @private */
@@ -454,7 +467,7 @@ export class Database extends ReadyResource {
    * is open.
    *
    * @param {Array<[string, unknown]>} ops
-   * @returns {Promise<void>}
+   * @returns {Promise<number | undefined>}  The stamp the last op was appended with; nothing when queued or when nothing changed.
    */
   async write(ops) {
     // behind, a set merges from a view missing the newer writes and every device takes the stale
@@ -466,6 +479,7 @@ export class Database extends ReadyResource {
       return
     }
     this.guard()
+    if (this._rebuilding) await this._rebuilding
     // leaving takes no seat: a reader's own removal goes in optimistically, apply admits it
     const optimistic = !this.bee.writable && leaving(ops, this.identity.id)
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
@@ -474,17 +488,18 @@ export class Database extends ReadyResource {
     // the dry run refuses what apply would; a no-op never reaches the log, an action always does
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
-      const { wrapped, changed } = await this._dryRun(ops)
+      const { wrapped, changed, stamp } = await this._dryRun(ops)
       if (!changed && !action) return
       // a newer op may have applied while this write awaited
       if (frozen()) throw CeroError.BEHIND(this.behind)
       await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
+      const ref = this.push ? this._ref(ops) : null
+      if (ref) this._push(ref)
+      return stamp
     } catch (err) {
       if (this.closing || this.closed) throw CeroError.CLOSED('Database')
       throw err
     }
-    const ref = this.push ? this._ref(ops) : null
-    if (ref) this._push(ref)
   }
 
   /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
@@ -844,12 +859,13 @@ export class Database extends ReadyResource {
   }
 
   /** @private */
-  async _boot() {
+  async _boot({ land = true } = {}) {
     const bee = new EpochAutobee(this.store.namespace(this.namespace), this.key, {
       keyPair: this.keyPair,
       encryptionKey: this.encryptionKey,
       keyring: this.keyring,
       optimistic: true,
+      fastForward: land ? undefined : false,
       wakeup: this.network?.wakeup || undefined,
       open: (b) => HyperDB.bee2(b, this.spec.database, { autoUpdate: true }),
       isTrusted: this._isTrusted.bind(this),
@@ -866,8 +882,8 @@ export class Database extends ReadyResource {
   }
 
   // ops skipped as too new apply once this version caught up, and a view whose definition grew
-  // since it was built (an index added by a rebuild), or that was applied under older rules, fills
-  // from the log: wipe the boot record and reboot
+  // since it was built (an index added by a rebuild), or that was applied under older rules or an
+  // older contract, fills from the log: wipe the boot record and reboot
   /** @private */
   async _replay() {
     const local = this.bee.local
@@ -875,8 +891,9 @@ export class Database extends ReadyResource {
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
     const view = built ? viewMarker(built) : null
-    const grown = !!view && (view.db < db || view.rules < this.rules)
-    const marker = b4a.concat([c.encode(c.uint, db), c.encode(c.uint, this.rules)])
+    const grown =
+      !!view && (view.db < db || view.rules < this.rules || view.contract < this.version)
+    const marker = b4a.concat([db, this.rules, this.version].map((n) => c.encode(c.uint, n)))
     if (!caught && !grown) {
       if (!view) await local.setUserData('cero/view', marker)
       return false
@@ -1096,6 +1113,50 @@ export class Database extends ReadyResource {
     return ctx ? { data: ctx.row } : null
   }
 
+  // the row this build keeps in the view it applies
+  /** @private */
+  _build() {
+    return [this.spec.database.versions.db, this.rules, this.version, this._skipped ?? 0]
+  }
+
+  // a fast-forward landed on a view: one another build applied is applied again here, from the log
+  /** @private */
+  async _onmove() {
+    this._landing = true
+    let built
+    try {
+      built = await this.dispatcher.built(this.view)
+    } finally {
+      this._landing = false
+    }
+    const own = this._build()
+    if (built.every((n, i) => n === own[i])) return
+    this._rebuilding = this._rebuild()
+      .catch(this._onerror)
+      .finally(() => (this._rebuilding = null))
+  }
+
+  // as an open does past skipped ops, with no fast-forward until it closes: one would land on such
+  // a view again
+  /** @private */
+  async _rebuild() {
+    // peers announce their writers once, as they connect: the writers of the view it leaves are
+    // where the new bee starts looking
+    const heads = []
+    for await (const { key, length } of this.bee.system.list()) heads.push({ key, length })
+    // the bee closes first: open, a batch it applied meanwhile would store what it applied again
+    await this.bee.close()
+    await this._onWriter(async (writer) => {
+      await writer.setUserData('autobee/head', null)
+      await writer.setUserData('cero/skipped', null)
+    })
+    this._skipped = null
+    if (this.closing) return
+    await this._boot({ land: false })
+    this.bee.hintWakeup(heads)
+    this._wire()
+  }
+
   // the lowest version skipped: the replay runs once this device reaches it, whoever sent the highest
   /** @private */
   _skip(version) {
@@ -1142,9 +1203,10 @@ export class Database extends ReadyResource {
       genesis: this.bee.system.isGenesis()
     }
     const wrapped = []
+    let stamp = 0
     try {
       for (const [op, payload] of ops) {
-        const stamp = await this._stamp(tx)
+        stamp = await this._stamp(tx)
         const value = this.dispatcher.encode(`@${this.ns}/${op}`, payload, stamp)
         await this.dispatcher.dispatch(value, {
           host,
@@ -1156,7 +1218,7 @@ export class Database extends ReadyResource {
         })
         wrapped.push(wrap(stamp, value))
       }
-      return { wrapped, changed: tx.updated() }
+      return { wrapped, changed: tx.updated(), stamp }
     } finally {
       // a failing close must not mask the handler's own rejection
       try {
@@ -1248,12 +1310,12 @@ export class Database extends ReadyResource {
   }
 }
 
-// the view's definition version, then the rules it was applied under: a marker that predates the
-// rules holds the first only
+// the view's definition version, then the rules and the contract it was applied under: a marker
+// that predates either holds what came before it
 function viewMarker(buf) {
   const state = { start: 0, end: buf.byteLength, buffer: buf }
-  const db = c.uint.decode(state)
-  return { db, rules: state.start < state.end ? c.uint.decode(state) : 0 }
+  const next = () => (state.start < state.end ? c.uint.decode(state) : 0)
+  return { db: c.uint.decode(state), rules: next(), contract: next() }
 }
 
 // an unbounded read of an old checkout wedges autobee's drain; null means untrusted

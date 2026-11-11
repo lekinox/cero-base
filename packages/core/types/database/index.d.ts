@@ -251,6 +251,10 @@ export declare class Database extends ReadyResource {
     _applied;
     /** @private */
     _landed;
+    /** @private */
+    _landing;
+    /** @private */
+    _rebuilding;
     namespace: string;
     _writable: boolean;
     encryptionKey: Uint8Array<ArrayBufferLike>;
@@ -275,6 +279,7 @@ export declare class Database extends ReadyResource {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
         version: (view: object) => Promise<number>;
+        built: (view: object) => Promise<Array<number | null>>;
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
@@ -334,6 +339,8 @@ export declare class Database extends ReadyResource {
     get view(): object | null;
     /** @private */
     private _open;
+    /** @private */
+    private _wire;
     /** @private */
     private _close;
     /**
@@ -423,9 +430,9 @@ export declare class Database extends ReadyResource {
      * is open.
      *
      * @param {Array<[string, unknown]>} ops
-     * @returns {Promise<void>}
+     * @returns {Promise<number | undefined>}  The stamp the last op was appended with; nothing when queued or when nothing changed.
      */
-    write(ops: Array<[string, unknown]>): Promise<void>;
+    write(ops: Array<[string, unknown]>): Promise<number | undefined>;
     /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
     get pushing(): boolean;
     /** @private */
@@ -587,6 +594,12 @@ export declare class Database extends ReadyResource {
     private _append;
     /** @private */
     private _done;
+    /** @private */
+    private _build;
+    /** @private */
+    private _onmove;
+    /** @private */
+    private _rebuild;
     /** @private */
     private _skip;
     /** @private */

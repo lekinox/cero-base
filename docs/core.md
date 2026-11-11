@@ -259,6 +259,7 @@ The invite string carries:
 - `seed`, whose keypair proves the join.
 - `link`, the node that added the invite's record. The join links it, so no member applies a join before its invite, even one minted on a device that was offline.
 - `expires`, and `data`, an optional payload the app reads before joining.
+- `stamp`, the version of the database its record was written at. The join is written at it too, and `Pairing.join` throws `BEHIND` on an app built below it: update the app, then join.
 
 It names no mirrors: each side waits on its own network's, so give every device the same ones. The database keeps the invite's public id, role, expiry, and whether it is reusable or needs confirming, never its seed. `ttl` is ms or a duration like `'12h'`. A reusable invite grants member at most, so a higher rank is handed out once.
 
@@ -267,7 +268,7 @@ How a join goes:
 1. **Write.** `Pairing.join` writes the join as the first block of the joiner's own writer core, in the network's store: open the database from that same store. It is sealed to the invite's address, so only members read who joins. It carries two signatures: the invite's over the writer, and the joiner's over the invite, the writer and the reply address.
 2. **Reach.** The core is announced to the database's peers and left on the mirrors. Any member device with the database open pulls it in.
 3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite.
-4. **Keys.** Every device of a member that can invite offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed.
+4. **Keys.** Every device of a member that can invite, and is not behind, offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed.
 5. **Expiry.** Apply has no clock: past an invite's expiry, a member that can remove drops the invite and any joiner still without keys.
 
 A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.

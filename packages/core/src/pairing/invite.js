@@ -19,6 +19,7 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
+ * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
  */
 
 /**
@@ -28,7 +29,7 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  */
 export class Invite {
   /** @param {InviteFields & { _str?: string }} fields */
-  constructor({ expires, key, address, seed, link = null, data = null, _str = null }) {
+  constructor({ expires, key, address, seed, link = null, data = null, stamp = 0, _str = null }) {
     this.version = VERSION
     this.expires = expires
     this.key = key
@@ -36,6 +37,7 @@ export class Invite {
     this.seed = seed
     this.link = link
     this.data = data
+    this.stamp = stamp
     /** @private */
     this._str = _str
     /** @private */

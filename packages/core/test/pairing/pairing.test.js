@@ -15,6 +15,7 @@ import { Pairing } from '../../src/pairing/index.js'
 import { Invite } from '../../src/pairing/invite.js'
 import { Response, STATUS_ACCEPTED } from '../../src/pairing/response.js'
 import { Mailbox } from '../../src/mailbox/index.js'
+import { unwrap } from '../../src/database/envelope.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { CeroError } from '../../src/lib/errors.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -35,13 +36,13 @@ async function makeMailbox(t, testnet, opts = {}) {
 }
 
 // a member: the owner of a fresh database, answering its joins
-async function makeHost(t, testnet, { mirrors } = {}) {
+async function makeHost(t, testnet, { mirrors, spec: built = spec } = {}) {
   const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
   const db = new Database({
     store: net.store,
     identity,
     network: net,
-    spec,
+    spec: built,
     encryptionKey: Identity.randomBytes(32)
   })
   await db.ready()
@@ -53,9 +54,10 @@ async function makeHost(t, testnet, { mirrors } = {}) {
   return { pairing, mailbox, net, db, identity }
 }
 
-async function makeJoiner(t, testnet, { mirrors } = {}) {
+async function makeJoiner(t, testnet, { mirrors, spec: built = spec } = {}) {
   const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
-  const join = (invite, opts = {}) => Pairing.join(mailbox, invite, { identity, spec, ...opts })
+  const join = (invite, opts = {}) =>
+    Pairing.join(mailbox, invite, { identity, spec: built, ...opts })
   return { mailbox, net, identity, join }
 }
 
@@ -316,6 +318,89 @@ test('Invite proof: only the invite holder proves a writer', async (t) => {
   )
   const other = Invite.create(sample())
   t.absent(Invite.proven(invite.id, writer, other.prove(writer)), 'bound to the invite')
+})
+
+// the fixture app at another contract
+const at = (version) => ({ ...spec, meta: { ...spec.meta, version } })
+
+// the stamp of the join a writer's core holds
+async function joinStamp(net, writer) {
+  const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer.publicKey }] })
+  const core = net.store.get({ key })
+  await core.ready()
+  const block = await core.get(0)
+  await core.close()
+  return unwrap(encoding.decodeOplog(block.subarray(8)).value).version
+}
+
+test('invite: carries the stamp its record was written with, and a join is stamped with it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: at(2) })
+  const before = await host.pairing.invite({ reuse: true })
+  t.is(Invite.parse(before).stamp, 1, 'the version it was written at')
+  await host.db.write([['upgrade', { version: 2 }]])
+  const after = await host.pairing.invite()
+  t.is(Invite.parse(after).stamp, 2, 'and the raised one after a raise')
+
+  const joiner = await makeJoiner(t, testnet, { spec: at(2) })
+  const { writer } = await joiner.join(after)
+  t.is(await joinStamp(joiner.net, writer), 2, "the join takes its invite's stamp")
+})
+
+test('invite: one that carries no stamp counts as the start', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: at(2) })
+  const fields = Invite.parse(await host.pairing.invite())
+  const bare = z32.encode(c.encode(getEncoding('@cero/invite'), { ...fields, stamp: 0 }))
+  t.is(Invite.parse(bare).stamp, 0)
+
+  const joiner = await makeJoiner(t, testnet, { spec: at(2) })
+  const { writer } = await joiner.join(bare)
+  t.is(await joinStamp(joiner.net, writer), spec.meta.start, 'its join is stamped with the start')
+})
+
+test('invite: a reusable one minted before a raise still admits a device on the older build', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: at(2) })
+  const invite = await host.pairing.invite({ reuse: true })
+  await host.db.write([['upgrade', { version: 2 }]])
+
+  const joiner = await makeJoiner(t, testnet)
+  t.alike((await joiner.join(invite)).key, host.db.key, 'it joins')
+  t.ok(await member(host.db, joiner.identity), 'and is a member')
+})
+
+test("join: a device whose build is below the invite's stamp is told to update, and writes nothing", async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: at(2) })
+  await host.db.write([['upgrade', { version: 2 }]])
+  const invite = await host.pairing.invite()
+
+  const joiner = await makeJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  const err = await joiner.join(invite, { writer }).catch((e) => e)
+  t.is(err?.code, 'BEHIND')
+  const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer.publicKey }] })
+  const core = joiner.net.store.get({ key })
+  await core.ready()
+  t.is(core.length, 0, 'no join in its core')
+  await core.close()
+})
+
+test('serving: a database that is behind answers no join', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
+  const invite = await host.pairing.invite({ reuse: true })
+  t.is(host.pairing.serving, true)
+  await host.db.write([['upgrade', { version: 2 }]])
+  await waitFor(() => host.db.behind === 2)
+  await waitFor(() => host.pairing.serving === false)
+  t.pass('it stops serving once behind')
+
+  const joiner = await makeJoiner(t, testnet, { spec: at(2) })
+  const err = await joiner.join(invite, { timeout: 5000 }).catch((e) => e)
+  t.is(err?.code, 'TIMEOUT', 'the joiner hears nothing')
+  t.ok(await member(host.db, joiner.identity), 'though apply admitted it')
 })
 
 // ─── joins: apply admits ───────────────────────────────────────────────────

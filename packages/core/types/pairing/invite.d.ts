@@ -26,6 +26,10 @@ export type InviteFields = {
      * The app's payload, readable before joining. Unsigned: a hint, not proof.
      */
     data?: Uint8Array | null;
+    /**
+     * The stamp its record was written with, which its joins take; `0` for none.
+     */
+    stamp?: number;
 };
 /**
  * @typedef {object} InviteFields
@@ -35,6 +39,7 @@ export type InviteFields = {
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
+ * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
  */
 /**
  * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
@@ -52,12 +57,13 @@ export declare class Invite {
         length: number;
     };
     data: Uint8Array<ArrayBufferLike>;
+    stamp: number;
     /** @private */
     _str;
     /** @private */
     _keyPair;
     /** @param {InviteFields & { _str?: string }} fields */
-    constructor({ expires, key, address, seed, link, data, _str }: InviteFields & {
+    constructor({ expires, key, address, seed, link, data, stamp, _str }: InviteFields & {
         _str?: string;
     });
     /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */

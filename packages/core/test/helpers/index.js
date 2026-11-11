@@ -362,11 +362,11 @@ export async function withRole(t, role, { members = [], after = {}, ...opts } = 
 export async function admit(a, b, role = 'member') {
   const invite = Invite.create({ key: a.key, address: a.address })
   const id = b4a.toHex(invite.id)
-  await a.call('add-invite', { id, role, createdAt: Date.now() })
+  const stamp = await a.write([['add-invite', { id, role, createdAt: Date.now() }]])
   await waitFor(async () => (await b.get('invites', id)).data)
   const payload = sealJoin(invite, b.identity, b.writerKey, crypto.randomBytes(32))
   const op = b.spec.dispatch.encode(`@${b.ns}/join`, payload)
-  await b.bee.append(wrap(b.version, op), { optimistic: true })
+  await b.bee.append(wrap(stamp, op), { optimistic: true })
   await waitFor(async () => (await a.get('members', b.identity.id)).data)
 }
 

@@ -3411,6 +3411,180 @@ test('gate: a view applied under older rules applies its log again, once', async
   t.alike(await open(rules), [row.id], 'a marker with no rules counts as the oldest')
 })
 
+test('gate: a device whose contract rose applies its log again, once', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'old' })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  // the ids of the messages a hook saw while the database opened on a build at this contract
+  const open = async (version) => {
+    const seen = []
+    const again = new Database({
+      store,
+      identity,
+      spec: rebuilt({ version }),
+      key,
+      keyPair,
+      encryptionKey
+    })
+    again.after('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.id)))
+    await again.ready()
+    await again.close()
+    return seen
+  }
+  const version = spec.meta.version
+  t.alike(await open(version), [], 'the same contract applies nothing again')
+  t.alike(await open(version + 1), [row.id], 'a raised one applies the old write again')
+  t.alike(await open(version + 1), [], 'and only the first time')
+
+  // a view built before the marker held its contract
+  const old = new Database({
+    store,
+    identity,
+    spec: rebuilt({ version: version + 1 }),
+    key,
+    keyPair,
+    encryptionKey
+  })
+  await old.ready()
+  const { db: definition } = spec.database.versions
+  await old.bee.local.setUserData(
+    'cero/view',
+    b4a.concat([c.encode(c.uint, definition), c.encode(c.uint, spec.meta.rules)])
+  )
+  await old.close()
+  t.alike(await open(version + 1), [row.id], 'a marker with no contract counts as the oldest')
+})
+
+// the build that applied a database's view, as the view holds it
+async function built(db) {
+  const names = ['_db', '_rules', '_contract', '_skipped']
+  const rows = await Promise.all(names.map((name) => db.view.get(`@${db.ns}/counters`, { name })))
+  return rows.map((row) => row?.value ?? null)
+}
+
+test('gate: the view carries the build that applied it, and what it skipped', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { db: definition } = spec.database.versions
+  t.alike(
+    await built(db),
+    [definition, db.rules, db.version, 0],
+    'its database, rules and contract'
+  )
+
+  const next = db.version + 1
+  await raise(db, next)
+  await stamped(db, next, 'add-messages', { id: genId(), text: 'from the next build' })
+  t.alike(
+    await built(db),
+    [definition, db.rules, db.version, next],
+    'and the lowest version it skipped'
+  )
+})
+
+// a device on a newer build away while an admin's device on the older one writes, through a hook
+// that build has and this one does not: it lands on that admin's view, the owner gone
+async function landing(t, { checked = (built) => built } = {}) {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const newer = rebuilt({ version: spec.meta.version + 1 })
+  const a = await makePeer(t, testnet, { topic, spec: newer })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, spec: newer, identity: await Identity.create() })
+  await admit(a.db, b.db)
+  const after = {
+    put: (ctx) => ctx.name === 'messages' && ctx.put('records', { text: 'hooked' })
+  }
+  const c = await makePeer(t, testnet, { ...room, after, identity: await Identity.create() })
+  await admit(a.db, c.db, 'admin')
+  await waitFor(() => b.db.writable && c.db.writable)
+  await b.network.suspend()
+
+  for (let i = 0; i < 100; i++) {
+    await c.db.tx(async (tx) => {
+      for (let j = 0; j < 3; j++) await tx.put('messages', { text: `${i}.${j}` })
+    })
+  }
+  await waitFor(async () => (await messages(a.db)) === 300, { timeout: 30000 })
+  const applied = await rows(a.db)
+  t.is((await c.db.get('records')).data.length, 300, "the older build's hook wrote its rows")
+  await offline(a)
+
+  const bee = b.db.bee
+  b.db.dispatcher.built = checked(b.db.dispatcher.built, bee, newer)
+  await b.network.resume()
+  await waitFor(() => bee.stats.fastForwards > 0, { timeout: 30000 })
+  t.pass("it landed on the older build's view")
+  // the view it landed on holds every message already: the rows count once a bee of its own applied them
+  await waitFor(() => b.db.bee !== bee && !b.db._rebuilding, { timeout: 30000 })
+  await waitFor(async () => (await messages(b.db)) === 300, { timeout: 30000 })
+  t.alike(await rows(b.db), applied, 'and holds the rows of the device that applied the log')
+  return { b, c }
+}
+
+const messages = async (db) => (await db.get('messages')).data.length
+
+// what a database holds, by ref and id
+async function rows(db) {
+  const ids = []
+  for (const name of ['messages', 'records']) {
+    for (const row of (await db.get(name)).data) ids.push(`${name}/${row.id}`)
+  }
+  return ids.sort()
+}
+
+test('gate: a device that fast-forwards onto a view another build applied applies the log again, and ends with the rows of one that applied it', async (t) => {
+  const { b, c } = await landing(t)
+  // away again while the admin writes past the gap a fast-forward takes
+  const again = b.db.bee
+  await b.network.suspend()
+  for (let i = 0; i < 30; i++) await c.db.put('messages', { text: `after.${i}` })
+  await b.network.resume()
+  await waitFor(async () => (await messages(b.db)) === 330, { timeout: 30000 })
+  t.is(again.stats.fastForwards, 0, 'and lands on no view until it closes')
+  t.is(b.db.bee, again, 'so it applies them itself')
+})
+
+test('gate: a batch applied between a landing and its check leaves the row of the build that applied the view', async (t) => {
+  await landing(t, {
+    checked: (built, bee, spec) => async (view) => {
+      await bee.append(wrap(1, spec.dispatch.encode('@cero/del-messages', { id: genId() })))
+      await bee.update()
+      return built(view)
+    }
+  })
+})
+
+test('gate: a write made as the log is applied again waits for it', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'gone' })
+  // made once the bee that held the view closed, before the next one opens
+  const deleting = new Promise((resolve) =>
+    db.bee.once('close', () => resolve(db.del('messages', row.id)))
+  )
+  // a view another build applied, as one a fast-forward lands on
+  db.version += 1
+  await db._onmove()
+  await deleting
+  t.absent((await db.get('messages', row.id)).data, 'it lands on the view applied again')
+})
+
+test('gate: a database closed as it applies its log again leaves no bee open, and reports nothing', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  // closed once the bee that held the view closed, before the next one opens
+  const closing = new Promise((resolve) => db.bee.once('close', () => resolve(db.close())))
+  db.version += 1
+  await db._onmove()
+  const rebuilding = db._rebuilding
+  await closing
+  await rebuilding
+  t.is(db.bee, null, 'no bee open')
+  t.alike(errors, [], 'nothing reported')
+})
+
 test('gate: a database rebuilt past skipped ops still leaves its topic on close', async (t) => {
   const testnet = await makeTestnet(t)
   const { db, store, identity, network } = await makePeer(t, testnet)
