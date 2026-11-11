@@ -601,20 +601,26 @@ test('confirm: a reply whose encryption key does not own the invite address is i
   const put = joiner.mailbox.inbox.put
   joiner.mailbox.inbox.put = async (m) => read.add(m.id) && put(m)
   const writer = crypto.keyPair()
-  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer })
+  const kept = []
+  const keep = async (answer) => kept.push(answer)
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
   const request = await asked(host.db)
 
   // the database key is no secret: every mirror holds it
   const { key } = host.db
-  const ids = []
-  for (const encryptionKey of [crypto.randomBytes(32), null]) {
-    const forged = { status: STATUS_ACCEPTED, reason: '', key, encryptionKey, epochs: [] }
-    await host.mailbox.send(Mailbox.getAddress(writer.secretKey), c.encode(Response, forged))
-    ids.push(b4a.toHex(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1))))
-  }
   const rows = () => joiner.mailbox.inbox.list()
   const unread = async (id) => (await rows()).some((m) => m.id === id && !m.handled)
-  for (const id of ids) await waitFor(async () => read.has(id) && !(await unread(id)))
+  for (const [name, encryptionKey] of [
+    ['a made-up', crypto.randomBytes(32)],
+    ['no', null]
+  ]) {
+    const forged = { status: STATUS_ACCEPTED, reason: '', key, encryptionKey, epochs: [] }
+    await host.mailbox.send(Mailbox.getAddress(writer.secretKey), c.encode(Response, forged))
+    const id = b4a.toHex(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+    // a reply that settled the join closed its inbox, so nothing reads the next one
+    const turned = await waitFor(async () => read.has(id) && !(await unread(id))).catch(() => false)
+    t.ok(turned && !kept.length, `a reply with ${name} encryption key is read and settles nothing`)
+  }
 
   await host.pairing.accept(request.id)
   t.alike((await joining).encryptionKey, host.db.encryptionKey)
