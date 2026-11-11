@@ -226,6 +226,14 @@ run(
   `git add package.json package-lock.json CHANGELOG.md ${PACKAGES.map((dir) => `${dir}/package.json ${dir}/types`).join(' ')}`
 )
 run(`git commit -m "release: v${next}"`)
+// what the run changed and the commit left out would be published without being committed
+const left = dryRun ? '' : exec('git status --porcelain --untracked-files=no')
+if (left) {
+  console.error(
+    `\n✗ the release commit left these out, nothing is tagged or published:\n\n${left}\n`
+  )
+  process.exit(1)
+}
 run(`git tag v${next}`)
 
 publish(next)
