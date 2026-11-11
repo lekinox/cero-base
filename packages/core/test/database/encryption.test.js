@@ -11,6 +11,8 @@ import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { CeroError } from '../../src/lib/errors.js'
 import { Network } from '../../src/network/index.js'
+import { Mailbox } from '../../src/mailbox/index.js'
+import { Pairing } from '../../src/pairing/index.js'
 import hid from 'hypercore-id-encoding'
 import { admission } from '../../src/lib/utils.js'
 import {
@@ -1234,6 +1236,79 @@ test('rotate: the first device removal rotates by itself, sealing the removed on
 })
 
 // an admin's own batch: what apply reads, without the dry run an honest write goes through
+// a host answering joins, and a joiner let in through its invite: promised a seat, holding the
+// keys, with `open` to open the database on her device
+async function promised(t, testnet) {
+  const host = await makePeer(t, testnet)
+  await host.db.bootstrap({ name: 'host' })
+  const pairing = new Pairing({ mailbox: new Mailbox(host.network), db: host.db })
+  await pairing.ready()
+  t.teardown(() => pairing.close().catch(() => {}), { order: 0 })
+  t.teardown(() => pairing.mailbox.close().catch(() => {}), { order: 1 })
+
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const network = new Network({ bootstrap: testnet.bootstrap, store })
+  await network.ready()
+  t.teardown(() => network.close().catch(() => {}), { order: 6 })
+  const mailbox = new Mailbox(network)
+  t.teardown(() => mailbox.close().catch(() => {}), { order: 1 })
+  const identity = await Identity.create()
+  const join = async () => {
+    const reply = await Pairing.join(mailbox, await pairing.invite(), { identity, spec })
+    const { key, encryptionKey, epochs, writer: keyPair } = reply
+    return { key, encryptionKey, epochs, keyPair }
+  }
+  const open = async (keys) => {
+    const db = new Database({ store, identity, network, spec, ...keys })
+    await db.ready()
+    t.teardown(() => db.close().catch(() => {}), { order: 5 })
+    return db
+  }
+  return { host, join, open }
+}
+
+const named = async (db) => {
+  const rows = await db.view.find(`@${db.ns}/epochs`, {}).toArray()
+  const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
+  return c.decode(wraps, top.wrapped).map((w) => w.id)
+}
+
+test('rotate: a device promised a seat is sealed to, and reads what was written since once it claims', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, join, open } = await promised(t, testnet)
+  // the keys are hers before the rotation: its secret is not among them
+  const keys = await join()
+  await host.db.rotate()
+  const [{ id }] = (await host.db.get('requests')).data
+  t.ok((await named(host.db)).includes(id), 'the rotation names the promised device')
+  await host.db.put('messages', { text: 'after the rotation' })
+
+  const db = await open(keys)
+  await db.claim()
+  await waitFor(async () => (await texts(db)).includes('after the rotation'))
+  t.is(db.keyring.seq, 1, 'she opened her envelope from the log')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  await host.db.rotation._audit()
+  t.is(host.db.keyring.seq, 1, 'and her seat is no reason to rotate again: she was named')
+})
+
+test('rotate: a promise made since the last rotation is no reason to rotate, one dropped with no seat is', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, join } = await promised(t, testnet)
+  await host.db.rotate()
+  await join()
+  const [{ id }] = (await host.db.get('requests')).data
+  t.absent((await named(host.db)).includes(id), 'promised after the rotation: not named')
+  await host.db.rotation._audit()
+  t.is(host.db.keyring.seq, 1, 'which calls for no rotation')
+
+  await host.db.rotate()
+  t.ok((await named(host.db)).includes(id), 'the next one names it')
+  await host.db.call('del-request', { id })
+  await host.db.rotation._audit()
+  t.is(host.db.keyring.seq, 3, 'dropped with no seat, the room rotates away from it')
+})
+
 function batch(db, ops) {
   return db.bee.append(ops.map(([name, op]) => wrap(db.version, db.spec.dispatch.encode(name, op))))
 }

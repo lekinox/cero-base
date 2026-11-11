@@ -270,8 +270,8 @@ How a join goes:
 
 1. **Write.** `Pairing.join` writes the join as the first block of the joiner's own writer core, in the network's store: open the database from that same store. It is sealed to the invite's address, so only members read who joins. It carries two signatures: the invite's over the writer, and the joiner's over the invite, the writer and the reply address.
 2. **Reach.** The core is announced to the database's peers and left on the mirrors. Any member device with the database open pulls it in.
-3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite. Under an invite with its own address it adds nobody yet: it writes a `promised` row in `requests` at the role, and spends a single-use invite.
-4. **Keys.** Every device of a member that can invite, and is not behind, offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed. A promised joiner is offered its keys until its invite expires, and a read settles nothing: the joiner opens the database with the keys and runs `db.claim()`, which adds the member at the promised role, seats the device and drops the promise. Any device of that identity holding the keys may run it. Under an invite with its own address an answer, the keys or a refusal, carries a tag only that invite's secret and the joiner's reply address make, and `Pairing.join` ignores any other.
+3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite. Under an invite with its own address it adds nobody yet: it writes the join's row in `requests` as `admitted` and `promised`, at the role, and spends a single-use invite.
+4. **Keys.** Every device of a member that can invite, and is not behind, offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed. A promised joiner is offered its keys until its invite expires, and a read settles nothing: the joiner opens the database with the keys and runs `db.claim()`, which adds the member at the promised role and seats the device. Any device of that identity holding the keys may run it. A member that can invite deletes the promised row once the joiner's device is seated. A rotation is sealed to promised devices too, so a joiner let in before one reads on after her claim. Under an invite with its own address an answer, the keys or a refusal, carries a tag only that invite's secret and the joiner's reply address make, and `Pairing.join` ignores any other.
 5. **Expiry.** Apply has no clock: past an invite's expiry, a member that can remove drops the invite and any joiner still without keys.
 
 A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.
@@ -284,10 +284,7 @@ A plain invite admits the joiner by itself: the invite is the approval. An invit
 // pairing and room from above; approve is your own check
 const invite = await pairing.invite({ confirm: true })
 
-for await (const { data: requests } of room.watch('requests', {
-  admitted: false,
-  promised: false
-})) {
+for await (const { data: requests } of room.watch('requests', { admitted: false })) {
   for (const request of requests) {
     // request.identity: who is asking. request.role: what for, the invite's role
     if (await approve(request)) await pairing.accept(request.id)
@@ -296,7 +293,7 @@ for await (const { data: requests } of room.watch('requests', {
 }
 ```
 
-- Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold joins already let in, until the joiner's device claims its seat (`promised: true`) or its keys are read (`admitted: true`), hence the filter.
+- Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold admitted joins until their keys are read (`admitted: true`), hence the filter.
 - `pairing.accept(id)` admits the joiner at the invite's role. `pairing.accept(id, { role })` can grant a lower one: `INVALID` for a role that is not a rank or is above the invite's, `REFUSED` above your own. It throws `EXPIRED` once the invite has expired.
 - `pairing.accept(id, { proof })` admits the joiner as a device of your own identity, not as a member: `proof` is `identity.link(request.key)`, your device attesting theirs. Apply checks the chain ends at the request's key under your identity (`REFUSED` otherwise), seats the writer under your member with the proof on its device row, and the reply carries that `proof`. A joiner with no identity yet joins as `Identity.bare(device)` and becomes `Identity.from({ publicKey, encryptionKey, device, proof })` from the reply.
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.

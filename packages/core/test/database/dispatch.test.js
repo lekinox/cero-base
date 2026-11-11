@@ -1251,7 +1251,7 @@ test('promise: a join on an invite with its own address writes no member and no 
   t.alike(seated, [], 'no seat')
   const owed = await promise(db, writer)
   t.is(owed?.promised, true, 'a promise')
-  t.absent(owed.admitted)
+  t.is(owed.admitted, true, 'no longer waiting for a member')
   t.is(owed.role, 'member', "at the invite's role")
   t.absent((await db.get('invites', b4a.toHex(invite.id))).data, 'single-use: spent')
 
@@ -1265,8 +1265,11 @@ test('promise: a join on an invite with its own address writes no member and no 
   t.is(device?.memberId, identity.id)
   t.alike(device.key, identity.device.publicKey, 'with the device key its proof ends at')
   t.alike(seated, [hid.encode(writer)], 'seated')
-  t.absent(await promise(db, writer), 'and the promise is gone')
   t.alike(put, ['members', 'devices'], "the hooks a join's rows fire")
+  t.ok(await promise(db, writer), 'the promise stays for an inviter to settle')
+  t.is(await apply(db, db.writerKey, 'del-request', { id: hid.encode(writer) }), null)
+  t.absent(await promise(db, writer))
+  t.is((await db.get('members', identity.id)).data?.role, 'member', 'settled, the member stays')
 })
 
 test("promise: a reader's completes with a member row and no seat", async (t) => {
@@ -1281,7 +1284,6 @@ test("promise: a reader's completes with a member row and no seat", async (t) =>
   t.is((await db.get('members', identity.id)).data?.role, 'reader')
   t.is((await db.get('devices', hid.encode(writer))).data?.memberId, identity.id, 'a device row')
   t.alike(seated, [], 'no writer seat')
-  t.absent(await promise(db, writer))
 })
 
 test('promise: another device of the identity completes it at the earliest role, and the one that joined then seats itself', async (t) => {
@@ -1300,8 +1302,8 @@ test('promise: another device of the identity completes it at the earliest role,
   t.is(await seat(db, phone), null, 'a device that never joined claims')
   t.is((await db.get('members', identity.id)).data?.role, 'reader', 'at the first promise')
   t.is((await db.get('devices', phone.writer.id)).data?.memberId, identity.id, 'and is seated')
-  t.absent(await promise(db, first), "the identity's promises are gone")
-  t.absent(await promise(db, other))
+  t.ok(await promise(db, first), 'the promises stay')
+  t.ok(await promise(db, other))
 
   const { data: record } = await db.get('members', identity.id)
   await apply(db, db.writerKey, 'set-member', { ...record, role: 'member', updatedAt: 3 })
@@ -1336,7 +1338,7 @@ test('promise: accepting a waiting join on an invite with its own address promis
   t.alike(seated, [])
 })
 
-test('promise: an accept with a proof promises with the chain, and the linked device keeps its own alone', async (t) => {
+test("promise: an accept with a proof promises with the chain, which the linked device's seat keeps", async (t) => {
   const { db, identity } = await withRole(t, 'owner')
   const invite = await addressed(db, { confirm: true, reuse: true })
   const open = await addressed(db, { reuse: true })
@@ -1370,8 +1372,10 @@ test('promise: an accept with a proof promises with the chain, and the linked de
   t.alike(row.proof, proof, 'its seat keeps the chain')
   t.alike(seated, [id])
   t.is((await db.get('members')).data.length, 1, 'no member was added')
-  t.absent(await promise(db, writer), 'its promise is gone')
-  t.ok(await promise(db, other), "the other device's stays")
+  t.ok(await promise(db, writer), 'its promise stays for an inviter to settle')
+
+  t.is(await seat(db, tablet), null, 'a device promised with no chain seats itself')
+  t.absent((await db.get('devices', tablet.writer.id)).data?.proof, 'and its seat carries none')
 })
 
 test('promise: one never kept leaves no member, a spent invite leaves it, and a removal takes it', async (t) => {

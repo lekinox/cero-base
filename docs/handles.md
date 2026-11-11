@@ -113,10 +113,7 @@ them, and members who can invite answer them.
 // the host; approve is your app's prompt
 const invite = await cero.invite(room, { confirm: true })
 
-for await (const { data: requests } of cero.watch(room.requests, {
-  admitted: false,
-  promised: false
-})) {
+for await (const { data: requests } of cero.watch(room.requests, { admitted: false })) {
   for (const request of requests) {
     // request.identity: the joiner's key, as bytes. request.role: the invite's role
     if (await approve(request)) await cero.accept(room, request)
@@ -137,8 +134,8 @@ try {
 ```
 
 - `hid.encode(request.identity)`, from `hypercore-id-encoding`, is the id their member row will have.
-  `room.requests` also holds joins already let in, until the joiner's device has taken its seat
-  (`promised: true`) or its keys are delivered (`admitted: true`), hence the filter.
+  `room.requests` also holds admitted joins until their keys are delivered (`admitted: true`), hence
+  the `{ admitted: false }` filter.
 - `cero.accept(room, request)` admits at the invite's role, `{ role: 'reader' }` at a lower one.
   `cero.deny(room, request, reason)` turns the joiner away. The first answer settles the request for
   everyone, and it survives restarts.

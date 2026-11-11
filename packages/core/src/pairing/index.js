@@ -59,8 +59,9 @@ const MAX_DELAY = 2 ** 31 - 1
  * it. The admission stays in the database until the joiner has its keys: every device of a member
  * that may invite offers them while online, and the first one read settles it for all. Under an
  * invite with an address of its own, being let in is a promise: no member and no seat until a device
- * of the joiner, holding the keys, claims its seat, and its keys are offered until then or until
- * the invite expires, whoever reads them. A join
+ * of the joiner, holding the keys, claims its seat. Its keys are offered until a member that may
+ * invite sees that device seated and settles the promise, or until the invite expires, whoever
+ * reads them. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
@@ -217,8 +218,7 @@ export class Pairing extends ReadyResource {
   /** @private */
   async _waiting(id) {
     const { data: row } = await this.db.get('requests', id)
-    const answered = row?.admitted || row?.promised
-    const invite = row && !answered && (await this.db.get('invites', row.invite)).data
+    const invite = row && !row.admitted && (await this.db.get('invites', row.invite)).data
     if (!invite) throw CeroError.UNKNOWN('request', id)
     return invite
   }
@@ -243,15 +243,31 @@ export class Pairing extends ReadyResource {
     this._arm([...invites, ...requests, ...spent])
     // behind, this device's view of the room is stale: it answers no join until it updates
     const inviter = can(role, INVITE) && this.db.behind === null
-    // an admission is owed its keys until they are read; a promise, while its invite lasts
-    const due = (row) => row.admitted || (row.promised && !expired(row))
-    const owed = inviter ? requests.filter(due) : []
+    // a promise is settled here once it is kept, never by a read of its keys
+    const kept = inviter ? await this._kept(requests) : []
+    for (const { id } of kept) await this.db.call('del-request', { id }).catch(safetyCatch)
+    // an admission is owed its keys until they are read; a promise, until kept or past its invite
+    const over = (row) => row.promised && (kept.includes(row) || expired(row))
+    const owed = inviter ? requests.filter((row) => row.admitted && !over(row)) : []
     const refused = inviter ? refusals : []
     const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
     await this._answer(owed, refused, role, secrets)
     const live = invites.some((row) => !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
+  }
+
+  // the promises kept: the device each was made to sits under the member it was made to
+  /** @private */
+  async _kept(requests) {
+    const promised = requests.filter((row) => row.promised)
+    if (promised.length === 0) return []
+    const { data: devices } = await this.db.get('devices')
+    const seated = ({ identity, key }) => {
+      const id = hid.encode(identity)
+      return devices.some((d) => d.memberId === id && d.key && b4a.equals(d.key, key))
+    }
+    return promised.filter(seated)
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it
@@ -273,8 +289,8 @@ export class Pairing extends ReadyResource {
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
   // online, until one is read. Past the invite's expiry the joiner has given up: the answer owed to
   // an extra device of a member is dropped, a member who can remove drops a new one, and a refused
-  // one is forgotten. A promised joiner is offered its keys until its device seats itself: a read
-  // settles nothing. An answer under an invite that has a secret is tagged with it
+  // one is forgotten. A promised joiner is offered its keys until its device has seated itself: a
+  // read settles nothing. An answer under an invite that has a secret is tagged with it
   /** @private */
   async _answer(owed, refused, role, secrets) {
     // a device linked under a member reads its chain off its seat, or off the promise of one

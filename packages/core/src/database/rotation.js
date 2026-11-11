@@ -160,13 +160,15 @@ export class Rotation {
     }
   }
 
-  // every seated device, readers' too: a member keeps reading on each of its devices
+  // every seated device, readers' too: a member keeps reading on each of its devices. And every
+  // device promised a seat: let in before a rotation, it reads on once it has taken it
   /** @private */
   async _devices() {
     const { data: devices } = await this.db.get('devices')
     const keyed = devices.filter((d) => d.key)
     if (keyed.length === 0) throw CeroError.INVALID('cannot rotate a database with no devices')
-    return keyed
+    const { data: requests } = await this.db.get('requests')
+    return [...keyed, ...requests.filter((row) => row.promised)]
   }
 
   // resolves the sequence apply assigned, 0 if it never applied
@@ -250,9 +252,12 @@ export class Rotation {
     }
     const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
     const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
-    const ids = new Set((await this._devices()).map((d) => d.id))
+    const devices = await this._devices()
+    const ids = new Set(devices.map((d) => d.id))
     const sealedOut = !db.keyring.entropy(top.stamp)
-    if (!sealedOut && recipients.size === ids.size && [...recipients].every((id) => ids.has(id))) {
+    // a promised device may be named, a seated one must be
+    const named = devices.every((d) => d.promised || recipients.has(d.id))
+    if (!sealedOut && named && [...recipients].every((id) => ids.has(id))) {
       this._healedFor = null
       return
     }

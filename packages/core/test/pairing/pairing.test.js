@@ -1692,20 +1692,71 @@ test('promised: another device of the identity, holding the keys, keeps the prom
   for (const net of [host.net, other.net]) await net.join(host.db.discoveryKey).flush()
   // it did not hear the join announced: a member's next write carries the join's core to it
   await host.db.call('set-device', { id: hid.encode(host.db.writerKey), name: 'later' })
-  // the keys as its root hands them on, and a writer of its own
-  const second = await opened(
-    t,
-    { ...other, identity: joiner.identity },
-    { ...reply, writer: null }
-  )
+  // the keys as its root hands them on, a device key and a writer of its own
+  const device = Identity.randomKeyPair()
+  const proof = joiner.identity.link(device.publicKey)
+  const identity = Identity.from({ ...joiner.identity, device, proof })
+  const second = await opened(t, { ...other, identity }, { ...reply, writer: null })
   await second.claim()
   t.ok(second.writable, 'a device that never joined seats itself')
-  await waitFor(async () => (await promises(host.db)).length === 0)
-  t.is((await member(host.db, joiner.identity))?.role, 'member')
+  await waitFor(async () => (await member(host.db, joiner.identity))?.role === 'member')
+  t.is((await promises(host.db)).length, 1, 'the device that joined is still offered its keys')
 
   const first = await opened(t, joiner, reply)
   await first.claim()
-  t.ok(first.writable, 'and the one that joined, as any device of a member')
+  t.ok(first.writable, 'and seats itself, as any device of a member')
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.pass('then the promise is settled')
+})
+
+test("promised: a member's other device let in by an invite gets its keys, and is settled once seated", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const invite = await host.pairing.invite({ reuse: true })
+  const first = await opened(t, joiner, await joiner.join(invite))
+  await first.claim()
+  await waitFor(async () => (await promises(host.db)).length === 0)
+
+  const other = await makeMailbox(t, testnet)
+  const device = Identity.randomKeyPair()
+  const proof = joiner.identity.link(device.publicKey)
+  const identity = Identity.from({ ...joiner.identity, device, proof })
+  const reply = await Pairing.join(other.mailbox, invite, { identity, spec: built, timeout: 8000 })
+  t.alike(reply.key, host.db.key, 'promised to a member already, it is offered its keys')
+  t.is((await promises(host.db)).length, 1, 'until its own device is seated')
+  const db = await opened(t, { net: other.net, identity }, reply)
+  await db.claim()
+  t.ok(db.writable)
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.pass('settled once its own device is seated')
+})
+
+test('promised: an inviter settles a promise once its device is seated, and a device that did not hear the join learns of the member from that write', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const reply = await joiner.join(await host.pairing.invite())
+  const { length } = host.db
+  const db = await opened(t, joiner, reply)
+  await db.claim()
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.is(host.db.length, length + 1, 'settled by one write of the host')
+  t.is((await member(host.db, joiner.identity))?.role, 'member', 'the member stays')
+  await waitFor(() => !host.pairing.serving)
+  t.is(host.pairing._replies.size, 0, 'and she is offered her keys no more')
+
+  // the joiner goes: what a device opening later learns, it learns from the host's log
+  await db.close()
+  await joiner.mailbox.close()
+  await joiner.net.close()
+  const late = await makeMailbox(t, testnet)
+  for (const net of [host.net, late.net]) await net.join(host.db.discoveryKey).flush()
+  const second = await opened(
+    t,
+    { net: late.net, identity: host.identity },
+    { ...reply, writer: null }
+  )
+  await waitFor(async () => !!(await member(second, joiner.identity)))
+  t.pass('another device of the host has the member, with no other write')
 })
 
 test('promised: accepting a waiting join promises at the accepted role, and its device claims', async (t) => {
