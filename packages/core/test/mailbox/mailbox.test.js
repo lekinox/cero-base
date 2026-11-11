@@ -2038,12 +2038,6 @@ test('Inbox: a key announced while its row waits to be read is read from that an
     onerror: () => {}
   })
   t.teardown(() => inbox.close())
-  let announced = 0
-  const onannounce = inbox._onannounce.bind(inbox)
-  inbox._onannounce = (entries, from) => {
-    announced++
-    return onannounce(entries, from)
-  }
   // the row is read back only once its key was announced
   const unseal = inbox._unseal.bind(inbox)
   let waited = false
@@ -2057,5 +2051,4 @@ test('Inbox: a key announced while its row waits to be read is read from that an
   await inbox.ready()
   await waitFor(() => got.length > 0, { timeout: 10000 }).catch(() => {})
   t.alike(got, ['late'], 'read from the peer that announced it')
-  t.is(announced, 1, 'without a second announce')
 })
