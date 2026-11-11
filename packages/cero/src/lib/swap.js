@@ -46,8 +46,8 @@ export async function settle(dir) {
 }
 
 /**
- * What a killed swap left in `main.next` goes, unless a swap is running there. Only once `main` is open: its lock
- * is held by any process running a swap in `dir`.
+ * What a killed swap left in `main.next` goes, unless a swap is running there. Only once `main` is open: a swap in
+ * another process holds its lock while the incoming identity opens, and lets it go to rename, a window this misses.
  *
  * @param {string} dir
  */
