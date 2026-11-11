@@ -59,12 +59,10 @@ export declare class Keyring {
     entropies: Map<number, Uint8Array>;
     /** @type {Map<number, number>} stamp → apply-order sequence */
     seqs: Map<number, number>;
-    /** stamp used for new blocks — the adopted epoch with the highest seq */
+    /** stamp used for new blocks, picked from the epoch rows (rotation.js) */
     current: number;
-    /** highest adopted apply-order sequence (0 = base era) */
+    /** sequence of the current epoch (0 = base era) */
     seq: number;
-    /** bumped on every add/remove — cheap change detection */
-    version: number;
     /** @type {(() => void) | null} called when an epoch is learned or dropped */
     onchange: (() => void) | null;
     constructor();
@@ -77,7 +75,7 @@ export declare class Keyring {
     /**
      * @param {number} stamp
      * @param {Uint8Array} entropy
-     * @param {number} [seq]  Apply-order sequence; drives `current` selection.
+     * @param {number} [seq]  Apply-order sequence.
      */
     add(stamp: number, entropy: Uint8Array, seq?: number): void;
     /**
