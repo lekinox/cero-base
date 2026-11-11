@@ -117,9 +117,8 @@ const operators = {
     const served = servedType(type)
     const key = z32.encode(coreKey)
     const blob = z32.encode(c.encode(blobIdEnc, blobId))
-    const tp = served ? `&type=${encodeURIComponent(served)}` : ''
     const tok = token ? `&token=${token}` : ''
-    return `${base}/?key=${key}&blob=${blob}${tp}${tok}`
+    return `${base}/?key=${key}&blob=${blob}&type=${encodeURIComponent(served)}${tok}`
   },
 
   /**
