@@ -79,7 +79,7 @@ A removal takes the member's logs out at once, but their key would still read wh
 
 - A removal by an admin or the owner carries the rotation: the removal goes into the log, then the new key, sealed to the devices that stay, and nothing else this device writes goes between them. When `cero.del` resolves the key is in place, and what this device writes next the removed member does not read.
 - A member who leaves, or who removes a device of her own where she cannot remove members, rotates nothing: half a second after it lands, a device of an admin or the owner with the handle open rotates the key, or the next one to come online. `cero.rotate(room)` rotates it at once and resolves when the key is in place.
-- A join rotates nothing: the joiner is handed the keys, and the next rotation is sealed to their device too. A join let in and then turned away, by `cero.deny`, by revoking its invite or at its expiry, rotates the key as a leave does.
+- A joiner is handed the keys, and the next rotation is sealed to their device too. A device that takes its seat after a rotation that did not name it is sealed a new key the same way a leave is followed by one: by a device of an admin or the owner, half a second later. A join let in and then turned away, by `cero.deny`, by revoking its invite or at its expiry, rotates the key as a leave does.
 - Each rotation starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
 - A removed member never learns a new epoch. The removal lands first, so they see it: `status.role` turns `null` and what they read stops there.
 
