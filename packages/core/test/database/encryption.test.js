@@ -937,7 +937,7 @@ test('rotate: soft delete in a rotated room auto-rotates (healer)', async (t) =>
   t.absent((await texts(victim.db)).includes('post'), 'victim cannot read past the healed epoch')
 })
 
-test('rotate: a member leaving on its own is sealed out by a rotation', async (t) => {
+test('rotate: a member leaving on its own is re-keyed out', async (t) => {
   const {
     a,
     members: [b]
