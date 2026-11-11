@@ -11,7 +11,7 @@ import hid from 'hypercore-id-encoding'
 import Hypercore from 'hypercore'
 import Autobee from 'autobee'
 import { genId } from '../../src/lib/ids.js'
-import { admission } from '../../src/lib/utils.js'
+import { admission, searchHit } from '../../src/lib/utils.js'
 import {
   makeTestnet,
   makeStore,
@@ -1134,6 +1134,29 @@ test('get search: composes with limit (pagination)', async (t) => {
   const r = await db.get('messages', { search: 'room', limit: 3 })
   t.is(r.data.length, 3, 'page capped to limit')
   t.is(r.total, 6, 'total counts the matches, not the page')
+})
+
+test('get search: the matches of the whole list, in index order, reversed and paged', async (t) => {
+  const { db } = await bootstrapped(t)
+  const texts = ['Room b', 'other', 'room A', 'rooM c', 'none', 'Róom d', 'room e']
+  for (const [i, text] of texts.entries()) await db.put('messages', { id: `${7 - i}`, text })
+  await db.put('messages', { id: '5', text: 'room again' })
+  const all = (await db.get('messages')).data
+  const hits = all.filter((m) => searchHit(m, 'ROOM'))
+  t.alike(
+    hits.map((m) => m.text),
+    ['Room b', 'room again', 'rooM c', 'Róom d', 'room e'],
+    'the matches, in index order'
+  )
+  for (const reverse of [false, true]) {
+    const want = reverse ? [...hits].reverse() : hits
+    const r = await db.get('messages', { search: 'ROOM', reverse })
+    t.alike(r.data, want, `same rows, same order${reverse ? ', reversed' : ''}`)
+    t.is(r.total, 5)
+    const page = await db.get('messages', { search: 'ROOM', reverse, limit: 2 })
+    t.alike(page.data, want.slice(0, 2), 'a page is the first matches')
+    t.is(page.total, 5)
+  }
 })
 
 test('get search: no match returns an empty page', async (t) => {

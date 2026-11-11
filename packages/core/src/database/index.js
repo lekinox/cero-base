@@ -588,8 +588,9 @@ export class Database extends ReadyResource {
 
     const { path, range, rest, sorted } = this._plan(name, query)
     const rows = await view.find(path, range).toArray()
-    if (!sorted) rows.sort(byIndex)
-    const matched = filter(rows, { ...rest, limit: undefined })
+    const matched = filter(rows, { ...rest, reverse: undefined, limit: undefined })
+    if (!sorted) matched.sort(byIndex)
+    if (rest.reverse) matched.reverse()
     const data = rest.limit === undefined ? matched : matched.slice(0, rest.limit)
     return { data, total: await this._total(view, path, range, matched, query), size: data.length }
   }
