@@ -39,6 +39,10 @@ export type Mail = {
 };
 export type Box = {
     list: () => Promise<Mail[]>;
+    /**
+     * The one row under an id, null when there is none.
+     */
+    get: (id: string) => Promise<Mail | null>;
     put: (mail: Mail) => Promise<unknown>;
     del: (id: string) => Promise<unknown>;
 };
@@ -70,6 +74,7 @@ export type MailboxOpts = {
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
+ * @property {(id: string) => Promise<Mail | null>} get   The one row under an id, null when there is none.
  * @property {(mail: Mail) => Promise<unknown>} put
  * @property {(id: string) => Promise<unknown>} del
  *
@@ -123,7 +128,9 @@ export declare class Mailbox extends ReadyResource {
      * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
      * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
      * over again the next time this address is received. One it resolves `false` on was not for
-     * this address: it is erased as one that does not open.
+     * this address: it is erased as one that does not open. A message that was being read when the
+     * app was killed or its inbox closed is handed over at the next start and stays on the device,
+     * whatever `keep` says or `onmessage` resolves.
      *
      * @param {Uint8Array} secret
      * @param {(message: Uint8Array) => unknown} onmessage

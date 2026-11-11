@@ -405,8 +405,8 @@ export class Pairing extends ReadyResource {
       }
       done(answer)
     }
-    // anything else sealed to the reply address, a second answer too, is turned away, so the
-    // inbox keeps none of it
+    // anything else sealed to the reply address, a second answer too, is turned away: the inbox
+    // keeps no row of it, and its core only when it was read back from a row kept across a restart
     const onreply = async (message) => {
       if (settling) return false
       const response = decode(Response, message)
