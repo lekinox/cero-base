@@ -294,6 +294,8 @@ export class Inbox extends ReadyResource {
     // a core this device already held is not the inbox's to erase, whatever is announced here
     const fetched = !held
     if (!message) {
+      // a read its own close cut short says nothing of the row: it waits for the next inbox at its address
+      if (this.closing) return this._settle(id)
       await this.box.del(id)
       await this._drop(id, fetched, true)
       return null

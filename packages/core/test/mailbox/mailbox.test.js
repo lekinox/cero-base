@@ -1273,7 +1273,14 @@ test('Inbox: close lets go of a read still waiting for its block, and one append
   await copy.get(0, { timeout: 30000 })
   t.is(uploads, 1, 'its sender was read once, by the other reader')
   t.is(calls, 0, 'not handed over')
-  t.is(box.mail.size, 0, 'no row')
+  t.is(box.pending(), 1, 'its row waits for the next start')
+
+  // its block never stored here, the row is dropped and the message read from its sender
+  const got = []
+  b.receive(secret, (message) => got.push(b4a.toString(message)))
+  await waitFor(() => got.length > 0, { timeout: 30000 })
+  t.alike(got, ['late'], 'handed over at the next start')
+  await waitFor(() => box.pending() === 0)
 })
 
 test('Inbox: a message read as its inbox closes waits in the box for the next start', async (t) => {
@@ -2089,3 +2096,62 @@ test('Inbox: a key announced at another address than its row leaves that row as 
   t.alike(box.mail.get(rows[0].id), rows[0], 'the handled one')
   t.alike(box.mail.get(rows[1].id), rows[1], 'the one still to hand over')
 })
+
+// an inbox closed, not killed, as the block of a message lands: while it is being stored, or
+// `late`, once it is and before its read returns. Then the next inbox at its address
+async function closedAsItLands(t, late) {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+  const inbox = new Inbox(b, secret, { box, onmessage: () => {}, onerror: () => {} })
+  t.teardown(() => inbox.close())
+  const get = b.store.get.bind(b.store)
+  let key = null
+  b.store.get = (opts) => {
+    const core = get(opts)
+    if (key || !opts?.key) return core
+    key = opts.key
+    core.ready().then(() => {
+      const inner = core.core
+      const verify = inner.verify.bind(inner)
+      inner.verify = async (...args) => {
+        if (!args[0].block) return verify(...args)
+        inner.verify = verify
+        if (!late) inbox.close()
+        const stored = await verify(...args)
+        if (late) {
+          for (const waiting of inbox._waiting) waiting.close().catch(() => {})
+          inbox.close()
+        }
+        return stored
+      }
+    })
+    return core
+  }
+  await inbox.ready()
+  await a.send(Mailbox.getAddress(secret), b4a.from('stored'))
+  await waitFor(() => inbox.closed, { timeout: 30000 })
+  b.store.get = get
+  t.ok(await readable(b, key), 'its block is on the disk')
+  await waitFor(async () => (await a.outbox.list()).length === 0)
+  t.pass('its sender counts it delivered, and offers it no more')
+
+  const got = []
+  const next = new Inbox(b, secret, {
+    box,
+    onmessage: (message) => got.push(b4a.toString(message)),
+    onerror: () => {}
+  })
+  t.teardown(() => next.close())
+  await next.ready()
+  await waitFor(() => got.length > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(got, ['stored'], 'handed over at the next start')
+}
+
+test('Inbox: closed as the block of a message is being stored, the next start hands it over', (t) =>
+  closedAsItLands(t, false))
+
+test('Inbox: closed once the block of a message is stored, its read cut short, the next start hands it over', (t) =>
+  closedAsItLands(t, true))
