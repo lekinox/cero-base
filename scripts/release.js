@@ -46,6 +46,15 @@ function exec(cmd) {
   return execSync(cmd, { cwd: root, encoding: 'utf8' }).trim()
 }
 
+function published(dir, version) {
+  const name = readJson(resolve(root, dir, 'package.json')).name
+  try {
+    return exec(`npm view ${name}@${version} version 2>/dev/null`) === version
+  } catch {
+    return false
+  }
+}
+
 function generateChangelog(version) {
   const lastTag = exec('git describe --tags --abbrev=0 2>/dev/null || echo ""')
   const range = lastTag ? `${lastTag}..HEAD` : 'HEAD'
@@ -117,6 +126,13 @@ if (!dryRun) {
   const behind = exec(`git rev-list --count HEAD..origin/${branch} 2>/dev/null || echo 0`)
   if (Number(behind) > 0) {
     console.error(`\n✗ ${branch} is ${behind} commit(s) behind origin — pull first\n`)
+    process.exit(1)
+  }
+  const tagged = exec(`git tag --list v${current}`) === `v${current}`
+  if (tagged && !resume && PACKAGES.some((dir) => !published(dir, current))) {
+    console.error(
+      `\n✗ v${current} is tagged but only partly on npm — rerun with HEAD at v${current} to finish it\n`
+    )
     process.exit(1)
   }
   // only the release commit of a resumed run may be missing from origin: CI ran on the rest
@@ -220,11 +236,7 @@ function publish(version) {
   console.log('\nPublishing...')
   for (const dir of PACKAGES) {
     const name = readJson(resolve(root, dir, 'package.json')).name
-    let published = false
-    try {
-      published = exec(`npm view ${name}@${version} version 2>/dev/null`) === version
-    } catch {}
-    if (published) {
+    if (published(dir, version)) {
       console.log(`  ${name}@${version} already on npm — skipping`)
       continue
     }
