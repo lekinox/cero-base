@@ -91,6 +91,11 @@ function generateChangelog(version) {
   return md
 }
 
+const rootPkg = readJson(resolve(root, 'package.json'))
+const current = rootPkg.version
+// a rerun after a partial publish finishes the tagged release instead of cutting another
+const resume = exec('git tag --points-at HEAD').split('\n').includes(`v${current}`)
+
 // 0. Preflight — fail fast, before any mutation, on a real release.
 if (!dryRun) {
   const dirty = exec('git status --porcelain')
@@ -114,6 +119,12 @@ if (!dryRun) {
     console.error(`\n✗ ${branch} is ${behind} commit(s) behind origin — pull first\n`)
     process.exit(1)
   }
+  // only the release commit of a resumed run may be missing from origin: CI ran on the rest
+  const ahead = exec('git rev-list --count HEAD --not --remotes=origin')
+  if (Number(ahead) > (resume ? 1 : 0)) {
+    console.error(`\n✗ ${ahead} commit(s) are not on origin — push and let CI pass first\n`)
+    process.exit(1)
+  }
   try {
     console.log(`  npm user: ${exec('npm whoami')}`)
   } catch {
@@ -122,9 +133,13 @@ if (!dryRun) {
   }
 }
 
+if (resume) {
+  console.log(`\nResuming v${current}${dryRun ? ' [dry run]' : ''}\n`)
+  publish(current)
+  process.exit(0)
+}
+
 // 1. Read current version
-const rootPkg = readJson(resolve(root, 'package.json'))
-const current = rootPkg.version
 const next = bumpVersion(current, bump)
 
 console.log(`\nReleasing ${current} → ${next} (${bump})${dryRun ? ' [dry run]' : ''}\n`)
@@ -197,24 +212,28 @@ run(
 run(`git commit -m "release: v${next}"`)
 run(`git tag v${next}`)
 
+publish(next)
+
 // 8. Publish to npm (local) — skip-if-published so a partial publish
 // (network death between packages) is recoverable by re-running.
-console.log('\nPublishing...')
-for (const dir of PACKAGES) {
-  const name = readJson(resolve(root, dir, 'package.json')).name
-  let published = false
-  try {
-    published = exec(`npm view ${name}@${next} version 2>/dev/null`) === next
-  } catch {}
-  if (published) {
-    console.log(`  ${name}@${next} already on npm — skipping`)
-    continue
+function publish(version) {
+  console.log('\nPublishing...')
+  for (const dir of PACKAGES) {
+    const name = readJson(resolve(root, dir, 'package.json')).name
+    let published = false
+    try {
+      published = exec(`npm view ${name}@${version} version 2>/dev/null`) === version
+    } catch {}
+    if (published) {
+      console.log(`  ${name}@${version} already on npm — skipping`)
+      continue
+    }
+    run(`npm publish -w ${dir}`)
   }
-  run(`npm publish -w ${dir}`)
+
+  // 9. Push
+  console.log('\nPushing...')
+  run(`git push && git push origin v${version}`)
+
+  console.log(`\n✓ Released v${version}${dryRun ? ' (dry run — nothing published or pushed)' : ''}`)
 }
-
-// 9. Push
-console.log('\nPushing...')
-run(`git push && git push origin v${next}`)
-
-console.log(`\n✓ Released v${next}${dryRun ? ' (dry run — nothing published or pushed)' : ''}`)
