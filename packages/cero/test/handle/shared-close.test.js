@@ -27,15 +27,15 @@ test('a room opened twice and closed once still works for the other holder', asy
   }
 })
 
-// a device that keeps `idle` rooms nobody holds, with `count` rooms it made and still holds
-async function rooms(t, idle, count) {
-  const { me } = await openHandle(t, { opts: { idle } })
+// a device that keeps `keepOpen` rooms nobody holds, with `count` rooms it made and still holds
+async function rooms(t, keepOpen, count) {
+  const { me } = await openHandle(t, { opts: { keepOpen } })
   const made = []
   for (let i = 0; i < count; i++) made.push(await open(me.team, { name: `room ${i}` }))
   return { me, made }
 }
 
-test('past the idle count, the room let go longest ago closes and the others stay open', async (t) => {
+test('past keepOpen, the room let go longest ago closes and the others stay open', async (t) => {
   const { made } = await rooms(t, 2, 4)
   const [first, second, third, fourth] = made
   await first.close()
@@ -79,7 +79,7 @@ test('a room somebody holds is never closed by the count', async (t) => {
   t.ok(await invite(held, {}), 'and it works')
 })
 
-test('idle 0 closes with the last holder at once', async (t) => {
+test('keepOpen 0 closes with the last holder at once', async (t) => {
   const { made } = await rooms(t, 0, 2)
   const [room, broken] = made
   await room.close()
@@ -94,14 +94,14 @@ test('idle 0 closes with the last holder at once', async (t) => {
   t.is(err?.message, 'disk full')
 })
 
-// an owner with a room and its code, and a second device to join it (idle 0: a let-go room closes at once)
+// an owner with a room and its code, and a second device to join it (keepOpen 0: a let-go room closes at once)
 async function joining(t) {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.store.bootstrap({ name: 'owner-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   const code = await invite(room, { reuse: true })
-  const b = await openHandle(t, { testnet, opts: { idle: 0 } })
+  const b = await openHandle(t, { testnet, opts: { keepOpen: 0 } })
   return { b, code }
 }
 

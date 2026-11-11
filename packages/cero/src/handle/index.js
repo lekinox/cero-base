@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { IDLE, NS, TIMEOUT } from '../lib/constants.js'
+import { KEEP_OPEN, NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { Join, wait } from './join.js'
@@ -127,7 +127,7 @@ export class Handle extends ReadyResource {
     // children still opening, not adopted yet: a close must close them too
     /** @private */
     this._pending = parent ? null : new Set()
-    // children closing on their own, past the idle count: a close waits for them, they still read its stores
+    // children closing on their own: a close waits for them, they still read its stores
     /** @private */
     this._ending = parent ? null : new Set()
     /** @private */
@@ -458,7 +458,7 @@ export class Handle extends ReadyResource {
 
   /**
    * One holder done with it: a child stays open for the others. With its last it stays open, idle, so a reopen
-   * finds it as it is; the root keeps `idle` of them (16 by default) and one more closes the least recently used.
+   * finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more closes the least recently used.
    * The root closes at once.
    * @returns {Promise<void>}
    */
@@ -470,7 +470,7 @@ export class Handle extends ReadyResource {
     }
     const idle = this.root._idle
     if (idle.has(this)) return
-    const max = this.root._opts.idle ?? IDLE
+    const max = this.root._opts.keepOpen ?? KEEP_OPEN
     if (!max || this._refs === 0) return this._end()
     this._refs = 0
     idle.add(this)
@@ -486,7 +486,7 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Closed for every holder at once: past the idle count, the parent closing, or the handle left for good.
+   * Closed for every holder at once: pushed out past `keepOpen`, the parent closing, or the handle left for good.
    * @private
    */
   _end() {

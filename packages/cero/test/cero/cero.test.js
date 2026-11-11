@@ -181,7 +181,7 @@ test('invites: a join that lands as its caller times out gives back the open it 
   const { me: owner } = await ceroOpen(t, { testnet })
   const room = await open(owner.team, { name: 'clinic' })
   const invite = await cero.invite(room)
-  const { me: joiner } = await ceroOpen(t, { testnet, idle: 0 })
+  const { me: joiner } = await ceroOpen(t, { testnet, keepOpen: 0 })
 
   // the room opens in time, and the join lands from inside the timeout's own callback
   let land
@@ -434,7 +434,7 @@ test('invites: a room reopened at boot to serve its invite closes once it serves
   const invite = await cero.invite(room)
   await owner.me.close()
 
-  const back = await reopen(t, owner.dir, testnet, { idle: 0 })
+  const back = await reopen(t, owner.dir, testnet, { keepOpen: 0 })
   const served = await joined(back, room.id)
   const joiner = await ceroOpen(t, { testnet })
   await open(joiner.me.team, invite)
@@ -607,7 +607,7 @@ async function unclaimed(t, opts) {
 }
 
 test('invites: a join that lands with nobody waiting is let go', async (t) => {
-  const { room } = await unclaimed(t, { idle: 0 })
+  const { room } = await unclaimed(t, { keepOpen: 0 })
   await waitUntil(() => room.closed, 10000)
   t.pass('nobody opened it, so it closed')
 })
@@ -1113,7 +1113,7 @@ test('storageKey: master seed encrypted at rest, same key reopens', async (t) =>
 // a closed child's blob core keys must leave the root registry, or the file
 // server keeps serving them for the root's whole life
 test('closing a child prunes its blob core keys from the root', async (t) => {
-  const { me } = await ceroOpen(t, { idle: 0 })
+  const { me } = await ceroOpen(t, { keepOpen: 0 })
   const room = await open(me.team, { name: 'blobby' })
 
   const { data: file } = await put(room.files, { data: b4a.from('x'), type: 'text/plain' })
@@ -1931,7 +1931,7 @@ test('cero(): a suspend() racing an in-flight resume() serializes — last call 
 
 test('cero(): a blob core resolving after close does not re-register its key', async (t) => {
   const { Blobs } = await import('@cero-base/core/blobs')
-  const { me } = await ceroOpen(t, { idle: 0 })
+  const { me } = await ceroOpen(t, { keepOpen: 0 })
   const team = await open(me.team)
 
   let release

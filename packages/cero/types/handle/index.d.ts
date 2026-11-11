@@ -295,7 +295,7 @@ export declare class Handle extends ReadyResource {
     private _leave;
     /**
      * One holder done with it: a child stays open for the others. With its last it stays open, idle, so a reopen
-     * finds it as it is; the root keeps `idle` of them (16 by default) and one more closes the least recently used.
+     * finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more closes the least recently used.
      * The root closes at once.
      * @returns {Promise<void>}
      */
@@ -303,7 +303,7 @@ export declare class Handle extends ReadyResource {
     /** @private one more holder: an idle handle is kept */
     private _hold;
     /**
-     * Closed for every holder at once: past the idle count, the parent closing, or the handle left for good.
+     * Closed for every holder at once: pushed out past `keepOpen`, the parent closing, or the handle left for good.
      * @private
      */
     private _end;

@@ -534,7 +534,7 @@ test('rpc: a reloaded UI re-attaches, init answers again and the old watches end
 const openOn = (server, id) => [...server.me.children].some((c) => c.id === id && !c.closing)
 
 test('rpc: a reloaded UI lets go of every room the old page held, however many times it opened them', async (t) => {
-  const { server, client } = await openPair(t, { idle: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   await open(client.team, { id: made.id })
   await client.rpc.init({})
@@ -543,7 +543,7 @@ test('rpc: a reloaded UI lets go of every room the old page held, however many t
 })
 
 test('rpc: a room the worker holds itself stays open through a page reload', async (t) => {
-  const { server, client } = await openPair(t, { idle: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   const mine = await open(server.me.team, { id: made.id })
   t.teardown(() => mine.close())
@@ -554,7 +554,7 @@ test('rpc: a room the worker holds itself stays open through a page reload', asy
 })
 
 test('rpc: a room the old page already closed is not closed again on reload', async (t) => {
-  const { server, client } = await openPair(t, { idle: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   await made.close()
   const mine = await open(server.me.team, { id: made.id })
@@ -564,7 +564,7 @@ test('rpc: a room the old page already closed is not closed again on reload', as
 })
 
 test('rpc: the new page’s opens after a reload count from zero', async (t) => {
-  const { server, client } = await openPair(t, { idle: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   await client.rpc.init({})
   const again = await open(client.team, { id: made.id })
@@ -576,15 +576,15 @@ test('rpc: the new page’s opens after a reload count from zero', async (t) => 
 // the room the worker serves under `id`, whoever holds it
 const servedOn = (server, id) => [...server.me.children].find((c) => c.id === id)
 
-// a worker that keeps `idle` rooms nobody holds, and `count` rooms its page made and still holds
-async function pageRooms(t, idle, count) {
-  const { server, client } = await openPair(t, { idle })
+// a worker that keeps `keepOpen` rooms nobody holds, and `count` rooms its page made and still holds
+async function pageRooms(t, keepOpen, count) {
+  const { server, client } = await openPair(t, { keepOpen })
   const made = []
   for (let i = 0; i < count; i++) made.push(await open(client.team, { name: `room ${i}` }))
   return { server, client, made }
 }
 
-test('rpc: past the idle count, the worker closes the room the page let go longest ago', async (t) => {
+test('rpc: past keepOpen, the worker closes the room the page let go longest ago', async (t) => {
   const { server, made } = await pageRooms(t, 2, 3)
   const [first, second, third] = made
   await first.close()

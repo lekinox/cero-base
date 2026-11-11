@@ -71,7 +71,7 @@ function mockMessaging({ failFirst = false } = {}) {
 
 // a writes to a room through a mirror behind a gateway; b, served over RPC to a client with a
 // messaging service, joined that room
-async function scene(t, { messaging, errors, idle = 0 } = {}) {
+async function scene(t, { messaging, errors, keepOpen = 0 } = {}) {
   const testnet = await makeTestnet(t)
   const gateway = await makeGateway(t, testnet)
   const mirror = await makeMirror(t, testnet, { pushGatewayKeys: [gateway.key] })
@@ -80,11 +80,11 @@ async function scene(t, { messaging, errors, idle = 0 } = {}) {
 
   const dir = await t.tmp()
   const [serverStream, clientStream] = pair()
-  // idle 0: a closed handle is closed, so a push is what opens it again
+  // keepOpen 0: a closed handle is closed, so a push is what opens it again
   const server = await serve(serverStream, spec, {
     storage: dir,
     bootstrap: testnet.bootstrap,
-    idle
+    keepOpen
   })
   const client = await connect(clientStream, spec, {
     onerror: (err) => errors?.push(err),
@@ -116,7 +116,7 @@ async function woken(t) {
   const server = await serve(serverStream, spec, {
     storage: await t.tmp(),
     bootstrap: testnet.bootstrap,
-    idle: 0
+    keepOpen: 0
   })
   const messaging = mockMessaging()
   const client = await connect(clientStream, spec, { push: messaging })
@@ -302,7 +302,7 @@ test('topics: a burst of updates on one handle is a few passes that read only th
 
 test('topics: an update that lands while a handle closes leaves its row as it was sealed', async (t) => {
   const errors = []
-  const { me } = await ceroOpen(t, { idle: 0, onerror: (err) => errors.push(err) })
+  const { me } = await ceroOpen(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
   const room = await open(me.team, { name: 'clinic' })
   const own = await pushOf(room, room)
   await waitUntil(async () => await receive(me, own))
@@ -451,7 +451,7 @@ test('receive: a member who removes one of her two devices: its push reads as no
 // c is taken out of a room b holds, and b's handle or app closes in the same tick the removal applies there
 async function closedOnRemoval(t, close) {
   const a = await ceroOpen(t)
-  const b = await ceroOpen(t, { testnet: a.testnet, idle: 0 })
+  const b = await ceroOpen(t, { testnet: a.testnet, keepOpen: 0 })
   const c = await ceroOpen(t, { testnet: a.testnet })
   const room = await open(a.me.team, { name: 'clinic' })
   const mine = await open(b.me.team, await cero.invite(room))
@@ -571,7 +571,7 @@ test('push: the messaging service follows the topics, and a push activates the h
   const messaging = mockMessaging()
   const errors = []
   // a wake lets go of the handle it opened: idle, it stays on the swarm
-  const { gateway, room, b } = await scene(t, { messaging, errors, idle: 1 })
+  const { gateway, room, b } = await scene(t, { messaging, errors, keepOpen: 1 })
   await waitUntil(() => messaging.topics.has(topicOf(room)))
   t.is(messaging.topics.size, 1, 'subscribed to the joined room')
 

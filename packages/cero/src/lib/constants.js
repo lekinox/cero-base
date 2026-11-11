@@ -9,4 +9,4 @@ export const SPENT = 'spent'
 export const TIMEOUT = 30000
 
 // How many handles nobody holds stay open for a reopen.
-export const IDLE = 16
+export const KEEP_OPEN = 16
