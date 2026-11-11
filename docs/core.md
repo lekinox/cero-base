@@ -138,24 +138,24 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                                                                        |
 | `parent`        | A database this one follows, as a handle follows its root: behind there, it is behind here too.                                                                                                   |
 
-| Method                                               | Does                                                                                                                                       |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `put(name, row)`                                     | `{ data }`: insert into a collection, or overwrite by id, keeping `createdAt`. It stamps the timestamps, ignoring any you pass.            |
-| `set(name, row, { upsert })`                         | `{ data }`, or `null` when `{ upsert: false }` finds no row. Merges, keeping `createdAt`.                                                  |
-| `get(name, idOrQuery)`                               | `{ data }`, or `{ data, total, size }` for a query, as Cero's `get`.                                                                       |
-| `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                           |
-| `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                 |
-| `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                           |
-| `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                        |
-| `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs. |
-| `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
-| `rotate()`                                           | `{ epoch }`: a new key sealed to every device. `INVALID` inside `tx`.                                                                      |
-| `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
-| `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
-| `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
-| `learn(epochs)`                                      | Keep epochs handed over after the open: each once its announcement applied here and the secret meets the commitment it carries.            |
-| `removeWriter(publicKey)`                            | Remove a device, by its writer keypair's public key.                                                                                       |
-| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                 |
+| Method                                               | Does                                                                                                                                                                                                                                 |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `put(name, row)`                                     | `{ data }`: insert into a collection, or overwrite by id, keeping `createdAt`. It stamps the timestamps, ignoring any you pass.                                                                                                      |
+| `set(name, row, { upsert })`                         | `{ data }`, or `null` when `{ upsert: false }` finds no row. Merges, keeping `createdAt`.                                                                                                                                            |
+| `get(name, idOrQuery)`                               | `{ data }`, or `{ data, total, size }` for a query, as Cero's `get`.                                                                                                                                                                 |
+| `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                                                                                                                     |
+| `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                                                                                                           |
+| `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                                                                                                                     |
+| `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                                                                                                                  |
+| `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs.                                                                                           |
+| `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.                                                                                                |
+| `rotate()`                                           | `{ epoch }`: a new key sealed to every device. `INVALID` inside `tx`.                                                                                                                                                                |
+| `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                                                                                                              |
+| `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives, or the promise a join on an invite with its own address got: the claim then writes the member row. A member's reader device takes none. `TIMEOUT` after 30000 ms. |
+| `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                                                                                                                   |
+| `learn(epochs)`                                      | Keep epochs handed over after the open: each once its announcement applied here and the secret meets the commitment it carries.                                                                                                      |
+| `removeWriter(publicKey)`                            | Remove a device, by its writer keypair's public key.                                                                                                                                                                                 |
+| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                                                                                                           |
 
 It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view`, `behind` and `pushing`, and emits:
 
@@ -173,7 +173,7 @@ Who writes:
 
 - **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It claims its seat, then records its device row.
 - **A member you invited** needs nothing: its join seats it, and `db.whenWritable()` resolves once that lands.
-- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat.
+- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat. A device whose identity was let in through an invite with its own address runs it too: there is no member row until then, the claim writes it, and for a reader it resolves at that row.
 - Only the genesis batch names a member directly. Everyone after comes in through a join, and a device seats only itself: an add-writer for another core is ignored.
 
 Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on one device run one after another. A device that may remove also rotates the key by itself when the devices change, a database's first removal included. A device joining later reads the epochs it is handed, `epochs`, never the envelopes sealed to others. See [How it works](how-it-works.md).
@@ -270,8 +270,8 @@ How a join goes:
 
 1. **Write.** `Pairing.join` writes the join as the first block of the joiner's own writer core, in the network's store: open the database from that same store. It is sealed to the invite's address, so only members read who joins. It carries two signatures: the invite's over the writer, and the joiner's over the invite, the writer and the reply address.
 2. **Reach.** The core is announced to the database's peers and left on the mirrors. Any member device with the database open pulls it in.
-3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite.
-4. **Keys.** Every device of a member that can invite, and is not behind, offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed. Under an invite with its own address an answer, the keys or a refusal, carries a tag only that invite's secret and the joiner's reply address make, and `Pairing.join` ignores any other.
+3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite. Under an invite with its own address it adds nobody yet: it writes a `promised` row in `requests` at the role, and spends a single-use invite.
+4. **Keys.** Every device of a member that can invite, and is not behind, offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed. A promised joiner is offered its keys until its invite expires, and a read settles nothing: the joiner opens the database with the keys and runs `db.claim()`, which adds the member at the promised role, seats the device and drops the promise. Any device of that identity holding the keys may run it. Under an invite with its own address an answer, the keys or a refusal, carries a tag only that invite's secret and the joiner's reply address make, and `Pairing.join` ignores any other.
 5. **Expiry.** Apply has no clock: past an invite's expiry, a member that can remove drops the invite and any joiner still without keys.
 
 A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.
@@ -284,7 +284,10 @@ A plain invite admits the joiner by itself: the invite is the approval. An invit
 // pairing and room from above; approve is your own check
 const invite = await pairing.invite({ confirm: true })
 
-for await (const { data: requests } of room.watch('requests', { admitted: false })) {
+for await (const { data: requests } of room.watch('requests', {
+  admitted: false,
+  promised: false
+})) {
   for (const request of requests) {
     // request.identity: who is asking. request.role: what for, the invite's role
     if (await approve(request)) await pairing.accept(request.id)
@@ -293,7 +296,7 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 }
 ```
 
-- Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold admitted joins until their keys are read (`admitted: true`), hence the filter.
+- Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold joins already let in, until the joiner's device claims its seat (`promised: true`) or its keys are read (`admitted: true`), hence the filter.
 - `pairing.accept(id)` admits the joiner at the invite's role. `pairing.accept(id, { role })` can grant a lower one: `INVALID` for a role that is not a rank or is above the invite's, `REFUSED` above your own. It throws `EXPIRED` once the invite has expired.
 - `pairing.accept(id, { proof })` admits the joiner as a device of your own identity, not as a member: `proof` is `identity.link(request.key)`, your device attesting theirs. Apply checks the chain ends at the request's key under your identity (`REFUSED` otherwise), seats the writer under your member with the proof on its device row, and the reply carries that `proof`. A joiner with no identity yet joins as `Identity.bare(device)` and becomes `Identity.from({ publicKey, encryptionKey, device, proof })` from the reply.
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.

@@ -115,9 +115,6 @@ export function makeDispatcher({
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
   const getDevice = (view, id) => view.get(`@${ns}/devices`, { id })
 
-  const getRole = async (view, identityKey) =>
-    identityKey ? ((await getMember(view, hid.encode(identityKey)))?.role ?? null) : null
-
   const getSignerRole = async (view, writerKey) => {
     if (!writerKey) return null
     const d = await getDevice(view, hid.encode(writerKey))
@@ -480,16 +477,30 @@ export function makeDispatcher({
     if (!signed) return
     if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
     const { genesis } = ctx.host
-    const inviter = await getRole(ctx.view, op.master)
-    if (!genesis && !can(inviter, INVITE)) throw CeroError.REFUSED('invite')
+    const memberId = hid.encode(op.master)
+    const ts = op.ts || 0
+    const known = await getMember(ctx.view, memberId)
+    const owed = known || genesis ? [] : await promised(ctx.view, op.master)
+    if (!genesis && !can(known?.role, INVITE) && !owed.length) throw CeroError.REFUSED('invite')
     // only a device of the signer's own identity: another member's device seats itself through
     // its join, or any key the signer holds would act as them.
     // Always an indexer: autobee gc's caught-up non-indexer sessions and they miss later appends
-    const memberId = hid.encode(op.master)
     if (op.memberId && op.memberId !== memberId) throw CeroError.REFUSED('member')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
-    await ctx.host.addWriter(op.writer, { isIndexer: true })
-    await seat(ctx, op.writer, memberId, op.ts || 0, signed.device)
+    // a promise kept: the member it was made to, at the role of the first one made
+    const role = owed[0]?.role
+    if (role) {
+      const member = { id: memberId, key: op.writer, role, createdAt: ts, updatedAt: ts }
+      await save(ctx, 'put', 'members', member)
+    }
+    if (!role || can(role, WRITE)) await ctx.host.addWriter(op.writer, { isIndexer: true })
+    // the promise to this device goes with its seat, which keeps the chain a link wrote; one
+    // made to the identity on its own is kept for all of its devices by the first that claims
+    const mine = (await promised(ctx.view, op.master)).filter(
+      (row) => (role && !row.proof) || b4a.equals(row.key, signed.device)
+    )
+    await seat(ctx, op.writer, memberId, ts, signed.device, mine.find((row) => row.proof)?.proof)
+    for (const row of mine) await drop(ctx, 'requests', row.id)
   })
 
   // a device goes with its seat and its key: by its own member, or one who may remove her
@@ -593,6 +604,9 @@ export function makeDispatcher({
         await ctx.host.removeWriter(hid.decode(device.id))
         await drop(ctx, 'devices', device.id)
         await drop(ctx, 'requests', device.id)
+      }
+      for (const row of await promised(ctx.view, hid.decode(op.id))) {
+        await drop(ctx, 'requests', row.id)
       }
     }
     if (leaving) {
@@ -729,14 +743,15 @@ export function makeDispatcher({
     if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
     await ctx.view.delete(spent, { id: op.id })
   })
-  // its joins still waiting for a member are turned away with it; admitted ones are still owed
-  // their keys. Its id stays, and its secret, so a later join with it is opened and hears why
+  // its joins still waiting for a member are turned away with it; admitted and promised ones are
+  // still owed their keys. Its id stays, and its secret, so a later join with it is opened and
+  // hears why
   async function spend(ctx, invite, reason) {
     const expires = invite.expires || 0
     await drop(ctx, 'invites', invite.id)
     await ctx.view.insert(spent, { id: invite.id, reason, expires, secret: invite.secret })
     for (const request of await ctx.view.find(requests, {}).toArray()) {
-      if (request.invite !== invite.id || request.admitted) continue
+      if (request.invite !== invite.id || request.admitted || request.promised) continue
       await drop(ctx, 'requests', request.id)
       await refuse(ctx, request, reason)
     }
@@ -754,6 +769,7 @@ export function makeDispatcher({
   async function admit(ctx, { invite, identity, key, writer, reply, role, ts }) {
     const memberId = hid.encode(identity)
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
+    if (invite.secret) return promise(ctx, { invite, identity, key, writer, reply, role, ts })
     const member =
       (await getMember(ctx.view, memberId)) ??
       (await save(ctx, 'put', 'members', {
@@ -778,6 +794,11 @@ export function makeDispatcher({
   async function admitDevice(ctx, { invite, memberId, key, proof, writer, reply, ts }) {
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
     const member = await getMember(ctx.view, memberId)
+    if (invite.secret) {
+      const identity = hid.decode(memberId)
+      const { role } = member
+      return promise(ctx, { invite, identity, key, writer, reply, role, ts, proof })
+    }
     if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
     await seat(ctx, writer, memberId, ts, key, proof)
     await save(ctx, 'put', 'requests', {
@@ -786,6 +807,26 @@ export function makeDispatcher({
       admitted: true
     })
     if (!invite.reuse) await spend(ctx, invite, 'spent')
+  }
+
+  // let in through an invite with an address of its own: no member and no seat until a device of
+  // the identity, holding the keys, seats itself. With a proof, the promise is to that one device
+  async function promise(ctx, { invite, identity, key, writer, reply, role, ts, proof = null }) {
+    await save(ctx, 'put', 'requests', {
+      ...request(invite, identity, key, writer, reply, ts),
+      role,
+      promised: true,
+      proof
+    })
+    if (!invite.reuse) await spend(ctx, invite, 'spent')
+  }
+
+  // what an identity was promised, the first made first
+  async function promised(view, identity) {
+    const rows = await view.find(requests, {}).toArray()
+    return rows
+      .filter((row) => row.promised && b4a.equals(row.identity, identity))
+      .sort((a, b) => a.index - b.index)
   }
 
   function request(invite, identity, key, writer, reply, ts) {
@@ -866,7 +907,7 @@ export function makeDispatcher({
   // device of the accepter's own identity, which its device attested
   add('accept', async (op, ctx) => {
     const waiting = await ctx.view.get(requests, { id: op.id })
-    if (!waiting || waiting.admitted) return
+    if (!waiting || waiting.admitted || waiting.promised) return
     const invite = await ctx.view.get(invites, { id: waiting.invite })
     const r = await getSignerRole(ctx.view, ctx.key)
     const role = op.role || invite?.role
@@ -887,7 +928,7 @@ export function makeDispatcher({
   // answered through the log like every refusal; a deny that lost the race to an accept is nothing
   add('deny', async (op, ctx) => {
     const waiting = await ctx.view.get(requests, { id: op.id })
-    if (!waiting || waiting.admitted) return
+    if (!waiting || waiting.admitted || waiting.promised) return
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
     await drop(ctx, 'requests', op.id)
     await refuse(ctx, waiting, op.reason || '')

@@ -1480,11 +1480,9 @@ test('proven: a join on an invite with its own address names it, and is admitted
   const result = await joiner.join(invite)
   t.alike(result.key, host.db.key)
   t.alike(result.encryptionKey, host.db.encryptionKey)
-  t.is((await member(host.db, joiner.identity)).role, 'member')
+  t.is((await promises(host.db))[0]?.role, 'member', 'let in')
   const { value } = built.dispatch.decode((await joinOf(joiner.net, result.writer)).body)
   t.alike(value.invite, Invite.parse(invite).id, 'named in the clear')
-  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
-  t.pass('and the admission settles once its keys were read')
 })
 
 // every message a mailbox hands to a join
@@ -1608,6 +1606,174 @@ test('proven: the tag of a fixed answer, the same from either end, over the byte
   t.is(proven(answer, reply.secretKey, invite.publicKey), null, 'shorter than a tag: none')
   t.is(tag(answer, invite.secretKey, b4a.alloc(32)), null, 'an address that shares nothing: none')
   t.is(proven(message, reply.secretKey, b4a.alloc(32)), null)
+})
+
+// ─── let in through an invite with its own address: a promise ──────────────
+
+const promises = async (db) => (await db.get('requests')).data.filter((row) => row.promised)
+
+// a device with the keys a join got: the database, opened with the join's writer or its own
+async function opened(t, { net, identity }, { key, encryptionKey, epochs, writer }) {
+  const keys = { key, encryptionKey, epochs, keyPair: writer }
+  const db = new Database({ store: net.store, identity, network: net, spec: built, ...keys })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 1 })
+  return db
+}
+
+test("promised: a join leaves no member and no seat until the joiner's device claims", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const reply = await joiner.join(await host.pairing.invite({ role: 'admin' }))
+  const [owed] = await promises(host.db)
+  t.is(owed?.role, 'admin', "promised at the invite's role")
+  t.absent(await member(host.db, joiner.identity), 'no member at the join')
+  t.absent((await host.db.get('devices', owed.id)).data, 'and no seat')
+
+  const db = await opened(t, joiner, reply)
+  await db.claim()
+  t.ok(db.writable, 'its device seats itself')
+  t.is((await member(db, joiner.identity))?.role, 'admin', "the member, at the invite's role")
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.is((await member(host.db, joiner.identity))?.role, 'admin')
+  t.is((await host.db.get('devices', owed.id)).data?.memberId, joiner.identity.id)
+})
+
+test("promised: a join admitted on an invite with the room's address is seated already, its claim appends nothing", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const reply = await joiner.join(await host.pairing.invite())
+  t.is((await member(host.db, joiner.identity))?.role, 'member', 'a member at the join')
+  const { key, encryptionKey, epochs, writer: keyPair } = reply
+  const { net: network, identity } = joiner
+  const keys = { key, encryptionKey, epochs, keyPair }
+  const db = new Database({ store: network.store, identity, network, spec, ...keys })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}), { order: 1 })
+  await db.claim()
+  await waitFor(() => db.writable)
+  t.is(db.length, 1, 'its core holds the join alone')
+})
+
+test('promised: its keys downloaded settle nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  await joiner.join(await host.pairing.invite())
+  const [owed] = await promises(host.db)
+  // a download is all a device offering the keys sees, whoever made it
+  await host.pairing._replies.get(owed.id).delivered
+  const length = host.db.length
+  await host.db.call('set-device', { id: hid.encode(host.db.writerKey), name: 'later' })
+  t.is(host.db.length, length + 1, 'nothing was written at the download')
+  t.is((await promises(host.db)).length, 1, 'the promise stands')
+  t.ok(host.pairing._replies.has(owed.id), 'still offered its keys')
+  t.absent(await member(host.db, joiner.identity))
+})
+
+test("promised: a reader's device claims a member row and no seat", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const reply = await joiner.join(await host.pairing.invite({ role: 'reader' }))
+  const db = await opened(t, joiner, reply)
+  await db.claim()
+  t.is((await member(db, joiner.identity))?.role, 'reader', 'a member once it claimed')
+  t.absent(db.writable, 'with no seat')
+  t.is((await db.get('devices', hid.encode(db.writerKey))).data?.memberId, joiner.identity.id)
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.is((await member(host.db, joiner.identity))?.role, 'reader')
+})
+
+test('promised: another device of the identity, holding the keys, keeps the promise the join made', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const reply = await joiner.join(await host.pairing.invite())
+  const other = await makeMailbox(t, testnet)
+  // a device that never joined finds the room on its topic
+  for (const net of [host.net, other.net]) await net.join(host.db.discoveryKey).flush()
+  // it did not hear the join announced: a member's next write carries the join's core to it
+  await host.db.call('set-device', { id: hid.encode(host.db.writerKey), name: 'later' })
+  // the keys as its root hands them on, and a writer of its own
+  const second = await opened(
+    t,
+    { ...other, identity: joiner.identity },
+    { ...reply, writer: null }
+  )
+  await second.claim()
+  t.ok(second.writable, 'a device that never joined seats itself')
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.is((await member(host.db, joiner.identity))?.role, 'member')
+
+  const first = await opened(t, joiner, reply)
+  await first.claim()
+  t.ok(first.writable, 'and the one that joined, as any device of a member')
+})
+
+test('promised: accepting a waiting join promises at the accepted role, and its device claims', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const joining = joiner.join(await host.pairing.invite({ confirm: true, reuse: true }))
+  const request = await asked(host.db)
+  await host.pairing.accept(request.id, { role: 'reader' })
+  const reply = await joining
+  t.is((await promises(host.db))[0]?.role, 'reader', 'promised at the accepted role')
+  t.absent(await member(host.db, joiner.identity), 'no member yet')
+  t.is(await code(host.pairing.accept(request.id)), 'UNKNOWN', 'accepting again writes nothing')
+  t.is(await code(host.pairing.deny(request.id)), 'UNKNOWN', 'nor a deny')
+
+  const db = await opened(t, joiner, reply)
+  await db.claim()
+  await waitFor(async () => (await member(host.db, joiner.identity))?.role === 'reader')
+  t.is((await promises(host.db)).length, 0)
+})
+
+test('promised: a linked device gets its chain in the answer, claims, and keeps its own promise alone', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: built })
+  const link = async () => {
+    const { mailbox, net } = await makeMailbox(t, testnet)
+    const device = Identity.randomKeyPair()
+    const identity = await Identity.bare(device)
+    const invite = await host.pairing.invite({ role: 'owner', confirm: true, ttl: '2h' })
+    const joining = Pairing.join(mailbox, invite, { identity, spec: built })
+    const mine = (row) => b4a.equals(row.key, device.publicKey)
+    const request = await waitFor(async () => (await waiting(host.db)).find(mine))
+    await host.pairing.accept(request.id, { proof: host.identity.link(request.key) })
+    return { net, device, reply: await joining, id: request.id }
+  }
+  const phone = await link()
+  const tablet = await link()
+  const owed = await promises(host.db)
+  t.is(owed.length, 2, 'each a promise')
+  t.alike(owed.find((row) => row.id === phone.id).proof, phone.reply.proof, 'with its chain')
+  t.absent((await host.db.get('devices', phone.id)).data, 'and no seat')
+
+  const { reply, device, net } = phone
+  const { publicKey } = host.identity
+  const { encryptionKey, proof } = reply
+  const identity = Identity.from({ publicKey, encryptionKey, device, proof })
+  const db = await opened(t, { net, identity }, reply)
+  await db.claim()
+  t.ok(db.writable, 'the linked device seats itself')
+  const { data: seat } = await db.get('devices', phone.id)
+  t.is(seat?.memberId, host.identity.id, 'a device of the host')
+  t.alike(seat.proof, proof, 'its seat keeps the chain')
+  await waitFor(async () => (await promises(host.db)).length === 1)
+  t.is((await promises(host.db))[0].id, tablet.id, "the other device's promise stands")
+  t.is((await host.db.get('members')).data.length, 1, 'no member was added')
+})
+
+test('promised: one never kept leaves no member, and past its invite nobody offers its keys or settles it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  await joiner.join(await host.pairing.invite({ ttl: 2000 }))
+  const [owed] = await promises(host.db)
+  t.ok(host.pairing._replies.has(owed.id), 'offered its keys while the invite lasts')
+  await waitFor(() => !host.pairing._replies.has(owed.id), { timeout: 8000 })
+  await waitFor(async () => (await spent(host.db)).length === 0)
+  t.is((await promises(host.db)).length, 1, 'the promise stands: nothing settles it')
+  t.absent(await member(host.db, joiner.identity), 'and there is no member to remove')
+  await waitFor(() => !host.pairing.serving)
+  t.pass('a device serves nobody for it')
 })
 
 // ─── errors ────────────────────────────────────────────────────────────────

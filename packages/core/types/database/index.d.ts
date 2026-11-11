@@ -506,9 +506,10 @@ export declare class Database extends ReadyResource {
         writer: import('../identity/index.js').KeyPair;
     }>;
     /**
-     * Seat this device's writer where its identity is a member: wait for the member row, append
-     * the add-writer the identity signs from this device's own core, and resolve once it writes.
-     * A member whose role cannot write takes no seat.
+     * Seat this device's writer where its identity is a member, or was promised to be one: wait
+     * for the member row or the promise, append the add-writer the identity signs from this
+     * device's own core, and resolve once it writes. A member whose role cannot write takes no
+     * seat; a promise at such a role is kept all the same, and resolves at the member row.
      *
      * @param {{ timeout?: number }} [opts]
      * @returns {Promise<void>}
@@ -633,6 +634,8 @@ export declare class Database extends ReadyResource {
     private _total;
     /** @private */
     private _member;
+    /** @private */
+    private _standing;
     /** @private */
     private _admission;
     /** @private */

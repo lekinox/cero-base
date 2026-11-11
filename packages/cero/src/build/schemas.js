@@ -100,7 +100,8 @@ export const main = {
     proof: bytes
   },
   // a join from its arrival until the joiner has its keys: waiting for a member on a confirm
-  // invite, then admitted and owed its reply. `id` is the joiner's writer
+  // invite, then admitted and owed its reply, or promised and offered its keys until a device of
+  // the identity seats itself. `id` is the joiner's writer
   request: {
     id: required(string),
     identity: required(bytes),
@@ -113,7 +114,12 @@ export const main = {
     // what the join asks for, the invite's role; once admitted, the role granted
     role: string,
     // the device key the join's proof ends at
-    key: bytes
+    key: bytes,
+    // let in through an invite with an address of its own: no member until a device of the
+    // identity seats itself
+    promised: bool,
+    // a promise to a device its member linked: the chain that device's seat keeps
+    proof: bytes
   },
   // a removed member comes back only through an invite minted after `index`
   removal: {

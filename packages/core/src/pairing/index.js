@@ -57,7 +57,10 @@ const MAX_DELAY = 2 ** 31 - 1
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A join
+ * that may invite offers them while online, and the first one read settles it for all. Under an
+ * invite with an address of its own, being let in is a promise: no member and no seat until a device
+ * of the joiner, holding the keys, claims its seat, and its keys are offered until then or until
+ * the invite expires, whoever reads them. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
@@ -214,7 +217,8 @@ export class Pairing extends ReadyResource {
   /** @private */
   async _waiting(id) {
     const { data: row } = await this.db.get('requests', id)
-    const invite = row && !row.admitted && (await this.db.get('invites', row.invite)).data
+    const answered = row?.admitted || row?.promised
+    const invite = row && !answered && (await this.db.get('invites', row.invite)).data
     if (!invite) throw CeroError.UNKNOWN('request', id)
     return invite
   }
@@ -239,7 +243,9 @@ export class Pairing extends ReadyResource {
     this._arm([...invites, ...requests, ...spent])
     // behind, this device's view of the room is stale: it answers no join until it updates
     const inviter = can(role, INVITE) && this.db.behind === null
-    const owed = inviter ? requests.filter((row) => row.admitted) : []
+    // an admission is owed its keys until they are read; a promise, while its invite lasts
+    const due = (row) => row.admitted || (row.promised && !expired(row))
+    const owed = inviter ? requests.filter(due) : []
     const refused = inviter ? refusals : []
     const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
     await this._answer(owed, refused, role, secrets)
@@ -267,13 +273,14 @@ export class Pairing extends ReadyResource {
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
   // online, until one is read. Past the invite's expiry the joiner has given up: the answer owed to
   // an extra device of a member is dropped, a member who can remove drops a new one, and a refused
-  // one is forgotten. An answer under an invite that has a secret is tagged with it
+  // one is forgotten. A promised joiner is offered its keys until its device seats itself: a read
+  // settles nothing. An answer under an invite that has a secret is tagged with it
   /** @private */
   async _answer(owed, refused, role, secrets) {
-    // a device linked under a member reads its chain off its row
+    // a device linked under a member reads its chain off its seat, or off the promise of one
     const proofs = new Map()
-    for (const { id } of owed) {
-      proofs.set(id, (await this.db.get('devices', id)).data?.proof ?? null)
+    for (const { id, promised, proof } of owed) {
+      proofs.set(id, promised ? proof : ((await this.db.get('devices', id)).data?.proof ?? null))
     }
     const keys = ({ id }) => ({
       status: STATUS_ACCEPTED,
@@ -320,7 +327,7 @@ export class Pairing extends ReadyResource {
     const gone = []
     for (const row of rows) {
       if (!expired(row)) {
-        if (!posts.has(row.id)) this._post(posts, row, answer(row), settled)
+        if (!posts.has(row.id)) this._post(posts, row, answer(row), row.promised ? null : settled)
         continue
       }
       // a device already offering it stops: nobody waits for it any more
@@ -339,6 +346,8 @@ export class Pairing extends ReadyResource {
     posts.set(id, post)
     const settle = async () => {
       await post.ready()
+      // a promise is kept by its device's own claim: whoever reads the keys, nothing is settled
+      if (!settled) return
       await post.delivered
       await this.db.call(settled, { id })
     }

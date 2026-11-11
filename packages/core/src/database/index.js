@@ -720,9 +720,10 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Seat this device's writer where its identity is a member: wait for the member row, append
-   * the add-writer the identity signs from this device's own core, and resolve once it writes.
-   * A member whose role cannot write takes no seat.
+   * Seat this device's writer where its identity is a member, or was promised to be one: wait
+   * for the member row or the promise, append the add-writer the identity signs from this
+   * device's own core, and resolve once it writes. A member whose role cannot write takes no
+   * seat; a promise at such a role is kept all the same, and resolves at the member row.
    *
    * @param {{ timeout?: number }} [opts]
    * @returns {Promise<void>}
@@ -730,8 +731,10 @@ export class Database extends ReadyResource {
   async claim({ timeout = 30000 } = {}) {
     this.guard()
     if (this.bee.writable) return
-    const { role } = await this._member(timeout)
-    if (!can(role, WRITE)) return
+    const { role, promised } = await this._member(timeout, true)
+    // seated while it waited: a join that was admitted wrote the seat with the member row
+    if (this.bee.writable) return
+    if (!promised && !can(role, WRITE)) return
     const stamp = await this._stamp(this.view)
     const op = this.dispatcher.encode(
       `@${this.ns}/add-writer`,
@@ -741,7 +744,8 @@ export class Database extends ReadyResource {
     // from a core not yet admitted: apply verifies the identity's signature and seats it
     await this.bee.append(wrap(stamp, op), { optimistic: true })
     await this.bee.update()
-    await this.whenWritable({ timeout })
+    if (can(role, WRITE)) await this.whenWritable({ timeout })
+    else await this._member(timeout)
   }
 
   /**
@@ -1318,9 +1322,10 @@ export class Database extends ReadyResource {
     return (await view.find(path, bounds).toArray()).length
   }
 
-  // this identity's member row, looked up again on every update until one lands it
+  // this identity's member row, looked up again on every update until one lands it; with
+  // `promised`, what the identity was promised stands in for the row nothing has written yet
   /** @private */
-  _member(timeout) {
+  _member(timeout, promised = false) {
     return new Promise((resolve, reject) => {
       const done = (err, member) => {
         clearTimeout(timer)
@@ -1329,8 +1334,7 @@ export class Database extends ReadyResource {
         if (err) reject(err)
         else resolve(member)
       }
-      const check = () =>
-        this.get('members', this.identity.id).then(({ data }) => data && done(null, data), done)
+      const check = () => this._standing(promised).then((row) => row && done(null, row), done)
       const onclose = () => done(CeroError.CLOSED('Database'))
       const timer =
         timeout > 0
@@ -1340,6 +1344,17 @@ export class Database extends ReadyResource {
       this.once('close', onclose)
       check()
     })
+  }
+
+  // the member row, or the first promise made to the identity, as apply picks it
+  /** @private */
+  async _standing(promised) {
+    const { data: member } = await this.get('members', this.identity.id)
+    if (member || !promised) return member
+    const { data: requests } = await this.get('requests')
+    const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
+    const first = requests.find(mine)
+    return first ? { role: first.role, promised: true } : null
   }
 
   // the add-writer row for `writer`, appended by this device and proven by its device key

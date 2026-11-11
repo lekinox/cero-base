@@ -93,6 +93,8 @@ export declare const main: {
         expires: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
         key: import("@cero-base/core").Prim;
+        promised: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
     };
     removal: {
         id: import("@cero-base/core").Prim;

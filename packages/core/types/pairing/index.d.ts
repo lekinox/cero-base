@@ -137,7 +137,10 @@ export type JoinResult = {
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A join
+ * that may invite offers them while online, and the first one read settles it for all. Under an
+ * invite with an address of its own, being let in is a promise: no member and no seat until a device
+ * of the joiner, holding the keys, claims its seat, and its keys are offered until then or until
+ * the invite expires, whoever reads them. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
