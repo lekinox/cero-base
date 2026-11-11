@@ -11,7 +11,7 @@ import hid from 'hypercore-id-encoding'
 import Hypercore from 'hypercore'
 import Autobee from 'autobee'
 import { genId } from '../../src/lib/ids.js'
-import { admission } from '../../src/lib/utils.js'
+import { admission, searchHit } from '../../src/lib/utils.js'
 import {
   makeTestnet,
   makeStore,
@@ -550,6 +550,47 @@ test('get: reverse/limit reads push down to the order index (bounded read)', asy
     ['m0', 'm1', 'm2', 'm3', 'm4'],
     'default order unchanged'
   )
+})
+
+test('get: an unlimited read returns the order index rows, in its order', async (t) => {
+  const { db } = await bootstrapped(t)
+  for (const id of ['c', 'a', 'e', 'b', 'd']) await db.put('messages', { id, text: id })
+  await db.put('messages', { id: 'a', text: 'again' })
+  await db.set('messages', { id: 'e', text: 'merged' })
+  const col = db.col(db.ref('messages'))
+  for (const reverse of [false, true]) {
+    const indexed = await db.view.find(`${col}-index`, { reverse }).toArray()
+    const { data, total, size } = await db.get('messages', reverse ? { reverse } : undefined)
+    t.alike(data, indexed, `same rows, same order${reverse ? ', reversed' : ''}`)
+    t.is(total, 5)
+    t.is(size, 5)
+  }
+  const { data } = await db.get('messages')
+  t.alike(
+    data.map((m) => m.id),
+    ['c', 'a', 'e', 'b', 'd'],
+    'an overwrite keeps its place'
+  )
+  await db.del('messages', 'b')
+  const indexed = await db.view.find(`${col}-index`).toArray()
+  const page = await db.get('messages', { limit: 1, total: true })
+  t.is(page.total, indexed.length, 'a page counts the rows the index holds')
+  for (const query of [{ reverse: 1 }, { reverse: 1, limit: 9 }]) {
+    t.alike(
+      (await db.get('messages', query)).data,
+      indexed,
+      'a reverse that is not true is ignored'
+    )
+  }
+})
+
+test('get: a fields that is not a list is refused on a full list as on a page', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { text: 'a' })
+  for (const query of [{ fields: 'text' }, { fields: 'text', limit: 3 }]) {
+    const err = await db.get('messages', query).catch((e) => e)
+    t.is(err.code, 'INVALID', JSON.stringify(query))
+  }
 })
 
 // ─── field validation ───────────────────────────────────────────────────────
@@ -1113,6 +1154,29 @@ test('get search: composes with limit (pagination)', async (t) => {
   const r = await db.get('messages', { search: 'room', limit: 3 })
   t.is(r.data.length, 3, 'page capped to limit')
   t.is(r.total, 6, 'total counts the matches, not the page')
+})
+
+test('get search: the matches of the whole list, in index order, reversed and paged', async (t) => {
+  const { db } = await bootstrapped(t)
+  const texts = ['Room b', 'other', 'room A', 'rooM c', 'none', 'Róom d', 'room e']
+  for (const [i, text] of texts.entries()) await db.put('messages', { id: `${7 - i}`, text })
+  await db.put('messages', { id: '5', text: 'room again' })
+  const all = (await db.get('messages')).data
+  const hits = all.filter((m) => searchHit(m, 'ROOM'))
+  t.alike(
+    hits.map((m) => m.text),
+    ['Room b', 'room again', 'rooM c', 'Róom d', 'room e'],
+    'the matches, in index order'
+  )
+  for (const reverse of [false, true]) {
+    const want = reverse ? [...hits].reverse() : hits
+    const r = await db.get('messages', { search: 'ROOM', reverse })
+    t.alike(r.data, want, `same rows, same order${reverse ? ', reversed' : ''}`)
+    t.is(r.total, 5)
+    const page = await db.get('messages', { search: 'ROOM', reverse, limit: 2 })
+    t.alike(page.data, want.slice(0, 2), 'a page is the first matches')
+    t.is(page.total, 5)
+  }
 })
 
 test('get search: no match returns an empty page', async (t) => {
