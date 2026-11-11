@@ -3687,6 +3687,68 @@ test('version: a database with no row is at its start', async (t) => {
   t.is(row.attachment, null, 'at the start, which does not name the field')
 })
 
+test('version: genesis is written at the target, so the creator keeps fields and routes newer than the start', async (t) => {
+  const s = dated(
+    { version: 2, start: 1, target: 2 },
+    {
+      routes: { '@cero/set-device': 2 },
+      types: { '@cero/member': { name: 2 }, '@cero/device': { name: 2 } }
+    }
+  )
+  const { db, identity } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), 2, 'genesis raised it to the target')
+  t.is((await db.get('members', identity.id)).data?.name, 'first', 'the member row keeps it')
+  const [device] = (await db.get('devices')).data
+  t.is(device?.name, 'first', 'and the device row')
+})
+
+test('version: an op after a raise in the same apply runs at the raised version', async (t) => {
+  const s = dated(
+    { version: 2, start: 1, target: 1 },
+    { types: { '@cero/messages': { attachment: 2 } } }
+  )
+  const { db } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), null, 'at the start')
+  const id = genId()
+  await db.bee.append([
+    wrap(2, spec.dispatch.encode('@cero/upgrade', { version: 2 })),
+    wrap(
+      2,
+      spec.dispatch.encode('@cero/add-messages', { id, text: 'x', attachment: b4a.from('a') })
+    )
+  ])
+  await db.bee.update()
+  t.is(await versionRow(db), 2, 'raised')
+  t.alike(
+    (await db.get('messages', id)).data?.attachment,
+    b4a.from('a'),
+    'the op after it names the field'
+  )
+})
+
+test('version: a device below a raise skips the ops after it in the same apply', async (t) => {
+  const { db } = await bootstrapped(t)
+  const id = genId()
+  await db.bee.append([
+    wrap(2, spec.dispatch.encode('@cero/upgrade', { version: 2 })),
+    wrap(2, spec.dispatch.encode('@cero/add-messages', { id, text: 'after the raise' }))
+  ])
+  await db.bee.update()
+  t.is(db.behind, 2, 'behind')
+  t.absent((await db.get('messages', id)).data, 'the op after the raise is past this build')
+  await waitFor(async () => (await marker(db, 'cero/skipped')) === 2)
+  t.pass('and recorded')
+})
+
+test('version: a write on a route newer than the version is refused before it reaches the log', async (t) => {
+  const s = dated({ version: 2, start: 1, target: 1 }, { routes: { '@cero/add-tasks': 2 } })
+  const { db } = await bootstrapped(t, { spec: s })
+  const length = db.bee.local.length
+  const err = await db.put('tasks', { title: 'x' }).catch((e) => e)
+  t.is(err?.rule, 'route', 'refused')
+  t.is(db.bee.local.length, length, 'nothing appended')
+})
+
 test('version: a store written under contracts 1 and 2, opened under 3, keeps every row', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
   const { data: one } = await db.put('messages', { text: 'one', attachment: b4a.from('1') })

@@ -80,6 +80,22 @@ test('Handle: rejects missing spec', async (t) => {
   t.exception.all(() => new Handle({ store, identity: {}, network: {} }), /spec is required/)
 })
 
+test('Handle: a new room is written at its target, so its owner row keeps a field newer than the start', async (t) => {
+  const team = spec.handles.team
+  const { since } = team.meta
+  const member = { ...since.types['@cero/member'], createdAt: 2 }
+  const meta = {
+    ...team.meta,
+    version: 2,
+    target: 2,
+    since: { ...since, types: { ...since.types, '@cero/member': member } }
+  }
+  const handles = { ...spec.handles, team: { ...team, meta } }
+  const { me, identity } = await openHandle(t, { spec: { ...spec, handles } })
+  const room = await open(me.team, { name: 'dated' })
+  t.ok((await get(room.members, identity.id)).data?.createdAt, 'the owner row has it')
+})
+
 test('Handle: a root rejects missing local', async (t) => {
   const { store } = await makeStore(t)
   t.exception.all(() => new Handle({ store, identity: {}, network: {}, spec }), /local is required/)

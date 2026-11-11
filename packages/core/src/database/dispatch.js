@@ -76,6 +76,8 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }> } }} opts.spec  Generated hyperdispatch spec.
  * @param {string} opts.ns  Namespace prefix for collection and op names.
  * @param {number} opts.start  The version of a database that holds no version row.
+ * @param {() => number} opts.contract  This build's contract: an op whose effective stamp is past it is skipped.
+ * @param {(stamp: number) => void} opts.onskip  Called with the effective stamp of each op skipped as past the contract.
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
@@ -83,12 +85,14 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, stamp: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, stamp: number }>, changed: boolean }> }}  `apply` takes each op at its effective stamp and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
   ns,
   start,
+  contract,
+  onskip,
   onerror,
   key,
   onepoch,
@@ -596,9 +600,11 @@ export function makeDispatcher({
     ctx.epochs?.push(row)
   })
 
-  // only an owner moves the version, and only up: a lower one is no change and no error
+  // only an owner moves the version, and only up: a lower one is no change and no error. The
+  // genesis batch raises first, before the member row it writes, so all of it runs at the version
   add('upgrade', async (op, ctx) => {
-    if ((await getSignerRole(ctx.view, ctx.key)) !== OWNER) throw CeroError.REFUSED('upgrade')
+    const owner = ctx.host.genesis || (await getSignerRole(ctx.view, ctx.key)) === OWNER
+    if (!owner) throw CeroError.REFUSED('upgrade')
     if (op.version <= (await versionOf(ctx.view))) return
     await ctx.view.insert(countersCol, { name: VERSION, value: op.version })
   })
@@ -907,17 +913,24 @@ export function makeDispatcher({
       let changed = false
       const landed = []
       for (const node of nodes) {
+        // the version as it stands at this node, an upgrade earlier in the batch included
+        const stamp = Math.min(node.version, await versionOf(tx))
+        // replayed once this build reaches it
+        if (stamp > contract()) {
+          onskip(stamp)
+          continue
+        }
         try {
           const seed = crypto.hash([node.key, c.encode(c.uint, node.length), node.value])
           // never a clock: the node's time is the same on every peer
-          await router.dispatch(await decode(node.value, node.stamp, tx), {
+          await router.dispatch(await decode(node.value, stamp, tx), {
             view: tx,
             host: deferred,
             key: node.key,
             dbKey,
             seed,
             ts: node.timestamp,
-            stamp: node.stamp,
+            stamp,
             epochs,
             touched
           })

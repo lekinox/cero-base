@@ -867,6 +867,8 @@ export class Handle extends ReadyResource {
       const writerKey = child.store.writerKey
       // one batch, so a handle's first ops land together
       await child.store.tx(async (tx) => {
+        // first, so the rest is written at the version
+        await tx.call('upgrade', { version: child.store.target })
         await tx.call('add-writer', {
           master: this.identity.publicKey,
           writer: writerKey,
@@ -881,7 +883,6 @@ export class Handle extends ReadyResource {
           createdAt: ts,
           updatedAt: ts
         })
-        await tx.call('upgrade', { version: child.store.target })
       })
       await this.store.call('add-handle', {
         id,

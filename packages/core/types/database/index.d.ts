@@ -276,12 +276,12 @@ export declare class Database extends ReadyResource {
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
-            stamp: number;
+            version: number;
         }>, view: object, host: object) => Promise<{
             landed: Array<{
                 value: Buffer;
                 key: Buffer;
-                stamp: number;
+                version: number;
             }>;
             changed: boolean;
         }>;

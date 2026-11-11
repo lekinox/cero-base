@@ -228,6 +228,8 @@ export class Database extends ReadyResource {
       spec: this.spec,
       ns: this.ns,
       start: this.start,
+      contract: () => this.version,
+      onskip: (stamp) => this._skip(stamp),
       onerror: this._onerror,
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
@@ -656,7 +658,7 @@ export class Database extends ReadyResource {
       await this.write([device])
     } else {
       // one batch: a writer is never on the log without its member row, nor the database without
-      // the version its build asks for
+      // the version its build asks for, raised first so the rest is written at it
       const member = {
         id: this.identity.id,
         key: this.writerKey,
@@ -667,7 +669,7 @@ export class Database extends ReadyResource {
       }
       const writer = this._admission(this.writerKey, ts)
       const upgrade = ['upgrade', { version: this.target }]
-      await this.write([['add-writer', writer], ['add-member', member], device, upgrade])
+      await this.write([upgrade, ['add-writer', writer], ['add-member', member], device])
     }
     return { id: this.writerKey, writer: this.keyPair }
   }
@@ -906,11 +908,9 @@ export class Database extends ReadyResource {
     }
   }
 
-  // unwrap once so the dispatcher sees op bytes, each at its effective stamp: no stamp is past the
-  // version, so a writer's own number decides nothing for the others. Skipping is deterministic
+  // unwrap once so the dispatcher sees op bytes and the stamp each was written with
   /** @private */
   async _apply(nodes, view, host) {
-    const version = await this.dispatcher.version(view)
     const ready = []
     for (const node of nodes) {
       const op = unwrap(node.value)
@@ -919,13 +919,7 @@ export class Database extends ReadyResource {
         this._onerror(CeroError.INVALID('an op with no envelope'))
         continue
       }
-      const stamp = Math.min(op.version, version)
-      // replayed once this build reaches it
-      if (stamp > this.version) {
-        this._skip(stamp)
-        continue
-      }
-      ready.push({ ...node, value: op.body, stamp })
+      ready.push({ ...node, value: op.body, version: op.version })
     }
     this._applied = true
     const { landed, changed } = await this.dispatcher.apply(ready, view, host)
@@ -1134,8 +1128,9 @@ export class Database extends ReadyResource {
       genesis: this.bee.system.isGenesis()
     }
     try {
-      const stamp = Math.min(this.version, await this.dispatcher.version(tx))
       for (const value of encoded) {
+        // at the version each op meets, as apply will run it
+        const stamp = Math.min(this.version, await this.dispatcher.version(tx))
         await this.dispatcher.dispatch(value, {
           host,
           view: tx,
