@@ -12,7 +12,7 @@ export function Settings() {
   const me = useCero()
   const { data: profile } = useQuery(me.profile)
   const { data: devices } = useQuery(me.devices)
-  const { data: requests } = useQuery(me.requests, { admitted: false })
+  const { data: requests } = useQuery(me.requests, { admitted: false, promised: false })
   const { theme, toggle } = useTheme()
   const toast = useToast()
   const [seed, setSeed] = useState(null)

@@ -81,6 +81,8 @@ test('rejoin: a member let back in after a rotation reopens the room and reads i
   const joined = await open(b.me.team, await cero.invite(clinic))
   await waitForConnection(a.net)
   await put(joined.messages, { text: 'first' })
+  // written by a device that seated itself a moment ago: the owner has it before she removes it
+  await waitUntil(async () => (await get(clinic.messages)).data.length === 1)
 
   await del(clinic.members, b.identity.id)
   await cero.rotate(clinic)

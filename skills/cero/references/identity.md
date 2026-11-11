@@ -50,7 +50,7 @@ phrase.
 ```js
 // on a device of yours: mint the invite, show the requests, accept the one that matches
 const invite = await cero.invite(me) // single-use, two hours: { ttl } sets it
-for await (const { data } of cero.watch(me.requests, { admitted: false })) {
+for await (const { data } of cero.watch(me.requests, { admitted: false, promised: false })) {
   for (const request of data) {
     if (await confirm(request.id))
       await cero.accept(me, request) // confirm is your UI

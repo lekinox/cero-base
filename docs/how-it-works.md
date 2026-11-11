@@ -57,9 +57,9 @@ flowchart TB
 
 1. **Ask.** The joiner's device starts its own log for the handle and writes the join as its first entry, sealed to the handle and signed twice: by the invite, and by the joiner for that log and the address its keys go to.
 2. **Reach.** The handle's peers and mirrors get that log, and any member's device with the handle open pulls it in.
-3. **Admit.** Every device checks both signatures and the invite's row, and turns away a member whose removal came after the invite. Then, in one step, it adds the member and the device, lets the log write if the role writes, and spends a single-use invite.
-4. **Keys.** Every online device of a member who can invite sends the joiner the handle's keys, directly and through mirrors, until one is stored by the joiner or a mirror. A join turned away with an invite the handle knows, revoked, spent or older than the joiner's removal, gets `DENIED` and the reason the same way; the handle keeps a revoked or spent invite until it would have expired. A join with an invite the handle never held gets no answer.
-5. **Expiry.** Past an invite's expiry, a device of a member who can remove drops the invite and removes any joiner still without keys.
+3. **Admit.** Every device checks both signatures and the invite's row, and turns away a member whose removal came after the invite. Then it lets the joiner in and spends a single-use invite. The joiner becomes a member once its own device, holding the keys, takes its seat: that adds the member and the device, and lets the log write if the role writes.
+4. **Keys.** Every online device of a member who can invite sends the joiner the handle's keys, directly and through mirrors, until the joiner's device has taken its seat or the invite has expired. A join turned away with an invite the handle knows, revoked, spent or older than the joiner's removal, gets `DENIED` and the reason the same way; the handle keeps a revoked or spent invite until it would have expired. A join with an invite the handle never held gets no answer.
+5. **Expiry.** Past an invite's expiry, a device of a member who can remove drops the invite. A joiner whose device never took its seat never became a member.
 
 An invite made with `confirm: true` pauses at step 3: the join waits in `room.requests` until a member who can invite accepts it, at the invite's role or lower, or denies it and the joiner gets `DENIED`. The first answer settles it everywhere.
 

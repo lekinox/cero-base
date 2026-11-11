@@ -1003,6 +1003,8 @@ export class Handle extends ReadyResource {
     let inflightId = null
     try {
       await child.ready()
+      // let in by a promise, this device seats itself: its claim writes the member row
+      await child.store.claim({ timeout: 0 })
       // admitted once our member row lands; the same apply seats a writer, a reader has no seat
       const member = await admitted(child.store, this.identity.id)
       if (member.role !== 'reader' && !child.store.writable) {

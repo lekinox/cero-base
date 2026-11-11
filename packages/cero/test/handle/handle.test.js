@@ -35,7 +35,10 @@ async function hosted(t, name) {
   const room = await open(host.team, { name })
   const join = async (invite) => {
     const { me } = await ceroOpen(t, { testnet })
-    return { me, room: await open(me.team, invite) }
+    const joined = await open(me.team, invite)
+    // a joiner's device seats itself: the host has the member once that claim reached it
+    await waitUntil(async () => (await get(room.members, me.identity.id)).data)
+    return { me, room: joined }
   }
   return { host, room, join, testnet }
 }
@@ -55,7 +58,9 @@ test('invite: a confirm invite waits for the app to accept', async (t) => {
   await accept(room, request)
   const joined = await joining
   t.teardown(() => joined.close().catch(() => {}))
-  t.is((await get(room.members, peer.identity.id)).data.role, 'reader')
+  // its device seats itself: the host has the member once that claim reached it
+  const member = await waitUntil(async () => (await get(room.members, peer.identity.id)).data)
+  t.is(member.role, 'reader')
 })
 
 test('invite: made-up keys a reader sends a confirm join are not kept, the accept still lets it in', async (t) => {

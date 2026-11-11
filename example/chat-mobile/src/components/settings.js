@@ -13,7 +13,7 @@ export function Settings() {
   const me = useCero()
   const { data: profile } = useQuery(me.profile)
   const { data: devices } = useQuery(me.devices)
-  const { data: requests } = useQuery(me.requests, { admitted: false })
+  const { data: requests } = useQuery(me.requests, { admitted: false, promised: false })
   const toast = useToast()
   const [name, setName] = useState(profile?.name || '')
   const [phrase, setPhrase] = useState(null)

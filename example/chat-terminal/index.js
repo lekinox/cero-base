@@ -83,7 +83,7 @@ async function main() {
   )
 
   // a device of yours asking in: approve it once the id matches the one it shows
-  const requestStream = cero.watch(me.requests, { admitted: false })
+  const requestStream = cero.watch(me.requests, { admitted: false, promised: false })
   const announced = new Set()
   requestStream.on('data', (event) => {
     for (const r of event.data) {
@@ -142,7 +142,7 @@ async function main() {
     }
     const [command, id] = text.split(/\s+/)
     if (command === '/approve' || command === '/deny') {
-      const { data } = await cero.get(me.requests, { admitted: false })
+      const { data } = await cero.get(me.requests, { admitted: false, promised: false })
       const request = data.find((r) => r.id === id)
       if (!request) {
         console.error(`! no pending device request ${id}`)
