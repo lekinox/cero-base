@@ -516,6 +516,53 @@ test('rpc: a room reads as in over the bridge, and its state once it has one', a
   t.is((await get(client.team, team.id)).data.state, 'leaving')
 })
 
+test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored with none', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'clinic' })
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+
+  const sent = []
+  const write = me.store.write
+  me.store.write = (ops) => (sent.push(...ops), write.call(me.store, ops))
+  await set(client.handles, { id: 'waiting', name: 'renamed' })
+  me.store.write = write
+  t.absent(sent[0][1].state, 'the rename sends no state')
+  const { data: row } = await get(client.team, 'waiting')
+  t.alike([row.name, row.state], ['renamed', 'asking'], 'and the row stands where it stood')
+
+  t.absent((await me.store.get('handles', team.id)).data.state, 'the room is stored with no state')
+  const listed = await get(client.team, { state: 'in' })
+  t.alike(
+    listed.data.map((row) => row.id),
+    [team.id],
+    'and listed as in'
+  )
+})
+
+test('rpc: a row is deleted over the bridge once it is over, not while asking', async (t) => {
+  const { me, client } = await openPair(t)
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+  const err = await del(client.handles, 'waiting').catch((err) => err)
+  t.is(err?.code, 'REFUSED', 'refused while asking')
+  await me.store.set('handles', { id: 'waiting', state: 'cancelled' })
+  await del(client.handles, 'waiting')
+  t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
+})
+
 test('rpc: a room created while the root closes rejects with CLOSED', async (t) => {
   const { me, client } = await openPair(t)
   const creating = open(client.team, { name: 'clinic' })

@@ -102,6 +102,9 @@ function moves(was, row) {
   return from === 'denied' && to === 'joining' && row.invite === was.invite
 }
 
+// on its way in or out: such a row is not deleted
+const UNSETTLED = new Set(['asking', 'joining', 'leaving'])
+
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -1106,14 +1109,21 @@ export function makeDispatcher({
 
   // held to its states on every peer, so a device with an older picture writes over no newer one
   const stands = (write) => async (op, ctx) => {
-    if (!moves(await ctx.view.get(col('handles'), { id: op.id }), op)) {
-      throw CeroError.REFUSED('state')
+    const was = await ctx.view.get(col('handles'), { id: op.id })
+    // a write that names no state leaves the row where it stands: its device may read an older one
+    if (was && !op.state) {
+      Object.assign(op, { state: was.state, reason: was.reason, by: was.by, invite: was.invite })
     }
+    if (!moves(was, op)) throw CeroError.REFUSED('state')
     return write(op, ctx)
   }
   add('add-handle', stands(upsert('handles', COLLECTION, false)))
   add('set-handle', stands(update('handles', false)))
-  add('del-handle', remove('handles', false))
+  add('del-handle', async (op, ctx) => {
+    const was = await ctx.view.get(col('handles'), { id: op.id })
+    if (UNSETTLED.has(was?.state)) throw CeroError.REFUSED('state')
+    return remove('handles', false)(op, ctx)
+  })
 
   for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
     if (info.internal) continue

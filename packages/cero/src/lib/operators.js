@@ -172,6 +172,20 @@ const standing = (res) =>
     ? { ...res, data: Array.isArray(res.data) ? res.data.map(stand) : stand(res.data) }
     : res
 
+// a handles query and what reads its result. A filter on `in` is made on what is read: such a row is stored
+// with `in` or with no state
+function stood(q) {
+  if (q?.state !== 'in') return [q, standing]
+  const { state, limit, ...rest } = q
+  const read = (res) => {
+    if (!Array.isArray(res?.data)) return res
+    const all = res.data.map(stand).filter((row) => row.state === state)
+    const data = limit === undefined ? all : all.slice(0, limit)
+    return { ...res, data, total: all.length, size: data.length }
+  }
+  return [rest, read]
+}
+
 function resolveResult(ref, res) {
   if (res == null || res.data == null) return res
   const data = Array.isArray(res.data)
@@ -214,11 +228,13 @@ export async function get(ref, q) {
   const live = ref.handle._live?.[ref.name]
   if (live) return live.get(q)
   if (ref.kind === 'handle') {
-    const res = await parentStore(ref).get('handles', ofType(ref, q))
-    return standing(typeof q === 'string' ? typed(res.data, ref.name) : res)
+    const [query, read] = stood(q)
+    const res = await parentStore(ref).get('handles', ofType(ref, query))
+    return read(typeof q === 'string' ? typed(res.data, ref.name) : res)
   }
-  const res = resolveResult(ref, await ref.handle.store.get(ref.name, q))
-  return ref.name === 'handles' ? standing(res) : res
+  if (ref.name !== 'handles') return resolveResult(ref, await ref.handle.store.get(ref.name, q))
+  const [query, read] = stood(q)
+  return read(resolveResult(ref, await ref.handle.store.get(ref.name, query)))
 }
 
 /**
@@ -279,17 +295,17 @@ function source(ref, q) {
     return { src: subscribe({ get: () => live.get(q), watch: live.watch }), map: (res) => res }
   }
   if (ref.kind === 'handle') {
+    const [query, read] = stood(q)
     const map = typeof q === 'string' ? (snap) => typed(snap?.data, ref.name) : (res) => res
     return {
-      src: parentStore(ref).watch('handles', ofType(ref, q)),
-      map: (res) => standing(map(res))
+      src: parentStore(ref).watch('handles', ofType(ref, query)),
+      map: (res) => read(map(res))
     }
   }
   const map = (res) => resolveResult(ref, res)
-  return {
-    src: ref.handle.store.watch(ref.name, q),
-    map: ref.name === 'handles' ? (res) => standing(map(res)) : map
-  }
+  if (ref.name !== 'handles') return { src: ref.handle.store.watch(ref.name, q), map }
+  const [query, read] = stood(q)
+  return { src: ref.handle.store.watch(ref.name, query), map: (res) => read(map(res)) }
 }
 
 // snapshots are idempotent: a slow reader gets only the newest
