@@ -616,6 +616,8 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _rebuild;
     /** @private */
+    private _wipe;
+    /** @private */
     private _skip;
     /** @private */
     private _track;
