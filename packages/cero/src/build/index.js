@@ -81,22 +81,30 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
     }
 
     const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
-    const version = await contract(next, dirs, [main, ...Object.values(handles)])
+    const compiled = [main, ...Object.values(handles)]
+    const { version, start, target, dated } = await contract(next, specDir, dirs, compiled, extend)
     // what a write means to Cero: a view applied under older rules applies its log again
     const rules = internal.contract.version
+    const app = { version, rules, start, target }
     const meta = {
       ...main.meta,
-      version,
-      rules,
+      ...app,
+      ...dated[0],
       local: local.meta,
       handles: Object.fromEntries(
-        Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version, rules }])
+        Object.entries(handles).map(([n, h], i) => [
+          n,
+          { ...h.meta, type: n, ...app, ...dated[i + 1] }
+        ])
       )
     }
 
     // the type marker tells the runtime which handle type to open
     for (const [name] of Object.entries(handles)) {
-      if (meta.refs[name]) meta.refs[name] = { kind: 'handle', type: name, schema: `@${ns}/handle` }
+      const ref = meta.refs[name]
+      if (ref) {
+        meta.refs[name] = { kind: 'handle', type: name, schema: `@${ns}/handle`, since: ref.since }
+      }
     }
 
     await fs.writeFile(
@@ -157,6 +165,7 @@ function compile(root, ns, scope = 'main', top = false) {
     collections: [],
     dispatches: [],
     indexes: [],
+    things: [],
     meta: { ns, refs: {} },
     ns,
     scope,
@@ -190,6 +199,7 @@ function compile(root, ns, scope = 'main', top = false) {
     collections: ctx.collections,
     dispatches: ctx.dispatches,
     indexes: ctx.indexes,
+    things: ctx.things,
     meta: ctx.meta
   }
 }
@@ -209,6 +219,9 @@ function register(name, node, ctx) {
   const route = routes.find((r) => ctx.taken.routes.has(r))
   if (route) throw CeroError.INVALID(`'${name}' makes Cero's route '${route}', rename it`)
   if (ctx.taken.types.has(name)) throw CeroError.INVALID(`'${name}' is a builtin type, rename it`)
+  const fields = Object.keys(node.fields)
+  const marked = fields.filter((f) => node.fields[f].later)
+  ctx.things.push({ name, type: fqn, fields, later: node.later === true, marked })
   if (node.kind === 'action') {
     ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.dispatches.push({ name, requestType: fqn })
@@ -264,8 +277,9 @@ function register(name, node, ctx) {
 
 // one contract for the app, kept in contract.json: it rises once per build that changes what is
 // stored, at the root or in any handle type, or what a write means to Cero, never for RPC alone.
-// A spec without one starts from its builders' versions, so a shipped app's number never goes down
-async function contract(specDir, dirs, compiled) {
+// A spec without one starts from its builders' versions, so a shipped app's number never goes down.
+// Its history keeps what each builder was at for every contract, which dates each field, ref and route
+async function contract(specDir, prior, dirs, compiled, extend) {
   const file = join(specDir, 'contract.json')
   const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
   // apply reads own from the reader's spec, so a collection keeps the one it shipped with
@@ -288,8 +302,121 @@ async function contract(specDir, dirs, compiled) {
   const version = kept
     ? kept.version + (kept.shape === shape ? 0 : 1)
     : Math.max(...shapes.flatMap((s) => s.versions))
-  await fs.writeFile(file, JSON.stringify({ version, shape, own }, null, 2) + '\n')
-  return version
+
+  const rules = internal.contract.version
+  const start = kept?.history ? kept.start : (kept?.version ?? version)
+  const floor = floorOf(kept, shape, version, start)
+  const history = kept?.history ? { ...kept.history } : { [start]: await builders(prior, dirs) }
+  history[version] = Object.fromEntries(dirs.map((dir, i) => [dir, shapes[i].builders]))
+
+  const contracts = Object.keys(history).map(Number)
+  const since = (c) => (c === start ? 0 : c)
+  const dated = dirs.map((dir, i) => {
+    const first = (at, v) => since(contracts.find((c) => history[c][dir]?.[at] >= v))
+    const [types, , routes] = shapes[i].stored
+    const out = {
+      since: {
+        routes: Object.fromEntries(routes.schema.map((r) => [r.name, first(1, r.version)])),
+        types: Object.fromEntries(
+          types.schema.map((type) => [
+            `@${type.namespace}/${type.name}`,
+            Object.fromEntries(type.fields.map((f) => [f.name, first(0, f.version)]))
+          ])
+        )
+      },
+      encoding: Object.fromEntries(
+        contracts.filter((c) => history[c][dir]).map((c) => [c, history[c][dir][0]])
+      )
+    }
+    const { ns, refs } = compiled[i].meta
+    for (const ref of Object.values(refs)) {
+      if (ref.live) ref.since = 0
+      else if (ref.kind === 'handle') {
+        ref.since = since(contracts.find((c) => history[c][join('handles', ref.type)]))
+      } else ref.since = out.since.routes[routeOf(ref, ns)]
+    }
+    return out
+  })
+
+  const target = aim(
+    dirs.flatMap((dir, i) => declared(compiled[i], extend, dated[i].since.types)),
+    Math.max(kept?.target ?? start, floor),
+    version
+  )
+  await fs.writeFile(
+    file,
+    JSON.stringify({ version, shape, own, rules, start, floor, target, history }, null, 2) + '\n'
+  )
+  return { version, start, target, dated }
+}
+
+// a spec with no history cannot tell whether its last change was Cero's rules, so it assumes so
+function floorOf(kept, shape, version, start) {
+  if (kept?.history) return kept.rules === internal.contract.version ? kept.floor : version
+  return kept && kept.shape !== shape ? version : start
+}
+
+function routeOf({ kind, path, verb }, ns) {
+  if (kind === 'action') return `@${ns}/${path[0]}`
+  if (kind === 'single') return `@${ns}/set-${path[0]}`
+  return `@${ns}/add-${verb || path[0]}`
+}
+
+// [schema, dispatch] builder versions of each directory the spec has
+async function builders(specDir, dirs) {
+  const read = (dir, rel) =>
+    fs.readFile(join(specDir, dir, rel), 'utf-8').then((json) => JSON.parse(json).version || 1)
+  const out = {}
+  for (const dir of dirs) {
+    if (!existsSync(join(specDir, dir))) continue
+    out[dir] = [await read(dir, 'schema/schema.json'), await read(dir, 'dispatch/dispatch.json')]
+  }
+  return out
+}
+
+// every thing the app declares in a directory, with its since and whether t.later holds it back
+function declared({ things, meta }, extend, types) {
+  const out = []
+  for (const { name, type, fields, later, marked } of things) {
+    out.push({ label: `'${name}'`, since: meta.refs[name].since, mark: later, held: later })
+    for (const f of fields) {
+      const mark = marked.includes(f)
+      out.push({ label: `'${f}' in '${name}'`, since: types[type][f], mark, held: later || mark })
+    }
+  }
+  for (const [type, fields] of Object.entries(extend)) {
+    for (const [f, m] of Object.entries(fields)) {
+      const mark = m.later === true
+      out.push({
+        label: `'${f}' in '${type}'`,
+        since: types[`@${meta.ns}/${type}`][f],
+        mark,
+        held: mark
+      })
+    }
+  }
+  return out
+}
+
+// one below the oldest thing held back: things turn on in the order they shipped, and stay on
+function aim(things, used, version) {
+  const marks = things.filter((x) => x.mark)
+  const gone = marks.find((x) => x.since <= used)
+  if (gone) {
+    throw CeroError.INVALID(
+      `${gone.label} is in use already: a database may have it, so t.later cannot hold it back`
+    )
+  }
+  if (marks.length === 0) return version
+  const oldest = marks.reduce((a, b) => (b.since < a.since ? b : a))
+  const target = oldest.since - 1
+  const early = things.find((x) => !x.held && x.since > target)
+  if (early) {
+    throw CeroError.INVALID(
+      `${early.label} shipped with or after ${oldest.label}, which t.later holds back: things turn on in the order they shipped, so mark it too, or release ${oldest.label}`
+    )
+  }
+  return target
 }
 
 function owned(refs) {
@@ -311,7 +438,11 @@ async function shapeOf(dir) {
     ...routes.schema.map((x) => x.requestType)
   ])
   schema.schema = schema.schema.filter((type) => named.has(`@${type.namespace}/${type.name}`))
-  return { stored: [schema, collections, routes], versions: [types || 1, db || 1, dispatch || 1] }
+  return {
+    stored: [schema, collections, routes],
+    versions: [types || 1, db || 1, dispatch || 1],
+    builders: [types || 1, dispatch || 1]
+  }
 }
 
 function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { rpc, extend = {} }) {
