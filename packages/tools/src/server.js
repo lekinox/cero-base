@@ -1,6 +1,6 @@
 import { get, watch } from '@cero-base/cero'
 
-import { Framed } from './protocol.js'
+import { Framed, MAX_FRAME } from './protocol.js'
 
 /**
  * A decoded request frame. Carries the correlation `id` and `method`, plus the
@@ -40,6 +40,8 @@ export class TapServer {
     /** @private */
     this._authed = !opts.token
     this.wire = new Framed(stream, (req) => this.onRequest(req))
+    // until the token checks out, a frame only needs room for one request
+    if (opts.token) this.wire.max = 64 * 1024
     /** @private */
     this._cleanup = () => this._teardown()
     stream.on('close', this._cleanup)
@@ -59,6 +61,7 @@ export class TapServer {
     if (!this._authed) {
       if (req.token !== this.opts.token) return this.stream.destroy()
       this._authed = true
+      this.wire.max = MAX_FRAME
     }
     const handler = this[req.method]
     if (!handler || !METHODS.has(req.method)) {

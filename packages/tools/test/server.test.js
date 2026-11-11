@@ -205,3 +205,29 @@ test('tap server: correct token authenticates the session', async (t) => {
   t.is(handles[0].id, 'root', 'authed request served')
   session.close()
 })
+
+test('tap server: a frame before the token larger than a request drops the connection', async (t) => {
+  const [a] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  t.teardown(() => server.close())
+
+  const head = b4a.alloc(4)
+  new DataView(head.buffer, head.byteOffset, 4).setUint32(0, 1024 * 1024, true)
+  const closed = once(a, 'close')
+  a.push(head)
+  await closed
+  t.pass('connection dropped before buffering the frame')
+})
+
+test('tap server: an authed session sends frames larger than a request', async (t) => {
+  const [a, b] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  const session = await connect(b, { token: 'sekrit' })
+  t.teardown(() => {
+    session.close()
+    server.close()
+  })
+
+  await session.handles()
+  await t.exception(session.get('nope', { search: 'x'.repeat(1024 * 1024) }), /unknown ref/)
+})

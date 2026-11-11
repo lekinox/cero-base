@@ -2,7 +2,7 @@ import b4a from 'b4a'
 
 const BYTES = '$b'
 // cap a frame and the backlog so a bad length prefix cannot grow memory without bound
-const MAX_FRAME = 16 * 1024 * 1024
+export const MAX_FRAME = 16 * 1024 * 1024
 
 function toWire(v) {
   if (b4a.isBuffer(v)) return { [BYTES]: b4a.toHex(v) }
@@ -38,6 +38,7 @@ export class Framed {
   constructor(stream, onMessage) {
     this.stream = stream
     this.onMessage = onMessage
+    this.max = MAX_FRAME
     this.buf = b4a.alloc(0)
     stream.on('data', (chunk) => this._ondata(chunk))
   }
@@ -64,7 +65,7 @@ export class Framed {
     this.buf = b4a.concat([this.buf, chunk])
     while (this.buf.length >= 4) {
       const len = new DataView(this.buf.buffer, this.buf.byteOffset, 4).getUint32(0, true)
-      if (len > MAX_FRAME) {
+      if (len > this.max) {
         this.stream.destroy() // oversized/garbage prefix — drop the connection
         return
       }
