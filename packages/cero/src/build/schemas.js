@@ -125,7 +125,9 @@ export const main = {
   // a removed member comes back only through an invite minted after `index`
   removal: {
     id: required(string),
-    index: required(uint)
+    index: required(uint),
+    // the member whose device wrote it: herself when she left
+    by: string
   },
   // this device's live view of a context: computed on read, never stored
   status: {

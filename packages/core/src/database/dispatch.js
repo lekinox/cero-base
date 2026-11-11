@@ -515,13 +515,14 @@ export function makeDispatcher({
 
   // a device goes with its seat and its key: by its own member, or one who may remove her
   async function unseat(ctx, id, device) {
-    if (device?.memberId !== (await getSignerMember(ctx.view, ctx.key))) {
+    const by = await getSignerMember(ctx.view, ctx.key)
+    if (device?.memberId !== by) {
       if (!(await canRemoveMember(ctx.view, ctx.key, device?.memberId))) {
         throw CeroError.REFUSED('remove')
       }
     }
     await ctx.host.removeWriter(hid.decode(id))
-    await revoke(ctx, device)
+    await revoke(ctx, device, by)
     await drop(ctx, 'devices', id)
     if (device) await owe(ctx.view)
     // with the seat go the keys its writer was still owed, and what its device key was promised:
@@ -549,10 +550,10 @@ export function makeDispatcher({
 
   // a removed device's key, and any device it attests after, stays out: its chain is static, so
   // the removal is kept here, beside the members'
-  async function revoke(ctx, device) {
+  async function revoke(ctx, device, by) {
     if (!device?.key) return
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted })
+    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by })
   }
   // the devices of the chain, not the identity it starts with: a member's removal is ordered by
   // its invites, a device's is for good
@@ -623,7 +624,8 @@ export function makeDispatcher({
     const existing = await getMember(ctx.view, op.id)
     if (!existing) return
     // leaving is hers: only someone else taking her out turns her older codes away
-    const leaving = op.id === (await getSignerMember(ctx.view, ctx.key))
+    const by = await getSignerMember(ctx.view, ctx.key)
+    const leaving = op.id === by
     // every device of the member goes with them, and any keys they were still owed
     const vacate = async () => {
       if (existing.key) await ctx.host.removeWriter(existing.key)
@@ -661,7 +663,7 @@ export function makeDispatcher({
     // an invite they could hold, or saw, does not bring them back on its own: after a removal it is turned away, after
     // leaving it waits for a member to accept her again, so leaving first never dodges a removal
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted })
+    await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted, by })
   })
 
   add('rotate-key', async (op, ctx) => {

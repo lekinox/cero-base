@@ -8,7 +8,7 @@ import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import { wrap } from '../../src/database/envelope.js'
-import { chainOf, linkOf } from '../../src/database/dispatch.js'
+import { chainOf, leftId, linkOf } from '../../src/database/dispatch.js'
 import { wraps } from '../../src/database/encryption.js'
 import {
   makeStore,
@@ -414,6 +414,55 @@ test('del-device: an unknown id is nothing, and another member device is not a m
   const owner = hid.encode(db.writerKey)
   t.is((await as('del-device', { id: owner }))?.code, 'REFUSED', "the owner's device")
   t.ok((await db.get('devices', owner)).data, 'stays')
+})
+
+// the record the room keeps of a removal
+const removal = (db, id) => db.view.get(`@${db.ns}/removals`, { id })
+
+test('removal: its record says who: the admin who removed her, herself when she left, her identity for a device of hers', async (t) => {
+  const v = inviteOp('member')
+  const { db, owner, id, as } = await withMember(t, 'admin', [v])
+  t.is(await as('del-member', { id: v.id }), null)
+  t.is((await removal(db, v.id))?.by, id, 'removed by the admin')
+
+  const phone = linked(owner)
+  await seat(db, phone)
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey)), null)
+  const key = hid.encode(phone.identity.device.publicKey)
+  t.is((await removal(db, key))?.by, owner.id, 'a device, by the identity whose other device did')
+
+  t.is(await as('del-member', { id }), null)
+  t.is((await removal(db, leftId(id)))?.by, id, 'a leave, by herself')
+})
+
+test('removal: who removed is the same on every device, and after the view is applied again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  const c = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db, 'admin')
+  await admit(a.db, c.db)
+  await waitFor(() => b.db.writable && c.db.writable)
+  await waitFor(async () => (await b.db.get('members', c.identity.id)).data)
+
+  await b.db.del('members', c.identity.id)
+  await waitFor(async () => removal(a.db, c.identity.id))
+  await b.db.del('members', b.identity.id)
+  const left = leftId(b.identity.id)
+  await waitFor(async () => removal(a.db, left))
+  const rows = async (db) => [await removal(db, c.identity.id), await removal(db, left)]
+  const seen = await rows(a.db)
+  t.alike(
+    seen.map((row) => row.by),
+    [b.identity.id, b.identity.id],
+    'the owner reads who'
+  )
+  t.alike(await rows(b.db), seen, 'as the device that wrote them does')
+  await a.db._rebuild()
+  t.alike(await rows(a.db), seen, 'and the same log gives the same records')
 })
 
 test('del-member: a rule on a removal sees her devices, and a refused one leaves them and her seat', async (t) => {

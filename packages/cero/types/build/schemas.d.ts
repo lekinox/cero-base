@@ -99,6 +99,7 @@ export declare const main: {
     removal: {
         id: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+        by: import("@cero-base/core").Prim;
     };
     status: {
         role: import("@cero-base/core").Prim;
