@@ -146,6 +146,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                           |
 | `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                 |
 | `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                           |
+| `since(name, mark)`                                  | `{ changes, reset, settle }`: rows changed since `settle()` last ran under `mark`, restarts included; all rows on `reset`. One caller.     |
 | `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                        |
 | `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs. |
 | `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
