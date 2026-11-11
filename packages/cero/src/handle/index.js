@@ -642,8 +642,8 @@ export class Handle extends ReadyResource {
       try {
         if (queued.root) await this._follow()
       } finally {
-        // their writers are read whether or not the root's rows were
-        for (const child of queued.children) await this._topic(child)
+        // their writers are read whether or not the root's rows were, each on its own
+        for (const child of queued.children) await this._topic(child).catch(this._onerror)
       }
     }
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
@@ -665,15 +665,17 @@ export class Handle extends ReadyResource {
   /** @private */
   async _follow() {
     const { changes, reset, settle } = await this.store.since('handles', 'topics')
+    let rows = null
     if (reset) {
       const wanted = new Set(changes.map(({ next }) => topicOf(next)))
-      for (const row of (await this.local.store.get('topics')).data) {
-        if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
+      rows = new Map((await this.local.store.get('topics')).data.map((row) => [row.id, row]))
+      for (const id of rows.keys()) {
+        if (!wanted.has(id)) await this.local.store.del('topics', id)
       }
     }
     for (const { prev, next } of changes) {
-      if (next) await this._row(next)
-      else await this.local.store.del('topics', topicOf(prev))
+      if (!next) await this.local.store.del('topics', topicOf(prev))
+      else await this._row(next, rows ? (rows.get(topicOf(next)) ?? null) : undefined)
     }
     await settle()
   }
@@ -683,20 +685,29 @@ export class Handle extends ReadyResource {
   /** @private */
   async _topic(child, sealing = false) {
     if (!child.opened || (child.closing && !sealing)) return
-    const { data: have } = await this.local.store.get('topics', b4a.toHex(child.store.discoveryKey))
-    if (!have) return
+    const id = b4a.toHex(child.store.discoveryKey)
+    let { data: have } = await this.local.store.get('topics', id)
+    if (!have) {
+      // the root's pass has not written its row, or failed to: it does now, so the handle's writers are kept
+      await this._follow()
+      have = (await this.local.store.get('topics', id)).data
+      if (!have) return
+    }
     const writers = await writersOf(child.store).catch(unread)
     if (sameBytes(have.writers, writers)) return
     await this.local.store.put('topics', { ...have, writers })
   }
 
-  // one handle's topics row, written when it differs. Who may write is read off the handle while it is open here,
-  // and kept as it was otherwise
+  // one handle's topics row, written when it differs from `have`, the row there is, read when not given. Who may
+  // write is read off the handle while it is open here, and kept as it was otherwise
   /** @private */
-  async _row(h) {
+  async _row(h, have) {
     const id = topicOf(h)
-    const child = [...this.children, ...this._pending].find((c) => c.opened && c.id === h.id)
-    const { data: have } = await this.local.store.get('topics', id)
+    // a handle on its way out is its seal's to read
+    const child = [...this.children, ...this._pending].find(
+      (c) => c.opened && !c.closing && c.id === h.id
+    )
+    if (have === undefined) have = (await this.local.store.get('topics', id)).data
     const row = {
       id,
       handle: h.id,

@@ -259,15 +259,21 @@ test('topics: with no point to go on from, a launch reads every handle once and 
   await first.close()
 
   const puts = []
-  const put = Storage.prototype.put
+  const reads = []
+  const { put, get: read } = Storage.prototype
   Storage.prototype.put = function (name, value) {
     if (name === 'topics') puts.push(value.name)
     return put.call(this, name, value)
   }
-  t.teardown(() => (Storage.prototype.put = put))
+  Storage.prototype.get = function (name, query) {
+    if (name === 'topics') reads.push(query ?? 'all')
+    return read.call(this, name, query)
+  }
+  t.teardown(() => Object.assign(Storage.prototype, { put, get: read }))
   const me = await cero(dir, spec, opts)
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   await me._indexing
+  t.alike(reads, ['all'], 'the rows are read once, as one list')
   t.alike(
     (await get(me.topics)).data.map((r) => r.id).sort(),
     [id, kept].sort(),
@@ -347,6 +353,68 @@ test('topics: a handle writes no row the pass over the root has not written', as
   await me.local.store.del('topics', id)
   await me._index(room)
   t.absent((await me.local.store.get('topics', id)).data, 'its writers have no row to go on')
+})
+
+test('topics: a handle whose row the pass over the root failed to write has its writers once it is written', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  await me._indexing
+  const store = me.local.store
+  const put = store.put.bind(store)
+  store.put = (name, value) => {
+    if (name !== 'topics') return put(name, value)
+    store.put = put
+    return Promise.reject(new Error('disk full'))
+  }
+  const room = await open(me.team, { name: 'clinic' })
+  await waitUntil(() => errors.length > 0)
+  // nothing changes in the root again: the handle's own pass has the root's rows written
+  await set(room.members, { id: me.identity.id, name: 'renamed' })
+  const own = await pushOf(room, room)
+  await waitUntil(async () => await receive(me, own))
+  t.pass('its own core is accepted')
+})
+
+test('topics: the pass over the root leaves the writers of a handle that is closing as they were sealed', async (t) => {
+  const { me } = await ceroOpen(t, { linger: 0 })
+  const room = await open(me.team, { name: 'clinic' })
+  const id = topicOf(room)
+  const handle = room.id
+  await waitUntil(async () => (await me.local.store.get('topics', id)).data?.writers)
+  const { data: sealed } = await me.local.store.get('topics', id)
+  await cero.close(room)
+  await me._indexing
+  // a handle that opened, failed its claim and is on its way out: nothing reads its store
+  const store = { get: () => Promise.reject(new Error('closed')) }
+  const closing = { opened: true, closing: true, id: handle, store }
+  me._pending.add(closing)
+  t.teardown(() => me._pending.delete(closing))
+  await me.store.set('handles', { id: handle, name: 'renamed' })
+  await waitUntil(async () => (await me.local.store.get('topics', id)).data.name === 'renamed')
+  t.alike((await me.local.store.get('topics', id)).data.writers, sealed.writers)
+})
+
+test('topics: one handle whose pass fails does not stop the pass of the next', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err.message) })
+  const first = await open(me.team, { name: 'first' })
+  const second = await open(me.team, { name: 'second' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 2)
+  await me._indexing
+  const topic = me._topic.bind(me)
+  const passed = []
+  me._topic = async (child, sealing) => {
+    passed.push(child.name)
+    if (child === first) throw new Error('disk full')
+    return topic(child, sealing)
+  }
+  let release
+  me._indexing = new Promise((resolve) => (release = resolve))
+  const queued = [me._index(first), me._index(second)]
+  release()
+  await Promise.all(queued)
+  t.alike(passed, ['first', 'second'])
+  t.alike(errors, ['disk full'], 'and the failure reached the app')
 })
 
 test('topics: after one failed reindex the next handles change still indexes', async (t) => {
