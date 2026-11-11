@@ -1026,6 +1026,29 @@ test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
   t.is(row.avatar, 'b.png', 'edit re-synced to the handles row')
 })
 
+test('handleSync: a handle closed and opened again still syncs onto the handles row', async (t) => {
+  const exts = [handleSync()]
+  const me = await openCero(t, await buildSpec(t, 'his-reopen', handleSchema, exts))
+
+  const room = await open(me.room)
+  const avatarOf = (want) =>
+    waitUntil(async () => {
+      const { data } = await get(me.room)
+      const r = data.find((h) => h.id === room.id)
+      return r?.avatar === want ? r : null
+    })
+
+  await set(room.profile, { name: 'general', avatar: 'a.png' })
+  await avatarOf('a.png')
+
+  await room.close()
+  const again = await open(me.room, { id: room.id })
+  t.is(again, room, 'kept open meanwhile')
+  await set(again.profile, { name: 'general', avatar: 'b.png' })
+  const row = await avatarOf('b.png')
+  t.is(row.avatar, 'b.png', 'an edit after the reopen synced to the handles row')
+})
+
 test('handleSync: a t.file room avatar lands in the handles list and resolves there', async (t) => {
   const me = await openCero(t, await buildSpec(t, 'his-file', fileSchema, fileSync))
   const room = await open(me.room)
@@ -1136,7 +1159,7 @@ test('watch: a handle-ref stream is destroyed when its handle closes', async (t)
 })
 
 test('watch: a child stream dies with the child, not the root', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'own-child'), { keepOpen: 0 })
+  const me = await openCero(t, await buildSpec(t, 'own-child'))
   const room = await open(me.room)
   const stream = watch(room.messages)
   t.absent(stream.destroyed)
@@ -1163,7 +1186,7 @@ test('watch: destroying manually de-registers — close does not double-destroy'
 })
 
 test('watch: open/close churn does not accumulate owned streams', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'own-churn'), { keepOpen: 0 })
+  const me = await openManual(t, await buildSpec(t, 'own-churn'))
   const streams = []
   for (let i = 0; i < 20; i++) {
     const room = await open(me.room)

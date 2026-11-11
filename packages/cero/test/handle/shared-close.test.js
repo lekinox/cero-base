@@ -1,7 +1,7 @@
 import test from 'brittle'
 
-import { open, invite } from '../../src/lib/operators.js'
-import { makeTestnet, openHandle } from '../helpers/index.js'
+import { open, invite, watch, put, get } from '../../src/lib/operators.js'
+import { makeTestnet, openHandle, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -28,8 +28,8 @@ test('a room opened twice and closed once still works for the other holder', asy
 })
 
 // a device that keeps `keepOpen` rooms nobody holds, with `count` rooms it made and still holds
-async function rooms(t, keepOpen, count) {
-  const { me } = await openHandle(t, { opts: { keepOpen } })
+async function rooms(t, keepOpen, count, onerror) {
+  const { me } = await openHandle(t, { opts: { keepOpen, onerror } })
   const made = []
   for (let i = 0; i < count; i++) made.push(await open(me.team, { name: `room ${i}` }))
   return { me, made }
@@ -44,11 +44,13 @@ test('past keepOpen, the room let go longest ago closes and the others stay open
   await second.close()
   t.absent(second.closing, 'a close nobody held it for changes nothing')
   await third.close()
-  t.ok(first.closed, 'the third one closed the least recently used')
+  await waitUntil(() => first.closed)
+  t.pass('the third one closed the least recently used')
   t.absent(second.closing, 'the second stays open')
   t.absent(third.closing, 'and the third')
   await fourth.close()
-  t.ok(second.closed, 'the fourth one closed the next')
+  await waitUntil(() => second.closed)
+  t.pass('the fourth one closed the next')
   t.absent(third.closing)
   t.absent(fourth.closing)
 })
@@ -62,7 +64,8 @@ test('an idle room opened again is the same room, and the most recently used', a
   t.is(again, first, 'a reopen gets the same room, never rebuilt')
   await again.close()
   await third.close()
-  t.ok(second.closed, 'the one let go before it closed')
+  await waitUntil(() => second.closed)
+  t.pass('the one let go before it closed')
   t.absent(first.closing, 'the reopened one stays open')
   t.absent(third.closing)
 })
@@ -74,9 +77,66 @@ test('a room somebody holds is never closed by the count', async (t) => {
   await also.close()
   await second.close()
   await third.close()
-  t.ok(second.closed, 'the idle one made room')
+  await waitUntil(() => second.closed)
+  t.pass('the idle one made room')
   t.absent(held.closing, 'the held one stays, however long ago it was opened')
   t.ok(await invite(held, {}), 'and it works')
+})
+
+test('a watch on a room ends with its last holder, and the room stays open for the next one', async (t) => {
+  const { me, made } = await rooms(t, 2, 1)
+  const [room] = made
+  const also = await open(me.team, { id: room.id })
+  const first = watch(room.messages)
+  await also.close()
+  t.absent(first.destroying, 'another holder keeps the room, with its watches')
+  await room.close()
+  await waitUntil(() => first.destroyed)
+  t.absent(room.closing, 'the room stays open')
+  t.is(room._owned.size, 0, 'with no watch left on it')
+  await open(me.team, { id: room.id })
+  const next = watch(room.messages)
+  const { data } = await new Promise((resolve) => next.once('data', resolve))
+  t.alike(data, [], 'and a watch after the reopen reads')
+})
+
+test('the close that pushes a room out does not wait for it, and its failure reaches onerror', async (t) => {
+  const errors = []
+  const { made } = await rooms(t, 1, 2, (err) => errors.push(err))
+  const [oldest, next] = made
+  let closed = false
+  const close = oldest.store.close.bind(oldest.store)
+  oldest.store.close = async () => {
+    await close()
+    closed = true
+    throw new Error('disk full')
+  }
+  await oldest.close()
+  await next.close()
+  t.absent(closed, 'it resolved while the room it pushed out still closes')
+  await waitUntil(() => errors.length)
+  t.alike(
+    errors.map((err) => err.message),
+    ['disk full'],
+    'the failure of that close reached onerror'
+  )
+  t.absent(next.closing, 'and the room that pushed it out stays open')
+})
+
+test('a room opened again while the count still closes it opens anew, and works', async (t) => {
+  const { me, made } = await rooms(t, 1, 2)
+  const [first, second] = made
+  await put(first.messages, { text: 'kept' })
+  await first.close()
+  await second.close()
+  t.ok(first.closing && !first.closed, 'pushed out, still closing')
+  const again = await open(me.team, { id: first.id })
+  t.not(again, first, 'opened anew')
+  await waitUntil(() => first.closed)
+  await put(again.messages, { text: 'after' })
+  const { data } = await get(again.messages)
+  t.alike(data.map((m) => m.text).sort(), ['after', 'kept'], 'it reads and writes')
+  t.ok(await invite(again, {}), 'and makes a code')
 })
 
 test('keepOpen 0 closes with the last holder at once', async (t) => {

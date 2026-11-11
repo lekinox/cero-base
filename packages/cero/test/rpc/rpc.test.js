@@ -591,7 +591,8 @@ test('rpc: past keepOpen, the worker closes the room the page let go longest ago
   await second.close()
   t.ok(openOn(server, first.id), 'two rooms nobody holds stay open on the worker')
   await third.close()
-  t.absent(openOn(server, first.id), 'the third one closed the least recently used')
+  await waitUntil(() => !openOn(server, first.id))
+  t.pass('the third one closed the least recently used')
   t.ok(openOn(server, second.id), 'the second stays open')
   t.ok(openOn(server, third.id), 'and the third')
 })
@@ -607,7 +608,8 @@ test('rpc: an idle room the page opens again is the same room on the worker, and
   await put(again.messages, { text: 'still served' })
   await again.close()
   await third.close()
-  t.absent(openOn(server, second.id), 'the one let go before it closed')
+  await waitUntil(() => !openOn(server, second.id))
+  t.pass('the one let go before it closed')
   t.ok(openOn(server, first.id), 'the reopened one stays open')
   t.ok(openOn(server, third.id))
 })
@@ -619,10 +621,43 @@ test('rpc: a room the page holds is never closed by the count', async (t) => {
   await also.close()
   await second.close()
   await third.close()
-  t.absent(openOn(server, second.id), 'the idle one made room')
+  await waitUntil(() => !openOn(server, second.id))
+  t.pass('the idle one made room')
   t.ok(openOn(server, held.id), 'the held one stays, however long ago it was opened')
   await put(held.messages, { text: 'still here' })
   t.is((await get(held.messages)).data.length, 1)
+})
+
+test('rpc: the close that pushes a room out is answered before it closes, and its failure reaches the page', async (t) => {
+  const errors = []
+  const { server, client } = await openPair(
+    t,
+    { keepOpen: 1 },
+    { onerror: (err) => errors.push(err) }
+  )
+  await waitUntil(() => server._errors.size === 1)
+  const oldest = await open(client.team, { name: 'oldest' })
+  const next = await open(client.team, { name: 'next' })
+  const { store } = servedOn(server, oldest.id)
+  const close = store.close.bind(store)
+  let release
+  const held = new Promise((resolve) => (release = resolve))
+  store.close = async () => {
+    await held
+    await close()
+    throw new Error('disk full')
+  }
+  await oldest.close()
+  await next.close()
+  t.absent(openOn(server, oldest.id), 'answered while the room it pushed out still closes')
+  release()
+  await waitUntil(() => errors.length)
+  t.alike(
+    errors.map((err) => err.message),
+    ['disk full'],
+    'the failure of that close reached the page'
+  )
+  t.ok(openOn(server, next.id), 'and the room that pushed it out stays open')
 })
 
 test('rpc: closing the worker closes its idle rooms with it', async (t) => {

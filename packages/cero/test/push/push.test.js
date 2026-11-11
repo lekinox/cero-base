@@ -580,9 +580,10 @@ test('push: the messaging service follows the topics, and a push activates the h
   await waitUntil(() => gateway.sent.length === gateway.before + 1)
   const dk = room.store.discoveryKey
   // closed before it syncs the write, so the push is newer: one more idle handle closes it
+  const served = [...b.me.children].find((c) => c.id === b.joined.id)
   await cero.close(b.joined)
   await cero.close(await open(b.client.team, { name: 'other' }))
-  await waitUntil(() => ![...b.me.children].some((c) => c.id === b.joined.id))
+  await waitUntil(() => served.closed)
   await b.me.network.resume()
   await waitUntil(() => b.me.network.presence.mode(dk) === null)
   messaging.push(payloadOf(gateway.sent.at(-1)))

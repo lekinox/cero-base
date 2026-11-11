@@ -201,6 +201,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _owned;
     /** @private */
+    _kept;
+    /** @private */
     _refs;
     /** @private */
     _idle;
@@ -266,8 +268,8 @@ export declare class Handle extends ReadyResource {
     private _close;
     /**
      * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-     * handle's lifecycle — it's destroyed automatically on close, so callers don't track
-     * cleanup.
+     * handle's holders — it's destroyed automatically once the last of them closes it, so
+     * callers don't track cleanup.
      *
      * @template {{ destroy?: Function, once?: Function }} T
      * @param {T} resource
@@ -277,6 +279,10 @@ export declare class Handle extends ReadyResource {
         destroy?: Function;
         once?: Function;
     }>(resource: T): T;
+    /** @private an owned resource no holder made: it stays through the last close and ends with the handle */
+    private _keep;
+    /** @private */
+    private _disown;
     /** @private */
     private _link;
     /** @private */
@@ -294,9 +300,9 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _leave;
     /**
-     * One holder done with it: a child stays open for the others. With its last it stays open, idle, so a reopen
-     * finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more closes the least recently used.
-     * The root closes at once.
+     * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
+     * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
+     * closes the least recently used, on its own. The root closes at once.
      * @returns {Promise<void>}
      */
     close(): Promise<void>;

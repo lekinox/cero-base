@@ -149,8 +149,12 @@ export class Handle extends ReadyResource {
     this._sus = parent
       ? null
       : new Suspendify({ suspend: () => this._sleep(), resume: () => this._wake() })
+    // what its holders tied to it, a watch: gone with the last of them
     /** @private */
     this._owned = new Set()
+    // what follows it for as long as it is open, an extension's watch
+    /** @private */
+    this._kept = new Set()
     // a child's holders: open hands every caller on this device the same handle, so each close lets one go and the
     // last one leaves it idle
     /** @private */
@@ -315,8 +319,9 @@ export class Handle extends ReadyResource {
       if (b.key) this.root._coreKeys.delete(b4a.toHex(b.key))
     }
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
-    for (const r of [...this._owned]) r.destroy?.()
-    this._owned.clear()
+    this._disown()
+    for (const r of [...this._kept]) r.destroy?.()
+    this._kept.clear()
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
     const root = !this.parent
@@ -366,8 +371,8 @@ export class Handle extends ReadyResource {
 
   /**
    * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-   * handle's lifecycle — it's destroyed automatically on close, so callers don't track
-   * cleanup.
+   * handle's holders — it's destroyed automatically once the last of them closes it, so
+   * callers don't track cleanup.
    *
    * @template {{ destroy?: Function, once?: Function }} T
    * @param {T} resource
@@ -381,6 +386,20 @@ export class Handle extends ReadyResource {
     this._owned.add(resource)
     resource.once?.('close', () => this._owned.delete(resource))
     return resource
+  }
+
+  /** @private an owned resource no holder made: it stays through the last close and ends with the handle */
+  _keep(resource) {
+    if (!this._owned.delete(resource)) return resource
+    this._kept.add(resource)
+    resource.once?.('close', () => this._kept.delete(resource))
+    return resource
+  }
+
+  /** @private */
+  _disown() {
+    for (const r of [...this._owned]) r.destroy?.()
+    this._owned.clear()
   }
 
   // a file's url on this device's file server, for the rows that name it
@@ -457,9 +476,9 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * One holder done with it: a child stays open for the others. With its last it stays open, idle, so a reopen
-   * finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more closes the least recently used.
-   * The root closes at once.
+   * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
+   * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
+   * closes the least recently used, on its own. The root closes at once.
    * @returns {Promise<void>}
    */
   async close() {
@@ -473,10 +492,11 @@ export class Handle extends ReadyResource {
     const max = this.root._opts.keepOpen ?? KEEP_OPEN
     if (!max || this._refs === 0) return this._end()
     this._refs = 0
+    this._disown()
     idle.add(this)
     if (idle.size <= max) return
     const [oldest] = idle
-    await oldest._end().catch(this._onerror)
+    oldest._end().catch(this._onerror)
   }
 
   /** @private one more holder: an idle handle is kept */

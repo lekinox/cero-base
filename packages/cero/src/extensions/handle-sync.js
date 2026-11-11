@@ -17,7 +17,8 @@ export function handleSync({ fields = { avatar: t.string } } = {}) {
       const onHandle = (child, opts) => {
         if (!child.profile) return
         if (opts.name) set(child.profile, { name: opts.name }).catch(me._onerror)
-        watch(child.profile).on('data', ({ data }) => {
+        // no holder's watch: it follows the handle for as long as it is open
+        child._keep(watch(child.profile)).on('data', ({ data }) => {
           if (!data?.name) return
           child.name = data.name
           mirror(child.profile, data, fields, me.handles, child.id).catch(me._onerror)
