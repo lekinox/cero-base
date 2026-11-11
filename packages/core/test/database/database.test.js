@@ -900,6 +900,104 @@ test('apply: an op skipped for an error is not announced, the next one is', asyn
   )
 })
 
+// two devices deleting one row at once leave the second delete in the log
+test('apply: a batch that changes nothing wakes no watcher, and its op is still reported', async (t) => {
+  const { db } = await bootstrapped(t)
+  const seen = []
+  const updates = []
+  db.on('apply', (e) => seen.push(e))
+  db.on('update', (touched) => updates.push([...touched]))
+  const { wrap } = await import('../../src/database/envelope.js')
+  const id = genId()
+  await db.bee.append(wrap(db.version, spec.dispatch.encode('@cero/del-messages', { id })))
+  await db.bee.update()
+
+  t.ok(
+    seen.find((e) => e.op === 'del' && e.row?.id === id),
+    'the op is reported'
+  )
+  t.alike(updates, [], 'and nobody is woken for it')
+  await db.put('messages', { text: 'real' })
+  t.alike(updates, [['messages']], 'the write that changed a row wakes its watchers')
+})
+
+// past genesis nobody adds a member
+function forgedMember() {
+  const key = Identity.randomKeyPair().publicKey
+  return { id: hid.encode(key), key, role: 'owner', createdAt: 1, updatedAt: 1 }
+}
+
+test('apply: what a hook wrote in a batch a refusal discards wakes no watcher', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  db.after('put', (ctx) => ctx.put('records', { id: `a-${ctx.row.id}`, text: ctx.row.text }))
+  const updates = []
+  db.on('update', (touched) => updates.push([...touched]))
+  const { wrap } = await import('../../src/database/envelope.js')
+  const put = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'in the batch' })
+  const refused = spec.dispatch.encode('@cero/add-member', forgedMember())
+  await db.bee.append([wrap(db.version, put), wrap(db.version, refused)])
+  await db.bee.update()
+
+  t.ok(
+    errors.some((e) => e.code === 'REFUSED'),
+    'the batch was refused'
+  )
+  t.alike(updates, [], 'and the row its hook wrote, discarded with it, wakes nobody')
+  await db.put('messages', { text: 'lands' })
+  t.alike(
+    updates.map((touched) => touched.sort()),
+    [['messages', 'records']],
+    'one that lands wakes the watchers of both'
+  )
+})
+
+test('apply: a rotation in a batch a refusal discards wakes no watcher', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const updates = []
+  db.on('update', (touched) => updates.push([...touched]))
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { seal, wraps } = await import('../../src/database/encryption.js')
+  const { data: devices } = await db.get('devices')
+  const entropy = Identity.randomBytes(32)
+  const rotation = spec.dispatch.encode('@cero/rotate-key', {
+    epoch: 0,
+    stamp: 1000,
+    wrapped: c.encode(wraps, seal(devices, entropy)),
+    createdAt: 1,
+    commit: Identity.randomBytes(32)
+  })
+  const refused = spec.dispatch.encode('@cero/add-member', forgedMember())
+  await db.bee.append([wrap(db.version, rotation), wrap(db.version, refused)])
+  await db.bee.update()
+
+  t.ok(
+    errors.some((e) => e.code === 'REFUSED'),
+    'the batch was refused'
+  )
+  t.is((await db.view.find('@cero/epochs', {}).toArray()).length, 0, 'its epoch did not land')
+  t.alike(updates, [], 'and wakes nobody')
+})
+
+test('write: what a hook wrote in a write refused before it is appended is not carried into the next update', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'first' })
+  db.after('put', (ctx) => ctx.put('records', { id: `a-${ctx.row.id}`, text: ctx.row.text }))
+  const updates = []
+  db.on('update', (touched) => updates.push([...touched]))
+  const refused = await db
+    .write([
+      ['add-messages', { id: genId(), text: 'in the batch' }],
+      ['add-member', forgedMember()]
+    ])
+    .catch((e) => e)
+  t.is(refused?.code, 'REFUSED', 'the write was refused')
+
+  await db.del('messages', row.id)
+  t.alike(updates, [['messages']], 'the next update names only what it changed')
+})
+
 test('set on an existing row keeps its index (no reorder)', async (t) => {
   const { db } = await bootstrapped(t)
   for (const id of ['m0', 'm1', 'm2']) await db.put('messages', { id, text: id })
@@ -2680,6 +2778,64 @@ test('presence: a replicated update ranks the database it lands in', async (t) =
   t.is(mode(yQuiet, y.network), 'active', 'the replicated update ranked quiet')
   await waitFor(() => mode(y.db, y.network) === null)
   t.pass('shared slid out')
+})
+
+// an action's op has to reach the others whether or not its hooks wrote a row here
+test('presence: an action that changes no row ranks its database, as any local write does', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const open = async (opts) => {
+    const db = new Database({
+      store,
+      identity,
+      spec: spec.handles.team,
+      encryptionKey: Identity.randomBytes(32),
+      ...opts
+    })
+    await db.ready()
+    t.teardown(() => db.close().catch(() => {}), { order: 5 })
+    return db
+  }
+  const rooms = []
+  for (const namespace of ['a', 'b']) {
+    const db = await open({ namespace })
+    await db.bootstrap({ name: namespace })
+    const { key, keyPair, encryptionKey } = db
+    rooms.push({ key, keyPair, encryptionKey, namespace })
+    await db.close()
+  }
+  const network = new Network({
+    bootstrap: testnet.bootstrap,
+    store,
+    presence: { active: 1, announced: 0, idle: 50 }
+  })
+  await network.ready()
+  t.teardown(() => network.close().catch(() => {}), { order: 9 })
+  const mode = (db) => network.presence.mode(db.bee.discoveryKey)
+  const a = await open({ network, ...rooms[0] })
+  const b = await open({ network, ...rooms[1] })
+  t.is(mode(a), 'active', 'a holds the one slot')
+  t.is(mode(b), null, 'b is unranked')
+
+  // a batch apply refuses, as anyone holding the key can append, ranks nothing
+  const { wrap } = await import('../../src/database/envelope.js')
+  const refused = spec.handles.team.dispatch.encode('@cero/add-member', forgedMember())
+  await b.bee.append(wrap(b.version, refused))
+  await b.bee.update()
+  t.is(mode(b), null, 'a refused batch leaves b unranked')
+
+  const updates = []
+  b.on('update', (touched) => updates.push([...touched]))
+  b.after('promote', async () => {})
+  await b.call('promote', { memberId: 'm', role: 'admin' })
+  t.alike(updates, [], 'its hook wrote nothing, so no watcher is woken')
+  t.is(mode(b), 'active', 'and the action ranks b all the same')
+
+  b.setActive(false)
+  await waitFor(() => mode(b) === null)
+  await b.call('promote', { memberId: 'm', role: 'admin' })
+  t.is(mode(b), 'active', 'and brings it back once taken off, so the op can leave the device')
 })
 
 // ─── write-path integrity ─────────────────────────────────────────────────

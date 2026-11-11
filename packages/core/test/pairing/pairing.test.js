@@ -98,7 +98,8 @@ const applied = (db, op, name) =>
     const onapply = (row) => {
       if (row.op !== op || row.name !== name) return
       db.off('apply', onapply)
-      db.once('update', () => resolve(row))
+      // readable once its batch is in the view, whether or not it changed a row
+      db.bee.updated().then(() => resolve(row))
     }
     db.on('apply', onapply)
   })
