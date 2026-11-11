@@ -572,6 +572,30 @@ test('build: a required field in a collection that is new builds', async (a) => 
   a.ok(spec.meta.refs.visits, 'a collection that never stored a row may require a field')
 })
 
+// a route stays in a built spec, and one with nothing left to handle it fails every write
+const whole = {
+  notes: t.collection({ text: t.string }),
+  prefs: t.single({ theme: t.string }),
+  room: { messages: t.collection({ text: t.string }), archive: t.action({ until: t.int }) },
+  local: { drafts: t.collection({ text: t.string }) }
+}
+
+test('build: a collection, a single or an action removed from a shipped schema, or declared as another kind, is refused', async (a) => {
+  const { notes, prefs, room, local } = whole
+  const { messages, archive } = room
+  const dir = await rebuilt(a, 'removed', schema(whole))
+  const lacks = (defs, route) =>
+    refused(a, 'removed', schema(defs), new RegExp(`route '@cero/${route}' shipped and this`))
+  await lacks({ prefs, room, local }, 'add-notes')
+  await lacks({ notes, room, local }, 'set-prefs')
+  await lacks({ notes, prefs, room: { messages }, local }, 'archive')
+  await lacks({ notes, prefs, room: { archive }, local }, 'add-messages')
+  await lacks({ ...whole, prefs: t.action({ theme: t.string }) }, 'set-prefs')
+  await a.execution(build(dir, schema(whole), { extensions: [] }), 'the schema that shipped builds')
+  const synced = schema({ notes, prefs, room })
+  await a.execution(build(dir, synced, { extensions: [] }), 'and a local collection has no route')
+})
+
 // one contract for the whole app, stamped by every database: a device on an older build skips newer
 // writes in a handle as it does at the root, and only stored data moves the number
 const plain = schema({
@@ -723,14 +747,15 @@ test('build: own taken off a shipped collection fails the build', async (t) => {
   t.is(err?.code, 'INVALID', err?.message)
 })
 
-test('build: own on a shipped collection dropped and declared again fails the build', async (a) => {
-  const dir = await rebuilt(a, 'own-again', ownAdded, loose)
-  const err = await build(dir, ownAdded, { extensions: [] }).catch((e) => e)
+test('build: own on a collection of a handle type dropped and declared again fails the build', async (a) => {
+  const rootOnly = schema({ notes: t.collection({ text: t.string }) })
+  const dir = await rebuilt(a, 'own-again', loose, rootOnly)
+  const err = await build(dir, loose, { extensions: [] }).catch((e) => e)
   a.absent(err, 'declared again with the rule it shipped with')
-  await build(dir, loose, { extensions: [] })
-  const flipped = schema({ ...loose.defs, todos: t.collection({ text: t.string }) })
-  const again = await build(dir, flipped, { extensions: [] }).catch((e) => e)
+  await build(dir, rootOnly, { extensions: [] })
+  const again = await build(dir, ownMessages, { extensions: [] }).catch((e) => e)
   a.is(again?.code, 'INVALID', again?.message)
+  a.ok(/'messages'/.test(again?.message), 'it names the collection')
 })
 
 test('build: own on a new collection builds', async (t) => {

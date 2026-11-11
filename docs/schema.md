@@ -241,8 +241,10 @@ const v2 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool, due
 Fields are stored by position, so add new ones at the end. A field added later is optional: the
 rows stored before it do not have it, so `t.required` on one fails the build. Removing or renaming
 a field, or changing its type or `required`, fails the build too, and so does turning `own` on or
-off for a collection that shipped: a new rule needs a new collection. Reordering two fields of the same type
-builds, and swaps their data on every row. A build that fails leaves `spec/` as it was. Keep
+off for a collection that shipped: a new rule needs a new collection. A collection, a single or an
+action that shipped stays in the schema: removing one, or declaring it as another kind, fails the
+build, because every log holds writes to it. Reordering two fields of the same type builds, and
+swaps their data on every row. A build that fails leaves `spec/` as it was. Keep
 `spec/` in git and rebuild over it after every change: it records what shipped.
 
 The build keeps one contract version for the app in `spec/contract.json`, and every database stamps
