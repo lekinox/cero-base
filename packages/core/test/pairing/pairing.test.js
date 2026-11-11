@@ -1981,6 +1981,50 @@ test('promised: a device linked through a device that is then removed is offered
   t.alike(await pairing._done([{ ...row, proof: host.identity.link(phone.publicKey) }]), [])
 })
 
+test('link: a device told as standing links another once the device that linked it is removed, and the removed one links nobody', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: built })
+  // the host's phone, since lost, and the tablet it had linked
+  const linked = (identity) => {
+    const device = Identity.randomKeyPair()
+    return Identity.from({ ...identity, device, proof: identity.link(device.publicKey) })
+  }
+  const phone = linked(host.identity)
+  const tablet = linked(phone)
+  const told = { removed: phone.device.publicKey, standing: tablet.device.publicKey }
+  await host.db.call('revoke', told)
+
+  const ask = async (opts) => {
+    const { mailbox } = await makeMailbox(t, testnet)
+    const device = Identity.randomKeyPair()
+    const identity = await Identity.bare(device)
+    const invite = await host.pairing.invite({ role: 'owner', confirm: true })
+    const joining = Pairing.join(mailbox, invite, { identity, spec: built, ...opts })
+    joining.catch(() => {})
+    const mine = (row) => b4a.equals(row.key, device.publicKey)
+    const request = await waitFor(async () => (await waiting(host.db)).find(mine))
+    return { joining, request }
+  }
+  const late = await ask({ timeout: 0 })
+  const signed = phone.link(late.request.key)
+  await t.exception(host.pairing.accept(late.request.id, { proof: signed }), /REFUSED/)
+  const { data: row } = await host.db.get('requests', late.request.id)
+  t.absent(row.admitted, 'a link the removed device signs lets nobody in')
+  await host.pairing.deny(late.request.id)
+  t.is(await code(late.joining), 'DENIED', 'and its join is turned away like any other')
+
+  const watch = await ask()
+  const proof = tablet.link(watch.request.key)
+  await host.pairing.accept(watch.request.id, { proof })
+  const reply = await watch.joining
+  t.alike(reply.proof, proof, 'one the standing device signs is answered with its chain')
+  const owed = await promises(host.db)
+  t.ok(
+    owed.find((row) => row.id === watch.request.id),
+    'and let in'
+  )
+})
+
 test('withdrawn: a promise denied by a member who may remove reaches the joiner with the reason', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })

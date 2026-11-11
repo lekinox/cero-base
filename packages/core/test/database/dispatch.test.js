@@ -689,6 +689,20 @@ test('revoke: what a room was told is the same on every device, and after the vi
   t.alike(await rows(a.db), seen, 'and the same log gives the same rows')
 })
 
+test('revoke: a room below the version that brings it is told nothing: its device hears UNSUPPORTED, and one in the log is refused as newer than its op', async (t) => {
+  const { since } = spec.meta
+  const routes = { ...since.routes, '@cero/revoke': spec.meta.version + 1 }
+  const older = { ...spec, meta: { ...spec.meta, since: { ...since, routes } } }
+  const { db, identity } = await bootstrapped(t, { spec: older })
+  const lists = { removed: keys(linked(identity)), standing: null }
+  await t.exception(db.call('revoke', lists), /UNSUPPORTED/)
+  const ctx = { view: db.view, host: noHost, key: db.writerKey, dbKey: db.key, stamp: db.version }
+  const value = db.spec.dispatch.encode('@cero/revoke', lists)
+  const refused = await db.dispatcher.dispatch(value, ctx).catch((err) => err)
+  t.is(refused?.rule, 'route', 'as any route newer than its op')
+  t.absent(await told(db, identity))
+})
+
 // ─── fast-forward trust ───────────────────────────────────────────────────
 
 // autobee trusts every fast-forward candidate unless a hook says otherwise —
