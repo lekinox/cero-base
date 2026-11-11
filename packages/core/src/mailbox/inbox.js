@@ -288,7 +288,9 @@ export class Inbox extends ReadyResource {
   async _land(id, key) {
     // one box for every address: a row another address keeps under this id stays as it is
     const row = await this.box.get(id)
-    if (row && !b4a.equals(row.address, this.address)) return this._settle(id, true)
+    if (row && !b4a.equals(row.address, this.address)) return this._settle(id)
+    // closed while its row was looked up: nothing is written for a key it never asked for
+    if (this.closing) return this._settle(id)
     await this.box.put({ id, address: this.address, message: EMPTY })
     const { held, message } = await this._unseal(key, { timeout: this.timeout })
     // a core this device already held is not the inbox's to erase, whatever is announced here

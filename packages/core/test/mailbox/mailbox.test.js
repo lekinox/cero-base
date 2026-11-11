@@ -2215,3 +2215,35 @@ test('Inbox: an announced key reads its one row from the box, and lists nothing'
   t.alike(gets, [...box.mail.keys()], 'one row read, the one under its id')
   t.is(lists, 0, 'the box is not listed')
 })
+
+test('Inbox: one that closes while it looks up the row of an announced key writes none', async (t) => {
+  const testnet = await makeTestnet(t)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+  const { get, put } = box
+  let reached
+  let release
+  const looking = new Promise((resolve) => (reached = resolve))
+  const held = new Promise((resolve) => (release = resolve))
+  box.get = async (id) => {
+    reached()
+    await held
+    return get(id)
+  }
+  let puts = 0
+  box.put = (m) => {
+    puts++
+    return put(m)
+  }
+  const inbox = new Inbox(b, secret, { box, onmessage: () => {}, onerror: () => {} })
+  t.teardown(() => inbox.close())
+  await inbox.ready()
+  announce(t, await peer(t, testnet), Mailbox.getAddress(secret), [crypto.randomBytes(32)])
+  await looking
+  const closing = inbox.close()
+  release()
+  await closing
+  t.is(puts, 0, 'no row written')
+  t.is(box.mail.size, 0, 'none left for the next start')
+})
