@@ -18,6 +18,7 @@ const { name, productName, version, upgrade } = pkg
 const appName = productName ?? name
 const protocol = name
 
+const WORKER = '/workers/main.js'
 const workers = new Map()
 let pear = null
 
@@ -84,14 +85,11 @@ function sendToAll(name, data) {
   }
 }
 
-function getWorker(specifier, extraArgs = []) {
+function getWorker(specifier) {
   if (workers.has(specifier)) return workers.get(specifier)
 
   const runtime = getPear()
-  const worker = runtime.run(path.resolve(__dirname, '..' + specifier), [
-    runtime.storage,
-    ...extraArgs
-  ])
+  const worker = runtime.run(path.resolve(__dirname, '..' + specifier), [runtime.storage])
 
   function sendWorkerStdout(data) {
     process.stdout.write(data)
@@ -186,8 +184,10 @@ async function createWindow() {
 }
 
 ipcMain.handle('pear:applyUpdate', () => getPear().applyUpdate())
-ipcMain.handle('pear:startWorker', (event, filename, extraArgs = []) => {
-  getWorker(filename, extraArgs)
+ipcMain.handle('pear:startWorker', (event, filename) => {
+  // a compromised renderer must not choose the code main runs
+  if (filename !== WORKER) throw new Error(`unknown worker: ${filename}`)
+  getWorker(WORKER)
   // set up now: a reloaded page must not offer setup again
   initialized = true
   return true
@@ -209,7 +209,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(async () => {
-  if (await checkInitialized()) getWorker('/workers/main.js')
+  if (await checkInitialized()) getWorker(WORKER)
 
   createWindow().catch((error) => {
     console.error('Failed to create window:', error)
