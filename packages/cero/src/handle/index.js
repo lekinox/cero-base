@@ -19,7 +19,7 @@ import hid from 'hypercore-id-encoding'
 import { admission, onAbort, filter, can, WRITE } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
-import { decodeId, servedType } from '@cero-base/core/blobs/codec'
+import { decodeId } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
 import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
@@ -726,11 +726,8 @@ export class Handle extends ReadyResource {
    * @private
    */
   _resolveCore(coreKey, info) {
-    const keys = this.root._coreKeys
-    const file = (type) => (info.blob ? keys.get(fileEntry(coreKey, info.blob, type)) : undefined)
-    // a row typed '' keys its file ahead of one whose type no header carries, served as '' too
-    const encryptionKey =
-      file(info.type) ?? (info.type ? undefined : file(UNSERVED)) ?? keys.get(b4a.toHex(coreKey))
+    const hex = b4a.toHex(coreKey)
+    const encryptionKey = this.root._coreKeys.get(hex)
     if (encryptionKey !== undefined) return { key: coreKey, encryptionKey }
     return null
   }
@@ -772,12 +769,9 @@ export class Handle extends ReadyResource {
   _registerBlobCore(id, stamp) {
     if (!id || !this.root?._coreKeys) return
     try {
-      // a row's stamp keys its own file: a member's row cannot pick the key of another's on the same core
-      const { coreKey, blobId, type } = decodeId(id)
-      // a core this device keys itself serves every file on it
-      if (this.root._coreKeys.has(b4a.toHex(coreKey))) return
-      const entry = fileEntry(coreKey, blobId, servedType(type) === type ? type : UNSERVED)
-      if (!this.root._coreKeys.has(entry)) {
+      const { coreKey } = decodeId(id)
+      const hex = b4a.toHex(coreKey)
+      if (!this.root._coreKeys.has(hex)) {
         // no stamp on a file-field value, look it up (fire-and-forget, idempotent)
         if (stamp === undefined) {
           this.store
@@ -790,10 +784,10 @@ export class Handle extends ReadyResource {
         }
         const key = this._blobCoreKey(stamp)
         if (!key) return // unknown epoch — this device is not entitled to the core
-        this.root._coreKeys.set(entry, key)
+        this.root._coreKeys.set(hex, key)
       }
       // remember which handle read it, so close prunes the entry
-      if (this !== this.root) (this._blobKeys ??= new Set()).add(entry)
+      if (this !== this.root) (this._blobKeys ??= new Set()).add(hex)
     } catch {
       // ignore invalid ids
     }
@@ -1329,14 +1323,6 @@ function reserved(child) {
   }
   child._pair.on('serving', release)
   release(child._pair.serving)
-}
-
-// the entry type of a row whose type no header carries: no file server url builds it
-const UNSERVED = '\n'
-
-// a file as its url names it to the file server
-function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {
-  return [b4a.toHex(coreKey), blockOffset, blockLength, byteOffset, byteLength, type].join('/')
 }
 
 // a local list read as a collection reads: one row by id, or the rows a query keeps

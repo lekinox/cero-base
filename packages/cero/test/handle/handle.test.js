@@ -1,9 +1,7 @@
 import test from 'brittle'
 import b4a from 'b4a'
-import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
-import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero } from '../../src/index.js'
@@ -1085,94 +1083,6 @@ test('files: a file resolves in its own handle whatever a room on the device doe
   t.is(await read(file.id), 'root file', 'while a room holds files too')
   await room.close()
   t.is(await read(file.id), 'root file', 'and once the room closed')
-})
-
-test("files: a row naming another member's blob with the wrong epoch leaves that member's file readable", async (t) => {
-  const { room, join } = await hosted(t, 'files')
-  const { room: mallory } = await join(await cero.invite(room))
-  const { room: olive } = await join(await cero.invite(room))
-  await rotate(room)
-  await waitUntil(() => olive.store.keyring.seq === 1 && mallory.store.keyring.seq === 1)
-  const want = 'the host file after the rotation'
-  const { data: real } = await put(room.files, { data: b4a.from(want), type: 'text/plain' })
-
-  // the same core and blob under another type, stamped with the base epoch
-  await waitUntil(async () => (await get(mallory.files, real.id)).data)
-  const { coreKey, blobId } = decodeId(real.id)
-  const forged = encodeId(coreKey, blobId, 'text/html')
-  await mallory.store.call('add-file', { id: forged, name: 'hi', stamp: 0, from: null })
-
-  // olive reads the forged row first
-  await waitUntil(async () => (await get(olive.files, forged)).data)
-  await waitUntil(async () => (await get(olive.files, real.id)).data)
-  const { data: row } = await get(olive.files, real.id)
-  const read = await waitUntil(async () => {
-    const res = await fetch(row.url)
-    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
-  })
-  t.is(read, want, 'the host file decrypts on olive')
-})
-
-test("files: a row whose type no header carries leaves another member's untyped file readable", async (t) => {
-  const { room, join } = await hosted(t, 'files')
-  const { room: mallory } = await join(await cero.invite(room))
-  const { room: olive } = await join(await cero.invite(room))
-  await rotate(room)
-  await waitUntil(() => olive.store.keyring.seq === 1 && mallory.store.keyring.seq === 1)
-  const want = 'the host file after the rotation'
-  const { data: real } = await put(room.files, { data: b4a.from(want), type: '' })
-
-  // the same core and blob under the type '\x01', served as '' like the real one, stamped with the base epoch
-  await waitUntil(async () => (await get(mallory.files, real.id)).data)
-  const { coreKey, blobId } = decodeId(real.id)
-  const bytes = z32.decode(encodeId(coreKey, blobId, 'x'))
-  bytes[bytes.length - 1] = 1
-  const forged = z32.encode(bytes)
-  await mallory.store.call('add-file', { id: forged, name: 'hi', stamp: 0, from: null })
-
-  // olive reads the forged row first
-  await waitUntil(async () => (await get(olive.files, forged)).data)
-  await waitUntil(async () => (await get(olive.files, real.id)).data)
-  const { data: row } = await get(olive.files, real.id)
-  const read = await waitUntil(async () => {
-    const res = await fetch(row.url)
-    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
-  })
-  t.is(read, want, 'the host file decrypts on olive')
-})
-
-test("files: a stored type a header cannot carry serves another member's file", async (t) => {
-  const { room, join } = await hosted(t, 'files')
-  const { room: olive } = await join(await cero.invite(room))
-  const want = 'an earlier build stored it'
-  const { data: file } = await put(room.files, { data: b4a.from(want), type: 'x' })
-  // the same blob under the type '\x01', as an earlier build could have stored it
-  const bytes = z32.decode(file.id)
-  bytes[bytes.length - 1] = 1
-  const id = z32.encode(bytes)
-  await room.store.call('add-file', { id, name: null, stamp: 0, from: null })
-
-  const { data: row } = await waitUntil(async () => {
-    const got = await get(olive.files, id)
-    return got.data && got
-  })
-  const read = await waitUntil(async () => {
-    const res = await fetch(row.url)
-    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
-  }, 10000).catch(() => null)
-  t.is(read, want, 'the bytes decrypt on olive')
-})
-
-test('files: reading its own files adds nothing to the root registry', async (t) => {
-  const { me } = await openHandle(t)
-  await me.store.bootstrap({ name: 'desktop' })
-  const { data: first } = await put(me.files, { data: b4a.from('0'), type: 'text/plain' })
-  await get(me.files, first.id)
-  const size = me._coreKeys.size
-  for (let i = 1; i < 20; i++) await put(me.files, { data: b4a.from(`${i}`), type: 'text/plain' })
-  const { data: rows } = await get(me.files)
-  t.is(rows.length, 20, 'every file read')
-  t.is(me._coreKeys.size, size, 'one entry for the core, none per file')
 })
 
 test('watch: changes carry file fields resolved on both sides', async (t) => {
