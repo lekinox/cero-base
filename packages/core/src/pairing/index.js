@@ -405,7 +405,7 @@ export class Pairing extends ReadyResource {
       const response = decode(Response, message)
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
-      } else if (response?.key && b4a.equals(response.key, parsed.key)) {
+      } else if (response?.key && b4a.equals(response.key, parsed.key) && owns(response, parsed)) {
         const { key, encryptionKey, epochs, proof = null } = response
         await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
       } else {
@@ -491,6 +491,11 @@ async function write(core, spec, invite, identity, writer) {
   const links = [invite.link]
   await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links }))
   await core.setUserData('cero/join', invite.id)
+}
+
+// the database key is no secret, every mirror holds it: the encryption key must own the invite's address
+function owns({ encryptionKey }, invite) {
+  return b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
 }
 
 function expired({ expires }) {

@@ -594,6 +594,32 @@ test('confirm: junk sealed to the reply address leaves nothing on the joiner, th
   t.absent(await stored(joiner.net, key), 'and the reply core is erased')
 })
 
+test('confirm: a reply whose encryption key does not own the invite address is ignored, the real one settles the join', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const read = new Set()
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => read.add(m.id) && put(m)
+  const writer = crypto.keyPair()
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer })
+  const request = await asked(host.db)
+
+  // the database key is no secret: every mirror holds it
+  const { key } = host.db
+  const ids = []
+  for (const encryptionKey of [crypto.randomBytes(32), null]) {
+    const forged = { status: STATUS_ACCEPTED, reason: '', key, encryptionKey, epochs: [] }
+    await host.mailbox.send(Mailbox.getAddress(writer.secretKey), c.encode(Response, forged))
+    ids.push(b4a.toHex(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1))))
+  }
+  const rows = () => joiner.mailbox.inbox.list()
+  const unread = async (id) => (await rows()).some((m) => m.id === id && !m.handled)
+  for (const id of ids) await waitFor(async () => read.has(id) && !(await unread(id)))
+
+  await host.pairing.accept(request.id)
+  t.alike((await joining).encryptionKey, host.db.encryptionKey)
+})
+
 test('join: two replies racing settle it once, and nothing is kept after', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
@@ -615,7 +641,12 @@ test('join: two replies racing settle it once, and nothing is kept after', async
 
   // as two member devices answer at once
   const reply = Mailbox.getAddress(writer.secretKey)
-  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  const answer = c.encode(Response, {
+    status: STATUS_ACCEPTED,
+    reason: '',
+    key: host.db.key,
+    encryptionKey: host.db.encryptionKey
+  })
   const keys = []
   for (let i = 0; i < 2; i++) {
     await host.mailbox.send(reply, answer)
@@ -644,7 +675,12 @@ test('join: a reply its keep failed on leaves the next one to settle it', async 
   await asked(host.db)
 
   const reply = Mailbox.getAddress(writer.secretKey)
-  const answer = c.encode(Response, { status: STATUS_ACCEPTED, reason: '', key: host.db.key })
+  const answer = c.encode(Response, {
+    status: STATUS_ACCEPTED,
+    reason: '',
+    key: host.db.key,
+    encryptionKey: host.db.encryptionKey
+  })
   await host.mailbox.send(reply, answer)
   await waitFor(() => tries === 1, { timeout: 30000 })
   await host.mailbox.send(reply, answer)
