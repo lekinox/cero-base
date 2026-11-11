@@ -424,7 +424,7 @@ export class Server extends RPCServer {
     if (n > 0) this._held.set(id, n)
     else this._held.delete(id)
     await h.close()
-    // another holder on this device keeps it, with its watches; a reopen while it lingers registers it again
+    // another holder on this device keeps it, with its watches; a reopen while it is idle registers it again
     if (h._refs > 0) return
     this._endWatches(id)
     this.handles.delete(id)

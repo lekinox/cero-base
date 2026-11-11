@@ -8,5 +8,5 @@ export const SPENT = 'spent'
 // Writer-admission / pairing timeout (ms).
 export const TIMEOUT = 30000
 
-// How long a handle its last holder closed stays open for a quick reopen (ms).
-export const LINGER = 20000
+// How many handles nobody holds stay open for a reopen.
+export const KEEP_OPEN = 16

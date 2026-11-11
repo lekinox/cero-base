@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
+import { KEEP_OPEN, NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { Join, wait } from './join.js'
@@ -127,7 +127,7 @@ export class Handle extends ReadyResource {
     // children still opening, not adopted yet: a close must close them too
     /** @private */
     this._pending = parent ? null : new Set()
-    // children closing on their own, their linger over: a close waits for them, they still read its stores
+    // children closing on their own: a close waits for them, they still read its stores
     /** @private */
     this._ending = parent ? null : new Set()
     /** @private */
@@ -149,14 +149,21 @@ export class Handle extends ReadyResource {
     this._sus = parent
       ? null
       : new Suspendify({ suspend: () => this._sleep(), resume: () => this._wake() })
+    // what its holders tied to it, a watch: gone with the last of them
     /** @private */
     this._owned = new Set()
+    // what follows it for as long as it is open, an extension's watch
+    /** @private */
+    this._kept = new Set()
+    /** @private */
+    this._arriving = false
     // a child's holders: open hands every caller on this device the same handle, so each close lets one go and the
-    // last one lets it linger
+    // last one leaves it idle
     /** @private */
     this._refs = 0
+    // the children nobody holds, the least recently used first
     /** @private */
-    this._idle = null
+    this._idle = parent ? null : new Set()
 
     this.store = new Database({
       store: store,
@@ -314,8 +321,9 @@ export class Handle extends ReadyResource {
       if (b.key) this.root._coreKeys.delete(b4a.toHex(b.key))
     }
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
-    for (const r of [...this._owned]) r.destroy?.()
-    this._owned.clear()
+    this._disown()
+    for (const r of [...this._kept]) r.destroy?.()
+    this._kept.clear()
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
     const root = !this.parent
@@ -364,9 +372,9 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-   * handle's lifecycle — it's destroyed automatically on close, so callers don't track
-   * cleanup.
+   * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this handle, so callers
+   * don't track cleanup. Tied by a holder, it is destroyed once the last holder closes the handle; tied by
+   * a `handle` listener as it runs, an extension's watch, it follows the handle for as long as it is open.
    *
    * @template {{ destroy?: Function, once?: Function }} T
    * @param {T} resource
@@ -377,9 +385,16 @@ export class Handle extends ReadyResource {
       resource.destroy?.()
       return resource
     }
-    this._owned.add(resource)
-    resource.once?.('close', () => this._owned.delete(resource))
+    const tied = this._arriving ? this._kept : this._owned
+    tied.add(resource)
+    resource.once?.('close', () => tied.delete(resource))
     return resource
+  }
+
+  /** @private */
+  _disown() {
+    for (const r of [...this._owned]) r.destroy?.()
+    this._owned.clear()
   }
 
   // a file's url on this device's file server, for the rows that name it
@@ -456,12 +471,13 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once,
-   * after any `cero.link` or `cero.restore` on it: one still waiting stops, one taking its place finishes first.
+   * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
+   * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
+   * closes the least recently used, on its own. The root closes at once, after any `cero.link` or `cero.restore` on
+   * it: one still waiting stops, one taking its place finishes first.
    * @returns {Promise<void>}
    */
-  close() {
+  async close() {
     if (!this.parent) {
       // one swap may wait behind another: the root ends once none is left
       const swap = this._swap
@@ -470,31 +486,32 @@ export class Handle extends ReadyResource {
     }
     if (this._refs > 1) {
       this._refs--
-      return Promise.resolve()
+      return
     }
-    if (this._idle) return Promise.resolve()
-    const linger = this.root._opts.linger ?? LINGER
-    if (!linger || this._refs === 0) return this._end()
+    const idle = this.root._idle
+    if (idle.has(this)) return
+    const max = this.root._opts.keepOpen ?? KEEP_OPEN
+    if (!max || this._refs === 0) return this._end()
     this._refs = 0
-    this._idle = setTimeout(() => this._end().catch(this._onerror), linger)
-    this._idle.unref?.()
-    return Promise.resolve()
+    this._disown()
+    idle.add(this)
+    if (idle.size <= max) return
+    const [oldest] = idle
+    oldest._end().catch(this._onerror)
   }
 
-  /** @private one more holder: a lingering handle is kept */
+  /** @private one more holder: an idle handle is kept */
   _hold() {
-    clearTimeout(this._idle)
-    this._idle = null
+    this.root._idle.delete(this)
     this._refs++
   }
 
   /**
-   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+   * Closed for every holder at once: pushed out past `keepOpen`, the parent closing, or the handle left for good.
    * @private
    */
   _end() {
-    clearTimeout(this._idle)
-    this._idle = null
+    this.root._idle.delete(this)
     this._refs = 0
     return super.close()
   }
@@ -1226,7 +1243,13 @@ export class Handle extends ReadyResource {
     this._carry(child)
     this._prune(child).catch(this._onerror)
     this._seats(child)
-    this.emit('handle', child, info)
+    // what a listener ties to the handle as it runs is no holder's: it stays through their last close
+    child._arriving = true
+    try {
+      this.emit('handle', child, info)
+    } finally {
+      child._arriving = false
+    }
   }
 
   // a handle's topics row follows who may write to it while it is open, so a push is checked

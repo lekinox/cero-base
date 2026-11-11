@@ -63,7 +63,7 @@ export class Join {
       const opts = { identity, spec: this.spec, writer, keep, timeout: 0, signal: running.signal }
       const reply = row.key ? unpack(row) : await Pairing.join(mailbox, invite, opts)
       const child = await this.root._enter(this.type, reply)
-      // the hold the open took is a waiter's: with none, it lingers and closes unless the app opens it
+      // the hold the open took is a waiter's: with none it is let go, idle until the app opens it
       if (!this.waiting) child.close().catch(this.root._onerror)
       this._end(this._resolve, child)
       await this._forget()

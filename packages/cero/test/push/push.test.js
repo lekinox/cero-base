@@ -73,7 +73,7 @@ function mockMessaging({ failFirst = false } = {}) {
 
 // a writes to a room through a mirror behind a gateway; b, served over RPC to a client with a
 // messaging service, joined that room
-async function scene(t, { messaging, errors, linger = 0 } = {}) {
+async function scene(t, { messaging, errors, keepOpen = 0 } = {}) {
   const testnet = await makeTestnet(t)
   const gateway = await makeGateway(t, testnet)
   const mirror = await makeMirror(t, testnet, { pushGatewayKeys: [gateway.key] })
@@ -82,11 +82,11 @@ async function scene(t, { messaging, errors, linger = 0 } = {}) {
 
   const dir = await t.tmp()
   const [serverStream, clientStream] = pair()
-  // linger 0: a closed handle is closed, so a push is what opens it again
+  // keepOpen 0: a closed handle is closed, so a push is what opens it again
   const server = await serve(serverStream, spec, {
     storage: dir,
     bootstrap: testnet.bootstrap,
-    linger
+    keepOpen
   })
   const client = await connect(clientStream, spec, {
     onerror: (err) => errors?.push(err),
@@ -112,13 +112,13 @@ async function scene(t, { messaging, errors, linger = 0 } = {}) {
 }
 
 // a worker served to a client with a messaging service, whose pushes all verify as newer for `id`
-async function woken(t, { linger }) {
+async function woken(t) {
   const testnet = await makeTestnet(t)
   const [serverStream, clientStream] = pair()
   const server = await serve(serverStream, spec, {
     storage: await t.tmp(),
     bootstrap: testnet.bootstrap,
-    linger
+    keepOpen: 0
   })
   const messaging = mockMessaging()
   const client = await connect(clientStream, spec, { push: messaging })
@@ -254,7 +254,7 @@ test('topics: a row that failed to write is written at the next launch', async (
 test('topics: with no point to go on from, a launch reads every handle once and drops the rows of those gone', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
-  const opts = { bootstrap: testnet.bootstrap, linger: 0 }
+  const opts = { bootstrap: testnet.bootstrap, keepOpen: 0 }
   const first = await cero(dir, spec, opts)
   const room = await open(first.team, { name: 'clinic' })
   const other = await open(first.team, { name: 'other' })
@@ -312,7 +312,7 @@ test('topics: a pass still waiting when the root closes does nothing and reports
 
 test('topics: a row written by a pass that kept no point goes with its handle', async (t) => {
   const errors = []
-  const { me } = await ceroOpen(t, { linger: 0, onerror: (err) => errors.push(err) })
+  const { me } = await ceroOpen(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
   await me._indexing
   // the pass writes the row and fails to keep its point: as a kill between the two
   const local = me.store.bee.local
@@ -390,7 +390,7 @@ test('topics: a handle whose row the pass over the root failed to write has its 
 })
 
 test('topics: the pass over the root leaves the writers of a handle that is closing as they were sealed', async (t) => {
-  const { me } = await ceroOpen(t, { linger: 0 })
+  const { me } = await ceroOpen(t, { keepOpen: 0 })
   const room = await open(me.team, { name: 'clinic' })
   const id = topicOf(room)
   const handle = room.id
@@ -561,7 +561,7 @@ test('topics: a burst of updates on one handle is a few passes that read only th
 
 test('topics: an update that lands while a handle closes leaves its row as it was sealed', async (t) => {
   const errors = []
-  const { me } = await ceroOpen(t, { linger: 0, onerror: (err) => errors.push(err) })
+  const { me } = await ceroOpen(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
   const room = await open(me.team, { name: 'clinic' })
   const own = await pushOf(room, room)
   await waitUntil(async () => await receive(me, own))
@@ -772,7 +772,7 @@ test('receive: a member who removes one of her two devices: its push reads as no
 // c is taken out of a room b holds, and b's handle or app closes in the same tick the removal applies there
 async function closedOnRemoval(t, close) {
   const a = await ceroOpen(t)
-  const b = await ceroOpen(t, { testnet: a.testnet, linger: 0 })
+  const b = await ceroOpen(t, { testnet: a.testnet, keepOpen: 0 })
   const c = await ceroOpen(t, { testnet: a.testnet })
   const room = await open(a.me.team, { name: 'clinic' })
   const mine = await open(b.me.team, await cero.invite(room))
@@ -891,8 +891,8 @@ test('push: the bare-kit entry answers every push, a bad one with nothing and sh
 test('push: the messaging service follows the topics, and a push activates the handle', async (t) => {
   const messaging = mockMessaging()
   const errors = []
-  // a wake lets go of the handle it opened: the linger keeps it on the swarm meanwhile
-  const { gateway, room, b } = await scene(t, { messaging, errors, linger: 2000 })
+  // a wake lets go of the handle it opened: idle, it stays on the swarm
+  const { gateway, room, b } = await scene(t, { messaging, errors, keepOpen: 1 })
   await waitUntil(() => messaging.topics.has(topicOf(room)))
   t.is(messaging.topics.size, 1, 'subscribed to the joined room')
 
@@ -900,9 +900,11 @@ test('push: the messaging service follows the topics, and a push activates the h
   await put(room.messages, { text: 'wake up' })
   await waitUntil(() => gateway.sent.length === gateway.before + 1)
   const dk = room.store.discoveryKey
-  // closed before it syncs the write, so the push is newer
+  // closed before it syncs the write, so the push is newer: one more idle handle closes it
+  const served = [...b.me.children].find((c) => c.id === b.joined.id)
   await cero.close(b.joined)
-  await waitUntil(() => ![...b.me.children].some((c) => c.id === b.joined.id))
+  await cero.close(await open(b.client.team, { name: 'other' }))
+  await waitUntil(() => served.closed)
   await b.me.network.resume()
   await waitUntil(() => b.me.network.presence.mode(dk) === null)
   messaging.push(payloadOf(gateway.sent.at(-1)))
@@ -917,12 +919,12 @@ test('push: the messaging service follows the topics, and a push activates the h
 
   const reopened = await open(b.client.team, { id: b.joined.id })
   await leave(reopened)
-  await waitUntil(() => messaging.topics.size === 0)
+  await waitUntil(() => !messaging.topics.has(topicOf(room)))
   t.pass('unsubscribed on leave')
 })
 
 test('push: a wake lets go of the handle it opened', async (t) => {
-  const { server, messaging, room, served, released } = await woken(t, { linger: 500 })
+  const { server, messaging, room, served, released } = await woken(t)
   await cero.close(room)
   await waitUntil(() => !served())
   for (let i = 0; i < 3; i++) messaging.push(new Uint8Array(1))
@@ -931,11 +933,11 @@ test('push: a wake lets go of the handle it opened', async (t) => {
   t.absent(server._held.has(room.id), 'three wakes hold nothing')
   t.absent(server.handles.has(room.id), 'the app holds nothing')
   await waitUntil(() => !served())
-  t.pass('the room closes once it lingered')
+  t.pass('the room closes once nobody holds it')
 })
 
 test('push: a wake whose activation fails still lets go of the handle it opened', async (t) => {
-  const { server, messaging, room, served, released } = await woken(t, { linger: 500 })
+  const { server, messaging, room, served, released } = await woken(t)
   await cero.close(room)
   await waitUntil(() => !served())
   const active = Handle.prototype._active
@@ -953,7 +955,7 @@ test('push: a wake whose activation fails still lets go of the handle it opened'
 })
 
 test('push: a wake leaves a room the app holds open', async (t) => {
-  const { server, messaging, room, served, released } = await woken(t, { linger: 500 })
+  const { server, messaging, room, served, released } = await woken(t)
   messaging.push(new Uint8Array(1))
   await waitUntil(() => released.count === 1)
   t.is(server._held.get(room.id), 1, "the app's own hold")
