@@ -666,6 +666,104 @@ test('revoke: a seat keeps the chain it was verified with, which its device cann
   t.ok(await seated(db, older), 'as one written with no key')
 })
 
+// her room, her seat, a phone she linked and a tablet the phone linked, both seated
+async function hers(t) {
+  const { db, member, writer, as } = await withMember(t, 'member')
+  const open = await minted(db, { reuse: true })
+  const asks = await minted(db, { confirm: true, reuse: true })
+  await seat(db, { identity: member, writer })
+  const phone = linked(member)
+  const tablet = linked(phone.identity)
+  await seat(db, phone)
+  await seat(db, tablet)
+  return { db, writer: writer.publicKey, as, open, asks, phone, tablet }
+}
+
+test('revoke: a list of standing keys passes only what its own identity removed: a device an admin removed cuts every chain through it whatever she tells, in a claim, a join and an accept, and its seat goes', async (t) => {
+  const { db, writer, open, asks, phone, tablet } = await hers(t)
+  t.is(await apply(db, db.writerKey, 'del-device', { id: phone.writer.id }), null)
+  t.ok(await seated(db, tablet), 'the device it linked keeps the seat it has')
+  t.is(await tell(db, writer, [], [tablet]), null)
+  t.absent(await seated(db, tablet), 'which no list of hers keeps')
+
+  const fresh = { identity: tablet.identity, writer: Identity.randomKeyPair() }
+  t.is((await seat(db, fresh))?.rule, 'removed', 'no claim')
+  const joins = Identity.randomKeyPair().publicKey
+  await apply(db, joins, 'join', joinOp(db, open, { identity: tablet.identity, writer: joins }))
+  t.is((await refusal(db, hid.encode(joins)))?.reason, 'removed', 'no join')
+  const device = Identity.randomKeyPair()
+  const waits = Identity.randomKeyPair().publicKey
+  const bare = await Identity.bare(device)
+  await apply(db, waits, 'join', joinOp(db, asks, { identity: bare, writer: waits }))
+  const proof = tablet.identity.link(device.publicKey)
+  const refused = await apply(db, writer, 'accept', { id: hid.encode(waits), proof })
+  t.is(refused?.rule, 'removed', 'no accept')
+  t.absent((await db.get('devices', hid.encode(waits))).data)
+})
+
+test('revoke: a device she removed herself is passed by a key she tells as standing, and a removal that says not who cuts as one by another does', async (t) => {
+  const { db, writer, as, phone, tablet } = await hers(t)
+  t.is(await as('del-device', { id: phone.writer.id }), null)
+  t.is(await tell(db, writer, [], [tablet]), null)
+  t.ok(await seated(db, tablet), 'its seat stays')
+  const fresh = () => ({ identity: tablet.identity, writer: Identity.randomKeyPair() })
+  t.is(await seat(db, fresh()), null, 'and it claims another')
+
+  // a record written before a removal said who
+  const key = hid.encode(phone.identity.device.publicKey)
+  await db.view.insert(`@${db.ns}/removals`, { id: key, index: 0 })
+  t.is((await seat(db, fresh()))?.rule, 'removed')
+})
+
+test('revoke: the joins that wait or were promised through a key told removed go with the telling, their accept and their claim are refused, and one through a key told as standing stays', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const asks = await addressed(db, { confirm: true, reuse: true })
+  const open = await addressed(db, { reuse: true })
+  const stranger = await Identity.create()
+  const phone = linked(stranger)
+  const tablet = linked(phone.identity)
+  const join = async (invite, { identity, writer }) => {
+    const key = writer.publicKey
+    await apply(db, key, 'join', named(db, invite, { identity, writer: key }))
+    return key
+  }
+  // a device the phone linked asks in and waits, then her first device comes in and sits
+  const waits = await join(asks, linked(phone.identity))
+  const sits = await join(open, { identity: stranger, writer: Identity.randomKeyPair() })
+  t.is(await claimed(db, stranger, sits), null)
+  const laptop = linked(phone.identity)
+  const cut = await join(open, laptop)
+  const kept = await join(open, linked(tablet.identity))
+  const waiting = await promise(db, waits)
+  t.is(waiting?.admitted, false, 'one waits')
+  t.ok((await promise(db, cut))?.promised, 'one is promised')
+
+  const lists = { removed: keys(phone), standing: keys(tablet) }
+  t.is(await apply(db, sits, 'revoke', lists), null)
+  t.absent(await promise(db, waits), 'the join that waited through the removed key goes')
+  t.absent(await promise(db, cut), 'as does the one promised through it')
+  t.is(await owed(db), 1, 'which owes a rotation')
+  t.ok(await promise(db, kept), 'one through a key told as standing stays')
+  t.is((await claimed(db, laptop.identity, cut))?.rule, 'removed', 'its claim is refused')
+  // the request still there, as a reorder leaves it
+  await db.view.insert(`@${db.ns}/requests`, waiting)
+  const refused = await apply(db, db.writerKey, 'accept', { id: waiting.id })
+  t.is(refused?.rule, 'removed', 'and its accept')
+})
+
+test('revoke: a telling by one who may remove spends the invites that let in on their own, as her removal does, and one by a member without that right spends nothing', async (t) => {
+  const { db, owner, member, writer } = await withMember(t, 'member')
+  const invite = await addressed(db, { reuse: true })
+  const asks = await addressed(db, { confirm: true, reuse: true })
+  await seat(db, { identity: member, writer })
+  t.is(await tell(db, writer.publicKey, [linked(member)], []), null)
+  t.ok(await live(db, invite), 'a member without the right to remove spends nothing')
+  t.is(await tell(db, db.writerKey, [linked(owner)], []), null)
+  t.absent(await live(db, invite), 'one who may remove spends it')
+  t.is((await spent(db, b4a.toHex(invite.id)))?.reason, 'removed')
+  t.ok(await live(db, asks), 'and one that waits for an accept stays')
+})
+
 test('revoke: what a room was told is the same on every device, and after the view is applied again', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()

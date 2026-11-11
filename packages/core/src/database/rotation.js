@@ -238,14 +238,11 @@ export class Rotation {
     return promised
   }
 
-  // a promise stands while its invite lasts and no device key it stands on is one removed
+  // a promise stands while its invite lasts and the chain it stands on does, as the log reads it
   /** @private */
   async _stands(row) {
     if (!row.promised || (row.expires > 0 && Date.now() > row.expires)) return false
-    for (const key of chainOf(row)) {
-      if (await this.db.view.get(`@${this.db.ns}/removals`, { id: hid.encode(key) })) return false
-    }
-    return true
+    return this.db.dispatcher.stands(this.db.view, [row.identity, ...chainOf(row)])
   }
 
   // resolves the sequence apply assigned, 0 if it never applied

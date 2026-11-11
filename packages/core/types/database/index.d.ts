@@ -285,6 +285,7 @@ export declare class Database extends ReadyResource {
         cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>;
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
+        stands: (view: object, chain: Uint8Array[]) => Promise<boolean>;
         version: (view: object) => Promise<number>;
         built: (view: object) => Promise<Array<number | null> | null>;
         apply: (nodes: Array<{

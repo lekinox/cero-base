@@ -15,7 +15,7 @@ import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE, MEMBER, REFUSALS, REMOVALS, SPENT } from '../lib/constants.js'
+import { NAMESPACE, MEMBER, REFUSALS, SPENT } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
 const MAX_DELAY = 2 ** 31 - 1
@@ -269,7 +269,7 @@ export class Pairing extends ReadyResource {
   }
 
   // the promises kept, the device each was made to sits under the member it was made to, and
-  // those void, standing on a device key since removed
+  // those void, their chain standing no more as the log reads it
   /** @private */
   async _done(requests) {
     const promised = requests.filter((row) => row.promised)
@@ -279,9 +279,14 @@ export class Pairing extends ReadyResource {
       const id = hid.encode(identity)
       return devices.some((d) => d.memberId === id && d.key && b4a.equals(d.key, key))
     }
-    const removed = new Set((await this._list(REMOVALS)).map((row) => row.id))
-    const cut = (row) => chainOf(row).some((key) => removed.has(hid.encode(key)))
-    return promised.filter((row) => cut(row) || seated(row))
+    this.db.guard()
+    const { dispatcher, view } = this.db
+    const done = []
+    for (const row of promised) {
+      const stands = await dispatcher.stands(view, [row.identity, ...chainOf(row)])
+      if (!stands || seated(row)) done.push(row)
+    }
+    return done
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it

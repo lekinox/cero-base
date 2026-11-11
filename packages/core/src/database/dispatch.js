@@ -108,7 +108,7 @@ const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[]) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -595,14 +595,18 @@ export function makeDispatcher({
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by })
   }
-  // a chain, its identity first, stands unless it passes a removed device key with no key after it
-  // that the identity's devices told stands: with nothing told, no chain through a removed key does
+  // a chain, its identity first, stands unless it passes a removed device key. A key its identity
+  // removed, told or taken out by a device of hers, is passed by a key after it that she told
+  // stands; one another member removed, or whose record says not who, cuts whatever she told
   async function stands(view, [identity, ...keys]) {
-    const told = await view.get(removals, { id: toldId(hid.encode(identity)) })
+    const memberId = hid.encode(identity)
+    const told = await view.get(removals, { id: toldId(memberId) })
     const removed = keysOf(told?.removed)
     let cut = -1
     for (const [i, key] of keys.entries()) {
-      if (has(removed, key) || (await view.get(removals, { id: hid.encode(key) }))) cut = i
+      const removal = await view.get(removals, { id: hid.encode(key) })
+      if (removal && removal.by !== memberId) return false
+      if (removal || has(removed, key)) cut = i
     }
     const standing = keysOf(told?.standing)
     return cut < 0 || keys.slice(cut + 1).some((key) => has(standing, key))
@@ -611,7 +615,8 @@ export function makeDispatcher({
 
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats
-  // of the identity whose chain no longer stands go
+  // of the identity whose chain no longer stands go, with the joins that wait or were promised
+  // through one. Told by someone who may remove, it is a removal by her
   add('revoke', async (op, ctx) => {
     const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
     if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
@@ -631,6 +636,12 @@ export function makeDispatcher({
       await owe(ctx.view)
       await forget(ctx, await ctx.view.get(requests, { id: seated.id }))
     }
+    for (const row of await ctx.view.find(requests, {}).toArray()) {
+      // waiting or promised: one admitted at its join has a seat of its own to lose
+      if (row.admitted && !row.promised) continue
+      if (!(await stands(ctx.view, [row.identity, ...chainOf(row)]))) await forget(ctx, row)
+    }
+    if (can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
   })
 
   // the genesis batch names the creator; everyone after comes in through a signed join
@@ -1165,6 +1176,7 @@ export function makeDispatcher({
     cut,
     dispatch: async (value, ctx) => router.dispatch(await decode(value, ctx.stamp, ctx.view), ctx),
     role: getSignerRole,
+    stands,
     version: versionOf,
     built,
     async apply(nodes, view, host) {

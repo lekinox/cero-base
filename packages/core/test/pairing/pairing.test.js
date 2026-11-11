@@ -1979,6 +1979,17 @@ test('promised: a device linked through a device that is then removed is offered
   const own = { ...row, proof: null, key: device.publicKey }
   t.alike(await pairing._done([own]), [own], 'as is one to a removed key itself')
   t.alike(await pairing._done([{ ...row, proof: host.identity.link(phone.publicKey) }]), [])
+
+  // a promise through a device its identity then tells the room is removed, as apply left it
+  const lost = Identity.randomKeyPair()
+  const link = host.identity.link(lost.publicKey)
+  const through = Identity.from({ ...host.identity, device: lost, proof: link })
+  const told = { ...row, proof: through.link(phone.publicKey) }
+  t.alike(await pairing._done([told]), [], 'a promise through a device nobody removed is owed')
+  await host.db.call('revoke', { removed: lost.publicKey, standing: phone.publicKey })
+  t.alike(await pairing._done([told]), [], 'as it is told as standing')
+  await host.db.call('revoke', { removed: lost.publicKey, standing: b4a.alloc(0) })
+  t.alike(await pairing._done([told]), [told], 'told removed, it is over and no keys are delivered')
 })
 
 test('link: a device told as standing links another once the device that linked it is removed, and the removed one links nobody', async (t) => {
