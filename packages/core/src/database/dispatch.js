@@ -9,6 +9,7 @@ import {
   COLLECTION,
   ACTION,
   COUNTERS,
+  VERSION,
   EPOCHS,
   REMOVALS,
   REFUSALS,
@@ -54,6 +55,16 @@ function sealed(wrapped) {
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
 
+// the request type of each of Cero's routes that writes no ref's row
+const REQUESTS = {
+  'add-writer': 'writer',
+  'del-writer': 'writer',
+  join: 'join',
+  accept: 'accept',
+  deny: 'deny',
+  'rotate-key': 'epoch'
+}
+
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -64,6 +75,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {object} opts
  * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }> } }} opts.spec  Generated hyperdispatch spec.
  * @param {string} opts.ns  Namespace prefix for collection and op names.
+ * @param {number} opts.start  The version of a database that holds no version row.
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
@@ -71,9 +83,20 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer }>, changed: boolean }> }}  `apply` resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, stamp: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, stamp: number }>, changed: boolean }> }}  `apply` takes each op at its effective stamp and resolves to the nodes that landed and whether they changed a row.
  */
-export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }) {
+export function makeDispatcher({
+  spec,
+  ns,
+  start,
+  onerror,
+  key,
+  onepoch,
+  room,
+  hooks,
+  touch,
+  read
+}) {
   const router = new spec.dispatch.Router()
 
   const col = (name) => `@${ns}/${name}`
@@ -172,12 +195,59 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   const single = (name) => spec.meta?.refs?.[name]?.kind === SINGLE
   // a name with no route, a counter or an epoch among them, fails to encode
   const verbOf = (name) => spec.meta?.refs?.[name]?.verb || name
+  const stored = (view, name, id) =>
+    single(name) ? view.findOne(col(name), {}) : view.get(col(name), { id })
+
+  // the database's version: its row, or the start for a database that never wrote one
+  const versionOf = async (view) => (await view.get(countersCol, { name: VERSION }))?.value ?? start
+
+  // each route's request type, and for a ref's add and set the ref its row is stored in
+  const routes = new Map()
+  for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
+    if (info.live || info.kind === 'handle' || !info.schema) continue
+    if (info.kind === ACTION) {
+      routes.set(`@${ns}/${name}`, { type: info.schema, name: null })
+      continue
+    }
+    for (const verb of ['add', 'set']) {
+      routes.set(`@${ns}/${verb}-${info.verb || name}`, { type: info.schema, name })
+    }
+  }
+  for (const [route, type] of Object.entries(REQUESTS)) {
+    routes.set(`@${ns}/${route}`, { type: `@${ns}/${type}`, name: null })
+  }
+  const since = spec.meta?.since
+  const upgrade = `@${ns}/upgrade`
+
+  // what the op's author could not name, decided from its stamp and the schema before any hook
+  // sees it: a route newer than the stamp, or one this build does not know, refuses its batch on
+  // every build, and a newer field keeps what is stored
+  async function decode(value, stamp, view) {
+    let op
+    try {
+      op = spec.dispatch.decode(value)
+    } catch (err) {
+      if (err?.code !== 'HANDLER_NOT_FOUND_BY_ID') throw err
+      throw CeroError.REFUSED('route', `${err.message}: a route this build does not know`)
+    }
+    // the op that moves the version is named at every version, or nothing could move it
+    if (op.name === upgrade) return op
+    if ((since?.routes[op.name] ?? 0) > stamp) {
+      throw CeroError.REFUSED('route', `${op.name} is newer than its op`)
+    }
+    const route = routes.get(op.name)
+    const fields = route ? since?.types[route.type] : null
+    const newer = fields ? Object.keys(fields).filter((f) => fields[f] > stamp) : []
+    if (newer.length === 0) return op
+    const row = route.name ? await stored(view, route.name, op.value.id) : null
+    for (const f of newer) op.value[f] = row?.[f] ?? null
+    return op
+  }
 
   // the operators developers know, bound to this op. A write is dispatched as the op's writer
   // would append it, so the same rank and `own` rules judge it
   function operators(ctx) {
-    const current = (name, id) =>
-      single(name) ? ctx.view.findOne(col(name), {}) : ctx.view.get(col(name), { id })
+    const current = (name, id) => stored(ctx.view, name, id)
     // held to the fields as a direct write is, before the encoder drops or chokes on one
     const held = (name, row, stored) => {
       checkFields(name, spec.meta?.refs?.[name], row)
@@ -334,7 +404,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     const meta = { op: 'del', name, id: op.id, existing }
     return hooked(fns, meta, ctx, () => ctx.view.delete(col(name), op))
   }
-  // only REFUSED aborts a batch: every peer derives it. Decode failures and unknown routes skip one node
+  // only REFUSED aborts a batch: every peer derives it. A body that does not decode skips one node
   const isRefusal = (err) => err?.isCeroError === true && err.code === 'REFUSED'
 
   // an op's after hooks run once all its rows landed; its ctx writes count on its node's mint
@@ -524,6 +594,13 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
     ctx.touched?.push(EPOCHS)
     // learned once its batch commits: a refused batch teaches no epoch, and a dry run commits nothing
     ctx.epochs?.push(row)
+  })
+
+  // only an owner moves the version, and only up: a lower one is no change and no error
+  add('upgrade', async (op, ctx) => {
+    if ((await getSignerRole(ctx.view, ctx.key)) !== OWNER) throw CeroError.REFUSED('upgrade')
+    if (op.version <= (await versionOf(ctx.view))) return
+    await ctx.view.insert(countersCol, { name: VERSION, value: op.version })
   })
 
   add('del-device', async (op, ctx) => {
@@ -811,8 +888,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
   }
 
   return {
-    dispatch: (value, ctx) => router.dispatch(value, ctx),
+    dispatch: async (value, ctx) => router.dispatch(await decode(value, ctx.stamp, ctx.view), ctx),
     role: getSignerRole,
+    version: versionOf,
     async apply(nodes, view, host) {
       const dbKey = key()
       // a batch is one writer's contiguous run, so a refusal discards only that writer's ops
@@ -832,13 +910,14 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         try {
           const seed = crypto.hash([node.key, c.encode(c.uint, node.length), node.value])
           // never a clock: the node's time is the same on every peer
-          await router.dispatch(node.value, {
+          await router.dispatch(await decode(node.value, node.stamp, tx), {
             view: tx,
             host: deferred,
             key: node.key,
             dbKey,
             seed,
             ts: node.timestamp,
+            stamp: node.stamp,
             epochs,
             touched
           })

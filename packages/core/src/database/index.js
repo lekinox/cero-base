@@ -15,6 +15,7 @@ import {
   QUERY_RESERVED,
   RANK,
   ADMIN,
+  OWNER,
   WRITE,
   REMOVALS
 } from '../lib/constants.js'
@@ -46,7 +47,7 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
- * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, start?: number, target?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -58,7 +59,7 @@ Hypercore.setRecoveryPeers(recovery)
  *
  * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
  * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
- * `unwritable`, `behind` (an op from a newer app version was skipped).
+ * `unwritable`, `behind` (the database's version passed this build's contract).
  *
  * @typedef {Record<string, unknown>} Row  A row, fields by name.
  * @typedef {{ data: Row | null }} SingleResult
@@ -113,7 +114,10 @@ export class Database extends ReadyResource {
     this.refs = this.meta.refs || {}
     this.version = this.meta.version || 1
     this.rules = this.meta.rules || 1
-    /** @type {number | null} */
+    // the version of a database with no version row, and the one this build asks databases to use
+    this.start = this.meta.start || 1
+    this.target = this.meta.target || this.start
+    /** @type {number | null} the database's version, while it is past this build's contract */
     this.behind = null
     /** @private */
     this._skipped = null
@@ -223,6 +227,7 @@ export class Database extends ReadyResource {
     this.dispatcher = makeDispatcher({
       spec: this.spec,
       ns: this.ns,
+      start: this.start,
       onerror: this._onerror,
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
@@ -242,6 +247,7 @@ export class Database extends ReadyResource {
       await this.rotation.hydrate()
       // epochs handed over at join are sealed to nobody this device can read later: keep them
       if (this._delivered) await this.rotation._save()
+      this._track(await this.dispatcher.version(this.view))
     } catch (err) {
       // ready-resource runs no _close for an open that failed
       await this._close().catch(safetyCatch)
@@ -249,7 +255,8 @@ export class Database extends ReadyResource {
     }
 
     // REMOVE-capable devices rotate when the epoch drifts from the member set, as it may have
-    // while this one was closed, or as a close cut its rotation short
+    // while this one was closed, or as a close cut its rotation short; an owner's device raises
+    // the version beside it
     this.on('update', () => this.rotation.heal())
     this.rotation.heal()
     this._writable = this.bee.writable
@@ -648,7 +655,8 @@ export class Database extends ReadyResource {
       await this.claim({ timeout })
       await this.write([device])
     } else {
-      // one batch: a writer is never on the log without its member row
+      // one batch: a writer is never on the log without its member row, nor the database without
+      // the version its build asks for
       const member = {
         id: this.identity.id,
         key: this.writerKey,
@@ -658,7 +666,8 @@ export class Database extends ReadyResource {
         updatedAt: ts
       }
       const writer = this._admission(this.writerKey, ts)
-      await this.write([['add-writer', writer], ['add-member', member], device])
+      const upgrade = ['upgrade', { version: this.target }]
+      await this.write([['add-writer', writer], ['add-member', member], device, upgrade])
     }
     return { id: this.writerKey, writer: this.keyPair }
   }
@@ -797,11 +806,11 @@ export class Database extends ReadyResource {
   async _preload() {
     await this._onWriter(async (local) => {
       await loadEpochs(this.keyring, local)
-      // read before the bee applies anything: an op applied as it opens adds to these, never over them
-      const behind = await local.getUserData('cero/behind')
-      this.behind = behind ? c.decode(c.uint, behind) : null
+      // read before the bee applies anything: an op applied as it opens adds to it, never over it
       const skipped = await local.getUserData('cero/skipped')
       this._skipped = skipped ? c.decode(c.uint, skipped) : null
+      // behind is read from the view: a marker kept on the core says nothing
+      if (await local.getUserData('cero/behind')) await local.setUserData('cero/behind', null)
     })
   }
 
@@ -841,7 +850,7 @@ export class Database extends ReadyResource {
     })
     // swarm BEFORE boot so the boot has peers to pull from, not a cold open
     if (this.network && this.key) this._joinSwarm(bee, crypto.discoveryKey(this.key))
-    // apply-time hooks (rotation.learn, _onfuture) must never see this.bee null mid-drain, and a failed open closes it
+    // apply-time hooks (rotation.learn, _skip) must never see this.bee null mid-drain, and a failed open closes it
     this.bee = bee
     await bee.ready()
     this.key = bee.key
@@ -854,7 +863,7 @@ export class Database extends ReadyResource {
   /** @private */
   async _replay() {
     const local = this.bee.local
-    const caught = [this._skipped, this.behind].some((v) => v !== null && v <= this.version)
+    const caught = this._skipped !== null && this._skipped <= this.version
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
     const view = built ? viewMarker(built) : null
@@ -869,12 +878,10 @@ export class Database extends ReadyResource {
     await this.bee.close()
     await this._onWriter(async (writer) => {
       await writer.setUserData('autobee/head', null)
-      await writer.setUserData('cero/behind', null)
       await writer.setUserData('cero/skipped', null)
       // once the applied log is wiped: cut short before that, the next open still finds a view to rebuild
       if (!view || grown) await writer.setUserData('cero/view', marker)
     })
-    this.behind = null
     this._skipped = null
     return true
   }
@@ -899,9 +906,11 @@ export class Database extends ReadyResource {
     }
   }
 
-  // unwrap once so the dispatcher sees op bytes. Skipping a newer version is deterministic
+  // unwrap once so the dispatcher sees op bytes, each at its effective stamp: no stamp is past the
+  // version, so a writer's own number decides nothing for the others. Skipping is deterministic
   /** @private */
   async _apply(nodes, view, host) {
+    const version = await this.dispatcher.version(view)
     const ready = []
     for (const node of nodes) {
       const op = unwrap(node.value)
@@ -910,13 +919,13 @@ export class Database extends ReadyResource {
         this._onerror(CeroError.INVALID('an op with no envelope'))
         continue
       }
-      if (op.version > this.version) {
-        // anyone holding the key appends a node: each is replayed once this version reaches it, only a writer's freezes
-        this._skip(op.version)
-        if (can(await this.dispatcher.role(view, node.key), WRITE)) this._onfuture(op.version)
+      const stamp = Math.min(op.version, version)
+      // replayed once this build reaches it
+      if (stamp > this.version) {
+        this._skip(stamp)
         continue
       }
-      ready.push({ ...node, value: op.body })
+      ready.push({ ...node, value: op.body, stamp })
     }
     this._applied = true
     const { landed, changed } = await this.dispatcher.apply(ready, view, host)
@@ -930,6 +939,7 @@ export class Database extends ReadyResource {
   /** @private */
   async _update(db) {
     await db.update()
+    this._track(await this.dispatcher.version(db))
     const touched = this._touched
     const quiet = this._applied && touched.size === 0
     const landed = this._landed
@@ -1094,13 +1104,24 @@ export class Database extends ReadyResource {
     this.bee.local.setUserData('cero/skipped', c.encode(c.uint, version)).catch(this._onerror)
   }
 
-  // ops from a newer app version: emit behind once per version, the marker survives restarts
+  // behind while the version is past this build's contract, as the view says
   /** @private */
-  _onfuture(version) {
-    if (this.behind !== null && version <= this.behind) return
-    this.behind = version
-    this.bee.local.setUserData('cero/behind', c.encode(c.uint, version)).catch(this._onerror)
-    this.emit('behind', version)
+  _track(version) {
+    const behind = version > this.version ? version : null
+    if (behind === this.behind) return
+    this.behind = behind
+    if (behind !== null) this.emit('behind', behind)
+  }
+
+  // an owner's device moves the database to the version its build asks for, a batch of its own
+  /** @private */
+  async _raise() {
+    // behind, the version is past this build's target as well
+    if (this.closing || this.closed || !this.writable) return
+    if (this.target <= (await this.dispatcher.version(this.view))) return
+    const { data: me } = await this.get('members', this.identity.id)
+    if (me?.role !== OWNER) return
+    await this.write([['upgrade', { version: this.target }]])
   }
 
   // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the write
@@ -1113,13 +1134,15 @@ export class Database extends ReadyResource {
       genesis: this.bee.system.isGenesis()
     }
     try {
+      const stamp = Math.min(this.version, await this.dispatcher.version(tx))
       for (const value of encoded) {
         await this.dispatcher.dispatch(value, {
           host,
           view: tx,
           key: this.writerKey,
           dbKey: this.key,
-          seed: crypto.hash([this.writerKey, value])
+          seed: crypto.hash([this.writerKey, value]),
+          stamp
         })
       }
       return tx.updated()

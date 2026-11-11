@@ -136,6 +136,9 @@ export declare const main: {
         type: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
     };
+    upgrade: {
+        version: import("@cero-base/core").Prim;
+    };
 };
 export declare const local: {
     master: {

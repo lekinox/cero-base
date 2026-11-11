@@ -32,6 +32,8 @@ export type DatabaseOpts = {
             ns?: string;
             version?: number;
             rules?: number;
+            start?: number;
+            target?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -74,7 +76,7 @@ export type DatabaseOpts = {
      *
      * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
      * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
-     * `unwritable`, `behind` (an op from a newer app version was skipped).
+     * `unwritable`, `behind` (the database's version passed this build's contract).
      */
     onerror?: (err: Error) => void;
 };
@@ -157,7 +159,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
- * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, start?: number, target?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -169,7 +171,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  *
  * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
  * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
- * `unwritable`, `behind` (an op from a newer app version was skipped).
+ * `unwritable`, `behind` (the database's version passed this build's contract).
  *
  * @typedef {Record<string, unknown>} Row  A row, fields by name.
  * @typedef {{ data: Row | null }} SingleResult
@@ -213,6 +215,8 @@ export declare class Database extends ReadyResource {
             ns?: string;
             version?: number;
             rules?: number;
+            start?: number;
+            target?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -223,6 +227,8 @@ export declare class Database extends ReadyResource {
         ns?: string;
         version?: number;
         rules?: number;
+        start?: number;
+        target?: number;
         refs?: Record<string, {
             kind?: string;
             verb?: string;
@@ -235,7 +241,9 @@ export declare class Database extends ReadyResource {
     }>;
     version: number;
     rules: number;
-    /** @type {number | null} */
+    start: number;
+    target: number;
+    /** @type {number | null} the database's version, while it is past this build's contract */
     behind: number | null;
     /** @private */
     _skipped;
@@ -264,13 +272,16 @@ export declare class Database extends ReadyResource {
     dispatcher: {
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
+        version: (view: object) => Promise<number>;
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
+            stamp: number;
         }>, view: object, host: object) => Promise<{
             landed: Array<{
                 value: Buffer;
                 key: Buffer;
+                stamp: number;
             }>;
             changed: boolean;
         }>;
@@ -577,7 +588,9 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _skip;
     /** @private */
-    private _onfuture;
+    private _track;
+    /** @private */
+    private _raise;
     /** @private */
     private _dryRun;
     /** @private */

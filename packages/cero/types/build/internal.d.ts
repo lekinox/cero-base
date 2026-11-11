@@ -137,6 +137,14 @@ export declare function dispatches(ns: string): Array<{
     requestType: string;
 }>;
 /**
+ * @param {string} ns
+ * @returns {Array<{ name: string, requestType: string }>}
+ */
+export declare function appended(ns: string): Array<{
+    name: string;
+    requestType: string;
+}>;
+/**
  * The names Cero takes in a scope, which an app ref would shadow: its refs and collections, its
  * types and its routes.
  *

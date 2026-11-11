@@ -29,6 +29,7 @@ export declare const RANK: {
 export declare const NAMESPACE = "cero";
 export declare const QUERY_RESERVED: Set<string>;
 export declare const COUNTERS = "counters";
+export declare const VERSION = "_version";
 export declare const EPOCHS = "epochs";
 export declare const REMOVALS = "removals";
 export declare const REFUSALS = "refusals";

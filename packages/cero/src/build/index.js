@@ -475,7 +475,8 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
   const stored = [...internal.collections(ns, 'main'), ...collections].map((x) => x.schema)
-  const sent = [...internal.dispatches(ns), ...dispatches].map((x) => x.requestType)
+  const routes = [...internal.dispatches(ns), ...dispatches, ...internal.appended(ns)]
+  const sent = routes.map((x) => x.requestType)
   const keep = slots(schemaDir, ns, new Set([...stored, ...sent]))
   for (const desc of internal.types('main', extend)) sns.register(keep(desc))
   for (const desc of types) sns.register(keep(desc))
@@ -491,7 +492,6 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)
   const xns = d.namespace(ns)
-  const routes = [...internal.dispatches(ns), ...dispatches]
   const numbered = routeIds(dispatchDir, ns, routes)
   for (const desc of routes) xns.register(numbered(desc))
   Hyperdispatch.toDisk(d, dispatchDir, { esm: true })

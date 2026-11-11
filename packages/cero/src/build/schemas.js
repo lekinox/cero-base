@@ -163,6 +163,10 @@ export const main = {
     handle: required(string),
     type: required(string),
     name: string
+  },
+  // an owner raises the database's version to this; a lower one changes nothing
+  upgrade: {
+    version: required(uint)
   }
 }
 
