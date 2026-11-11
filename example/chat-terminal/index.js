@@ -51,6 +51,7 @@ async function main() {
   if (opts.phrase) {
     console.log('# phrase:')
     opts.phrase = (await lines.next()).value?.trim()
+    if (!opts.phrase) throw new Error('--phrase: no phrase on stdin')
   }
 
   const fresh = !opts.phrase && !opts.link && !(await isInitialized(storage))

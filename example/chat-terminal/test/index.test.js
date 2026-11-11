@@ -117,6 +117,21 @@ test('the phrase is read from stdin, not from the command line', { timeout: 1200
   t.is(recovered.slice(recovered.indexOf('(')), you.slice(you.indexOf('(')), 'the same identity')
 })
 
+test('an empty line for the phrase creates no identity', { timeout: 120000 }, async (t) => {
+  const net = await createTestnet(NODES)
+  t.teardown(() => net.destroy(), { order: 100 })
+  const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+  const device = launch(t, ['--phrase', '--storage', tmp(), '--bootstrap', bootstrap])
+  const exited = new Promise((resolve) => device.on('exit', resolve))
+  device.stdin.write('\n')
+  t.is(await exited, 1, 'refused')
+  t.absent(
+    device.lines.some((line) => line.startsWith('# you:')),
+    'no identity'
+  )
+})
+
 function tmp() {
   return mkdtempSync(join(tmpdir(), 'chat-terminal-test-'))
 }
