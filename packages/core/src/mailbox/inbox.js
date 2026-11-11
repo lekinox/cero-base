@@ -31,6 +31,8 @@ const EMPTY = b4a.alloc(0)
  * @returns {{ publicKey: Uint8Array, secretKey: Uint8Array }}
  */
 export function keyPair(secret) {
+  // Bare ends the process on a hash of what is no buffer, where Node throws
+  if (!b4a.isBuffer(secret)) throw CeroError.INVALID('secret must be a buffer')
   return crypto.encryptionKeyPair(crypto.hash([NS, secret]))
 }
 
