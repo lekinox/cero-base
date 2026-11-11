@@ -66,20 +66,23 @@ export declare class Inbox extends ReadyResource {
     /** @private */
     _waiting;
     /** @private */
+    _after;
+    /** @private */
     _session;
     /** @private */
     _discovery;
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} secret
-     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number }} opts
+     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number, after?: Promise<void>[] }} opts  `after`: closes to wait for before it opens.
      */
-    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep, timeout }: {
+    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep, timeout, after }: {
         box: import('./index.js').Box;
         onmessage: (message: Uint8Array) => unknown;
         onerror: (err: Error) => void;
         keep?: boolean;
         timeout?: number;
+        after?: Promise<void>[];
     });
     /** @private */
     private _open;

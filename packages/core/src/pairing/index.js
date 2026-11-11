@@ -423,15 +423,21 @@ export class Pairing extends ReadyResource {
     // the database pulls the join in like any optimistic append, from us or from a mirror
     const post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
 
-    const onabort = () => fail(CeroError.CLOSED('join'))
+    // its inbox closes the moment it stops, so one that joins again at once with this writer waits for the row
+    // a reply being read may yet leave
+    const stop = (err) => {
+      inbox.close().catch(safetyCatch)
+      fail(err)
+    }
+    const onabort = () => stop(CeroError.CLOSED('join'))
     if (signal?.aborted) onabort()
     signal?.addEventListener('abort', onabort)
     mailbox.once('close', onabort)
-    const timer = timeout > 0 ? setTimeout(() => fail(CeroError.TIMEOUT('join')), timeout) : null
+    const timer = timeout > 0 ? setTimeout(() => stop(CeroError.TIMEOUT('join')), timeout) : null
     const left = parsed.expires - Date.now()
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
     const expiry =
-      parsed.expires && left < MAX_DELAY ? setTimeout(() => fail(CeroError.EXPIRED()), left) : null
+      parsed.expires && left < MAX_DELAY ? setTimeout(() => stop(CeroError.EXPIRED()), left) : null
     write(core, spec, parsed, identity, writer)
       .then(() => post.ready())
       .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))

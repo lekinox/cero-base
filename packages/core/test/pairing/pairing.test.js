@@ -146,6 +146,55 @@ test('sync: one still reading as its database closes ends as closed', async (t) 
   t.is(await code(syncing), 'CLOSED', 'as its other reads do, not on a view that is gone')
 })
 
+// runs `onread` the moment a join's reply block is read, its row still on its way to the box
+function onReplyRead(mailbox, onread) {
+  const box = mailbox.inbox
+  const put = box.put
+  let read = false
+  box.put = async (mail) => {
+    if (!read && !mail.handled) {
+      read = true
+      await onread()
+    }
+    return put(mail)
+  }
+}
+
+test('join: one stopped as its reply was read gets it when the same writer joins again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  const invite = await host.pairing.invite()
+  const stop = new AbortController()
+  onReplyRead(joiner.mailbox, () => stop.abort())
+
+  t.is(await code(joiner.join(invite, { writer, timeout: 0, signal: stop.signal })), 'CLOSED')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('its inviter counts the reply delivered')
+  const again = await joiner.join(invite, { writer, timeout: 15000 }).catch((err) => err)
+  t.alike(again.key, host.db.key, 'the one that resumes gets the answer')
+})
+
+test('join: taken over as its reply is read, the attempt that took over gets it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const writer = crypto.keyPair()
+  const invite = await host.pairing.invite()
+  // its inviter has counted the reply delivered and offers it no more, then, as with a newer invite, the
+  // attempt in flight stops and the same writer joins again at once
+  const stop = new AbortController()
+  let second = null
+  onReplyRead(joiner.mailbox, async () => {
+    await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+    stop.abort()
+    second = joiner.join(invite, { writer, timeout: 5000 }).catch((err) => err)
+  })
+
+  t.is(await code(joiner.join(invite, { writer, timeout: 0, signal: stop.signal })), 'CLOSED')
+  const again = await second
+  t.alike(again.key, host.db.key, 'the attempt that took over gets the answer')
+})
+
 // ─── invites ───────────────────────────────────────────────────────────────
 
 test('invite: a z32 string, kept in the database', async (t) => {

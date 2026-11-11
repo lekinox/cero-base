@@ -108,12 +108,18 @@ export class Mailbox extends ReadyResource {
    * @returns {{ close: () => Promise<void> }}
    */
   receive(secret, onmessage, { keep = true, timeout } = {}) {
+    const address = keyPair(secret).publicKey
+    // an inbox still closing at this address may yet leave a row: this one opens once it has, and finds it
+    const after = [...this._resources]
+      .filter((r) => r instanceof Inbox && r.closing && b4a.equals(r.address, address))
+      .map((r) => r.closing)
     const inbox = new Inbox(this.network, secret, {
       box: this.inbox,
       onmessage,
       onerror: this.onerror,
       keep,
-      timeout
+      timeout,
+      after
     })
     this._track(inbox)
     inbox.ready().catch(this.onerror)
