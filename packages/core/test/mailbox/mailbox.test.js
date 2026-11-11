@@ -518,6 +518,33 @@ test('Mailbox: a restart sends again on the same core, written once', async (t) 
   t.is(core.length, 1, 'written once, not again on the restart')
 })
 
+test('Mailbox: a message stored before its sender restarted counts as delivered on the restart', async (t) => {
+  const testnet = await makeTestnet(t)
+  const net = await peer(t, testnet)
+  const outbox = kept()
+  // the sender stops before it drops the row
+  const del = outbox.del
+  let dropped = 0
+  outbox.del = async () => dropped++
+  const secret = crypto.randomBytes(32)
+  const owner = await mailbox(t, testnet)
+  let calls = 0
+  owner.receive(secret, () => calls++)
+
+  const before = new Mailbox(net, { outbox })
+  await before.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await waitFor(() => calls === 1 && dropped === 1, { timeout: 30000 })
+  await before.close()
+  outbox.del = del
+
+  const after = new Mailbox(net, { outbox })
+  t.teardown(() => after.close())
+  await after.ready()
+  await waitFor(() => outbox.mail.size === 0, { timeout: 10000 }).catch(() => {})
+  t.is(outbox.mail.size, 0, 'dropped from the outbox')
+  t.is(calls, 1, 'handed over once')
+})
+
 test('Mailbox: keep false still reaches an offline owner through a mirror', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)
@@ -1283,6 +1310,33 @@ test('Inbox: a message read as its inbox closes waits in the box for the next st
   b.receive(secret, (message) => got.push(b4a.toString(message)))
   await waitFor(() => got.length > 0, { timeout: 10000 }).catch(() => {})
   t.alike(got, ['late'], 'handed over the next time its address is received')
+})
+
+test('Mailbox: a message sent as its inbox closes is delivered once the next inbox stores it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const b = await mailbox(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const got = []
+  const inbox = b.receive(secret, (message) => got.push(b4a.toString(message)))
+  // the close starts the moment its sender puts the block on the wire
+  const get = a.network.store.get.bind(a.network.store)
+  let closing = null
+  a.network.store.get = (opts) => {
+    const core = get(opts)
+    if (opts?.name) core.on('upload', () => (closing ??= inbox.close()))
+    return core
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('sent'))
+  await waitFor(() => !!closing, { timeout: 30000 })
+  await closing
+  t.is(got.length, 0, 'not handed to an inbox that closed')
+
+  b.receive(secret, (message) => got.push(b4a.toString(message)))
+  await waitFor(() => got.length > 0, { timeout: 10000 }).catch(() => {})
+  t.alike(got, ['sent'], 'handed over the next time its address is received')
+  await waitFor(async () => (await a.outbox.list()).length === 0)
+  t.pass('then its sender counts it delivered')
 })
 
 test('Inbox: one opened at an address while another closes there finds the row that one left', async (t) => {

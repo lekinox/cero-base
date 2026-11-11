@@ -1,5 +1,6 @@
 import test from 'brittle'
 import process from 'process'
+import AbortController from 'bare-abort-controller'
 import fs from 'fs'
 import path from 'path'
 import b4a from 'b4a'
@@ -604,6 +605,30 @@ test('invites: a reply the joiner stopped before keeping is handed over again af
   await waitUntil(async () => ((await get(room.requests)).data.length === 0 ? true : null))
   const again = await reopen(t, joiner.dir, testnet)
   t.ok(await joined(again, room.id), 'the kept reply opens the room')
+})
+
+test('invites: a joiner closing as its reply goes out joins once it opens again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+
+  const joiner = await ceroOpen(t, { testnet })
+  // the joiner closes the moment the member puts its reply on the wire
+  const { store } = owner.me.network
+  const get = store.get.bind(store)
+  let closing = null
+  store.get = (opts) => {
+    const core = get(opts)
+    if (opts?.name) core.on('upload', () => (closing ??= joiner.me.close()))
+    return core
+  }
+  joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
+  await waitUntil(() => !!closing)
+  await closing
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, room.id).catch(() => null), 'the room opens after the reopen')
 })
 
 test('invites: a denial the joiner stopped before forgetting is handed over again after a restart', async (t) => {
@@ -1465,6 +1490,30 @@ test('link: a launch that stops waiting resumes on the next, with no new invite'
     /holds an identity/,
     'a set-up dir takes no invite'
   )
+})
+
+test('link: a launch stopped as its reply goes out links on the next', async (t) => {
+  const a = await ceroOpen(t)
+  const invite = await cero.invite(a.me)
+  const dir = await t.tmp()
+  const opts = { bootstrap: a.testnet.bootstrap }
+  // the launch stops the moment the accepting device puts its reply on the wire
+  const stop = new AbortController()
+  const { store } = a.me.network
+  const get = store.get.bind(store)
+  store.get = (o) => {
+    const core = get(o)
+    if (o?.name) core.on('upload', () => stop.abort())
+    return core
+  }
+  const first = cero(dir, spec, { ...opts, invite, signal: stop.signal }).catch((err) => err)
+  await cero.accept(a.me, await asked(a.me))
+  const stopped = await first
+  if (stopped.id) await stopped.close()
+
+  const b = await cero(dir, spec, { ...opts, recoveryTimeout: 20000 }).catch((err) => err)
+  if (b.id) t.teardown(() => b.close().catch(() => {}), { order: 4 })
+  t.is(b.id, a.me.id, 'linked on the next launch')
 })
 
 test('link: a removed device loses its seats in every handle, and the root rotates its key', async (t) => {

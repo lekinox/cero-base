@@ -138,7 +138,7 @@ export declare class Mailbox extends ReadyResource {
     };
     /**
      * Send a message to an address. Resolves once the outbox keeps it; it is delivered in the
-     * background, and dropped from the outbox once someone read it.
+     * background, and dropped from the outbox once the owner or a mirror stored it.
      *
      * @param {Uint8Array} address
      * @param {Uint8Array} message
