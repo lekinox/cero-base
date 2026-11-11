@@ -913,7 +913,8 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
   const served = [...me.children][0]
   const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
   const link = { key: random(), length: 1 }
-  const stray = Invite.create({ key: random(), address: random(), link }).toString()
+  // a room nobody here has, at an address that can be sealed to: a random one cannot always
+  const stray = Invite.create({ key: random(), address: served.store.address, link }).toString()
   const cases = {
     'phrase on the root': (root) => cero.phrase(root),
     'phrase on a room': (root, room) => cero.phrase(room),
