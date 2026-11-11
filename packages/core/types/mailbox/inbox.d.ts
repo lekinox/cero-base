@@ -34,8 +34,8 @@ export declare function erase(store: import('corestore'), key: Uint8Array, live?
  * open in time, or that `onmessage` resolves `false` on, is dropped.
  * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
  * device held already is left alone, and so is one whose message is found at a start in a row
- * written before its block was read: that row does not say the inbox fetched it, so `keep` false
- * erases nothing for it.
+ * written before its block was read: that row does not say the inbox fetched it, so nothing is
+ * erased for it, whatever `keep` says or `onmessage` resolves.
  */
 export declare class Inbox extends ReadyResource {
     network: import("../index.js").Network;

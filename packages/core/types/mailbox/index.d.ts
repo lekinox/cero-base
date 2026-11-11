@@ -128,11 +128,13 @@ export declare class Mailbox extends ReadyResource {
      * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
      * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
      * over again the next time this address is received. One it resolves `false` on was not for
-     * this address: it is erased as one that does not open.
+     * this address: it is erased as one that does not open. A message that was being read when the
+     * app was killed or its inbox closed is handed over at the next start and stays on the device,
+     * whatever `keep` says or `onmessage` resolves.
      *
      * @param {Uint8Array} secret
      * @param {(message: Uint8Array) => unknown} onmessage
-     * @param {{ keep?: boolean, timeout?: number }} [opts]  `keep`: false erases each message from this device once handled; one that was being read when the app was killed or its inbox closed is handed over at the next start and stays on the device. `timeout`: ms a message has to arrive once announced, and again to be handled, 30 s by default.
+     * @param {{ keep?: boolean, timeout?: number }} [opts]  `keep`: false erases each message from this device once handled. `timeout`: ms a message has to arrive once announced, and again to be handled, 30 s by default.
      * @returns {{ close: () => Promise<void> }}
      */
     receive(secret: Uint8Array, onmessage: (message: Uint8Array) => unknown, { keep, timeout }?: {

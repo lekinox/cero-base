@@ -86,8 +86,8 @@ export function erase(store, key, live = () => true) {
  * open in time, or that `onmessage` resolves `false` on, is dropped.
  * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
  * device held already is left alone, and so is one whose message is found at a start in a row
- * written before its block was read: that row does not say the inbox fetched it, so `keep` false
- * erases nothing for it.
+ * written before its block was read: that row does not say the inbox fetched it, so nothing is
+ * erased for it, whatever `keep` says or `onmessage` resolves.
  */
 export class Inbox extends ReadyResource {
   /**
