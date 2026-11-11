@@ -50,7 +50,7 @@ export class Rotation {
    */
   async learn(row) {
     const { keyring } = this.db
-    const known = keyring.entropy(row.stamp)
+    const known = this.held(row)
     const entropy = known || this._unseal(row)
     if (known) {
       keyring.add(row.stamp, known, row.epoch) // re-applied, the sequence may be news
@@ -77,11 +77,39 @@ export class Rotation {
   async hydrate() {
     try {
       for (const row of await this._epochs()) {
-        if (!this.db.keyring.entropy(row.stamp)) await this.learn(row)
+        if (!this.held(row)) await this.learn(row)
       }
     } catch {
       // rows past our newest epoch hydrate via apply
     }
+  }
+
+  /**
+   * The secret held for a row, if it meets the row's commitment.
+   *
+   * @param {{ stamp: number, commit: Uint8Array }} row
+   * @returns {Uint8Array | null}
+   */
+  held(row) {
+    const entropy = this.db.keyring.entropy(row.stamp)
+    return entropy && row.commit && b4a.equals(crypto.hash(entropy), row.commit) ? entropy : null
+  }
+
+  /**
+   * Write under the newest landed epoch whose secret this device holds, so a rotation a reorder
+   * dropped is never written under.
+   *
+   * @param {object} [view]
+   */
+  async pick(view = this.db.view) {
+    let top = null
+    for await (const row of view.find(`@${this.db.ns}/epochs`, {}, { reverse: true })) {
+      if (!this.held(row)) continue
+      top = row
+      break
+    }
+    this.db.keyring.current = top ? top.stamp : 0
+    this.db.keyring.seq = top ? top.epoch : 0
   }
 
   /** Debounced audit, run at open and after every update. */
@@ -121,6 +149,7 @@ export class Rotation {
         throw CeroError.INVALID('rotation was not applied')
       }
       db.keyring.add(stamp, entropy, epoch)
+      await this.pick()
       await this._save()
       db.emit('epoch')
       return { epoch }

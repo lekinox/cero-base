@@ -242,6 +242,7 @@ export class Database extends ReadyResource {
       await this.rotation.hydrate()
       // epochs handed over at join are sealed to nobody this device can read later: keep them
       if (this._delivered) await this.rotation._save()
+      await this.rotation.pick()
     } catch (err) {
       // ready-resource runs no _close for an open that failed
       await this._close().catch(safetyCatch)
@@ -741,13 +742,15 @@ export class Database extends ReadyResource {
     const rows = await this.rotation._epochs()
     let added = false
     for (const e of epochs) {
-      if (this.keyring.entropy(e.stamp)) continue
       const row = rows.find((r) => r.stamp === e.stamp)
-      if (!row?.commit || !b4a.equals(crypto.hash(e.entropy), row.commit)) continue
+      if (!row?.commit || this.rotation.held(row)) continue
+      if (!b4a.equals(crypto.hash(e.entropy), row.commit)) continue
       this.keyring.add(e.stamp, e.entropy, e.epoch)
       added = true
     }
-    if (added) await this.rotation._save()
+    if (!added) return
+    await this.rotation.pick()
+    await this.rotation._save()
   }
 
   /**
@@ -936,6 +939,8 @@ export class Database extends ReadyResource {
     }
     this._applied = true
     const { landed, changed } = await this.dispatcher.apply(ready, view, host)
+    // a reorder may have dropped the epoch written under
+    await this.rotation.pick(view)
     if (landed.length > 0) this._landed = true
     this._notify(landed, changed)
   }
