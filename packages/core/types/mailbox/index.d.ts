@@ -39,6 +39,10 @@ export type Mail = {
 };
 export type Box = {
     list: () => Promise<Mail[]>;
+    /**
+     * The one row under an id, null when there is none.
+     */
+    get: (id: string) => Promise<Mail | null>;
     put: (mail: Mail) => Promise<unknown>;
     del: (id: string) => Promise<unknown>;
 };
@@ -70,6 +74,7 @@ export type MailboxOpts = {
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
+ * @property {(id: string) => Promise<Mail | null>} get   The one row under an id, null when there is none.
  * @property {(mail: Mail) => Promise<unknown>} put
  * @property {(id: string) => Promise<unknown>} del
  *

@@ -30,6 +30,7 @@ function kept() {
     mail,
     pending: () => [...mail.values()].filter((m) => !m.handled).length,
     list: async () => [...mail.values()],
+    get: async (id) => mail.get(id) ?? null,
     put: async (m) => mail.set(m.id, m),
     del: async (id) => mail.delete(id)
   }
@@ -1881,7 +1882,7 @@ function killed(t, net, secret, box) {
     return write(arg)
   }
   const inbox = new Inbox(net, secret, {
-    box: { list: box.list, put: alive(box.put), del: alive(box.del) },
+    box: { list: box.list, get: box.get, put: alive(box.put), del: alive(box.del) },
     onmessage: () => {},
     onerror: () => {}
   })
@@ -2179,4 +2180,38 @@ test('Inbox: keep false leaves the core of a message found at a start in a row w
   await waitFor(() => got.length > 0 && !next._mail.has(b4a.toHex(key)))
   t.alike(got, ['stored'])
   t.ok(await readable(b, key), 'handled, its core still on the disk')
+})
+
+test('Inbox: an announced key reads its one row from the box, and lists nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+  const got = []
+  const inbox = new Inbox(b, secret, {
+    box,
+    onmessage: (message) => got.push(b4a.toString(message)),
+    onerror: () => {}
+  })
+  t.teardown(() => inbox.close())
+  await inbox.ready()
+
+  let lists = 0
+  const gets = []
+  const { list, get } = box
+  box.list = () => {
+    lists++
+    return list()
+  }
+  box.get = (id) => {
+    gets.push(id)
+    return get(id)
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('one'))
+  await waitFor(() => got.length > 0 && box.mail.size === 1 && box.pending() === 0, {
+    timeout: 30000
+  })
+  t.alike(gets, [...box.mail.keys()], 'one row read, the one under its id')
+  t.is(lists, 0, 'the box is not listed')
 })

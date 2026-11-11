@@ -203,7 +203,7 @@ await mailbox.send(address, b4a.from('hi'))
 await inbox.close() // stop receiving
 ```
 
-- **Kept until stored.** The outbox keeps a message until a device or a mirror stored it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, put, del }`, keep that across a restart. A message may arrive twice, never not at all; once handled, it is not handed over again, though a mirror still holds it. The inbox remembers what it handled at an address for 30 days: one a mirror still announces after that comes again.
+- **Kept until stored.** The outbox keeps a message until a device or a mirror stored it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, get, put, del }`, keep that across a restart. A message may arrive twice, never not at all; once handled, it is not handed over again, though a mirror still holds it. The inbox remembers what it handled at an address for 30 days: one a mirror still announces after that comes again.
 - **No message in the boxes.** The outbox keeps a message sealed to its address; the inbox keeps which core it came in, and reads it from there.
 - **A throwing `onmessage`** keeps the message and reports to `onerror`, the constructor option.
 - **A slow `onmessage`.** Sixteen messages are read and handled at a time; one still being handled after 30 seconds stays in the inbox and makes room for the next. `receive(secret, onmessage, { timeout })` sets those 30 seconds, and how long an announced message has to arrive.
