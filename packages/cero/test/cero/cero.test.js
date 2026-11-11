@@ -1028,8 +1028,10 @@ test('storageKey: master seed encrypted at rest, same key reopens', async (t) =>
   const a = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey: key })
   const id = a.id
   const seed = (await a.local.store.get('master')).data.seed
+  const device = a.identity.device.secretKey.subarray(0, 32)
   await a.close()
   t.absent(await diskContains(`${dir}/main`, seed), 'seed unreadable on disk with storageKey')
+  t.absent(await diskContains(`${dir}/main`, device), "and this device's key")
 
   const b = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey: key })
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
