@@ -1450,21 +1450,21 @@ test('devices: a removed device is re-added by the phrase, as a new device', asy
   t.ok(c.me.store.writable, 'back in')
 })
 
-test('devices: a removed device reads on until the root rotates its key, then nothing written after', async (t) => {
+test('devices: a removed device reads nothing the root writes after its removal', async (t) => {
   const a = await ceroOpen(t)
   const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
   await devices(a.me, 2)
-  await del(a.me.devices, b.me.device.id)
-  await devices(b.me, 1)
-
   await set(a.me.profile, { name: 'seen' })
   await waitUntil(async () => ((await get(b.me.profile)).data?.name === 'seen' ? true : null))
-  t.pass('the root kept its key, so the removed device still reads')
 
-  await rotate(a.me)
+  await del(a.me.devices, b.me.device.id)
+  t.is(a.me.store.keyring.seq, 1, 'the root rotated its key with the removal')
   await set(a.me.profile, { name: 'unseen' })
-  await new Promise((r) => setTimeout(r, 1500))
-  t.is((await get(b.me.profile)).data?.name, 'seen', 'nothing written after rotation reaches it')
+
+  await devices(b.me, 1)
+  const key = a.me.store.keyring.current
+  t.absent(b.me.store.keyring.entropy(key), 'the removed device holds no key for it')
+  t.is((await get(b.me.profile)).data?.name, 'seen', 'and reads nothing written after')
 })
 
 // ─── link: a device joins by invite, no phrase ────────────────────────────

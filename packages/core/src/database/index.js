@@ -33,7 +33,7 @@ import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs, plainId } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
-import { Rotation } from './rotation.js'
+import { Rotation, removes } from './rotation.js'
 import { makeChanges } from './changes.js'
 import { makeDispatcher, BESPOKE, leftId } from './dispatch.js'
 import { keyPair } from '../mailbox/inbox.js'
@@ -483,19 +483,34 @@ export class Database extends ReadyResource {
    * @returns {Promise<number | undefined>}  The stamp the last op was appended with; nothing when queued or when nothing changed.
    */
   async write(ops) {
-    // behind, a set merges from a view missing the newer writes and every device takes the stale
-    // row: no writes until the update, but leaving, which touches nothing else
-    const frozen = () => this.behind !== null && !leaving(ops, this.identity.id)
-    if (frozen()) throw CeroError.BEHIND(this.behind)
+    if (this._frozen(ops)) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
       if (this.spent) throw CeroError.INVALID('a write through tx after its fn returned')
       for (const op of ops) this.txQueue.push(op)
       return
     }
     this.guard()
+    return removes(ops) ? this.rotation.carry(ops) : this._write(ops)
+  }
+
+  // behind, a set merges from a view missing the newer writes and every device takes the stale
+  // row: no writes until the update, but leaving, which touches nothing else
+  /** @private */
+  _frozen(ops) {
+    return this.behind !== null && !leaving(ops, this.identity.id)
+  }
+
+  // a removal and the rotation it carries are `queued`: every other write waits until both are in
+  /** @private */
+  async _write(ops, queued = false) {
     // a write goes in on the bee it started on: a rebuild closes it once the write is done
-    while (this._rebuilding) await this._rebuilding
-    const writing = this._commit(ops, frozen)
+    for (;;) {
+      const busy = this._rebuilding || (!queued && this.rotation.carrying)
+      if (!busy) break
+      await busy
+      this.guard()
+    }
+    const writing = this._commit(ops)
     this._writes.add(writing)
     try {
       return await writing
@@ -505,7 +520,7 @@ export class Database extends ReadyResource {
   }
 
   /** @private */
-  async _commit(ops, frozen) {
+  async _commit(ops) {
     // leaving takes no seat: a reader's own removal goes in optimistically, apply admits it
     const optimistic = !this.bee.writable && leaving(ops, this.identity.id)
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
@@ -517,7 +532,7 @@ export class Database extends ReadyResource {
       const { wrapped, changed, stamp } = await this._dryRun(ops)
       if (!changed && !action) return
       // a newer op may have applied while this write awaited
-      if (frozen()) throw CeroError.BEHIND(this.behind)
+      if (this._frozen(ops)) throw CeroError.BEHIND(this.behind)
       await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
       const ref = this.push ? this._ref(ops) : null
       if (ref) this._push(ref)

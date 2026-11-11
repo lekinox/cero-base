@@ -194,13 +194,13 @@ end what the handle gave her elsewhere, a seat in another handle say.
 ## Remove and rotate the key
 
 ```js
-await cero.del(room.members, memberId)
-await cero.rotate(room) // { epoch }: the room has a new key
+await cero.del(room.members, memberId) // removed, and the room has a new key
+await cero.rotate(room) // { epoch }: a new key at any other time
 ```
 
-A removal rotates the handle's key shortly after on its own, on a device that can remove, so the
-removed member reads nothing written after it. `cero.rotate` rotates it at once: await it before writing
-something they must not see. It needs the remove permission, `REFUSED` otherwise, and cannot run
+A removal by an admin or the owner rotates the handle's key in the same step: when `cero.del`
+resolves the key is in place, and the removed member reads nothing written after it. `cero.rotate`
+rotates it at any other time. It needs the remove permission, `REFUSED` otherwise, and cannot run
 inside a transaction: `cero.rotate(tx)` throws `INVALID`. [How it works](how-it-works.md) has the
 mechanism.
 

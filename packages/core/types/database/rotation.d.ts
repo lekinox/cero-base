@@ -9,6 +9,8 @@ export declare class Rotation {
         stamp: number;
         epoch: number;
     };
+    /** @type {Promise<void> | null} Pending while a removal and its rotation go in. */
+    carrying: Promise<void> | null;
     /** @private */
     _queue;
     /** @private */
@@ -27,6 +29,17 @@ export declare class Rotation {
     rotate(): Promise<{
         epoch: number;
     }>;
+    /**
+     * A removal by a device that may remove carries its rotation: the removal, then the key sealed
+     * to the devices that stay, with nothing else of this device in between. The key is a block of
+     * its own, so it lands even when a reorder refuses the removal.
+     *
+     * @param {Array<[string, unknown]>} ops  A batch that takes a member or a device out.
+     * @returns {Promise<number | undefined>}  What the removal's write resolves.
+     */
+    carry(ops: Array<[string, unknown]>): Promise<number | undefined>;
+    /** @private */
+    private _queued;
     /**
      * An applied rotation announcement: open our envelope, learn the secret, persist it.
      *
@@ -63,6 +76,10 @@ export declare class Rotation {
     /** Debounced key check, with the owner's raise beside it, run at open and after every update. */
     heal(): void;
     /** @private */
+    private _carry;
+    /** @private */
+    private _staying;
+    /** @private */
     private _rotate;
     /** @private */
     private _devices;
@@ -83,3 +100,8 @@ export declare class Rotation {
     /** @private */
     private _heal;
 }
+/**
+ * @param {Array<[string, unknown]>} ops
+ * @returns {boolean} Whether a batch takes a member or a device out.
+ */
+export declare function removes(ops: Array<[string, unknown]>): boolean;

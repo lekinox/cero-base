@@ -4707,11 +4707,16 @@ test('gate: a member behind can still leave, and the others apply it', async (t)
 test('gate: a removal applied while behind starts no rotation on this device, nor an error', async (t) => {
   const { a, b } = await members(t)
   let audits = 0
+  let release = null
+  const behind = new Promise((resolve) => (release = resolve))
   const audit = a.db.rotation._audit.bind(a.db.rotation)
-  a.db.rotation._audit = () => audit().finally(() => audits++)
-  await a.db.removeWriter(b.db.keyPair.publicKey)
+  a.db.rotation._audit = () => behind.then(audit).finally(() => audits++)
+  // her own leave: a removal this device makes carries its rotation before it is behind
+  await b.db.del('members', b.identity.id)
+  await waitFor(async () => !(await a.db.get('members', b.identity.id)).data)
   await raise(a.db, a.db.version + 1)
   t.is(a.db.behind, a.db.version + 1, 'behind before the audit ran')
+  release()
 
   await waitFor(() => audits >= 1)
   t.absent(
