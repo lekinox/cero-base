@@ -1467,6 +1467,47 @@ test('link: a launch that stops waiting resumes on the next, with no new invite'
   )
 })
 
+// a link launch accepted on `a` that stops on one write of its setup's end, then closes
+async function killedLinking(t, a, method, when) {
+  const invite = await cero.invite(a.me)
+  const dir = await t.tmp()
+  let launch = null
+  let stopping
+  const stopped = new Promise((resolve) => (stopping = resolve))
+  const dies = {
+    setup(me) {
+      if (launch) return
+      launch = { me, writer: me.store.keyPair.publicKey }
+      stall(me.local.store, method, when).then(stopping)
+    }
+  }
+  cero(dir, spec, { bootstrap: a.testnet.bootstrap, invite, extensions: [dies] }).catch(() => {})
+  await cero.accept(a.me, await asked(a.me))
+  await stopped
+  await launch.me.close()
+  return { dir, writer: launch.writer }
+}
+
+test('link: a launch killed at the end of its setup opens as the linked device, on the same writer', async (t) => {
+  const a = await ceroOpen(t)
+  const opts = { bootstrap: a.testnet.bootstrap }
+  const steps = [
+    ['set', (name, row) => name === 'keypair' && row.setup === null],
+    ['del', (name) => name === 'joins']
+  ]
+  for (const [method, when] of steps) {
+    const { dir, writer } = await killedLinking(t, a, method, when)
+    const b = await cero(dir, spec, opts)
+    t.teardown(() => b.close().catch(() => {}), { order: 1 })
+    t.is(b.id, a.me.id, `stopped on ${method}: the linked identity`)
+    t.alike(b.store.keyPair.publicKey, writer, 'on the writer it was linked with')
+    t.alike((await b.local.store.get('joins')).data, [], 'with no join left behind')
+    await b.close()
+  }
+  await devices(a.me, 3)
+  t.pass('one seat per linked device')
+})
+
 test('link: a removed device loses its seats in every handle, and the root rotates its key', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
