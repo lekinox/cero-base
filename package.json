@@ -21,6 +21,8 @@
     "test:node": "turbo test:node --filter='./packages/*' --concurrency=1",
     "test:core": "npm test -w @cero-base/core",
     "test:cero": "npm test -w @cero-base/cero",
+    "pretest:capacity": "npm run pretest && npm run build:test -w @cero-base/cero",
+    "test:capacity": "node scripts/capacity.js",
     "dev:desktop": "npm run build:desktop && cd example/chat-desktop && npm run dev --",
     "dev:mobile": "npm run build:mobile && cd example/chat-mobile && npm run ios",
     "release": "node scripts/release.js",
