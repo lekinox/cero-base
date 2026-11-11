@@ -586,13 +586,13 @@ export class Database extends ReadyResource {
       return { data: await view.get(col, { id: query }) }
     }
 
-    const { path, range, rest, sorted } = this._plan(name, query)
+    const { path, range, rest, sorted, count = path } = this._plan(name, query)
     const rows = await view.find(path, range).toArray()
     const matched = filter(rows, { ...rest, reverse: undefined, limit: undefined })
     if (!sorted) matched.sort(byIndex)
     if (rest.reverse) matched.reverse()
     const data = rest.limit === undefined ? matched : matched.slice(0, rest.limit)
-    return { data, total: await this._total(view, path, range, matched, query), size: data.length }
+    return { data, total: await this._total(view, count, range, matched, query), size: data.length }
   }
 
   /**
@@ -1158,11 +1158,14 @@ export class Database extends ReadyResource {
       pushWindow(range, rest)
       return { path: col, range, rest, sorted: true }
     }
-    // a full read scans and sorts in about half the time the order index takes to walk
-    if (ref?.orderIndex && query.limit !== undefined) {
+    if (ref?.orderIndex) {
       const range = {}
       pushWindow(range, rest)
-      return { path: `${col}-index`, range, rest, sorted: true }
+      // a full read, and a count, scan the collection in about half the time the order index takes to walk
+      if (range.limit !== undefined) {
+        return { path: `${col}-index`, range, rest, sorted: true, count: col }
+      }
+      return { path: col, range: {}, rest: { reverse: range.reverse }, sorted: false }
     }
     return { path: col, range: {}, rest, sorted: false }
   }

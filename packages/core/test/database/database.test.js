@@ -571,6 +571,17 @@ test('get: an unlimited read returns the order index rows, in its order', async 
     ['c', 'a', 'e', 'b', 'd'],
     'an overwrite keeps its place'
   )
+  await db.del('messages', 'b')
+  const indexed = await db.view.find(`${col}-index`).toArray()
+  const page = await db.get('messages', { limit: 1, total: true })
+  t.is(page.total, indexed.length, 'a page counts the rows the index holds')
+  for (const query of [{ reverse: 1 }, { reverse: 1, limit: 9 }]) {
+    t.alike(
+      (await db.get('messages', query)).data,
+      indexed,
+      'a reverse that is not true is ignored'
+    )
+  }
 })
 
 // ─── field validation ───────────────────────────────────────────────────────
