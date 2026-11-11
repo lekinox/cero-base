@@ -157,6 +157,21 @@ test('link: a close with a second link taking over from the first ends both CLOS
   await kept(t, again, id)
 })
 
+test('link: a close with two links waiting behind the first ends all three CLOSED', async (t) => {
+  const a = await ceroOpen(t)
+  const { me, dir } = await mine(t, { bootstrap: a.testnet.bootstrap })
+  let request = null
+  const first = cero.link(me, await cero.invite(a.me), { onrequest: (r) => (request = r) })
+  first.catch(() => {})
+  await waitUntil(() => request)
+  const invites = [await cero.invite(a.me), await cero.invite(a.me)]
+  const behind = invites.map((invite) => cero.link(me, invite))
+  for (const link of behind) link.catch(() => {})
+  await me.close()
+  for (const link of [first, ...behind]) await t.exception(link, /CLOSED/)
+  t.absent(fs.existsSync(`${dir}/main.next`), 'nothing left beside it')
+})
+
 test('link: a close while the new device waits for its seat, the accepting one gone, ends it CLOSED', async (t) => {
   const a = await ceroOpen(t)
   let accepting = null

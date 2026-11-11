@@ -279,7 +279,8 @@ export async function link(me, invite, { onrequest } = {}) {
 // failed, denied or replaced restore or link leaves the device as it was. A newer swap replaces one still waiting,
 // and a close of `me` stops it until it commits
 async function swap(me, opts) {
-  await me._swap?.abort()
+  // several may wait on the same one: each stops whichever runs by its turn, so one runs at a time
+  while (me._swap) await me._swap.abort()
   if (me.closing || me.closed) throw CeroError.CLOSED('Handle')
   // everything carries over except the identity, the channel above all
   const { _dir: dir, spec, _opts: was } = me
