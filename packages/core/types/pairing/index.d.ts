@@ -141,6 +141,9 @@ export type JoinResult = {
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
+ * Where the database's version keeps an invite's secret on its record, the invite has an address
+ * of its own: its joins are sealed to it, and its answers carry the tag only that secret and the
+ * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export declare class Pairing extends ReadyResource {
@@ -169,6 +172,8 @@ export declare class Pairing extends ReadyResource {
      * @returns {Promise<string>}
      */
     invite({ role, ttl, reuse, confirm, data }?: InviteOpts): Promise<string>;
+    /** @private */
+    private _secret;
     /**
      * Revoke an invite, for every member. Needs the remove permission.
      *
@@ -223,16 +228,18 @@ export declare class Pairing extends ReadyResource {
     static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal, keep }?: JoinOpts): Promise<JoinResult>;
 }
 /**
- * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's device, under its chain to the identity,
- * for this writer and reply address.
+ * A join's payload: sealed to the invite's address, so only those who hold its row read who joins,
+ * every member for an invite that carries the database's address; proven by the invite over the
+ * writer; signed by the joiner's device, under its chain to the identity, for this writer and reply
+ * address. An invite with an address of its own is named in the clear, so apply finds its secret.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
  * @param {Uint8Array} writer
  * @param {Uint8Array} reply
- * @returns {{ box: Uint8Array }}
+ * @returns {{ box: Uint8Array, invite?: Uint8Array }}
  */
 export declare function sealJoin(invite: Invite, identity: import('../identity/index.js').Identity, writer: Uint8Array, reply: Uint8Array): {
     box: Uint8Array;
+    invite?: Uint8Array;
 };

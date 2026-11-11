@@ -24,6 +24,7 @@ import { genId } from '../../src/lib/ids.js'
 import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { Invite } from '../../src/pairing/invite.js'
+import { Mailbox } from '../../src/mailbox/index.js'
 import { encodeId } from '../../src/blobs/codec.js'
 import { spec } from '../fixtures/spec/index.js'
 
@@ -1115,6 +1116,86 @@ test('join: a forged join admits nobody', async (t) => {
   t.is(await apply(db, elsewhere, 'join', joinOp(db, invite, { identity, writer })), null)
   t.absent((await db.get('members', identity.id)).data, 'nobody admitted')
   t.absent((await db.get('devices', hid.encode(elsewhere))).data, 'a join proves only its own core')
+})
+
+// an invite with an address of its own: its row holds the secret
+async function addressed(db, record = {}) {
+  const secret = crypto.randomBytes(32)
+  const invite = Invite.create({ key: db.key, address: Mailbox.getAddress(secret) })
+  await db.call('add-invite', inviteRow(b4a.toHex(invite.id), { secret, ...record }))
+  return invite
+}
+
+// the join on it: sealed to the invite's address, naming the invite in the clear
+const named = (db, invite, opts) => ({
+  ...joinOp(db, invite, { address: invite.address, ...opts }),
+  invite: invite.id
+})
+
+test('join: one that names its invite opens with the secret on its row, live or spent', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db)
+  const id = b4a.toHex(invite.id)
+  const { secret } = (await db.get('invites', id)).data
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  t.is(await apply(db, writer, 'join', named(db, invite, { identity, writer })), null)
+  t.is((await db.get('members', identity.id)).data?.role, 'member', 'admitted')
+  t.is((await db.get('requests', hid.encode(writer))).data?.invite, id, 'owed its keys, under it')
+  t.alike((await spent(db, id))?.secret, secret, 'spent, the secret stays')
+
+  const other = await Identity.create()
+  const late = Identity.randomKeyPair().publicKey
+  const reply = crypto.randomBytes(32)
+  await apply(db, late, 'join', named(db, invite, { identity: other, writer: late, reply }))
+  const refused = await refusal(db, hid.encode(late))
+  t.is(refused?.reason, 'spent', 'a join on the spent one still opens, and hears why')
+  t.is(refused?.invite, id, 'under the invite whose secret proves the answer')
+  t.absent((await db.get('members', other.id)).data, 'and admits nobody')
+})
+
+test("join: one that names an invite is skipped where its row holds no secret, or isn't there", async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  // the invite as a device that lacks its row has it, and as one whose row kept no secret
+  const absent = Invite.create({ key: db.key, address: Mailbox.getAddress(crypto.randomBytes(32)) })
+  const bare = await addressed(db, { secret: null, reuse: true })
+  const joins = {
+    'no row': named(db, absent, { identity, writer }),
+    'a row with no secret': named(db, bare, { identity, writer }),
+    "a row with no secret, sealed to the room's address": named(db, bare, {
+      identity,
+      writer,
+      address: db.address
+    })
+  }
+  for (const [why, op] of Object.entries(joins)) {
+    t.is(await apply(db, writer, 'join', op), null, `${why}: skipped, not refused`)
+  }
+  t.absent((await db.get('members', identity.id)).data, 'nobody admitted')
+  t.absent(await refusal(db, hid.encode(writer)), 'nor answered')
+
+  const kept = await addressed(db)
+  const unnamed = joinOp(db, kept, { identity, writer, address: kept.address })
+  t.is(await apply(db, writer, 'join', unnamed), null)
+  t.absent((await db.get('members', identity.id)).data, "one that names none is the room's to open")
+})
+
+test('join: one whose box holds another invite than it names is skipped', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const one = await addressed(db, { reuse: true })
+  const two = await addressed(db, { reuse: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  // a join on `two`, sealed to the address of `one` and naming it
+  const crossed = { ...joinOp(db, two, { identity, writer, address: one.address }), invite: one.id }
+  t.is(await apply(db, writer, 'join', crossed), null, 'skipped, not refused')
+  t.absent((await db.get('members', identity.id)).data, 'nobody admitted')
+  t.absent((await db.get('requests', hid.encode(writer))).data)
+
+  t.is(await apply(db, writer, 'join', named(db, two, { identity, writer })), null)
+  t.ok((await db.get('members', identity.id)).data, 'named as its box says, it is admitted')
 })
 
 test('join: a removed member comes back only through an invite minted after its removal', async (t) => {

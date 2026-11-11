@@ -43,6 +43,7 @@ export declare const main: {
         createdAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         confirm: import("@cero-base/core").Prim;
+        secret: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;
@@ -74,6 +75,7 @@ export declare const main: {
     };
     join: {
         box: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
     accept: {
         id: import("@cero-base/core").Prim;
@@ -121,11 +123,13 @@ export declare const main: {
         reply: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
     spent: {
         id: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        secret: import("@cero-base/core").Prim;
     };
     deny: {
         id: import("@cero-base/core").Prim;

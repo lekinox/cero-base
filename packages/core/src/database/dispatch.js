@@ -37,6 +37,7 @@ import { getEncoding } from '../lib/spec/index.js'
 import { decodeId } from '../blobs/codec.js'
 import { Identity } from '../identity/index.js'
 import { Invite } from '../pairing/invite.js'
+import { keyPair } from '../mailbox/inbox.js'
 import { wraps } from './encryption.js'
 
 const Join = getEncoding('@cero/join')
@@ -83,7 +84,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
- * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
+ * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins that name no invite are sealed to.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
@@ -729,11 +730,11 @@ export function makeDispatcher({
     await ctx.view.delete(spent, { id: op.id })
   })
   // its joins still waiting for a member are turned away with it; admitted ones are still owed
-  // their keys. Its id stays, so a later join with it hears why
+  // their keys. Its id stays, and its secret, so a later join with it is opened and hears why
   async function spend(ctx, invite, reason) {
     const expires = invite.expires || 0
     await drop(ctx, 'invites', invite.id)
-    await ctx.view.insert(spent, { id: invite.id, reason, expires })
+    await ctx.view.insert(spent, { id: invite.id, reason, expires, secret: invite.secret })
     for (const request of await ctx.view.find(requests, {}).toArray()) {
       if (request.invite !== invite.id || request.admitted) continue
       await drop(ctx, 'requests', request.id)
@@ -741,11 +742,11 @@ export function makeDispatcher({
     }
   }
 
-  // a join turned away is answered at its reply address. A writer with a request hears through
-  // that: one of the two per writer, or a denial could race its keys
-  async function refuse(ctx, { id, reply, expires }, reason) {
+  // a join turned away is answered at its reply address, under its invite. A writer with a request
+  // hears through that: one of the two per writer, or a denial could race its keys
+  async function refuse(ctx, { id, reply, expires, invite }, reason) {
     if (await ctx.view.get(requests, { id })) return
-    await ctx.view.insert(refusals, { id, reply, reason, expires })
+    await ctx.view.insert(refusals, { id, reply, reason, expires, invite })
   }
 
   // the member, when new, and its device, seated when the member writes; its request stays until
@@ -794,22 +795,30 @@ export function makeDispatcher({
     return { id, identity, key, invite: invite.id, role, reply, expires, createdAt: ts }
   }
 
-  // null when it does not open: anyone may append a join
-  function open(box) {
-    const pair = room()
+  // null when it does not open: anyone may append a join. One that names its invite is sealed to
+  // that invite's own address, and only its row, live or spent, has the secret; the name in the
+  // clear is the one in the box
+  async function open(view, { box, invite }) {
+    const pair = invite ? await pairOf(view, b4a.toHex(invite)) : room()
     if (!pair || !box?.byteLength) return null
     try {
       const plain = crypto.decrypt(box, pair)
-      return plain && c.decode(Join, plain)
+      const join = plain && c.decode(Join, plain)
+      if (join && invite && !b4a.equals(join.invite, invite)) return null
+      return join
     } catch {
       return null
     }
+  }
+  async function pairOf(view, id) {
+    const row = (await view.get(invites, { id })) ?? (await view.get(spent, { id }))
+    return row?.secret ? keyPair(row.secret) : null
   }
 
   // the joiner's own core asks in: the invite proves it may, its device signs where the keys go
   // and the proof's chain says whose device it is
   add('join', async (op, ctx) => {
-    const join = open(op.box)
+    const join = await open(ctx.view, op)
     if (!join || !ctx.key) return
     if (!Invite.proven(join.invite, ctx.key, join.signature)) return
     const signed = Identity.verify(join.proof, joining(ctx.dbKey, join.invite, ctx.key, join.reply))
@@ -821,7 +830,8 @@ export function makeDispatcher({
       // an invite the database never held could be anyone's: nobody answers it
       const record = await ctx.view.get(spent, { id: b4a.toHex(join.invite) })
       if (!record) return
-      return refuse(ctx, { id, reply: join.reply, expires: record.expires }, record.reason)
+      const turned = { id, reply: join.reply, expires: record.expires, invite: record.id }
+      return refuse(ctx, turned, record.reason)
     }
     const ts = join.ts || 0
     const memberId = hid.encode(join.identity)
@@ -829,7 +839,10 @@ export function makeDispatcher({
     const removal = known ? null : await ctx.view.get(removals, { id: memberId })
     const out =
       (removal && (invite.index ?? 0) <= removal.index) || (await revoked(ctx.view, join.proof))
-    if (out) return refuse(ctx, { id, reply: join.reply, expires: invite.expires || 0 }, 'removed')
+    if (out) {
+      const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
+      return refuse(ctx, turned, 'removed')
+    }
     await ctx.view.delete(refusals, { id })
     const gone = known ? null : await ctx.view.get(removals, { id: leftId(memberId) })
     const older = gone && (invite.index ?? 0) <= gone.index

@@ -1,4 +1,5 @@
 export declare const STAMPED = 2;
+export declare const PROVEN = 3;
 export type InviteFields = {
     /**
      * Absolute expiry timestamp; `0` means never.
@@ -9,7 +10,7 @@ export type InviteFields = {
      */
     key: Uint8Array;
     /**
-     * The database's address: a join is sealed to it.
+     * Where a join is sealed to: the invite's own address, or the database's.
      */
     address: Uint8Array;
     /**
@@ -32,7 +33,7 @@ export type InviteFields = {
      */
     stamp?: number;
     /**
-     * The invite's form: `STAMPED` once the stamp is past its database's start.
+     * The invite's form: `PROVEN` with an address of its own, else `STAMPED` once the stamp is past its database's start.
      */
     version?: number;
 };
@@ -40,17 +41,17 @@ export type InviteFields = {
  * @typedef {object} InviteFields
  * @property {number} expires           Absolute expiry timestamp; `0` means never.
  * @property {Uint8Array} key           Key of the database the invite opens.
- * @property {Uint8Array} address       The database's address: a join is sealed to it.
+ * @property {Uint8Array} address       Where a join is sealed to: the invite's own address, or the database's.
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
- * @property {number} [version]         The invite's form: `STAMPED` once the stamp is past its database's start.
+ * @property {number} [version]         The invite's form: `PROVEN` with an address of its own, else `STAMPED` once the stamp is past its database's start.
  */
 /**
- * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
- * proves the joiner holds the invite. Role and expiry come from the database's own record;
- * `expires` is here so a joiner fails fast.
+ * An invite: the database it opens, the address a join is sealed to, its own or the database's,
+ * and a seed whose keypair proves the joiner holds the invite. Role and expiry come from the
+ * database's own record; `expires` is here so a joiner fails fast.
  */
 export declare class Invite {
     version: number;

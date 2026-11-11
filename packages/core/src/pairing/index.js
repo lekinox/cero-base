@@ -6,8 +6,8 @@ import crypto from 'hypercore-crypto'
 import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
-import { Invite, STAMPED } from './invite.js'
-import { Response, STATUS_ACCEPTED, STATUS_DENIED } from './response.js'
+import { Invite, STAMPED, PROVEN } from './invite.js'
+import { Response, STATUS_ACCEPTED, STATUS_DENIED, tag, proven } from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
@@ -61,6 +61,9 @@ const MAX_DELAY = 2 ** 31 - 1
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
+ * Where the database's version keeps an invite's secret on its record, the invite has an address
+ * of its own: its joins are sealed to it, and its answers carry the tag only that secret and the
+ * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -124,20 +127,33 @@ export class Pairing extends ReadyResource {
       throw CeroError.INVALID(`a reusable invite admits at most member, not '${role}'`)
     }
 
-    const invite = Invite.create({ ttl, data, key: this.db.key, address: this.db.address })
+    const secret = await this._secret()
+    const address = secret ? Mailbox.getAddress(secret) : this.db.address
+    const invite = Invite.create({ ttl, data, key: this.db.key, address })
     const row = {
       id: b4a.toHex(invite.id),
       role,
       reuse,
       confirm,
       expires: invite.expires,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      secret
     }
     invite.stamp = await this.db.write([['add-invite', row]])
-    if (invite.stamp > this.db.start) invite.version = STAMPED
+    if (secret) invite.version = PROVEN
+    else if (invite.stamp > this.db.start) invite.version = STAMPED
     invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()
+  }
+
+  // an invite's own address needs its secret on its row: none where the database's version has no
+  // such field, and the invite carries the room's address
+  /** @private */
+  async _secret() {
+    const secret = crypto.randomBytes(32)
+    const version = await this.db.dispatcher.version(this.db.view)
+    return this.db.dispatcher.cut(`@${this.db.ns}/add-invite`, { secret }, version).secret ?? null
   }
 
   /**
@@ -226,7 +242,8 @@ export class Pairing extends ReadyResource {
     const inviter = can(role, INVITE) && this.db.behind === null
     const owed = inviter ? requests.filter((row) => row.admitted) : []
     const refused = inviter ? refusals : []
-    await this._answer(owed, refused, role)
+    const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
+    await this._answer(owed, refused, role, secrets)
     const live = invites.some((row) => !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
@@ -251,9 +268,9 @@ export class Pairing extends ReadyResource {
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
   // online, until one is read. Past the invite's expiry the joiner has given up: the answer owed to
   // an extra device of a member is dropped, a member who can remove drops a new one, and a refused
-  // one is forgotten
+  // one is forgotten. An answer under an invite that has a secret is tagged with it
   /** @private */
-  async _answer(owed, refused, role) {
+  async _answer(owed, refused, role, secrets) {
     // a device linked under a member reads its chain off its row
     const proofs = new Map()
     for (const { id } of owed) {
@@ -274,9 +291,10 @@ export class Pairing extends ReadyResource {
       encryptionKey: null,
       epochs: null
     })
+    const sealed = (answer) => (row) => seal(answer(row), secrets.get(row.invite), row.reply)
     // only a device that read its keys covers another: unread ones would keep each other in
     const unread = new Map(owed.map((row) => [row.id, row]))
-    for (const row of this._offer(this._replies, owed, keys, 'del-request')) {
+    for (const row of this._offer(this._replies, owed, sealed(keys), 'del-request')) {
       const id = hid.encode(row.identity)
       const { data: devices } = await this.db.get('devices')
       const others = devices.filter((d) => d.memberId === id && d.id !== row.id)
@@ -286,7 +304,7 @@ export class Pairing extends ReadyResource {
         await this.db.call('del-member', { id }).catch(safetyCatch)
       }
     }
-    for (const row of this._offer(this._denials, refused, denied, 'del-refusal')) {
+    for (const row of this._offer(this._denials, refused, sealed(denied), 'del-refusal')) {
       await this.db.call('del-refusal', { id: row.id }).catch(safetyCatch)
     }
   }
@@ -318,7 +336,7 @@ export class Pairing extends ReadyResource {
   /** @private */
   _post(posts, { id, reply }, answer, settled) {
     const { network } = this.mailbox
-    const post = new Post(network, reply, c.encode(Response, answer), { mirrors: network.mirrors })
+    const post = new Post(network, reply, answer, { mirrors: network.mirrors })
     posts.set(id, post)
     const settle = async () => {
       await post.ready()
@@ -382,6 +400,8 @@ export class Pairing extends ReadyResource {
     }
     const parsed = Invite.parse(invite)
     if (parsed.expired) throw CeroError.EXPIRED()
+    // an invite with its own address proves its answers: one without a valid tag is nobody's
+    const mine = parsed.version === PROVEN ? Mailbox.keyPair(writer.secretKey) : null
     // an invite with no stamp was minted before invites carried one: at the start
     const { version = 1, start = 1 } = spec.meta || {}
     const stamp = parsed.stamp || start
@@ -410,9 +430,14 @@ export class Pairing extends ReadyResource {
     const onreply = async (message) => {
       if (settling) return false
       const response = decode(Response, message)
+      if (mine && !proven(response, mine.secretKey, parsed.address)) return false
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
-      } else if (response?.key && b4a.equals(response.key, parsed.key) && owns(response, parsed)) {
+      } else if (
+        response?.key &&
+        b4a.equals(response.key, parsed.key) &&
+        (mine || owns(response, parsed))
+      ) {
         const { key, encryptionKey, epochs, proof = null } = response
         await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
       } else {
@@ -464,15 +489,16 @@ export class Pairing extends ReadyResource {
 }
 
 /**
- * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's device, under its chain to the identity,
- * for this writer and reply address.
+ * A join's payload: sealed to the invite's address, so only those who hold its row read who joins,
+ * every member for an invite that carries the database's address; proven by the invite over the
+ * writer; signed by the joiner's device, under its chain to the identity, for this writer and reply
+ * address. An invite with an address of its own is named in the clear, so apply finds its secret.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
  * @param {Uint8Array} writer
  * @param {Uint8Array} reply
- * @returns {{ box: Uint8Array }}
+ * @returns {{ box: Uint8Array, invite?: Uint8Array }}
  */
 export function sealJoin(invite, identity, writer, reply) {
   const join = {
@@ -482,7 +508,8 @@ export function sealJoin(invite, identity, writer, reply) {
     proof: identity.sign(joining(invite.key, invite.id, writer, reply)),
     ts: Date.now()
   }
-  return { box: crypto.encrypt(c.encode(Join, join), invite.address) }
+  const box = crypto.encrypt(c.encode(Join, join), invite.address)
+  return invite.version === PROVEN ? { box, invite: invite.id } : { box }
 }
 
 // one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
@@ -504,6 +531,12 @@ async function write(core, spec, stamp, invite, identity, writer) {
 // the database key is no secret, every mirror holds it: the encryption key must own the invite's address
 function owns({ encryptionKey }, invite) {
   return !!encryptionKey && b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
+}
+
+// an answer under an invite with a secret carries the tag it makes with the reply address
+function seal(answer, secret, reply) {
+  const proof = secret ? tag(answer, Mailbox.keyPair(secret).secretKey, reply) : null
+  return c.encode(Response, { ...answer, tag: proof })
 }
 
 function expired({ expires }) {

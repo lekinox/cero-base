@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "schema": [
     {
       "name": "link",
@@ -183,6 +183,12 @@
           "required": false,
           "type": "buffer",
           "version": 1
+        },
+        {
+          "name": "tag",
+          "required": false,
+          "type": "buffer",
+          "version": 3
         }
       ]
     },

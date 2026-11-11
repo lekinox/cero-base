@@ -63,7 +63,9 @@ export const types = [
       { name: 'encryptionKey', type: 'buffer', required: false },
       { name: 'epochs', type: '@cero/epoch', required: false, array: true },
       // a device admitted under a member: its chain to the identity, as the accepter wrote it
-      { name: 'proof', type: 'buffer', required: false }
+      { name: 'proof', type: 'buffer', required: false },
+      // on an invite with its own address: proves the answer comes from a holder of its secret
+      { name: 'tag', type: 'buffer', required: false }
     ]
   },
 

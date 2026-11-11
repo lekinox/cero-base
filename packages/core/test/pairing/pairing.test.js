@@ -12,17 +12,35 @@ import { Network } from '../../src/network/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Database } from '../../src/database/index.js'
 import { Pairing } from '../../src/pairing/index.js'
-import { Invite } from '../../src/pairing/invite.js'
-import { Response, STATUS_ACCEPTED } from '../../src/pairing/response.js'
+import { Invite, PROVEN } from '../../src/pairing/invite.js'
+import {
+  Response,
+  STATUS_ACCEPTED,
+  STATUS_DENIED,
+  tag,
+  proven
+} from '../../src/pairing/response.js'
 import { Mailbox } from '../../src/mailbox/index.js'
 import { unwrap } from '../../src/database/envelope.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { CeroError } from '../../src/lib/errors.js'
-import { spec } from '../fixtures/spec/index.js'
+import { spec as built } from '../fixtures/spec/index.js'
 
 import { makeStore, makeTestnet, makeBlindPeer, waitFor } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
+
+// the fixture app as a release that brings an invite's secret with `contract`
+function dated(spec, contract) {
+  const { since } = spec.meta
+  const invite = { ...since.types['@cero/invite'], secret: contract }
+  const types = { ...since.types, '@cero/invite': invite }
+  return { ...spec, meta: { ...spec.meta, since: { ...since, types } } }
+}
+
+// with a contract no database here reaches: its invites carry the room's address. `built` has the
+// field from the start, so its invites have an address of their own
+const spec = dated(built, 9)
 
 async function makeMailbox(t, testnet, opts = {}) {
   const identity = await Identity.create()
@@ -323,15 +341,17 @@ test('Invite proof: only the invite holder proves a writer', async (t) => {
 // the fixture app at another contract
 const at = (version) => ({ ...spec, meta: { ...spec.meta, version } })
 
-// the stamp of the join a writer's core holds
-async function joinStamp(net, writer) {
+// the join a writer's core holds: its stamp and its op
+async function joinOf(net, writer) {
   const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer.publicKey }] })
   const core = net.store.get({ key })
   await core.ready()
   const block = await core.get(0)
   await core.close()
-  return unwrap(encoding.decodeOplog(block.subarray(8)).value).version
+  return unwrap(encoding.decodeOplog(block.subarray(8)).value)
 }
+
+const joinStamp = async (net, writer) => (await joinOf(net, writer)).version
 
 test('invite: carries the stamp its record was written with, and a join is stamped with it', async (t) => {
   const testnet = await makeTestnet(t)
@@ -1364,6 +1384,169 @@ async function holds(mirror, referrer) {
   await waitFor(() => core.length > 0 && core.contiguousLength === core.length, { timeout: 30000 })
   await core.close()
 }
+
+// ─── invites with an address of their own ──────────────────────────────────
+
+test('proven: an invite minted where the version keeps its secret has an address of its own', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet, { spec: built })
+  const one = Invite.parse(await pairing.invite({ reuse: true }))
+  const two = Invite.parse(await pairing.invite())
+  t.is(one.version, PROVEN, 'in a form a release from before it refuses')
+  t.unlike(one.address, db.address, "not the room's")
+  t.unlike(one.address, two.address, 'and another for each invite')
+  const rows = await invites(db)
+  for (const invite of [one, two]) {
+    const row = rows.find((r) => r.id === b4a.toHex(invite.id))
+    t.is(row.secret?.byteLength, 32, 'its row holds the secret')
+    t.alike(Mailbox.getAddress(row.secret), invite.address, 'which owns the address')
+  }
+})
+
+test("proven: where the version has no field for the secret, an invite is today's and joins as today", async (t) => {
+  const testnet = await makeTestnet(t)
+  // the release that brings the secret with contract 2, in a database still at 1
+  const later = dated(built, 2)
+  const host = await makeHost(t, testnet, {
+    spec: { ...later, meta: { ...later.meta, version: 2 } }
+  })
+  const invite = await host.pairing.invite({ reuse: true })
+  const parsed = Invite.parse(invite)
+  t.alike(parsed.address, host.db.address, "the room's address")
+  t.is(parsed.version, 1, 'in the form every release joins with')
+  t.absent((await invites(host.db))[0].secret, 'and no secret on its row')
+  const joiner = await makeJoiner(t, testnet)
+  t.alike((await joiner.join(invite)).encryptionKey, host.db.encryptionKey, 'it joins as today')
+
+  await host.db.write([['upgrade', { version: 2 }]])
+  const after = Invite.parse(await host.pairing.invite())
+  t.is(after.version, PROVEN, 'once the database has the field, an invite has its own address')
+  t.unlike(after.address, host.db.address)
+})
+
+test('proven: a join on an invite with its own address names it, and is admitted', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const invite = await host.pairing.invite()
+  const result = await joiner.join(invite)
+  t.alike(result.key, host.db.key)
+  t.alike(result.encryptionKey, host.db.encryptionKey)
+  t.is((await member(host.db, joiner.identity)).role, 'member')
+  const { value } = built.dispatch.decode((await joinOf(joiner.net, result.writer)).body)
+  t.alike(value.invite, Invite.parse(invite).id, 'named in the clear')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('and the admission settles once its keys were read')
+})
+
+// a join waiting on a confirm invite with its own address, and `ignored`: whether an answer sent
+// to its reply address was read there and settled nothing
+async function waitingJoin(t, testnet) {
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const read = new Set()
+  const put = joiner.mailbox.inbox.put
+  joiner.mailbox.inbox.put = async (m) => read.add(m.id) && put(m)
+  const writer = crypto.keyPair()
+  const kept = []
+  const keep = async (answer) => kept.push(answer)
+  const joining = joiner.join(await host.pairing.invite({ confirm: true }), { writer, keep })
+  joining.catch(() => {})
+  const request = await asked(host.db)
+  const reply = Mailbox.getAddress(writer.secretKey)
+  const rows = () => joiner.mailbox.inbox.list()
+  const ignored = async (answer) => {
+    await host.mailbox.send(reply, c.encode(Response, answer))
+    const id = b4a.toHex(await sentKey(host.net, (await host.mailbox.outbox.list()).at(-1)))
+    const unread = async () => (await rows()).some((m) => m.id === id && !m.handled)
+    const turned = await waitFor(async () => read.has(id) && !(await unread())).catch(() => false)
+    return turned && kept.length === 0
+  }
+  return { host, joining, request, reply, ignored }
+}
+
+test('proven: an untagged acceptance and an untagged denial at the reply address are ignored, the genuine answer lands', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joining, request, ignored } = await waitingJoin(t, testnet)
+  // what anyone who ever had the room's first key can write
+  const { key, encryptionKey } = host.db
+  const accepted = { status: STATUS_ACCEPTED, reason: '', key, encryptionKey, epochs: [] }
+  t.ok(await ignored(accepted), "an acceptance with the room's keys and no tag settles nothing")
+  t.ok(await ignored({ status: STATUS_DENIED, reason: 'forged' }), 'nor a denial with none')
+
+  await host.pairing.accept(request.id)
+  t.alike((await joining).encryptionKey, host.db.encryptionKey, 'the one the invite proves does')
+})
+
+test('proven: an answer tagged by anything but its invite and its reply address is ignored', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joining, request, reply, ignored } = await waitingJoin(t, testnet)
+  const [{ secret }] = await invites(host.db)
+  const { secretKey } = Mailbox.keyPair(secret)
+  const denial = { status: STATUS_DENIED, reason: 'forged' }
+  const tags = {
+    'another secret': tag(denial, Mailbox.keyPair(crypto.randomBytes(32)).secretKey, reply),
+    'for another reply address': tag(denial, secretKey, crypto.encryptionKeyPair().publicKey),
+    'of another answer': tag({ ...denial, reason: 'spent' }, secretKey, reply),
+    'cut short': tag(denial, secretKey, reply).subarray(0, 16)
+  }
+  for (const [why, forged] of Object.entries(tags)) {
+    t.ok(await ignored({ ...denial, tag: forged }), `a tag ${why} settles nothing`)
+  }
+
+  await host.pairing.accept(request.id)
+  t.alike((await joining).key, host.db.key, 'the genuine answer still lands')
+})
+
+test('proven: a denial on an invite with its own address carries its reason', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const joining = joiner.join(await host.pairing.invite({ confirm: true })).catch((e) => e)
+  await host.pairing.deny((await asked(host.db)).id, 'not today')
+  const err = await joining
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'not today')
+  await waitFor(async () => (await refusals(host.db)).length === 0)
+  t.pass('and the refusal goes once read')
+})
+
+test("proven: a join on a spent invite with its own address is answered spent, under the invite's tag", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner: one } = await makeHostJoiner(t, testnet, { spec: built })
+  const two = await makeJoiner(t, testnet)
+  const invite = await host.pairing.invite()
+  const [{ secret }] = await invites(host.db)
+  await one.join(invite)
+  t.alike((await spent(host.db))[0]?.secret, secret, 'the spent row keeps the secret')
+
+  const answers = []
+  const receive = two.mailbox.receive.bind(two.mailbox)
+  two.mailbox.receive = (key, onmessage, opts) =>
+    receive(key, (message) => answers.push(message) && onmessage(message), opts)
+  const writer = crypto.keyPair()
+  const err = await two.join(invite, { writer, timeout: 10000 }).catch((e) => e)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'spent')
+  const mine = Mailbox.keyPair(writer.secretKey)
+  const answer = c.decode(Response, answers[0])
+  t.ok(proven(answer, mine.secretKey, Invite.parse(invite).address), 'tagged by the invite')
+  t.absent(await member(host.db, two.identity), 'and was not admitted')
+})
+
+test('proven: the tag of a fixed answer, the same from either end', (t) => {
+  const invite = crypto.encryptionKeyPair(b4a.alloc(32, 1))
+  const reply = crypto.encryptionKeyPair(b4a.alloc(32, 2))
+  const answer = { status: STATUS_DENIED, reason: 'spent' }
+  const expected = b4a.from(
+    '03a71b3fb1b06247002e12d9596f6f5963ab48b5edaf57a8cd170f23f52317a6',
+    'hex'
+  )
+  t.alike(tag(answer, invite.secretKey, reply.publicKey), expected, "from the invite's secret")
+  t.alike(tag(answer, reply.secretKey, invite.publicKey), expected, "from the joiner's")
+  t.ok(proven({ ...answer, tag: expected }, reply.secretKey, invite.publicKey))
+  const other = { ...answer, reason: 'revoked', tag: expected }
+  t.absent(proven(other, reply.secretKey, invite.publicKey), 'bound to the answer')
+  t.is(tag(answer, invite.secretKey, b4a.alloc(32)), null, 'an address that shares nothing: none')
+  t.absent(proven({ ...answer, tag: expected }, reply.secretKey, b4a.alloc(32)))
+})
 
 // ─── errors ────────────────────────────────────────────────────────────────
 

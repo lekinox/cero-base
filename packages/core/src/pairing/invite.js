@@ -10,6 +10,8 @@ import { CeroError } from '../lib/errors.js'
 const VERSION = 1
 // an invite past its database's start: a release from before the stamp refuses it instead of joining
 export const STAMPED = 2
+// an invite with an address of its own: its joins name it and its answers are proven
+export const PROVEN = 3
 const Encoding = getEncoding('@cero/invite')
 const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
 
@@ -17,18 +19,18 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  * @typedef {object} InviteFields
  * @property {number} expires           Absolute expiry timestamp; `0` means never.
  * @property {Uint8Array} key           Key of the database the invite opens.
- * @property {Uint8Array} address       The database's address: a join is sealed to it.
+ * @property {Uint8Array} address       Where a join is sealed to: the invite's own address, or the database's.
  * @property {Uint8Array} seed          The invite's secret; its keypair proves a join.
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
- * @property {number} [version]         The invite's form: `STAMPED` once the stamp is past its database's start.
+ * @property {number} [version]         The invite's form: `PROVEN` with an address of its own, else `STAMPED` once the stamp is past its database's start.
  */
 
 /**
- * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
- * proves the joiner holds the invite. Role and expiry come from the database's own record;
- * `expires` is here so a joiner fails fast.
+ * An invite: the database it opens, the address a join is sealed to, its own or the database's,
+ * and a seed whose keypair proves the joiner holds the invite. Role and expiry come from the
+ * database's own record; `expires` is here so a joiner fails fast.
  */
 export class Invite {
   /** @param {InviteFields & { _str?: string }} fields */
@@ -143,7 +145,7 @@ export class Invite {
     } catch {
       throw CeroError.INVALID_INVITE('not an invite')
     }
-    if (fields.version !== VERSION && fields.version !== STAMPED) {
+    if (![VERSION, STAMPED, PROVEN].includes(fields.version)) {
       throw CeroError.INVALID_INVITE('unknown invite version')
     }
     if (!sealable(fields.address)) throw CeroError.INVALID_INVITE('address cannot be sealed to')

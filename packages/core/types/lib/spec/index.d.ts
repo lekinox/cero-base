@@ -38,6 +38,7 @@ declare function getEncoding(name: any): {
         encryptionKey: any;
         epochs: any;
         proof: any;
+        tag: any;
     };
 } | {
     preencode(state: any, m: any): void;
@@ -94,6 +95,7 @@ declare function getStruct(name: any, v?: number): {
         encryptionKey: any;
         epochs: any;
         proof: any;
+        tag: any;
     } | {
         data: any;
     } | {

@@ -52,7 +52,10 @@ export const main = {
     createdAt: int,
     index: uint,
     // its joins wait for a member to accept them
-    confirm: bool
+    confirm: bool,
+    // the secret behind its own address: every device that has the row opens its joins and proves
+    // their answers
+    secret: bytes
   },
   handle: {
     id: required(string),
@@ -84,9 +87,11 @@ export const main = {
     commit: bytes,
     stamp: uint
   },
-  // appended by the joiner's own writer core, sealed to the database's address
+  // appended by the joiner's own writer core, sealed to the database's address, or to its
+  // invite's own, which it then names
   join: {
-    box: required(bytes)
+    box: required(bytes),
+    invite: bytes
   },
   accept: {
     id: required(string),
@@ -147,13 +152,17 @@ export const main = {
     id: required(string),
     reply: required(bytes),
     reason: required(string),
-    expires: int
+    expires: int,
+    // the invite it joined with, whose secret proves the answer
+    invite: string
   },
   // an invite spent or revoked, kept until it expires so a join with it hears why
   spent: {
     id: required(string),
     reason: required(string),
-    expires: int
+    expires: int,
+    // kept from its invite, so a join with it is still opened and answered
+    secret: bytes
   },
   deny: {
     id: required(string),
