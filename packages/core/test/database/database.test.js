@@ -3628,6 +3628,23 @@ test('gate: a batch applied between a landing and its check leaves the row of th
   })
 })
 
+test('gate: ops skipped while nothing else had applied are applied once this build reaches them', async (t) => {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const first = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
+  await first.ready()
+  const { key, keyPair, encryptionKey, version } = first
+  // every op this device saw was too new: its view is empty and says nothing of the build that applied it
+  await first.bee.local.setUserData('cero/skipped', c.encode(c.uint, version))
+  await first.close()
+
+  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}))
+  t.is(again._skipped, null, 'the log is applied again')
+  t.is(await marker(again, 'cero/skipped'), null, 'and nothing is left marked')
+})
+
 test('gate: a read while a landed view is applied again waits for it, and never sees a row missing', async (t) => {
   const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
   const identity = await Identity.create()

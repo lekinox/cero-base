@@ -916,7 +916,9 @@ export class Database extends ReadyResource {
   // from the log
   /** @private */
   async _replay() {
-    if (!(await this._foreign(this.view))) return false
+    // an empty view names no build: what was skipped and is now reached still has to be applied
+    const caught = this._skipped !== null && this._skipped <= this.version
+    if (!caught && !(await this._foreign(this.view))) return false
     await this._wipe()
     return true
   }
