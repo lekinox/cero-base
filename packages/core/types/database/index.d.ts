@@ -539,6 +539,8 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _preload;
     /** @private */
+    private _onWriter;
+    /** @private */
     private _boot;
     /** @private */
     private _replay;

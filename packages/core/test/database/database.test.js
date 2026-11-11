@@ -3147,6 +3147,237 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
   t.ok((await again.get('messages', after.id)).data, 'and the device writes again')
 })
 
+// what a marker in the local core holds
+async function marker(db, name) {
+  const value = await db.bee.local.getUserData(name)
+  return value ? c.decode(c.uint, value) : null
+}
+
+// runs `fn` once the database's first boot is over, where an op applied during it leaves its markers
+function afterFirstBoot(db, fn) {
+  const boot = db._boot.bind(db)
+  let first = true
+  db._boot = async () => {
+    await boot()
+    if (!first) return
+    first = false
+    await fn()
+  }
+}
+
+test('gate: an update applies what it skipped, though a newer op is applied as the database opens', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { wrap } = await import('../../src/database/envelope.js')
+  const next = db.version + 1
+  const id = genId()
+  await db.bee.append(wrap(next, spec.dispatch.encode('@cero/add-messages', { id, text: 'next' })))
+  await db.bee.update()
+  t.is(db.behind, next, 'skipped on this build')
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const updated = { ...spec, meta: { ...spec.meta, version: next } }
+  const again = new Database({ store, identity, spec: updated, key, keyPair, encryptionKey })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  // a writer's op one version further is applied during the boot, and its markers are stored
+  afterFirstBoot(again, async () => {
+    again._skip(next + 1)
+    again._onfuture(next + 1)
+    await waitFor(
+      async () => again._skipped === next || (await marker(again, 'cero/skipped')) === next + 1
+    )
+    await waitFor(async () => (await marker(again, 'cero/behind')) === next + 1)
+  })
+  await again.ready()
+  t.ok((await again.get('messages', id)).data, 'the write this build can apply is applied')
+})
+
+test('gate: an older newer-version op applied as the database opens does not lower behind', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { wrap } = await import('../../src/database/envelope.js')
+  const far = db.version + 4
+  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'far' })
+  await db.bee.append(wrap(far, op))
+  await db.bee.update()
+  t.is(db.behind, far)
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  afterFirstBoot(again, async () => {
+    again._onfuture(again.version + 1)
+    await waitFor(
+      async () => again.behind === far || (await marker(again, 'cero/behind')) === again.version + 1
+    )
+  })
+  await again.ready()
+  t.is(again.behind, far, 'still behind the newest version it skipped')
+})
+
+test('gate: a newer write applied as the database opens, its marker not stored yet, holds it back all the same', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { key, keyPair, encryptionKey } = db
+  const future = db.version + 1
+  await db.close()
+
+  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  afterFirstBoot(again, () => again._onfuture(future))
+  await again.ready()
+  t.is(again.behind, future, 'behind from this open on')
+  const err = await again.put('messages', { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'and it does not write')
+})
+
+test('gate: a marker still on its way to the store when a rebuild begins costs nothing: the rebuild runs, and nothing is reported', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { wrap } = await import('../../src/database/envelope.js')
+  const next = db.version + 1
+  const id = genId()
+  await db.bee.append(wrap(next, spec.dispatch.encode('@cero/add-messages', { id, text: 'next' })))
+  await db.bee.update()
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const errors = []
+  const updated = { ...spec, meta: { ...spec.meta, version: next } }
+  const again = new Database({
+    store,
+    identity,
+    spec: updated,
+    key,
+    keyPair,
+    encryptionKey,
+    onerror: (err) => errors.push(err)
+  })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  // a writer's op one version further is applied during the boot: its markers are not stored yet
+  // when the open decides to rebuild
+  afterFirstBoot(again, () => {
+    again._skip(next + 1)
+    again._onfuture(next + 1)
+  })
+  await again.ready()
+  t.alike(
+    errors.map((e) => e.message),
+    [],
+    'nothing reported'
+  )
+  t.ok((await again.get('messages', id)).data, 'and the write this build can apply is applied')
+})
+
+// runs `fn` once the stored record of what a database applied is wiped, where a batch its bee applied would
+// store it again and cancel the rebuild
+function onWipe(t, fn) {
+  const set = Hypercore.prototype.setUserData
+  let first = true
+  Hypercore.prototype.setUserData = async function (name, value) {
+    await set.call(this, name, value)
+    if (!first || name !== 'autobee/head' || value !== null) return
+    first = false
+    await fn()
+  }
+  t.teardown(() => (Hypercore.prototype.setUserData = set))
+}
+
+// an op from a peer, landing in a database whose bee is still open
+async function lands(db, version) {
+  if (db.bee.closing || db.bee.closed) return false
+  const { wrap } = await import('../../src/database/envelope.js')
+  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'late' })
+  await db.bee.append(wrap(version, op))
+  await db.bee.update()
+  return true
+}
+
+test('gate: an op that lands as an update rebuilds the view does not cancel the rebuild', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { wrap } = await import('../../src/database/envelope.js')
+  const next = db.version + 1
+  const id = genId()
+  await db.bee.append(wrap(next, spec.dispatch.encode('@cero/add-messages', { id, text: 'next' })))
+  await db.bee.update()
+  t.is(db.behind, next, 'skipped on this build')
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const updated = { ...spec, meta: { ...spec.meta, version: next } }
+  const again = new Database({ store, identity, spec: updated, key, keyPair, encryptionKey })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  let landed = null
+  onWipe(t, async () => (landed = await lands(again, next)))
+  await again.ready()
+  t.is(landed, false, 'nothing lands once the record is wiped: its bee is closed')
+  t.ok((await again.get('messages', id)).data, 'and the skipped write is applied')
+})
+
+test('gate: an op that lands as newer rules rebuild the view does not cancel the rebuild', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'old' })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const meta = { ...spec.meta, rules: spec.meta.rules + 1 }
+  const again = new Database({
+    store,
+    identity,
+    spec: { ...spec, meta },
+    key,
+    keyPair,
+    encryptionKey
+  })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  const seen = []
+  again.after('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.id)))
+  let landed = null
+  onWipe(t, async () => (landed = await lands(again, again.version)))
+  await again.ready()
+  t.is(landed, false, 'nothing lands once the record is wiped')
+  t.ok(seen.includes(row.id), 'and the old row is applied again under the new rules')
+})
+
+test('gate: a rebuild cut short before the applied log was wiped is done at the next open', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'old' })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  // the ids of the messages a hook saw while the database opened under newer rules, and how the open ended
+  const meta = { ...spec.meta, rules: spec.meta.rules + 1 }
+  const open = async (cut) => {
+    const seen = []
+    const again = new Database({
+      store,
+      identity,
+      spec: { ...spec, meta },
+      key,
+      keyPair,
+      encryptionKey
+    })
+    again.after('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.id)))
+    // the device dies as the rebuild is about to wipe the applied log
+    const set = Hypercore.prototype.setUserData
+    if (cut) {
+      Hypercore.prototype.setUserData = async function (name, value) {
+        if (name === 'autobee/head' && value === null) throw new Error('power cut')
+        return set.call(this, name, value)
+      }
+    }
+    const err = await again.ready().then(
+      () => null,
+      (e) => e
+    )
+    Hypercore.prototype.setUserData = set
+    await again.close().catch(() => {})
+    return { seen, err }
+  }
+  const first = await open(true)
+  t.is(first.err?.message, 'power cut', 'the first open under the new rules dies before the wipe')
+  t.alike((await open(false)).seen, [row.id], 'the next one applies the log again')
+  t.alike((await open(false)).seen, [], 'and only that once')
+})
+
 test('gate: a view applied under older rules applies its log again, once', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
   const { data: row } = await db.put('messages', { text: 'old' })
