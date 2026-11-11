@@ -10,7 +10,8 @@ export const defs = {
     members: { type: 'member' },
     devices: { type: 'device' },
     invites: { type: 'invite' },
-    handles: { type: 'handle' },
+    // the handles not settled are read through it, never every row
+    handles: { type: 'handle', indexes: { state: ['state'] } },
     files: { type: 'file' },
     requests: { type: 'request' }
   },
@@ -121,6 +122,7 @@ export function refs(ns, scope) {
         path: [name],
         internal: true,
         ...(scope === 'main' && declare({ verb: def.type }, schemas.main[def.type])),
+        ...(def.indexes && { indexes: def.indexes }),
         schema: `@${ns}/${def.type}`
       }
     ])
@@ -163,6 +165,21 @@ export function collections(ns, scope) {
     out.push({ name: SPENT, schema: `@${ns}/spent`, key: ['id'] })
   }
   return out
+}
+
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, collection: string, key: string[] }>}
+ */
+export function indexes(ns, scope) {
+  return Object.entries(defs[scope]).flatMap(([name, def]) =>
+    Object.entries(def.indexes || {}).map(([idx, key]) => ({
+      name: `${name}-${idx}`,
+      collection: `@${ns}/${name}`,
+      key
+    }))
+  )
 }
 
 /**

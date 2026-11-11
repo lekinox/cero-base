@@ -76,6 +76,32 @@ export const chainOf = ({ key, proof }) => [...Identity.chain(proof).slice(1), k
 // and alone verifies as nothing
 export const linkOf = (proof) => (Identity.verify(proof, null) ? proof : null)
 
+// where an identity stands in a handle, and where each state leads: one with none is over
+const STATES = {
+  asking: ['joining', 'denied', 'expired', 'cancelled'],
+  joining: ['in', 'denied'],
+  in: ['leaving', 'removed'],
+  leaving: ['left', 'removed'],
+  left: [],
+  removed: [],
+  denied: [],
+  expired: [],
+  cancelled: []
+}
+
+// a handles row with no state is `in`. One that is over is asked again under another invite, and
+// a denied one is let in under its own, by another device of the identity
+function moves(was, row) {
+  const to = row.state || 'in'
+  if (!STATES[to]) return false
+  if (!was) return true
+  const from = was.state || 'in'
+  if (from === to || STATES[from].includes(to)) return true
+  if (STATES[from].length || !row.invite) return false
+  if (to === 'asking') return row.invite !== was.invite
+  return from === 'denied' && to === 'joining' && row.invite === was.invite
+}
+
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -1078,8 +1104,15 @@ export function makeDispatcher({
   add('set-file', update('files', true))
   add('del-file', remove('files', true))
 
-  add('add-handle', upsert('handles', COLLECTION, false))
-  add('set-handle', update('handles', false))
+  // held to its states on every peer, so a device with an older picture writes over no newer one
+  const stands = (write) => async (op, ctx) => {
+    if (!moves(await ctx.view.get(col('handles'), { id: op.id }), op)) {
+      throw CeroError.REFUSED('state')
+    }
+    return write(op, ctx)
+  }
+  add('add-handle', stands(upsert('handles', COLLECTION, false)))
+  add('set-handle', stands(update('handles', false)))
   add('del-handle', remove('handles', false))
 
   for (const [name, info] of Object.entries(spec.meta?.refs || {})) {

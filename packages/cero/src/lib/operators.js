@@ -165,6 +165,13 @@ const parentStore = (ref) => (ref.handle.root ? ref.handle.root.store : ref.hand
 const ofType = (ref, q) => (typeof q === 'string' ? q : { ...q, type: ref.name })
 const typed = (row, name) => ({ data: row?.type === name ? row : null })
 
+// a handles row with no state is one of a handle the identity is in
+const stand = (row) => (row && !row.state ? { ...row, state: 'in' } : row)
+const standing = (res) =>
+  res?.data
+    ? { ...res, data: Array.isArray(res.data) ? res.data.map(stand) : stand(res.data) }
+    : res
+
 function resolveResult(ref, res) {
   if (res == null || res.data == null) return res
   const data = Array.isArray(res.data)
@@ -208,10 +215,10 @@ export async function get(ref, q) {
   if (live) return live.get(q)
   if (ref.kind === 'handle') {
     const res = await parentStore(ref).get('handles', ofType(ref, q))
-    return typeof q === 'string' ? typed(res.data, ref.name) : res
+    return standing(typeof q === 'string' ? typed(res.data, ref.name) : res)
   }
-  const res = await ref.handle.store.get(ref.name, q)
-  return resolveResult(ref, res)
+  const res = resolveResult(ref, await ref.handle.store.get(ref.name, q))
+  return ref.name === 'handles' ? standing(res) : res
 }
 
 /**
@@ -273,9 +280,16 @@ function source(ref, q) {
   }
   if (ref.kind === 'handle') {
     const map = typeof q === 'string' ? (snap) => typed(snap?.data, ref.name) : (res) => res
-    return { src: parentStore(ref).watch('handles', ofType(ref, q)), map }
+    return {
+      src: parentStore(ref).watch('handles', ofType(ref, q)),
+      map: (res) => standing(map(res))
+    }
   }
-  return { src: ref.handle.store.watch(ref.name, q), map: (res) => resolveResult(ref, res) }
+  const map = (res) => resolveResult(ref, res)
+  return {
+    src: ref.handle.store.watch(ref.name, q),
+    map: ref.name === 'handles' ? (res) => standing(map(res)) : map
+  }
 }
 
 // snapshots are idempotent: a slow reader gets only the newest

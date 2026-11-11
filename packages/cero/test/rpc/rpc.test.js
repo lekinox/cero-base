@@ -503,6 +503,19 @@ test('rpc: client.create(type) opens a child handle on the server', async (t) =>
   void me
 })
 
+test('rpc: a room reads as in over the bridge, and its state once it has one', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'clinic' })
+  t.is((await get(client.team, team.id)).data.state, 'in', 'by id')
+  t.alike(
+    (await get(client.team)).data.map((row) => row.state),
+    ['in'],
+    'and in a list'
+  )
+  await me.store.set('handles', { id: team.id, state: 'leaving' })
+  t.is((await get(client.team, team.id)).data.state, 'leaving')
+})
+
 test('rpc: a room created while the root closes rejects with CLOSED', async (t) => {
   const { me, client } = await openPair(t)
   const creating = open(client.team, { name: 'clinic' })
