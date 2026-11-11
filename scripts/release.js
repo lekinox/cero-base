@@ -191,7 +191,9 @@ run('node scripts/smoke-install.js', { force: true })
 
 // 7. Git commit + tag
 console.log('\nCommitting...')
-run('git add -A')
+run(
+  `git add package.json package-lock.json CHANGELOG.md ${PACKAGES.map((dir) => `${dir}/package.json ${dir}/types`).join(' ')}`
+)
 run(`git commit -m "release: v${next}"`)
 run(`git tag v${next}`)
 
