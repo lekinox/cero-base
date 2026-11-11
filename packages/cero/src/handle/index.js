@@ -457,14 +457,15 @@ export class Handle extends ReadyResource {
 
   /**
    * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once,
+   * after any `cero.link` or `cero.restore` on it: one still waiting stops, one taking its place finishes first.
    * @returns {Promise<void>}
    */
   close() {
     if (!this.parent) {
-      // a link or a restore still waiting stops with the root, one taking its place finishes first
+      // one swap may wait behind another: the root ends once none is left
       const swap = this._swap
-      if (swap) return (swap.committing ? swap.done : swap.abort()).then(() => this._end())
+      if (swap) return (swap.committing ? swap.done : swap.abort()).then(() => this.close())
       return this._end()
     }
     if (this._refs > 1) {

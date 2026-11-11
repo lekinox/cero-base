@@ -127,9 +127,10 @@ channel and mirrors included, and recovers it like a new device. Only once it ha
 close `me`, delete its data and resolve with the new one. Until then `me` stays open and untouched:
 `TIMEOUT` when no device of that identity answers, or a bad phrase, leaves this device as it was, so
 retry later. Closing `me` while it waits ends it with `CLOSED`, and the next launch opens the identity
-`me` had. A swap that dies part way is finished or undone the next time `cero(dir, spec)` opens the
-directory. Another phrase in `cero()` on a used directory is `INVALID`: switching goes through
-`cero.restore`.
+`me` had. Once the new identity has opened the swap goes through: a close of `me` waits for it, and
+`cero.restore` or `cero.link` still resolves with the new `me`, open, for the app to close. A swap
+that dies part way is finished or undone the next time `cero(dir, spec)` opens the directory. Another
+phrase in `cero()` on a used directory is `INVALID`: switching goes through `cero.restore`.
 
 A phrase that is already `me`'s returns `me` unchanged. A client makes the same call.
 

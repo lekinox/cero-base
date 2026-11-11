@@ -613,6 +613,23 @@ test('rpc: the root closing while a restore looks for a device ends it CLOSED on
   await t.exception(restoring, /CLOSED/)
 })
 
+test('rpc: the server closing as a link takes the root’s place closes the linked root too', async (t) => {
+  const { me, server, client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+  let closing = null
+  // the root closing under the swap: the commit is under way
+  me.own({ destroy: () => (closing = server.close()) })
+  link(client, await cero.invite(other)).catch(() => {})
+  await accept(other, await nextRequest(other))
+  await waitUntil(() => closing !== null)
+  await closing
+  // an open root would still hold the directory
+  const again = await cero(me._dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(again.id, other.id, 'the linked identity, its store let go')
+})
+
 test("rpc: the worker's background errors reach the client's onerror", async (t) => {
   let report
   const seen = new Promise((resolve) => (report = resolve))

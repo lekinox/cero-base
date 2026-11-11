@@ -195,6 +195,10 @@ async function start(dir, spec, opts = {}) {
             timeout
           }
     })
+    // stopped before it has its seat, it stops waiting: the device that seats it may be gone. Seated, it opens whole
+    opts.signal?.addEventListener('abort', () => {
+      if (!me.store.writable) me.store.close().catch(safetyCatch)
+    })
     // an extension's hooks see every op the root applies; what else it calls waits for the open
     const setups = Promise.all(me.extensions.map(async (ext) => ext.setup?.(me)))
     setups.catch(() => {}) // a failed setup surfaces below, once the root can close

@@ -295,7 +295,8 @@ export declare class Handle extends ReadyResource {
     private _leave;
     /**
      * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-     * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+     * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once,
+     * after any `cero.link` or `cero.restore` on it: one still waiting stops, one taking its place finishes first.
      * @returns {Promise<void>}
      */
     close(): Promise<void>;
