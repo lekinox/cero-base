@@ -1350,8 +1350,14 @@ export class Database extends ReadyResource {
   /** @private */
   async _standing(promised) {
     const { data: member } = await this.get('members', this.identity.id)
-    if (member || !promised) return member
+    if (!promised) return member
     const { data: requests } = await this.get('requests')
+    // a core that wrote already, its join or an earlier claim, claims once the view holds what it
+    // wrote: appended on a view still catching up with it, a claim is lost
+    const id = hid.encode(this.writerKey)
+    const landed = requests.some((row) => row.id === id) || (await this.get('devices', id)).data
+    if (this.length > 0 && !landed) return null
+    if (member) return member
     const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
     const first = requests.find(mine)
     return first ? { role: first.role, promised: true } : null

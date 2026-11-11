@@ -1731,6 +1731,54 @@ test("promised: a member's other device let in by an invite gets its keys, and i
   t.pass('settled once its own device is seated')
 })
 
+test("promised: a member's device that joined claims only once its view holds its own join", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const invite = await host.pairing.invite({ reuse: true })
+  const first = await opened(t, joiner, await joiner.join(invite))
+  await first.claim()
+
+  const other = await makeMailbox(t, testnet)
+  const device = Identity.randomKeyPair()
+  const proof = joiner.identity.link(device.publicKey)
+  const identity = Identity.from({ ...joiner.identity, device, proof })
+  const reply = await Pairing.join(other.mailbox, invite, { identity, spec: built })
+  const db = await opened(t, { net: other.net, identity }, reply)
+  // its view as one still catching up: its member's row is there, what its own join wrote is not
+  const get = db.get.bind(db)
+  let behind = true
+  let looked = 0
+  db.get = async (name, query) => {
+    if (name === 'members') looked++
+    if (!behind || (name !== 'requests' && name !== 'devices')) return get(name, query)
+    return { data: typeof query === 'string' ? null : [] }
+  }
+  const claiming = db.claim()
+  await waitFor(() => looked > 0)
+  const early = await waitFor(() => db.length > 1, { timeout: 1500 }).catch(() => false)
+  t.absent(early, 'no claim is appended ahead of its own join')
+
+  behind = false
+  db.emit('update', new Set(['requests']))
+  await claiming
+  await waitFor(() => db.writable)
+  t.is(db.length, 2, 'once its view holds its join, it claims')
+})
+
+test('promised: a writer that joins again under another invite is answered under that one', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const writer = crypto.keyPair()
+  await joiner.join(await host.pairing.invite(), { writer })
+  const [{ id }] = await promises(host.db)
+  const earlier = host.pairing._replies.get(id)
+
+  const again = await joiner.join(await host.pairing.invite(), { writer, timeout: 8000 })
+  t.alike(again.key, host.db.key, 'its second join gets its keys')
+  t.not(host.pairing._replies.get(id), earlier, 'in a post made for the row as it now stands')
+  t.ok(earlier.closing || earlier.closed, 'and the earlier one is let go')
+})
+
 test('promised: an inviter settles a promise once its device is seated, and a device that did not hear the join learns of the member from that write', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })

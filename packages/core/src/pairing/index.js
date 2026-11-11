@@ -333,12 +333,13 @@ export class Pairing extends ReadyResource {
     }
   }
 
-  // posts each live row its answer once, closes those settled elsewhere, returns those past expiry
+  // posts each live row its answer once, closes those settled elsewhere or made for a row since
+  // written again under another invite, returns those past expiry
   /** @private */
   _offer(posts, rows, answer, settled) {
-    const live = new Set(rows.map((row) => row.id))
+    const live = new Map(rows.map((row) => [row.id, row.invite]))
     for (const [id, post] of posts) {
-      if (live.has(id)) continue
+      if (live.has(id) && live.get(id) === post.invite) continue
       posts.delete(id)
       post.close().catch(safetyCatch)
     }
@@ -358,9 +359,11 @@ export class Pairing extends ReadyResource {
 
   // kept in memory, not in the outbox: the row in the log is what outlives a restart
   /** @private */
-  _post(posts, { id, reply }, answer, settled) {
+  _post(posts, { id, reply, invite }, answer, settled) {
     const { network } = this.mailbox
     const post = new Post(network, reply, answer, { mirrors: network.mirrors })
+    // the invite its answer is tagged under
+    post.invite = invite
     posts.set(id, post)
     const settle = async () => {
       await post.ready()
