@@ -262,7 +262,7 @@ The invite string carries:
 - `seed`, whose keypair proves the join.
 - `link`, the node that added the invite's record. The join links it, so no member applies a join before its invite, even one minted on a device that was offline.
 - `expires`, and `data`, an optional payload the app reads before joining.
-- `stamp`, the version of the database its record was written at. The join is written at it too, and `Pairing.join` throws `BEHIND` on an app built below it: update the app, then join. Once the database is past the version it started at, a Cero release from before the stamp refuses the invite with `INVALID_INVITE`, as a release from before invites had an address of their own refuses one that has.
+- `stamp`, the version of the database its record was written at. The join is written at it too, and `Pairing.join` throws `BEHIND` on an app built below it: update the app, then join. Once the database is past the version it started at, a Cero release from before the stamp refuses the invite with `INVALID_INVITE`, as it does any invite with an address of its own.
 
 It names no mirrors: each side waits on its own network's, so give every device the same ones. The database keeps the invite's public id, role, expiry, and whether it is reusable or needs confirming, never its seed. With an address of its own it also keeps that address's secret, so every device that has the record opens the invite's joins and proves their answers. `ttl` is ms or a duration like `'12h'`. A reusable invite grants member at most, so a higher rank is handed out once.
 

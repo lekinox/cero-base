@@ -74,6 +74,12 @@
           "required": false,
           "type": "uint",
           "version": 2
+        },
+        {
+          "name": "own",
+          "required": false,
+          "type": "bool",
+          "version": 3
         }
       ]
     },
@@ -183,12 +189,6 @@
           "required": false,
           "type": "buffer",
           "version": 1
-        },
-        {
-          "name": "tag",
-          "required": false,
-          "type": "buffer",
-          "version": 3
         }
       ]
     },

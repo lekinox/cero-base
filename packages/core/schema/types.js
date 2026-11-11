@@ -26,7 +26,9 @@ export const types = [
       { name: 'seed', type: 'fixed32', required: true },
       { name: 'link', type: '@cero/link', required: true },
       { name: 'data', type: 'buffer', required: false },
-      { name: 'stamp', type: 'uint', required: false }
+      { name: 'stamp', type: 'uint', required: false },
+      // the address is the invite's own, not the room's: its join names it, its answers are tagged
+      { name: 'own', type: 'bool', required: false }
     ]
   },
   // Pairing join — sealed to the room's address, in the joiner's own writer core. `signature` is
@@ -63,9 +65,7 @@ export const types = [
       { name: 'encryptionKey', type: 'buffer', required: false },
       { name: 'epochs', type: '@cero/epoch', required: false, array: true },
       // a device admitted under a member: its chain to the identity, as the accepter wrote it
-      { name: 'proof', type: 'buffer', required: false },
-      // on an invite with its own address: proves the answer comes from a holder of its secret
-      { name: 'tag', type: 'buffer', required: false }
+      { name: 'proof', type: 'buffer', required: false }
     ]
   },
 

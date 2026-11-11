@@ -826,9 +826,11 @@ export function makeDispatcher({
     join.identity = signed.identity
     const id = hid.encode(ctx.key)
     const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
+    const record = invite ?? (await ctx.view.get(spent, { id: b4a.toHex(join.invite) }))
+    // an invite with an address of its own is joined by name only
+    if (record?.secret && !op.invite) return
     if (!invite) {
       // an invite the database never held could be anyone's: nobody answers it
-      const record = await ctx.view.get(spent, { id: b4a.toHex(join.invite) })
       if (!record) return
       const turned = { id, reply: join.reply, expires: record.expires, invite: record.id }
       return refuse(ctx, turned, record.reason)

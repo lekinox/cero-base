@@ -1,6 +1,7 @@
 export declare const STATUS_ACCEPTED = 0;
 export declare const STATUS_DENIED = 1;
-export type Answer = {
+/** @type {import('compact-encoding').Encoder<{ status: number, reason?: string, key?: Uint8Array | null, encryptionKey?: Uint8Array | null, epochs?: Array<{ epoch: number, stamp: number, entropy: Uint8Array }> | null }>} */
+export declare const Response: import('compact-encoding').Encoder<{
     status: number;
     reason?: string;
     key?: Uint8Array | null;
@@ -10,30 +11,24 @@ export type Answer = {
         stamp: number;
         entropy: Uint8Array;
     }> | null;
-    proof?: Uint8Array | null;
-    tag?: Uint8Array | null;
-};
+}>;
 /**
- * @typedef {{ status: number, reason?: string, key?: Uint8Array | null, encryptionKey?: Uint8Array | null, epochs?: Array<{ epoch: number, stamp: number, entropy: Uint8Array }> | null, proof?: Uint8Array | null, tag?: Uint8Array | null }} Answer
- */
-/** @type {import('compact-encoding').Encoder<Answer>} */
-export declare const Response: import('compact-encoding').Encoder<Answer>;
-/**
- * An answer's tag, keyed by what the invite's address and the joiner's reply address share: each
- * end makes it from its own secret key and the other's address, and nobody else can.
+ * The tag of an encoded answer, keyed by what the invite's address and the joiner's reply address
+ * share: each end makes it from its own secret key and the other's address, and nobody else can.
  *
- * @param {Answer} answer
+ * @param {Uint8Array} answer     The answer as it is sent.
  * @param {Uint8Array} secretKey  This end's secret key.
  * @param {Uint8Array} publicKey  The other end's address.
  * @returns {Uint8Array | null}   Null for an address that shares nothing.
  */
-export declare function tag(answer: Answer, secretKey: Uint8Array, publicKey: Uint8Array): Uint8Array | null;
+export declare function tag(answer: Uint8Array, secretKey: Uint8Array, publicKey: Uint8Array): Uint8Array | null;
 /**
- * Whether an answer carries the tag its two ends make.
+ * The answer in a message that starts with its tag: the bytes after it, null when the tag is not
+ * the one its two ends make over them.
  *
- * @param {Answer | null} answer
+ * @param {Uint8Array} message
  * @param {Uint8Array} secretKey
  * @param {Uint8Array} publicKey
- * @returns {boolean}
+ * @returns {Uint8Array | null}
  */
-export declare function proven(answer: Answer | null, secretKey: Uint8Array, publicKey: Uint8Array): boolean;
+export declare function proven(message: Uint8Array, secretKey: Uint8Array, publicKey: Uint8Array): Uint8Array | null;

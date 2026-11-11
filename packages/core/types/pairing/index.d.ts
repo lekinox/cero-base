@@ -142,7 +142,7 @@ export type JoinResult = {
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
  * Where the database's version keeps an invite's secret on its record, the invite has an address
- * of its own: its joins are sealed to it, and its answers carry the tag only that secret and the
+ * of its own: its joins are sealed to it, and its answers follow the tag only that secret and the
  * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */

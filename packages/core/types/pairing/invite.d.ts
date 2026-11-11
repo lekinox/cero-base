@@ -1,5 +1,4 @@
 export declare const STAMPED = 2;
-export declare const PROVEN = 3;
 export type InviteFields = {
     /**
      * Absolute expiry timestamp; `0` means never.
@@ -33,9 +32,13 @@ export type InviteFields = {
      */
     stamp?: number;
     /**
-     * The invite's form: `PROVEN` with an address of its own, else `STAMPED` once the stamp is past its database's start.
+     * The invite's form: `STAMPED` once the stamp is past its database's start, or with an address of its own.
      */
     version?: number;
+    /**
+     * Whether the address is the invite's own: its join names it and its answers are tagged.
+     */
+    own?: boolean;
 };
 /**
  * @typedef {object} InviteFields
@@ -46,7 +49,8 @@ export type InviteFields = {
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
- * @property {number} [version]         The invite's form: `PROVEN` with an address of its own, else `STAMPED` once the stamp is past its database's start.
+ * @property {number} [version]         The invite's form: `STAMPED` once the stamp is past its database's start, or with an address of its own.
+ * @property {boolean} [own]            Whether the address is the invite's own: its join names it and its answers are tagged.
  */
 /**
  * An invite: the database it opens, the address a join is sealed to, its own or the database's,
@@ -65,12 +69,13 @@ export declare class Invite {
     };
     data: Uint8Array<ArrayBufferLike>;
     stamp: number;
+    own: boolean;
     /** @private */
     _str;
     /** @private */
     _keyPair;
     /** @param {InviteFields & { _str?: string }} fields */
-    constructor({ version, expires, key, address, seed, link, data, stamp, _str }: InviteFields & {
+    constructor({ version, expires, key, address, seed, link, data, stamp, own, _str }: InviteFields & {
         _str?: string;
     });
     /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */
@@ -103,10 +108,10 @@ export declare class Invite {
     /**
      * A new invite with a fresh seed.
      *
-     * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null }} opts
+     * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null, own?: boolean }} opts
      * @returns {Invite}
      */
-    static create({ ttl, key, address, link, data }: {
+    static create({ ttl, key, address, link, data, own }: {
         ttl?: number | string;
         key: Uint8Array;
         address: Uint8Array;
@@ -115,6 +120,7 @@ export declare class Invite {
             length: number;
         } | null;
         data?: Uint8Array | null;
+        own?: boolean;
     }): Invite;
     /**
      * Parse an invite string.

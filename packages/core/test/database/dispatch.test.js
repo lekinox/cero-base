@@ -1182,6 +1182,26 @@ test("join: one that names an invite is skipped where its row holds no secret, o
   t.absent((await db.get('members', identity.id)).data, "one that names none is the room's to open")
 })
 
+test('join: one on an invite whose row holds a secret is skipped unless it names it', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db)
+  const id = b4a.toHex(invite.id)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  // sealed to the room's address, as a join on an invite with none of its own
+  const unnamed = () => joinOp(db, invite, { identity, writer })
+  t.is(await apply(db, writer, 'join', unnamed()), null, 'skipped, not refused')
+  t.absent((await db.get('members', identity.id)).data, 'on a live one: nobody admitted')
+  t.ok((await db.get('invites', id)).data, 'and the invite is not spent')
+
+  await db.call('del-invite', { id })
+  t.ok((await spent(db, id))?.secret, 'revoked, its row keeps the secret')
+  t.is(await apply(db, writer, 'join', unnamed()), null)
+  t.absent(await refusal(db, hid.encode(writer)), 'on a spent one: not answered')
+  await apply(db, writer, 'join', named(db, invite, { identity, writer }))
+  t.is((await refusal(db, hid.encode(writer)))?.reason, 'revoked', 'named, it hears why')
+})
+
 test('join: one whose box holds another invite than it names is skipped', async (t) => {
   const { db } = await withRole(t, 'owner')
   const one = await addressed(db, { reuse: true })

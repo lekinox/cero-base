@@ -6,7 +6,7 @@ import crypto from 'hypercore-crypto'
 import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
-import { Invite, STAMPED, PROVEN } from './invite.js'
+import { Invite, STAMPED } from './invite.js'
 import { Response, STATUS_ACCEPTED, STATUS_DENIED, tag, proven } from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
@@ -62,7 +62,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
  * Where the database's version keeps an invite's secret on its record, the invite has an address
- * of its own: its joins are sealed to it, and its answers carry the tag only that secret and the
+ * of its own: its joins are sealed to it, and its answers follow the tag only that secret and the
  * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
@@ -129,7 +129,7 @@ export class Pairing extends ReadyResource {
 
     const secret = await this._secret()
     const address = secret ? Mailbox.getAddress(secret) : this.db.address
-    const invite = Invite.create({ ttl, data, key: this.db.key, address })
+    const invite = Invite.create({ ttl, data, key: this.db.key, address, own: !!secret })
     const row = {
       id: b4a.toHex(invite.id),
       role,
@@ -140,20 +140,19 @@ export class Pairing extends ReadyResource {
       secret
     }
     invite.stamp = await this.db.write([['add-invite', row]])
-    if (secret) invite.version = PROVEN
-    else if (invite.stamp > this.db.start) invite.version = STAMPED
+    if (secret || invite.stamp > this.db.start) invite.version = STAMPED
     invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()
   }
 
-  // an invite's own address needs its secret on its row: none where the database's version has no
-  // such field, and the invite carries the room's address
+  // an invite's own address needs its secret on its row: none where the built spec has no such
+  // field, or the database's version has not reached it, and the invite carries the room's address
   /** @private */
   async _secret() {
-    const secret = crypto.randomBytes(32)
+    const since = this.db.meta.since?.types[`@${this.db.ns}/invite`]?.secret
     const version = await this.db.dispatcher.version(this.db.view)
-    return this.db.dispatcher.cut(`@${this.db.ns}/add-invite`, { secret }, version).secret ?? null
+    return since <= version ? crypto.randomBytes(32) : null
   }
 
   /**
@@ -401,7 +400,7 @@ export class Pairing extends ReadyResource {
     const parsed = Invite.parse(invite)
     if (parsed.expired) throw CeroError.EXPIRED()
     // an invite with its own address proves its answers: one without a valid tag is nobody's
-    const mine = parsed.version === PROVEN ? Mailbox.keyPair(writer.secretKey) : null
+    const mine = parsed.own ? Mailbox.keyPair(writer.secretKey) : null
     // an invite with no stamp was minted before invites carried one: at the start
     const { version = 1, start = 1 } = spec.meta || {}
     const stamp = parsed.stamp || start
@@ -429,8 +428,8 @@ export class Pairing extends ReadyResource {
     // inbox keeps none of it
     const onreply = async (message) => {
       if (settling) return false
-      const response = decode(Response, message)
-      if (mine && !proven(response, mine.secretKey, parsed.address)) return false
+      const answer = mine ? proven(message, mine.secretKey, parsed.address) : message
+      const response = answer && decode(Response, answer)
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
       } else if (
@@ -509,7 +508,7 @@ export function sealJoin(invite, identity, writer, reply) {
     ts: Date.now()
   }
   const box = crypto.encrypt(c.encode(Join, join), invite.address)
-  return invite.version === PROVEN ? { box, invite: invite.id } : { box }
+  return invite.own ? { box, invite: invite.id } : { box }
 }
 
 // one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
@@ -533,10 +532,11 @@ function owns({ encryptionKey }, invite) {
   return !!encryptionKey && b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
 }
 
-// an answer under an invite with a secret carries the tag it makes with the reply address
+// an answer under an invite with a secret follows the tag it makes with the reply address
 function seal(answer, secret, reply) {
-  const proof = secret ? tag(answer, Mailbox.keyPair(secret).secretKey, reply) : null
-  return c.encode(Response, { ...answer, tag: proof })
+  const message = c.encode(Response, answer)
+  const proof = secret ? tag(message, Mailbox.keyPair(secret).secretKey, reply) : null
+  return proof ? b4a.concat([proof, message]) : message
 }
 
 function expired({ expires }) {

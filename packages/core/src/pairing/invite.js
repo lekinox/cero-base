@@ -8,10 +8,9 @@ import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 
 const VERSION = 1
-// an invite past its database's start: a release from before the stamp refuses it instead of joining
+// an invite past its database's start, or with an address of its own: a release from before the
+// stamp refuses it instead of joining
 export const STAMPED = 2
-// an invite with an address of its own: its joins name it and its answers are proven
-export const PROVEN = 3
 const Encoding = getEncoding('@cero/invite')
 const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
 
@@ -24,7 +23,8 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
- * @property {number} [version]         The invite's form: `PROVEN` with an address of its own, else `STAMPED` once the stamp is past its database's start.
+ * @property {number} [version]         The invite's form: `STAMPED` once the stamp is past its database's start, or with an address of its own.
+ * @property {boolean} [own]            Whether the address is the invite's own: its join names it and its answers are tagged.
  */
 
 /**
@@ -43,6 +43,7 @@ export class Invite {
     link = null,
     data = null,
     stamp = 0,
+    own = false,
     _str = null
   }) {
     this.version = version
@@ -53,6 +54,7 @@ export class Invite {
     this.link = link
     this.data = data
     this.stamp = stamp
+    this.own = own
     /** @private */
     this._str = _str
     /** @private */
@@ -112,10 +114,10 @@ export class Invite {
   /**
    * A new invite with a fresh seed.
    *
-   * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null }} opts
+   * @param {{ ttl?: number | string, key: Uint8Array, address: Uint8Array, link?: { key: Uint8Array, length: number } | null, data?: Uint8Array | null, own?: boolean }} opts
    * @returns {Invite}
    */
-  static create({ ttl = 0, key, address, link = null, data = null }) {
+  static create({ ttl = 0, key, address, link = null, data = null, own = false }) {
     if (key?.byteLength !== 32) throw CeroError.INVALID('key must be a 32-byte buffer')
     if (address?.byteLength !== 32) throw CeroError.INVALID('address must be a 32-byte buffer')
     if (!sealable(address)) throw CeroError.INVALID('address cannot be sealed to')
@@ -127,7 +129,8 @@ export class Invite {
       address,
       seed: crypto.randomBytes(32),
       link,
-      data
+      data,
+      own
     })
   }
 
@@ -145,7 +148,7 @@ export class Invite {
     } catch {
       throw CeroError.INVALID_INVITE('not an invite')
     }
-    if (![VERSION, STAMPED, PROVEN].includes(fields.version)) {
+    if (fields.version !== VERSION && fields.version !== STAMPED) {
       throw CeroError.INVALID_INVITE('unknown invite version')
     }
     if (!sealable(fields.address)) throw CeroError.INVALID_INVITE('address cannot be sealed to')
