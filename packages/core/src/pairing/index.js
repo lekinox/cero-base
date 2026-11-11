@@ -11,7 +11,7 @@ import { Response, STATUS_ACCEPTED, STATUS_DENIED, tag, proven } from './respons
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
-import { chainOf } from '../database/dispatch.js'
+import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
@@ -310,7 +310,8 @@ export class Pairing extends ReadyResource {
     // a device linked under a member reads its chain off its seat, or off the promise of one
     const proofs = new Map()
     for (const { id, promised, proof } of owed) {
-      proofs.set(id, promised ? proof : ((await this.db.get('devices', id)).data?.proof ?? null))
+      const chain = promised ? linkOf(proof) : (await this.db.get('devices', id)).data?.proof
+      proofs.set(id, chain ?? null)
     }
     const keys = ({ id }) => ({
       status: STATUS_ACCEPTED,

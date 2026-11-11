@@ -1,5 +1,6 @@
 import ReadyResource from 'ready-resource'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import createTestnet from '@hyperswarm/testnet'
@@ -9,6 +10,7 @@ import ProtomuxRpcRouter from 'protomux-rpc-router'
 import HyperDHT from 'hyperdht'
 
 import { Network } from '@cero-base/core/network'
+import { Database } from '@cero-base/core/database'
 import { Identity } from '@cero-base/core/identity'
 
 import { cero, get } from '../../src/index.js'
@@ -119,6 +121,23 @@ export function nextRequest(room, after = null) {
     const { data } = await get(room.requests, { admitted: false })
     return data.find((r) => r.id !== after?.id) || null
   })
+}
+
+// a join through `invite` by `root`, where it runs, whose device opens the room with its keys and
+// claims its seat only once `first` ran and its own view shows its writer refused; `team` is the
+// ref as the app holds it
+export async function refusedAtClaim(t, root, team, invite, first) {
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  Database.prototype.claim = async function (opts) {
+    if (this.identity.id === root.id) {
+      await first()
+      const id = hid.encode(this.writerKey)
+      await waitUntil(() => this.view.get(`@${this.ns}/refusals`, { id }))
+    }
+    return claim.call(this, opts)
+  }
+  return cero.open(team, invite).catch((err) => err)
 }
 
 export async function waitUntil(fn, timeout = 30000, step = 50) {

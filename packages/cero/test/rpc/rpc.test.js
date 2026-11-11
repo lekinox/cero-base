@@ -32,7 +32,15 @@ import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
 import { spec as next } from '../fixtures/spec/next/index.js'
-import { makeTestnet, observe, waitUntil, fetch, nextRequest, joinsOf } from '../helpers/index.js'
+import {
+  makeTestnet,
+  observe,
+  waitUntil,
+  fetch,
+  nextRequest,
+  joinsOf,
+  refusedAtClaim
+} from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -944,6 +952,21 @@ test("rpc: the UI sees a confirm invite's requests and answers them", async (t) 
   const refused = open(bob.team, invite).catch((e) => e)
   await deny(room, await nextRequest(room, request), 'not now')
   t.is((await refused).code, 'DENIED', 'denied from the UI')
+})
+
+test('rpc: a promise withdrawn while the UI waits for its seat rejects DENIED, with the reason', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const room = await open(owner.team, { name: 'clinic' })
+  const promised = () =>
+    waitUntil(async () => (await get(room.requests)).data.find((r) => r.promised) || null)
+  const withdraw = async () => deny(room, await promised(), 'not you')
+
+  const err = await refusedAtClaim(t, me, client.team, await cero.invite(room), withdraw)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'not you')
+  t.is((await get(client.team)).data.length, 0, 'in no room')
 })
 
 test('rpc: a join denied to the UI rejects with the reason', async (t) => {

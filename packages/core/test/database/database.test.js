@@ -1507,6 +1507,15 @@ test('claim: appends nothing until the member row arrives', { timeout: 10000 }, 
   await t.exception(db.claim({ timeout: 200 }), /waiting for the member row timed out/)
 })
 
+test('claim: its wait looks again once the device writes, not only on an update', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  let seated = false
+  const waiting = db._member(2000, async () => seated)
+  seated = true
+  db.emit('writable')
+  t.ok(await waiting.catch(() => false), 'the seat ends it')
+})
+
 test("claim: a reader's second device takes no seat", async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()

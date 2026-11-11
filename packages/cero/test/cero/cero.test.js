@@ -43,6 +43,7 @@ import {
   waitUntil,
   nextRequest,
   joinsOf,
+  refusedAtClaim,
   ceroOpen
 } from '../helpers/index.js'
 
@@ -608,6 +609,24 @@ test('invites: a denial reaches the caller, or onerror once nobody waits', async
   await waitUntil(() => errors.length || null)
   t.is(errors[0].code, 'DENIED', 'a resumed join reports to onerror')
   t.alike(await joinsOf(back), [])
+})
+
+test('invites: a promise withdrawn while the joiner waits for its seat ends its open DENIED, with the reason', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  const promised = () =>
+    waitUntil(async () => (await get(room.requests)).data.find((r) => r.promised) || null)
+  const withdraw = async () => deny(room, await promised(), 'not you')
+
+  const invite = await cero.invite(room)
+  const err = await refusedAtClaim(t, joiner.me, joiner.me.team, invite, withdraw)
+  t.is(err.code, 'DENIED', 'the caller hears it')
+  t.is(err.reason, 'not you')
+  t.alike(await joinsOf(joiner.me), [], 'and the join is over')
+  t.is((await get(joiner.me.team)).data.length, 0, 'in no room')
+  t.absent((await get(room.members, joiner.me.id)).data, 'and no member of it')
 })
 
 // a join whose caller stopped waiting, landing once the owner is back
@@ -1648,24 +1667,41 @@ test('link: a removed device loses its seats in every handle, and the root rotat
   t.pass('the device writes nowhere')
 })
 
-// a new device accepted on `a` that stops waiting before its keys, left unread past the invite
-async function unread(t, a) {
+// a new device accepted on `a` that stops waiting before its keys: promised a seat it never takes
+async function accepted(t, a) {
   const invite = await cero.invite(a.me, { ttl: '6s' })
   const dir = await t.tmp()
   const opts = { bootstrap: a.testnet.bootstrap, invite, recoveryTimeout: 1500 }
   await t.exception(cero(dir, spec, opts), /TIMEOUT/)
   await cero.accept(a.me, await asked(a.me))
-  await waitUntil(async () => (await get(a.me.requests)).data.find((r) => r.admitted) || null)
+  const { id } = await waitUntil(
+    async () => (await get(a.me.requests)).data.find((r) => r.admitted) || null
+  )
+  return { dir, id }
+}
+
+// left unread past the invite, when its promise is withdrawn
+async function unread(t, a) {
+  const { dir } = await accepted(t, a)
   await waitUntil(async () => ((await get(a.me.requests)).data.length === 0 ? true : null))
   return dir
 }
 
-test('link: an accepted device that never reads its keys leaves the root writable', async (t) => {
+test("link: an accepted device that never reads its keys has no seat, its promise is denied at the invite's expiry, and the root stays writable", async (t) => {
   const a = await ceroOpen(t)
   await set(a.me.profile, { name: 'ana' })
-  await unread(t, a)
+  const denies = []
+  const call = a.me.store.call.bind(a.me.store)
+  a.me.store.call = (verb, row) => {
+    if (verb === 'deny') denies.push(row)
+    return call(verb, row)
+  }
+  const { id } = await accepted(t, a)
+  t.is((await get(a.me.devices)).data.length, 1, 'accepted, the unread device has no seat')
+  await waitUntil(async () => ((await get(a.me.requests)).data.length === 0 ? true : null))
+  t.alike(denies, [{ id, reason: 'expired' }], "its promise is denied at the invite's expiry")
+  t.is((await get(a.me.devices)).data.length, 1, 'and it never had one')
   t.ok(a.me.store.writable, 'the accepting device still writes to its root')
-  t.is((await get(a.me.devices)).data.length, 2, 'and the unread device keeps its seat')
   await set(a.me.profile, { name: 'still ana' })
   t.is((await get(a.me.profile)).data?.name, 'still ana')
 })

@@ -8,6 +8,7 @@ import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import { wrap } from '../../src/database/envelope.js'
+import { chainOf, linkOf } from '../../src/database/dispatch.js'
 import {
   makeStore,
   makeTestnet,
@@ -1417,11 +1418,12 @@ test("promise: a device removed takes its writer's request with it, and what its
   const again = Identity.randomKeyPair().publicKey
   await apply(db, writer, 'join', named(db, invite, { identity, writer }))
   t.is(await claimed(db, identity, writer), null)
-  // the same device let in once more on another writer, and another device of the member
+  // the same device let in once more on another writer, and another device of the member, which
+  // her phrase made: its chain does not pass through the first
   await apply(db, again, 'join', named(db, invite, { identity, writer: again }))
-  const tablet = linked(identity)
-  const other = tablet.writer.publicKey
-  await apply(db, other, 'join', named(db, invite, { identity: tablet.identity, writer: other }))
+  const tablet = await Identity.create({ seed: identity.seed })
+  const other = Identity.randomKeyPair().publicKey
+  await apply(db, other, 'join', named(db, invite, { identity: tablet, writer: other }))
   t.ok(await promise(db, writer), 'seated, its promise not settled yet')
 
   t.is(await apply(db, db.writerKey, 'del-device', { id: hid.encode(writer) }), null)
@@ -1516,6 +1518,65 @@ test('accept: a waiting join whose device key was removed since is refused', asy
   await db.view.insert(`@${db.ns}/removals`, { id: key, index: 0 })
   t.is((await apply(db, db.writerKey, 'accept', { id }))?.rule, 'removed')
   t.absent((await promise(db, writer))?.admitted, 'it is let in nowhere')
+})
+
+test('accept: a waiting join stands on the chain it proved: a device earlier on it removed, the accept is refused and the request goes with the removal', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db, { confirm: true, reuse: true })
+  const open = await addressed(db)
+  // her tablet, linked by her first device, asks in and waits; the first comes in by another invite
+  const stranger = await Identity.create()
+  const tablet = linked(stranger)
+  const waits = tablet.writer.publicKey
+  const id = hid.encode(waits)
+  await apply(db, waits, 'join', named(db, invite, { identity: tablet.identity, writer: waits }))
+  const first = stranger.device.publicKey
+  t.alike(chainOf(await promise(db, waits))[0], first, 'the row keeps the chain its join proved')
+  const sits = Identity.randomKeyPair().publicKey
+  await apply(db, sits, 'join', named(db, open, { identity: stranger, writer: sits }))
+  t.is(await claimed(db, stranger, sits), null)
+  t.absent((await promise(db, waits))?.admitted, 'still waiting')
+
+  // the removal recorded and the request still there, as a reorder leaves them
+  const removal = { id: hid.encode(first), index: 0 }
+  await db.view.insert(`@${db.ns}/removals`, removal)
+  t.is((await apply(db, db.writerKey, 'accept', { id }))?.rule, 'removed')
+  t.absent((await promise(db, waits))?.admitted, 'it is let in nowhere')
+  await db.view.delete(`@${db.ns}/removals`, removal)
+
+  t.is(await apply(db, db.writerKey, 'del-device', { id: hid.encode(sits) }), null)
+  t.absent(await promise(db, waits), 'removed for real, the request that stood on it goes')
+})
+
+test('promise: a join keeps its proof for its chain alone: its seat keeps no chain, a linked one keeps its link', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const stranger = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, await addressed(db), { identity: stranger, writer }))
+  const row = await promise(db, writer)
+  t.ok(row.proof, 'the promise keeps the proof of its join')
+  t.is(linkOf(row.proof), null, 'which is no link')
+  t.is(await claimed(db, stranger, writer), null)
+  t.is((await db.get('devices', hid.encode(writer))).data.proof, null, 'so its seat keeps none')
+
+  const device = Identity.randomKeyPair()
+  const other = Identity.randomKeyPair().publicKey
+  const bare = await Identity.bare(device)
+  const invite = await addressed(db, { confirm: true })
+  await apply(db, other, 'join', named(db, invite, { identity: bare, writer: other }))
+  const proof = identity.link(device.publicKey)
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(other), proof }), null)
+  t.alike(linkOf((await promise(db, other)).proof), proof, 'a link replaces it with its chain')
+
+  const guest = await Identity.create()
+  const late = Identity.randomKeyPair().publicKey
+  const asks = await addressed(db, { confirm: true })
+  await apply(db, late, 'join', named(db, asks, { identity: guest, writer: late }))
+  const { proof: proved } = await promise(db, late)
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(late) }), null)
+  const kept = await promise(db, late)
+  t.ok(kept.promised, 'accepted, a promise')
+  t.alike(kept.proof, proved, 'an accept that links nobody keeps it')
 })
 
 test('join: a removed member comes back only through an invite minted after its removal', async (t) => {

@@ -1628,6 +1628,8 @@ test("promised: a join leaves no member and no seat until the joiner's device cl
   const reply = await joiner.join(await host.pairing.invite({ role: 'admin' }))
   const [owed] = await promises(host.db)
   t.is(owed?.role, 'admin', "promised at the invite's role")
+  t.ok(owed.proof, 'the promise keeps the proof of its join')
+  t.is(reply.proof, null, 'which is no chain for its answer to carry')
   t.absent(await member(host.db, joiner.identity), 'no member at the join')
   t.absent((await host.db.get('devices', owed.id)).data, 'and no seat')
 
@@ -1915,6 +1917,40 @@ test('withdrawn: a promise denied by a member who may remove reaches the joiner 
   const answer = proven(answers[0], mine.secretKey, Invite.parse(invite).address)
   t.is(c.decode(Response, answer).reason, 'not you', "after her invite's tag")
   t.absent(await member(host.db, joiner.identity))
+})
+
+test('withdrawn: a device that holds the keys ends its claim DENIED, with the reason, once it reads its promise gone', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const reply = await joiner.join(await host.pairing.invite())
+  const [owed] = await promises(host.db)
+  await host.pairing.deny(owed.id, 'not you')
+
+  const db = await opened(t, joiner, reply)
+  const err = await db.claim({ timeout: 8000 }).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'no seat to wait for')
+  t.is(err?.reason, 'not you')
+  t.is(db.length, 1, 'and nothing claimed')
+})
+
+test('withdrawn: a claim appended as its promise is withdrawn ends DENIED too', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const reply = await joiner.join(await host.pairing.invite())
+  const [owed] = await promises(host.db)
+  const db = await opened(t, joiner, reply)
+  // the withdrawal reaches her view after she read the promise, before her claim is on her core
+  const append = db.bee.append.bind(db.bee)
+  db.bee.append = async (...args) => {
+    await host.pairing.deny(owed.id, 'too late')
+    await waitFor(async () => (await promises(db)).length === 0)
+    return append(...args)
+  }
+  const err = await db.claim({ timeout: 8000 }).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'her wait for the seat ends')
+  t.is(err?.reason, 'too late')
+  t.absent(db.writable)
+  t.absent(await member(host.db, joiner.identity), 'and she is no member')
 })
 
 // a member of the host's database at `role`, on its own device, answering joins

@@ -118,7 +118,8 @@ export const main = {
     // let in through an invite with an address of its own: no member until a device of the
     // identity seats itself
     promised: bool,
-    // a promise to a device its member linked: the chain that device's seat keeps
+    // the chain its join proved; once a member linked its device, the chain that link wrote, which
+    // the device's seat keeps
     proof: bytes
   },
   // a removed member comes back only through an invite minted after `index`

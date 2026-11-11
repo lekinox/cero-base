@@ -17,7 +17,8 @@ import {
   ADMIN,
   OWNER,
   WRITE,
-  REMOVALS
+  REMOVALS,
+  REFUSALS
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
@@ -723,7 +724,8 @@ export class Database extends ReadyResource {
    * Seat this device's writer where its identity is a member, or was promised to be one: wait
    * for the member row or the promise, append the add-writer the identity signs from this
    * device's own core, and resolve once it writes. A member whose role cannot write takes no
-   * seat; a promise at such a role is kept all the same, and resolves at the member row.
+   * seat; a promise at such a role is kept all the same, and resolves at the member row. Rejects
+   * `DENIED`, with the reason, once the room shows this writer turned away: its promise withdrawn.
    *
    * @param {{ timeout?: number }} [opts]
    * @returns {Promise<void>}
@@ -731,7 +733,7 @@ export class Database extends ReadyResource {
   async claim({ timeout = 30000 } = {}) {
     this.guard()
     if (this.bee.writable) return
-    const { role, promised } = await this._member(timeout, true)
+    const { role, promised } = await this._member(timeout, () => this._standing())
     // seated while it waited: a join that was admitted wrote the seat with the member row
     if (this.bee.writable) return
     if (!promised && !can(role, WRITE)) return
@@ -744,8 +746,7 @@ export class Database extends ReadyResource {
     // from a core not yet admitted: apply verifies the identity's signature and seats it
     await this.bee.append(wrap(stamp, op), { optimistic: true })
     await this.bee.update()
-    if (can(role, WRITE)) await this.whenWritable({ timeout })
-    else await this._member(timeout)
+    await this._member(timeout, () => this._kept(role))
   }
 
   /**
@@ -1322,25 +1323,27 @@ export class Database extends ReadyResource {
     return (await view.find(path, bounds).toArray()).length
   }
 
-  // this identity's member row, looked up again on every update until one lands it; with
-  // `promised`, what the identity was promised stands in for the row nothing has written yet
+  // what `find` reads of this identity's place, read again on every update and once this device
+  // writes, until there is something; its throw ends the wait
   /** @private */
-  _member(timeout, promised = false) {
+  _member(timeout, find) {
     return new Promise((resolve, reject) => {
-      const done = (err, member) => {
+      const done = (err, found) => {
         clearTimeout(timer)
         this.off('update', check)
+        this.off('writable', check)
         this.off('close', onclose)
         if (err) reject(err)
-        else resolve(member)
+        else resolve(found)
       }
-      const check = () => this._standing(promised).then((row) => row && done(null, row), done)
+      const check = () => find().then((found) => found && done(null, found), done)
       const onclose = () => done(CeroError.CLOSED('Database'))
       const timer =
         timeout > 0
           ? setTimeout(() => done(CeroError.TIMEOUT('waiting for the member row')), timeout)
           : null
       this.on('update', check)
+      this.on('writable', check)
       this.once('close', onclose)
       check()
     })
@@ -1348,19 +1351,34 @@ export class Database extends ReadyResource {
 
   // the member row, or the first promise made to the identity, as apply picks it
   /** @private */
-  async _standing(promised) {
+  async _standing() {
     const { data: member } = await this.get('members', this.identity.id)
-    if (!promised) return member
     const { data: requests } = await this.get('requests')
     // a core that wrote already, its join or an earlier claim, claims once the view holds what it
-    // wrote: appended on a view still catching up with it, a claim is lost
+    // wrote: appended on a view still catching up with it, a claim is lost. Turned away, it hears
     const id = hid.encode(this.writerKey)
     const landed = requests.some((row) => row.id === id) || (await this.get('devices', id)).data
-    if (this.length > 0 && !landed) return null
+    if (this.length > 0 && !landed) return this._refused()
     if (member) return member
     const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
     const first = requests.find(mine)
     return first ? { role: first.role, promised: true } : null
+  }
+
+  // a claim kept: this device's seat, or the member row at a role with none
+  /** @private */
+  async _kept(role) {
+    await this._refused()
+    return can(role, WRITE) ? this.writable : (await this.get('members', this.identity.id)).data
+  }
+
+  // a writer has a refusal only where it has no request: its join turned away, or what it was
+  // promised withdrawn
+  /** @private */
+  async _refused() {
+    const id = hid.encode(this.writerKey)
+    const refusal = await this.view.get(`@${this.ns}/${REFUSALS}`, { id })
+    if (refusal) throw CeroError.DENIED(refusal.reason || null)
   }
 
   // the add-writer row for `writer`, appended by this device and proven by its device key

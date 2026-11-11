@@ -67,8 +67,13 @@ const REQUESTS = {
   'rotate-key': 'epoch'
 }
 
-// the device keys a request stands on: its own, and those of the chain a link wrote for it
+// the device keys a request stands on: its own, and those of the chain its join proved or a link
+// wrote for it
 export const chainOf = ({ key, proof }) => [...Identity.chain(proof).slice(1), key]
+
+// the chain a link wrote, which a seat keeps and an answer carries: a join's proof signs its join,
+// and alone verifies as nothing
+export const linkOf = (proof) => (Identity.verify(proof, null) ? proof : null)
 
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
@@ -501,7 +506,7 @@ export function makeDispatcher({
     // a linked device's seat keeps the chain its promise carries. The promises stay: a member
     // who may invite settles one once it sees it kept
     const mine = made.find((row) => b4a.equals(row.key, signed.device))
-    await seat(ctx, op.writer, memberId, ts, signed.device, mine?.proof)
+    await seat(ctx, op.writer, memberId, ts, signed.device, linkOf(mine?.proof))
   })
 
   // a device goes with its seat and its key: by its own member, or one who may remove her
@@ -779,10 +784,12 @@ export function makeDispatcher({
 
   // the member, when new, and its device, seated when the member writes; its request stays until
   // a member delivered the keys. The invite is spent unless it is reusable
-  async function admit(ctx, { invite, identity, key, writer, reply, role, ts }) {
+  async function admit(ctx, { invite, identity, key, writer, reply, role, ts, proof }) {
     const memberId = hid.encode(identity)
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
-    if (invite.secret) return promise(ctx, { invite, identity, key, writer, reply, role, ts })
+    if (invite.secret) {
+      return promise(ctx, { invite, identity, key, writer, reply, role, ts, proof })
+    }
     const member =
       (await getMember(ctx.view, memberId)) ??
       (await save(ctx, 'put', 'members', {
@@ -823,8 +830,9 @@ export function makeDispatcher({
   }
 
   // let in through an invite with an address of its own: admitted, with no member and no seat
-  // until a device of the identity, holding the keys, seats itself. With a proof, that one device
-  async function promise(ctx, { invite, identity, key, writer, reply, role, ts, proof = null }) {
+  // until a device of the identity, holding the keys, seats itself. With a link's chain for its
+  // proof, that one device
+  async function promise(ctx, { invite, identity, key, writer, reply, role, ts, proof }) {
     await save(ctx, 'put', 'requests', {
       ...request(invite, identity, key, writer, reply, ts),
       role,
@@ -905,7 +913,7 @@ export function makeDispatcher({
     const older = gone && (invite.index ?? 0) <= gone.index
     if ((invite.confirm || older) && !known) {
       const waiting = request(invite, join.identity, signed.device, ctx.key, join.reply, ts)
-      return save(ctx, 'put', 'requests', waiting)
+      return save(ctx, 'put', 'requests', { ...waiting, proof: join.proof })
     }
     await admit(ctx, {
       invite,
@@ -914,7 +922,8 @@ export function makeDispatcher({
       writer: ctx.key,
       reply: join.reply,
       role: invite.role,
-      ts
+      ts,
+      proof: join.proof
     })
   })
   // a waiting join, admitted at a role within the invite's and the accepter's; with a proof, as a
@@ -928,7 +937,7 @@ export function makeDispatcher({
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {
       throw CeroError.REFUSED('invite')
     }
-    const { identity, key, reply, createdAt: ts = 0 } = waiting
+    const { identity, key, reply, proof, createdAt: ts = 0 } = waiting
     // a key removed since the join was made lets nobody in
     if (await gone(ctx.view, chainOf(waiting))) throw CeroError.REFUSED('removed')
     const writer = hid.decode(op.id)
@@ -939,7 +948,7 @@ export function makeDispatcher({
       if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
       return admitDevice(ctx, { invite, memberId, key, proof: op.proof, writer, reply, ts })
     }
-    await admit(ctx, { invite, identity, key, writer, reply, role, ts })
+    await admit(ctx, { invite, identity, key, writer, reply, role, ts, proof })
   })
   // a waiting join is turned away by one who may invite; a promise is withdrawn by one who may
   // remove, since its joiner may hold the keys. Answered through the log like every refusal
