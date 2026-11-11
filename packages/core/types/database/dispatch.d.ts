@@ -1,4 +1,8 @@
 export declare const BESPOKE: Set<string>;
+export declare const chainOf: ({ key, proof }: {
+    key: any;
+    proof: any;
+}) => any[];
 export declare const leftId: (memberId: any) => string;
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and

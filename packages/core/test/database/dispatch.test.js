@@ -1433,6 +1433,64 @@ test("promise: a device removed takes its writer's request with it, and what its
   t.absent(await promise(db, other), 'a writer unseated before it sat loses what it was owed')
 })
 
+test('promise: a device removed takes the requests that stand on its key, linked through it or waiting on it', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const invite = await addressed(db, { confirm: true, reuse: true })
+  const open = await addressed(db)
+  // another device of the owner, seated, links a bare device; the owner's first links one too
+  const phone = linked(identity)
+  t.is(await seat(db, phone), null)
+  const asks = async () => {
+    const device = Identity.randomKeyPair()
+    const writer = Identity.randomKeyPair().publicKey
+    const bare = await Identity.bare(device)
+    await apply(db, writer, 'join', named(db, invite, { identity: bare, writer }))
+    return { device, writer, id: hid.encode(writer) }
+  }
+  const through = await asks()
+  const direct = await asks()
+  const late = await asks()
+  const chain = phone.identity.link(through.device.publicKey)
+  t.is(await apply(db, db.writerKey, 'accept', { id: through.id, proof: chain }), null)
+  const own = identity.link(direct.device.publicKey)
+  t.is(await apply(db, db.writerKey, 'accept', { id: direct.id, proof: own }), null)
+
+  // a stranger who waits, then comes in through another invite on the same device
+  const stranger = await Identity.create()
+  const waits = Identity.randomKeyPair().publicKey
+  const sits = Identity.randomKeyPair().publicKey
+  await apply(db, waits, 'join', named(db, invite, { identity: stranger, writer: waits }))
+  await apply(db, sits, 'join', named(db, open, { identity: stranger, writer: sits }))
+  t.is(await claimed(db, stranger, sits), null)
+  t.absent((await promise(db, waits))?.admitted, 'still waiting')
+
+  t.is(await apply(db, db.writerKey, 'del-device', { id: phone.writer.id }), null)
+  t.absent(await promise(db, through.writer), 'the promise linked through it goes')
+  t.ok(await promise(db, direct.writer), 'one linked through another device stays')
+  const refused = await apply(db, db.writerKey, 'accept', {
+    id: late.id,
+    proof: phone.identity.link(late.device.publicKey)
+  })
+  t.is(refused?.rule, 'removed', 'and it links nobody after')
+
+  t.is(await apply(db, db.writerKey, 'del-device', { id: hid.encode(sits) }), null)
+  t.absent(await promise(db, waits), 'the request that waited on a removed key goes')
+})
+
+test('accept: a waiting join whose device key was removed since is refused', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db, { confirm: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', named(db, invite, { identity, writer }))
+  // the removal recorded and the request still there, as a reorder leaves them
+  const key = hid.encode(identity.device.publicKey)
+  await db.view.insert(`@${db.ns}/removals`, { id: key, index: 0 })
+  t.is((await apply(db, db.writerKey, 'accept', { id }))?.rule, 'removed')
+  t.absent((await promise(db, writer))?.admitted, 'it is let in nowhere')
+})
+
 test('join: a removed member comes back only through an invite minted after its removal', async (t) => {
   const { db } = await withRole(t, 'owner')
   const before = await minted(db, { reuse: true })
@@ -1706,8 +1764,9 @@ test('accept: a proof through a device removed since the join seats nothing', as
   t.ok((await db.get('requests', id)).data, 'waiting')
 
   await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey))
+  t.absent((await db.get('requests', id)).data, 'the request that waited on its key goes with it')
   const proof = identity.link(device.publicKey)
-  t.is((await apply(db, db.writerKey, 'accept', { id, proof }))?.code, 'REFUSED')
+  t.is(await apply(db, db.writerKey, 'accept', { id, proof }), null, 'accepting it is nothing')
   t.absent((await db.get('devices', id)).data, 'nothing seated')
 })
 

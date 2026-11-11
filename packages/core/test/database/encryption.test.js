@@ -1253,8 +1253,8 @@ async function promised(t, testnet) {
   const mailbox = new Mailbox(network)
   t.teardown(() => mailbox.close().catch(() => {}), { order: 1 })
   const identity = await Identity.create()
-  const join = async (opts) => {
-    const reply = await Pairing.join(mailbox, await pairing.invite(opts), { identity, spec })
+  const join = async (opts, as = identity) => {
+    const reply = await Pairing.join(mailbox, await pairing.invite(opts), { identity: as, spec })
     const { key, encryptionKey, epochs, writer: keyPair } = reply
     return { key, encryptionKey, epochs, keyPair }
   }
@@ -1342,26 +1342,40 @@ test('rotate: a promise never kept whose invite ran out is not sealed', async (t
   t.absent((await named(host.db)).includes(id), 'and no more once it ran out')
 })
 
-test('rotate: a promise to a device key recorded removed is not sealed', async (t) => {
+test('rotate: a device linked through a device that is then removed is not sealed', async (t) => {
   const testnet = await makeTestnet(t)
-  const { host, pairing, join, open } = await promised(t, testnet)
-  // she asks on an invite that waits for a member, then comes in through another
-  join({ confirm: true }).catch(() => {})
-  const waiting = async () => (await host.db.get('requests', { admitted: false })).data[0]
-  const request = await waitFor(waiting)
-  const db = await open(await join())
-  await db.claim()
-  const id = hid.encode(db.writerKey)
-  await waitFor(async () => (await host.db.get('devices', id)).data)
-  await waitFor(async () => !(await host.db.get('requests', id)).data)
+  const { host, pairing, join } = await promised(t, testnet)
+  // another device of the host's identity, seated: the one that links
+  const device = Identity.randomKeyPair()
+  const proof = host.identity.link(device.publicKey)
+  const linker = Identity.from({ ...host.identity, device, proof })
+  const { key, encryptionKey } = host.db
+  const b = await makePeer(t, testnet, { topic: host.topic, identity: linker, key, encryptionKey })
+  await b.db.claim()
 
-  // her device is removed, and the join that waited is accepted all the same
+  const phone = Identity.randomKeyPair()
+  join({ confirm: true }, await Identity.bare(phone)).catch(() => {})
+  const waiting = async () => (await host.db.get('requests', { admitted: false })).data[0]
+  const { id } = await waitFor(waiting)
+  // the host answers no more: the promise stays as apply leaves it
   await pairing.close()
-  await host.db.call('del-device', { id })
-  await host.db.call('accept', { id: request.id, role: 'member' })
-  t.ok((await host.db.get('requests', request.id)).data?.promised, 'promised to a removed key')
+  await host.db.call('accept', { id, proof: linker.link(phone.publicKey) })
+  const { data: row } = await host.db.get('requests', id)
   await host.db.rotate()
-  t.absent((await named(host.db)).includes(request.id), 'a rotation does not name it')
+  t.ok((await named(host.db)).includes(id), 'sealed while every key of its chain stands')
+
+  await host.db.call('del-device', { id: hid.encode(b.db.writerKey) })
+  t.absent(
+    (await host.db.get('requests', id)).data,
+    'its promise goes with the device that linked it'
+  )
+  await host.db.rotate()
+  t.absent((await named(host.db)).includes(id), 'and the next rotation does not name it')
+  const { rotation } = host.db
+  t.absent(await rotation._stands(row), 'a promise whose chain passes a removed key stands no more')
+  const own = { ...row, proof: null, key: device.publicKey }
+  t.absent(await rotation._stands(own), 'nor one to a removed key itself')
+  t.ok(await rotation._stands({ ...row, proof: host.identity.link(phone.publicKey) }))
 })
 
 function batch(db, ops) {

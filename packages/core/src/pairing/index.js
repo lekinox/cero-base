@@ -11,6 +11,7 @@ import { Response, STATUS_ACCEPTED, STATUS_DENIED, tag, proven } from './respons
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
+import { chainOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
@@ -258,7 +259,7 @@ export class Pairing extends ReadyResource {
   }
 
   // the promises kept, the device each was made to sits under the member it was made to, and
-  // those void, made to a device key since removed
+  // those void, standing on a device key since removed
   /** @private */
   async _done(requests) {
     const promised = requests.filter((row) => row.promised)
@@ -269,7 +270,8 @@ export class Pairing extends ReadyResource {
       return devices.some((d) => d.memberId === id && d.key && b4a.equals(d.key, key))
     }
     const removed = new Set((await this._list(REMOVALS)).map((row) => row.id))
-    return promised.filter((row) => removed.has(hid.encode(row.key)) || seated(row))
+    const cut = (row) => chainOf(row).some((key) => removed.has(hid.encode(key)))
+    return promised.filter((row) => cut(row) || seated(row))
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it

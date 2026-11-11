@@ -6,6 +6,7 @@ import hid from 'hypercore-id-encoding'
 import { REMOVE } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
 import { wraps, epochEntries, seal, opened } from './encryption.js'
+import { chainOf } from './dispatch.js'
 import { Identity } from '../identity/index.js'
 import { CeroError } from '../lib/errors.js'
 
@@ -173,11 +174,14 @@ export class Rotation {
     return [...keyed, ...promised]
   }
 
-  // a promise stands while its invite lasts and its device key is not one removed
+  // a promise stands while its invite lasts and no device key it stands on is one removed
   /** @private */
-  async _stands({ promised, expires, key }) {
-    if (!promised || (expires > 0 && Date.now() > expires)) return false
-    return !(await this.db.view.get(`@${this.db.ns}/removals`, { id: hid.encode(key) }))
+  async _stands(row) {
+    if (!row.promised || (row.expires > 0 && Date.now() > row.expires)) return false
+    for (const key of chainOf(row)) {
+      if (await this.db.view.get(`@${this.db.ns}/removals`, { id: hid.encode(key) })) return false
+    }
+    return true
   }
 
   // resolves the sequence apply assigned, 0 if it never applied

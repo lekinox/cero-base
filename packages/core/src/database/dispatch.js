@@ -67,6 +67,9 @@ const REQUESTS = {
   'rotate-key': 'epoch'
 }
 
+// the device keys a request stands on: its own, and those of the chain a link wrote for it
+export const chainOf = ({ key, proof }) => [...Identity.chain(proof).slice(1), key]
+
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -515,8 +518,11 @@ export function makeDispatcher({
     // a rotation is sealed to the promised
     await drop(ctx, 'requests', id)
     if (!device?.key) return
+    const stood = (row) => chainOf(row).some((key) => b4a.equals(key, device.key))
     for (const row of await ctx.view.find(requests, {}).toArray()) {
-      if (row.promised && b4a.equals(row.key, device.key)) await drop(ctx, 'requests', row.id)
+      // waiting or promised: one admitted at its join has a seat of its own to lose
+      if (row.admitted && !row.promised) continue
+      if (stood(row)) await drop(ctx, 'requests', row.id)
     }
   }
   add('del-writer', async (op, ctx) => {
@@ -534,8 +540,9 @@ export function makeDispatcher({
   }
   // the devices of the chain, not the identity it starts with: a member's removal is ordered by
   // its invites, a device's is for good
-  async function revoked(view, proof) {
-    for (const key of Identity.chain(proof).slice(1)) {
+  const revoked = (view, proof) => gone(view, Identity.chain(proof).slice(1))
+  async function gone(view, keys) {
+    for (const key of keys) {
       if (await view.get(removals, { id: hid.encode(key) })) return true
     }
     return false
@@ -920,6 +927,8 @@ export function makeDispatcher({
       throw CeroError.REFUSED('invite')
     }
     const { identity, key, reply, createdAt: ts = 0 } = waiting
+    // a key removed since the join was made lets nobody in
+    if (await gone(ctx.view, chainOf(waiting))) throw CeroError.REFUSED('removed')
     const writer = hid.decode(op.id)
     if (op.proof) {
       const memberId = await getSignerMember(ctx.view, ctx.key)
