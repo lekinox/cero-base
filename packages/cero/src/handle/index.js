@@ -172,6 +172,8 @@ export class Handle extends ReadyResource {
       pinned: !parent,
       // the root has no topic to push to
       push: !!parent,
+      // the root says which of this identity's devices are removed: behind there, behind here
+      parent: parent?.root.store,
       onerror: this._onerror
     })
     /** @private */
@@ -528,6 +530,7 @@ export class Handle extends ReadyResource {
       epoch: (current && seqs.get(current)) || 0,
       suspended: this.root._sus.suspended,
       behind: this.store.behind || 0,
+      version: await this.store.dispatcher.version(this.store.view),
       nearby: this.root._bluetooth?.state ?? null
     }
     if (this.parent) data.topic = b4a.toHex(this.store.discoveryKey)
@@ -543,7 +546,7 @@ export class Handle extends ReadyResource {
       [this.store, 'unwritable'],
       [this.store, 'behind']
     ]
-    if (this.parent) sources.push([this.root, 'status'])
+    if (this.parent) sources.push([this.root, 'status'], [this.root.store, 'behind'])
     for (const [emitter, event] of sources) emitter.on(event, fn)
     const off = this._onRadio(fn)
     return () => {
@@ -1190,6 +1193,8 @@ export class Handle extends ReadyResource {
   // handles are told by whichever device of the identity has them open
   /** @private */
   async _prune(child) {
+    // behind, the root's removals are not all on this device yet
+    if (this.store.behind !== null) return
     const { data: rows } = await child.store.get('devices')
     for (const row of rows) {
       if (row.memberId !== this.identity.id || !row.key) continue

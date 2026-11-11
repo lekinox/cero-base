@@ -214,6 +214,28 @@ export async function get(ref, q) {
   return resolveResult(ref, res)
 }
 
+/**
+ * Whether a handle has turned on a collection, a single or an action, or a field of one with
+ * `field`. What a release holds back with `t.later` turns on once the handle's `status.version`
+ * reaches the release that brought it; until then a write naming it fails with `UNSUPPORTED`.
+ *
+ * @param {Ref} ref  A ref of the root or of an open handle (`room.notes`).
+ * @param {string} [field]
+ * @returns {Promise<boolean>}
+ */
+export async function supports(ref, field) {
+  const status = !ref.type && ref.handle.status
+  if (!status) throw CeroError.INVALID('supports takes the ref of the root or of an open handle')
+  const { meta } = ref.handle.spec
+  const info = meta.refs[ref.name]
+  const fields = meta.since?.types[info.schema] ?? {}
+  if (field !== undefined && !(field in fields)) {
+    throw CeroError.UNKNOWN('field', `${ref.name}.${field}`)
+  }
+  const { data } = await get(status)
+  return Math.max(info.since ?? 0, fields[field] ?? 0) <= data.version
+}
+
 // a watch stream dies with its handle, or with the signal
 const bindStream = (owner, stream, opts) => {
   const stopAbort = onAbort(opts?.signal, () => stream.destroy())

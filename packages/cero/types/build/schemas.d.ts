@@ -102,6 +102,7 @@ export declare const main: {
         epoch: import("@cero-base/core").Prim;
         suspended: import("@cero-base/core").Prim;
         behind: import("@cero-base/core").Prim;
+        version: import("@cero-base/core").Prim;
         nearby: import("@cero-base/core").Prim;
     };
     joining: {

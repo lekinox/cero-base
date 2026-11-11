@@ -1,6 +1,6 @@
 import { schema, t } from '@cero-base/cero'
 
-export default schema({
+const defs = {
   profile: t.single({
     name: t.string,
     avatar: t.file
@@ -44,4 +44,13 @@ export default schema({
     }),
     tasks: t.collection({ title: t.required(t.string) })
   }
+}
+
+export default schema(defs)
+
+// the next release of the app: what it adds is held back, so its databases stay where they are
+export const next = schema({
+  ...defs,
+  messages: t.collection({ ...defs.messages.fields, tag: t.later(t.string) }),
+  visits: t.later(t.collection({ date: t.string }))
 })

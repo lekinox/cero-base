@@ -72,6 +72,10 @@ export type DatabaseOpts = {
      */
     keyPair?: import('../identity/index.js').KeyPair;
     /**
+     * A database whose members this one follows: behind there, it is behind here too.
+     */
+    parent?: Database | null;
+    /**
      * Called when a node is skipped or refused, or the bee errors.
      *
      * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
@@ -167,6 +171,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
  * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
+ * @property {Database | null} [parent]                               A database whose members this one follows: behind there, it is behind here too.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
  * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
@@ -243,8 +248,10 @@ export declare class Database extends ReadyResource {
     rules: number;
     start: number;
     target: number;
-    /** @type {number | null} the database's version, while it is past this build's contract */
-    behind: number | null;
+    /** @type {Database | null} */
+    parent: Database | null;
+    /** @private */
+    _behind;
     /** @private */
     _skipped;
     /** @private */
@@ -331,6 +338,8 @@ export declare class Database extends ReadyResource {
     get address(): Uint8Array | null;
     /** @returns {Uint8Array | null} this device's local writer key */
     get writerKey(): Uint8Array | null;
+    /** @returns {number | null} the database's version, or its parent's, while it is past this build's contract */
+    get behind(): number | null;
     /** @returns {boolean} whether the bee accepts local writes */
     get writable(): boolean;
     /** @returns {number} number of ops in the local writer */

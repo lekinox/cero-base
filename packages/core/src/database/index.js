@@ -55,6 +55,7 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
  * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
+ * @property {Database | null} [parent]                               A database whose members this one follows: behind there, it is behind here too.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
  * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
@@ -117,8 +118,10 @@ export class Database extends ReadyResource {
     // the version of a database with no version row, and the one this build asks databases to use
     this.start = this.meta.start || 1
     this.target = this.meta.target || this.start
-    /** @type {number | null} the database's version, while it is past this build's contract */
-    this.behind = null
+    /** @type {Database | null} */
+    this.parent = opts.parent || null
+    /** @private */
+    this._behind = null
     /** @private */
     this._skipped = null
     /** @private */
@@ -206,6 +209,11 @@ export class Database extends ReadyResource {
   /** @returns {Uint8Array | null} this device's local writer key */
   get writerKey() {
     return this.bee?.local?.key || null
+  }
+
+  /** @returns {number | null} the database's version, or its parent's, while it is past this build's contract */
+  get behind() {
+    return this._behind ?? this.parent?.behind ?? null
   }
 
   /** @returns {boolean} whether the bee accepts local writes */
@@ -1191,16 +1199,15 @@ export class Database extends ReadyResource {
   /** @private */
   _track(version) {
     const behind = version > this.version ? version : null
-    if (behind === this.behind) return
-    this.behind = behind
+    if (behind === this._behind) return
+    this._behind = behind
     if (behind !== null) this.emit('behind', behind)
   }
 
   // an owner's device moves the database to the version its build asks for, a batch of its own
   /** @private */
   async _raise() {
-    // behind, the version is past this build's target as well
-    if (this.closing || this.closed || !this.writable) return
+    if (this.closing || this.closed || !this.writable || this.behind !== null) return
     if (this.target <= (await this.dispatcher.version(this.view))) return
     const { data: me } = await this.get('members', this.identity.id)
     if (me?.role !== OWNER) return

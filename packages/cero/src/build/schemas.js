@@ -123,6 +123,8 @@ export const main = {
     suspended: bool,
     // an app version this one cannot read ops from, 0 when current
     behind: uint,
+    // the app version the context's data is at, what `supports` answers from
+    version: uint,
     // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
     nearby: string
   },

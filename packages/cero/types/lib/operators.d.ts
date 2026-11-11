@@ -87,6 +87,16 @@ export declare function after(ref: Ref, fn: (ctx: HookContext) => unknown, opts?
  */
 export declare function get(ref: Ref, q?: string | Record<string, unknown>): Promise<SingleResult | ListResult>;
 /**
+ * Whether a handle has turned on a collection, a single or an action, or a field of one with
+ * `field`. What a release holds back with `t.later` turns on once the handle's `status.version`
+ * reaches the release that brought it; until then a write naming it fails with `UNSUPPORTED`.
+ *
+ * @param {Ref} ref  A ref of the root or of an open handle (`room.notes`).
+ * @param {string} [field]
+ * @returns {Promise<boolean>}
+ */
+export declare function supports(ref: Ref, field?: string): Promise<boolean>;
+/**
  * Read a ref as it changes. Each item is what `get(ref, query)` returns now; a slow reader gets
  * only the newest. With `changes: true` in the query each item also carries `changes`, the
  * `{ prev, next }` rows that changed since the item before, so a slow reader gets fewer items,

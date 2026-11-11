@@ -27,10 +27,11 @@ import {
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect, restore, link } from '../../src/rpc/client.js'
+import { connect, restore, link, supports } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
+import { spec as next } from '../fixtures/spec/next/index.js'
 import { makeTestnet, observe, waitUntil, fetch, nextRequest, joinsOf } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
@@ -52,17 +53,17 @@ function pair() {
   return [a, b]
 }
 
-async function openPair(t, serverOpts = {}, clientOpts) {
+async function openPair(t, serverOpts = {}, clientOpts, built = spec) {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
 
   const [serverStream, clientStream] = pair()
-  const server = await serve(serverStream, spec, {
+  const server = await serve(serverStream, built, {
     storage: dir,
     bootstrap: testnet.bootstrap,
     ...serverOpts
   })
-  const client = await connect(clientStream, spec, clientOpts)
+  const client = await connect(clientStream, built, clientOpts)
 
   t.teardown(
     async () => {
@@ -621,6 +622,38 @@ test("rpc: deactivate takes a room off the swarm, activate brings it back; suspe
   t.ok((await get(client.status)).data.suspended, 'suspended on the server')
   await cero.resume(client)
   t.absent((await get(client.status)).data.suspended, 'resumed')
+})
+
+test('rpc: status.version and supports answer in the UI as in the worker, before and after a raise', async (t) => {
+  const { me, client } = await openPair(t, {}, undefined, next)
+  const version = async () => (await get(client.status)).data.version
+  t.is(await version(), next.meta.target, 'the version crosses the wire')
+  t.ok(await supports(client.messages, 'text'), 'a field it had')
+  t.absent(await supports(client.messages, 'tag'), 'a field held back')
+  t.absent(await supports(client.visits), 'a collection held back')
+
+  await me.store.write([['upgrade', { version: next.meta.version }]])
+  await waitUntil(async () => (await version()) === next.meta.version || null)
+  t.ok(await supports(client.messages, 'tag'), 'the field is on')
+  t.ok(await supports(client.visits), 'and the collection')
+})
+
+test('rpc: a write of what the version holds back is refused with UNSUPPORTED in the UI', async (t) => {
+  const { client } = await openPair(t, {}, undefined, next)
+  const field = await put(client.messages, { text: 'a', tag: 'b' }).catch((e) => e)
+  t.is(field?.code, 'UNSUPPORTED', field?.message)
+  const collection = await put(client.visits, { date: 'today' }).catch((e) => e)
+  t.is(collection?.code, 'UNSUPPORTED', collection?.message)
+})
+
+test('rpc: a room whose root is behind reports it and does not write, in the UI', async (t) => {
+  const { me, client } = await openPair(t)
+  const room = await open(client.team, { name: 'clinic' })
+  const behind = me.store.version + 1
+  await me.store.write([['upgrade', { version: behind }]])
+  await waitUntil(async () => (await get(room.status)).data.behind === behind || null)
+  const err = await put(room.messages, { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', err?.message)
 })
 
 test('rpc: removed reads in the worker, the answer back in the UI', async (t) => {

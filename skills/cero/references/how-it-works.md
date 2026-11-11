@@ -5,7 +5,7 @@ Predict what your app shows offline, on a conflict, on a removal and on a join.
 ```js
 // room from cero.open, as in the quickstart
 for await (const { data } of cero.watch(room.status)) {
-  console.log(data) // { role, writable, epoch, suspended, behind, nearby }
+  console.log(data) // { role, writable, epoch, suspended, behind, version, nearby }
 }
 ```
 
@@ -92,7 +92,7 @@ The last write in that order wins, per row: `set` merges on the writing device a
 
 ## App versions
 
-Every write carries its app's contract version, which the build raises when what is stored changes, at the root or in any handle type ([Schema](schema.md#change-a-schema-that-shipped)). An older build skips writes from a newer one, the same way on every device, and `status.behind` shows the newer version so the app can ask for an update. Once updated, it applies the writes it skipped. Stored rows are read as they are, which is why the schema only grows. When an update of Cero changes what a write means, the updated app applies its writes again the first time it opens.
+The build keeps the app's version, raising it when what is stored changes, at the root or in any handle type ([Schema](schema.md#change-a-schema-that-shipped)). Each handle, and the root, keeps the version it is at in its own data, and only an owner's device moves it forward. Every device writes as that version, and applies a write as the version it was written at: what its author's version did not have stays as stored. A device whose app is older than the handle's version skips the writes it cannot read, the same way on every such device, and `status.behind` shows the version so the app can ask for an update. Once updated, it applies the log again. Stored rows are read as they are, which is why the schema only grows. When an update of Cero changes what a write means, the updated app applies its writes again the first time it opens.
 
 ## Next
 

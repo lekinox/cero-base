@@ -18,6 +18,7 @@ export declare const cero: {
         signal?: AbortSignal;
     }): () => void;
     get(ref: operators.Ref, q?: string | Record<string, unknown>): Promise<operators.SingleResult | operators.ListResult>;
+    supports(ref: operators.Ref, field?: string): Promise<boolean>;
     watch(ref: operators.Ref, query?: string | (Record<string, unknown> & {
         changes?: boolean;
     }), opts?: {

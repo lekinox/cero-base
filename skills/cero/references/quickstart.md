@@ -40,7 +40,7 @@ await build('./spec', schema)
 node build.js
 ```
 
-This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Every device in a handle needs the same `spec/`: one on an older build skips the newer writes and shows `behind` in its `room.status`.
+This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Once a handle uses what a build adds, a device on an older build shows `behind` in its `room.status` and must update to write there.
 
 ## Write the chat
 

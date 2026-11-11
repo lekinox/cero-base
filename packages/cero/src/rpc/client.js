@@ -22,6 +22,7 @@ export const {
   del,
   watch,
   call,
+  supports,
   open,
   invite,
   revoke,

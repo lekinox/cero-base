@@ -4728,6 +4728,23 @@ test('gate: a join from a newer release, skipped as too new, applies once this d
   t.is(again.behind, null, 'and nothing freezes')
 })
 
+test('gate: a database whose parent is behind is behind too: it does not write nor raise', async (t) => {
+  const { db: root } = await bootstrapped(t)
+  const { db } = await bootstrapped(t, { parent: root })
+  const behind = root.version + 1
+  await raise(root, behind)
+  t.is(db.behind, behind, 'behind as its parent is')
+  const err = await db.put('messages', { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'it does not write')
+
+  // its own build asks for a version it has not reached
+  const row = await versionRow(db)
+  db.version += 1
+  db.target = db.version
+  await db._raise()
+  t.is(await versionRow(db), row, 'and raises nothing')
+})
+
 test('gate: a raise applied during a write stops it', async (t) => {
   const { a, b } = await members(t)
   const { data: row } = await a.db.put('messages', { text: 'first' })

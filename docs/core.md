@@ -136,6 +136,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `pinned`        | Always search and announce, outside the network's presence budget.                                                                                                                                |
 | `push`          | Push a notification through the network's mirrors after a local write to a ref whose meta declares `push`, naming the ref; one in flight and the latest block once more after it. Off by default. |
 | `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                                                                        |
+| `parent`        | A database this one follows, as a handle follows its root: behind there, it is behind here too.                                                                                                   |
 
 | Method                                               | Does                                                                                                                                       |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -164,7 +165,9 @@ It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `ad
 | `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated.                                                 |
 | `writable`, `unwritable` | This device gained or lost write. `writable` fires once the view holds its admission, so a read on it sees this device's row. |
 | `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.                                                           |
-| `behind`                 | The version of a newer app whose op was skipped.                                                                              |
+| `behind`                 | The database's version, once it is past this build's contract.                                                                |
+
+A database is at a version of the app, kept in its view. A new one starts at `spec.meta.target`, and an owner's device on a build whose target is higher moves it there with an `upgrade` op of its own. It never goes down. Every device writes as the database's version: a write naming what that version lacks throws `UNSUPPORTED`, and an op applies as the version it was written at, so what its author's version lacked stays as stored. Past this build's contract, `spec.meta.version`, the database is behind: `behind` holds the version, ops written past the contract wait until an update applies the log again, and every write throws `BEHIND` but a member's own leaving.
 
 Who writes:
 
