@@ -120,22 +120,40 @@ test('mirrors: owner and joiner are never online together, across restarts', asy
   const [{ secretKey }] = (await joiner.me.local.store.get('joins')).data
   await joiner.me.close()
 
-  // the owner comes back alone, admits it, and leaves once the reply and the admission are on
-  // the mirror
+  // all of a device's writer core for the room is on the mirror
+  const mirrored = async ({ store }) => {
+    const core = mirror.store.get({ key: store.writerKey })
+    await core.ready()
+    await waitUntil(() => core.contiguousLength >= store.bee.local.length || null)
+    await core.close()
+  }
+
+  // the owner comes back alone, lets it in, and leaves once the reply is on the mirror: a
+  // promise, no member yet
   const replied = holds(mirror, Mailbox.getAddress(secretKey))
   const back = await reopen(t, owner.dir, testnet, { mirrors })
   const reopened = await open(back.team, { id })
-  await waitUntil(async () => ((await get(reopened.members)).data.length === 2 ? true : null))
+  await waitUntil(async () => ((await get(reopened.requests)).data.length === 1 ? true : null))
   await replied
-  const { writerKey, bee } = reopened.store
-  const mirrored = mirror.store.get({ key: writerKey })
-  await mirrored.ready()
-  await waitUntil(() => mirrored.contiguousLength >= bee.local.length || null)
-  await mirrored.close()
+  t.is((await get(reopened.members)).data.length, 1, 'let in, not a member before her device comes')
+  await mirrored(reopened)
   await back.close()
 
+  // the joiner comes back alone, takes her seat, and leaves once her claim is on the mirror
   const again = await reopen(t, joiner.dir, testnet, { mirrors })
-  t.ok(await joined(again, id), 'joined with nobody else online')
+  const seated = await joined(again, id)
+  t.ok(seated, 'joined with nobody else online')
+  t.ok((await get(seated.members, again.identity.id)).data, 'a member on her own device')
+  await mirrored(seated)
+  await again.close()
+
+  // the owner, alone again, has her as a member from what the mirror holds
+  const last = await reopen(t, owner.dir, testnet, { mirrors })
+  const room2 = await open(last.team, { id })
+  await waitUntil(async () => ((await get(room2.members)).data.length === 2 ? true : null))
+  t.pass('her claim reached the owner through the mirror')
+  await waitUntil(async () => ((await get(room2.requests)).data.length === 0 ? true : null))
+  t.pass('and the owner settled her promise')
 })
 
 test('hooks: an action on a type runs in every room of it, created, joined or reopened', async (t) => {
@@ -481,6 +499,8 @@ test('roles: a reader promoted to member can write', async (t) => {
   const joined = await open(joiner.me.team, await cero.invite(room, { role: 'reader' }))
   t.absent(joined.store.writable)
 
+  // her device seated itself: the owner has the member once that claim reached it
+  await waitUntil(async () => (await get(room.members, joiner.me.identity.id)).data)
   await set(room.members, { id: joiner.me.identity.id, role: 'member' })
   await waitUntil(() => joined.store.writable || null)
   await put(joined.messages, { text: 'promoted' })
@@ -648,10 +668,12 @@ test('invites: a reply the joiner stopped before keeping is handed over again af
   await stopped
   await joiner.me.close()
 
-  // the member saw the reply read and never offers it again: only the joiner's inbox has it
-  await waitUntil(async () => ((await get(room.requests)).data.length === 0 ? true : null))
+  // a read settles nothing: she was let in, and stays so until her device has taken its seat
+  t.is((await get(room.requests)).data.length, 1, 'let in, the reply read and not kept')
   const again = await reopen(t, joiner.dir, testnet)
-  t.ok(await joined(again, room.id), 'the kept reply opens the room')
+  t.ok(await joined(again, room.id), 'the reply opens the room')
+  await waitUntil(async () => ((await get(room.requests)).data.length === 0 ? true : null))
+  t.pass('and a member settles it once she is seated')
 })
 
 test('invites: a joiner closing as its reply goes out joins once it opens again', async (t) => {
