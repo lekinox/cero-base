@@ -343,6 +343,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _follow;
     /** @private */
+    private _put;
+    /** @private */
     private _drop;
     /** @private */
     private _topic;
