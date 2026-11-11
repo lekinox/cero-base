@@ -126,9 +126,11 @@ const restored = await cero.restore(me, phrase)
 channel and mirrors included, and recovers it like a new device. Only once it has opened does it
 close `me`, delete its data and resolve with the new one. Until then `me` stays open and untouched:
 `TIMEOUT` when no device of that identity answers, or a bad phrase, leaves this device as it was, so
-retry later. A swap that dies part way is finished or undone the next time `cero(dir, spec)` opens the
-directory. Another phrase in `cero()` on a used directory is `INVALID`: switching goes through
-`cero.restore`.
+retry later. Closing `me` while it waits ends it with `CLOSED`, and the next launch opens the identity
+`me` had. Once the new identity has opened the swap goes through: a close of `me` waits for it, and
+`cero.restore` or `cero.link` still resolves with the new `me`, open, for the app to close. A swap
+that dies part way is finished or undone the next time `cero(dir, spec)` opens the directory. Another
+phrase in `cero()` on a used directory is `INVALID`: switching goes through `cero.restore`.
 
 A phrase that is already `me`'s returns `me` unchanged. A client makes the same call.
 
@@ -141,7 +143,8 @@ const linked = await cero.link(me, invite, { onrequest: (id) => show(id) })
 does, and replaces `me` only once accepted. It waits for the accept as long as the invite lasts,
 since the other device is in the user's other hand. A code that is no device invite
 (`INVALID_INVITE`), `DENIED`, or a newer `restore` or `link` (`CLOSED`) leaves `me` as it was; the
-other device keeps the request until the invite expires.
+other device keeps the request until the invite expires. Closing `me` while it waits ends it with
+`CLOSED` too.
 An app whose worker opens cero before the user chooses, as one driven over RPC does, offers all
 three ways in from one screen with `cero.restore` and `cero.link`.
 

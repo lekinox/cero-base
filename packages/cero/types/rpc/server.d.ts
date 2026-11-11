@@ -92,6 +92,8 @@ export declare class Server extends RPCServer {
     _held: Map<string, number>;
     /** @private */
     _booting;
+    /** @private */
+    _adopting;
     /**
      * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec
@@ -116,6 +118,11 @@ export declare class Server extends RPCServer {
     private _boot;
     /** @private */
     private _close;
+    /**
+     * The root a restore or a link resolves with is the one served from here on; with the server closing it closes.
+     * @private
+     */
+    private _adopt;
     /**
      * End every watch stream bound to a handle (e.g. when it closes or leaves).
      * @private
