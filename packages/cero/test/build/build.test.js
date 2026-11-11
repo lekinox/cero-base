@@ -473,6 +473,105 @@ test('build: the app routes start at the id they shipped with', async (t) => {
   t.is(ids['@cero/set-profile'], 25, 'the first app route')
 })
 
+// a route's id is the wire format: one added later takes a free id, wherever its schema registers it,
+// and never the id of a route registered after it, as the bundled extensions' are after an app's
+test('build: a collection added to a shipped app builds a spec that loads, every route on its id', async (a) => {
+  const dir = join(buildRoot, 'grown')
+  await fs.rm(dir, { recursive: true, force: true })
+  a.teardown(() => fs.rm(dir, { recursive: true, force: true }))
+  const routes = async (sub) =>
+    JSON.parse(await fs.readFile(join(dir, sub, 'dispatch/dispatch.json'), 'utf-8')).schema
+  const grown = schema({
+    notes: t.collection({ text: t.string }),
+    tasks: t.collection({ title: t.string }),
+    room: { messages: t.collection({ text: t.string }), polls: t.collection({ title: t.string }) }
+  })
+
+  await build(dir, plain)
+  const shipped = { main: await routes('main'), room: await routes('handles/room') }
+  await build(dir, grown)
+  for (const [sub, was] of [
+    ['main', shipped.main],
+    ['handles/room', shipped.room]
+  ]) {
+    const now = await routes(sub)
+    const ids = new Map(now.map((r) => [r.name, r.id]))
+    a.ok(now.length > was.length, `${sub}: the new routes are there`)
+    a.is(new Set(ids.values()).size, now.length, `${sub}: no two routes share an id`)
+    a.alike(
+      was.map((r) => ids.get(r.name)),
+      was.map((r) => r.id),
+      `${sub}: every shipped route keeps its id`
+    )
+  }
+  const { spec } = await importSpec(dir).catch((err) => ({ spec: null, err }))
+  a.ok(spec, 'the spec loads')
+  const task = { id: 't1', title: 'call back', createdAt: 1, updatedAt: 1 }
+  const op = spec?.dispatch.decode(spec.dispatch.encode('@cero/add-tasks', task))
+  a.is(op?.name, '@cero/add-tasks', 'and routes the new collection')
+})
+
+test('build: a route a Cero release adds takes a free id in a spec built before it', async (a) => {
+  const dir = await rebuilt(a, 'route-added', plain)
+  // the spec as a release without Cero's last route built it: every route after that one an id lower
+  const file = join(dir, 'main/dispatch/dispatch.json')
+  const json = JSON.parse(await fs.readFile(file, 'utf-8'))
+  const at = json.schema.findIndex((route) => route.name === '@cero/del-refusal')
+  const [dropped] = json.schema.splice(at, 1)
+  for (const route of json.schema) if (route.id > dropped.id) route.id--
+  await fs.writeFile(file, JSON.stringify(json, null, 2))
+  const shipped = json.schema.map((route) => [route.name, route.id])
+
+  await build(dir, plain, { extensions: [] })
+  const now = JSON.parse(await fs.readFile(file, 'utf-8')).schema
+  const ids = new Map(now.map((route) => [route.name, route.id]))
+  a.is(new Set(ids.values()).size, now.length, 'no two routes share an id')
+  a.alike(
+    shipped.map(([name]) => ids.get(name)),
+    shipped.map(([, id]) => id),
+    'every route the spec had keeps its id'
+  )
+  a.ok(ids.get('@cero/del-refusal') > Math.max(...shipped.map(([, id]) => id)), 'the new one after')
+  const { spec } = await importSpec(dir).catch(() => ({ spec: null }))
+  a.ok(spec, 'and the spec loads')
+})
+
+// a required field is stored with no sign of its absence, so rows written before it would not decode
+test('build: a required field added to a shipped collection is refused', async (a) => {
+  const due = schema({
+    notes: t.collection({ title: t.string, body: t.string, due: t.required(t.string) })
+  })
+  await rebuilt(a, 'required-late', titled)
+  await refused(a, 'required-late', due, /'due' on 'notes' is required/)
+  const again = build(join(buildRoot, 'required-late'), titled, { extensions: [] })
+  await a.execution(again, 'and the schema that shipped builds again')
+})
+
+test('build: a required field added to a builtin of a shipped app is refused', async (a) => {
+  const alias = schema({ members: t.extend({ alias: t.required(t.string) }) })
+  await rebuilt(a, 'required-builtin', schema({}))
+  await refused(a, 'required-builtin', alias, /'alias' on 'member' is required/)
+})
+
+test('build: a required field a Cero release adds to a type that is never stored builds', async (a) => {
+  const dir = await rebuilt(a, 'required-unstored', plain)
+  const verb = rpc['req-verb']
+  rpc['req-verb'] = { ...verb, extra: t.required(t.string) }
+  a.teardown(() => {
+    rpc['req-verb'] = verb
+  })
+  await a.execution(build(dir, plain, { extensions: [] }))
+})
+
+test('build: a required field in a collection that is new builds', async (a) => {
+  const fresh = schema({
+    notes: t.collection({ title: t.string, body: t.string }),
+    visits: t.collection({ date: t.required(t.string) })
+  })
+  const { spec } = await importSpec(await rebuilt(a, 'required-new', titled, fresh))
+  a.ok(spec.meta.refs.visits, 'a collection that never stored a row may require a field')
+})
+
 // one contract for the whole app, stamped by every database: a device on an older build skips newer
 // writes in a handle as it does at the root, and only stored data moves the number
 const plain = schema({

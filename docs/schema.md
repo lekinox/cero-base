@@ -238,9 +238,10 @@ const v1 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool }) }
 const v2 = cero.schema({ todos: t.collection({ text: t.string, done: t.bool, due: t.int }) })
 ```
 
-Fields are stored by position, so add new ones at the end. Removing or renaming a field, or
-changing its type or `required`, fails the build, and so does turning `own` on or off for a
-collection that shipped: a new rule needs a new collection. Reordering two fields of the same type
+Fields are stored by position, so add new ones at the end. A field added later is optional: the
+rows stored before it do not have it, so `t.required` on one fails the build. Removing or renaming
+a field, or changing its type or `required`, fails the build too, and so does turning `own` on or
+off for a collection that shipped: a new rule needs a new collection. Reordering two fields of the same type
 builds, and swaps their data on every row. A build that fails leaves `spec/` as it was. Keep
 `spec/` in git and rebuild over it after every change: it records what shipped.
 
