@@ -1163,6 +1163,18 @@ test("files: a stored type a header cannot carry serves another member's file", 
   t.is(read, want, 'the bytes decrypt on olive')
 })
 
+test('files: reading its own files adds nothing to the root registry', async (t) => {
+  const { me } = await openHandle(t)
+  await me.store.bootstrap({ name: 'desktop' })
+  const { data: first } = await put(me.files, { data: b4a.from('0'), type: 'text/plain' })
+  await get(me.files, first.id)
+  const size = me._coreKeys.size
+  for (let i = 1; i < 20; i++) await put(me.files, { data: b4a.from(`${i}`), type: 'text/plain' })
+  const { data: rows } = await get(me.files)
+  t.is(rows.length, 20, 'every file read')
+  t.is(me._coreKeys.size, size, 'one entry for the core, none per file')
+})
+
 test('watch: changes carry file fields resolved on both sides', async (t) => {
   const { me } = await openHandle(t)
 

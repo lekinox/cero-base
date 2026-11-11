@@ -774,6 +774,8 @@ export class Handle extends ReadyResource {
     try {
       // a row's stamp keys its own file: a member's row cannot pick the key of another's on the same core
       const { coreKey, blobId, type } = decodeId(id)
+      // a core this device keys itself serves every file on it
+      if (this.root._coreKeys.has(b4a.toHex(coreKey))) return
       const entry = fileEntry(coreKey, blobId, servedType(type) === type ? type : UNSERVED)
       if (!this.root._coreKeys.has(entry)) {
         // no stamp on a file-field value, look it up (fire-and-forget, idempotent)
