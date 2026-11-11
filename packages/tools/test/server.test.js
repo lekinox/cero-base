@@ -231,3 +231,28 @@ test('tap server: an authed session sends frames larger than a request', async (
   await session.handles()
   await t.exception(session.get('nope', { search: 'x'.repeat(1024 * 1024) }), /unknown ref/)
 })
+
+test('tap server: a first request larger than a frame before the token is served', async (t) => {
+  const [a, b] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  const session = await connect(b, { token: 'sekrit' })
+  t.teardown(() => {
+    session.close()
+    server.close()
+  })
+  a.once('close', () => b.destroy())
+
+  await t.exception(session.get('nope', { search: 'x'.repeat(70 * 1024) }), /unknown ref/)
+})
+
+test('tap server: the token frame gets no reply', async (t) => {
+  const [a, b] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  t.teardown(() => server.close())
+
+  let wire
+  const reply = new Promise((resolve) => (wire = new Framed(b, resolve)))
+  wire.send({ token: 'sekrit' })
+  wire.send({ id: 1, method: 'handles' })
+  t.is((await reply).id, 1, 'the first reply answers the first request')
+})

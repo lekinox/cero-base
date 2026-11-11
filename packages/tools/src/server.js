@@ -40,7 +40,7 @@ export class TapServer {
     /** @private */
     this._authed = !opts.token
     this.wire = new Framed(stream, (req) => this.onRequest(req))
-    // until the token checks out, a frame only needs room for one request
+    // until the token checks out, a frame only needs room for the token
     if (opts.token) this.wire.max = 64 * 1024
     /** @private */
     this._cleanup = () => this._teardown()
@@ -62,6 +62,7 @@ export class TapServer {
       if (req.token !== this.opts.token) return this.stream.destroy()
       this._authed = true
       this.wire.max = MAX_FRAME
+      if (!req.method) return
     }
     const handler = this[req.method]
     if (!handler || !METHODS.has(req.method)) {
