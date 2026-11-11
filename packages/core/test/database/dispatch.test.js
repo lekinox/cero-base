@@ -2982,7 +2982,7 @@ test('removal: a promise no device claimed goes with it, its single-use invite u
   const { db, id } = await withMember(t, 'member')
   const once = await addressed(db)
   const many = await addressed(db, { reuse: true })
-  const asked = await addressed(db, { reuse: true, confirm: true })
+  const asked = await addressed(db, { confirm: true })
   const x = await Identity.create()
   const xw = Identity.randomKeyPair().publicKey
   const y = await Identity.create()
@@ -3000,7 +3000,11 @@ test('removal: a promise no device claimed goes with it, its single-use invite u
   t.absent(await promise(db, xw), 'and under a single-use one, used up by its join')
   t.is((await refusal(db, hid.encode(xw)))?.reason, 'removed')
   t.is((await claimed(db, x, xw))?.code, 'REFUSED', 'it claims nothing after')
-  t.ok((await promise(db, zw))?.promised, "one made by a member's accept stays")
+  t.absent(await live(db, asked), 'the invite that waits is used up by its accept')
+  t.ok((await promise(db, zw))?.promised, "and the promise a member's accept made stays")
+  t.absent(await refusal(db, hid.encode(zw)))
+  t.is(await claimed(db, z, zw), null, 'its device claims after')
+  t.is((await db.get('devices', hid.encode(zw))).data?.memberId, z.id)
 })
 
 test('removal: a promise that goes with its device or its member leaves a refusal', async (t) => {

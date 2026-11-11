@@ -540,13 +540,14 @@ export function makeDispatcher({
   }
   // a removal by someone who may remove spends the invites that let in on their own: one the
   // removed held, or saw, brings nobody in after it. Those that wait for an accept stay. A promise
-  // no device claimed goes too where its invite was used up: only one that waits is live by now
+  // no device claimed goes too, its invite used up or not, unless that invite waited for an accept
   async function shut(ctx) {
     for (const invite of await ctx.view.find(invites, {}).toArray()) {
       if (invite.secret && !invite.confirm) await spend(ctx, invite, 'removed')
     }
     for (const row of await ctx.view.find(requests, {}).toArray()) {
       if (!row.promised || (await ctx.view.get(invites, { id: row.invite }))) continue
+      if ((await ctx.view.get(spent, { id: row.invite }))?.confirm) continue
       if (!(await sat(ctx.view, row))) await withdraw(ctx, row)
     }
   }
@@ -816,7 +817,8 @@ export function makeDispatcher({
   async function spend(ctx, invite, reason) {
     const expires = invite.expires || 0
     await drop(ctx, 'invites', invite.id)
-    await ctx.view.insert(spent, { id: invite.id, reason, expires, secret: invite.secret })
+    const { secret, confirm } = invite
+    await ctx.view.insert(spent, { id: invite.id, reason, expires, secret, confirm })
     const kept = async (request) => {
       if (!request.admitted) return false
       if (!request.promised || reason === 'spent') return true
