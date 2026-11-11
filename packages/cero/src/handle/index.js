@@ -597,13 +597,12 @@ export class Handle extends ReadyResource {
 
   // the joins this device waits on, without the keys the local store keeps for them
   /** @private */
-  async _joins(query = {}) {
+  async _joins(query) {
     const rows = (await this.local.store.get('joins')).data
-    const data = filter(
+    return listed(
       rows.map(({ id, type, invite }) => ({ id, type, invite })),
       query
     )
-    return { data, total: data.length, size: data.length }
   }
 
   /** @private */
@@ -613,13 +612,12 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
-  async _topics(query = {}) {
+  async _topics(query) {
     const rows = (await this.local.store.get('topics')).data
-    const data = filter(
+    return listed(
       rows.map(({ id, handle, type, name }) => ({ id, handle, type, name })),
       query
     )
-    return { data, total: data.length, size: data.length }
   }
 
   // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
@@ -1319,6 +1317,13 @@ export class Handle extends ReadyResource {
 // the keys a pairing reply delivered, as a handle opens with them
 function delivered({ key, encryptionKey, epochs, writer }) {
   return { key, encryptionKey, epochs, keyPair: writer }
+}
+
+// a local list read as a collection reads: one row by id, or the rows a query keeps
+function listed(rows, query = {}) {
+  if (typeof query === 'string') return { data: rows.find((row) => row.id === query) ?? null }
+  const data = filter(rows, query)
+  return { data, total: data.length, size: data.length }
 }
 
 function admitted(db, id) {

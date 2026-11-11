@@ -1047,6 +1047,17 @@ test('files: get(handle.files, id) resolves a single file row', async (t) => {
 
 // ─── Phase 4: WRITE gate ──────────────────────────────────────────────────────
 
+test('Handle: me.topics and me.joins read one row by id, as a collection does', async (t) => {
+  const { me } = await ceroOpen(t)
+  await open(me.team, { name: 'clinic' })
+  await waitUntil(async () => (await get(me.topics)).data.length === 1)
+  const [row] = (await get(me.topics)).data
+  t.alike((await get(me.topics, row.id)).data, row, 'a topic by its id')
+  t.alike((await get(me.topics, { name: 'clinic' })).data, [row], 'a filter still lists')
+  t.is((await get(me.topics, 'unknown')).data, null, 'an unknown topic reads null')
+  t.is((await get(me.joins, 'unknown')).data, null, 'an unknown join reads null')
+})
+
 test('files: a reader cannot add a file', async (t) => {
   const { room, join } = await hosted(t, 'files')
   const { room: reader } = await join(await cero.invite(room, { role: 'reader' }))
