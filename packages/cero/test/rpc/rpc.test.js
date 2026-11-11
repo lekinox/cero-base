@@ -921,6 +921,24 @@ test('rpc: a join denied to the UI rejects with the reason', async (t) => {
   t.is(err.reason, 'full')
 })
 
+test("rpc: what a room refuses at apply reaches the client's onerror", async (t) => {
+  const errors = []
+  const { me, server, client } = await openPair(t, {}, { onerror: (err) => errors.push(err) })
+  await waitUntil(() => server._errors.size === 1)
+  await open(client.team, { name: 'clinic' })
+  const [room] = me.children
+  // past genesis nobody adds a member: the room's own device appends one, as a modified app could
+  const { wrap } = await import('../../../core/src/database/envelope.js')
+  const key = Identity.randomBytes(32)
+  const forged = { id: z32.encode(key), key, role: 'owner', createdAt: 1, updatedAt: 1 }
+  const op = spec.handles.team.dispatch.encode('@cero/add-member', forged)
+  await room.store.bee.append(wrap(room.store.version, op))
+  const refused = await waitUntil(() => errors.find((err) => err.code === 'REFUSED'), 5000).catch(
+    () => null
+  )
+  t.ok(refused, 'the room reports it to the app, as the root does its own')
+})
+
 test('rpc: a denial after the join stopped waiting reaches onerror with the reason', async (t) => {
   const errors = []
   const { me, testnet } = await openPair(t, {}, { onerror: (err) => errors.push(err) })

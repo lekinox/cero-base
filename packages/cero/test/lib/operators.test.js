@@ -298,6 +298,21 @@ test('cero.address: one secret, one address, as a string', (t) => {
   t.not(cero.address(Identity.randomBytes(32)), cero.address(secret))
 })
 
+test("inbox: a handler that throws reaches the app's onerror", async (t) => {
+  const { me: a, testnet } = await ceroOpen(t)
+  const errors = []
+  const { me: b } = await ceroOpen(t, { testnet, onerror: (err) => errors.push(err.message) })
+  const secret = Identity.randomBytes(32)
+  const stop = inbox(b, secret, () => {
+    throw new Error('handler broke')
+  })
+  t.teardown(stop)
+
+  await send(a, cero.address(secret), { kind: 'pass' })
+  await waitUntil(() => errors.length > 0, 10000).catch(() => {})
+  t.alike(errors, ['handler broke'])
+})
+
 test('send → inbox: any value arrives with its verified sender', async (t) => {
   const { a, b, secret, address } = await mailPair(t)
   const got = []

@@ -248,6 +248,23 @@ test('close: an app closed as a room it serves reopens at launch reports nothing
   t.alike(errors, [])
 })
 
+test("close: a room's failure in the background reaches the app's onerror", async (t) => {
+  const { me, errors } = await device(t, { linger: 0 })
+  const room = await cero.open(me.team, { name: 'clinic' })
+  await me._indexing
+  // its last writers row fails to write
+  const reindex = me._reindex.bind(me)
+  me._reindex = async (last, only) => {
+    if (last) throw new Error('disk full')
+    return reindex(last, only)
+  }
+  await cero.close(room)
+  t.alike(
+    errors.map((e) => e.message),
+    ['disk full']
+  )
+})
+
 test('close: it still opens again on the same storage', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()

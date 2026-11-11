@@ -76,7 +76,7 @@ try {
 
 ## Background errors
 
-Your calls reject to you. What Cero does on its own (replication, pairing, mirroring, a suspend step, a join nobody waits on any more) goes to `onerror`, and without one it prints.
+Your calls reject to you. What Cero does on its own (replication, pairing, mirroring, a suspend step, a join nobody waits on any more) goes to `onerror`, and without one it prints. That is so at the root, in every handle and for mail. One you will see from a handle is `REFUSED`: a write from another device that the rules turned away. It was not applied.
 
 ```js
 // dir and spec as in the Quickstart, toast is yours
