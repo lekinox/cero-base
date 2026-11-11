@@ -222,6 +222,7 @@ export declare const rpc: {
         fields: {
             prim: string;
             required?: boolean;
+            later?: boolean;
             array: boolean;
         };
     };

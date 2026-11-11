@@ -1000,20 +1000,20 @@ test('build: meta dates every field, collection, single, action, route and handl
   a.is(meta.handles.board.refs.cards.since, 2, 'and its refs')
 })
 
+// contract.json as a build before the history wrote it
+async function unrecorded(dir) {
+  const { version, shape, own } = await keptOf(dir)
+  await fs.writeFile(join(dir, 'contract.json'), JSON.stringify({ version, shape, own }))
+}
+
 test('build: what a spec had before it kept a history is since 0, the history starting at its contract', async (a) => {
   const dir = await rebuilt(a, 'pre-history', titled, dated)
-  const file = join(dir, 'contract.json')
-  const { version, shape, own } = await keptOf(dir)
-  await fs.writeFile(file, JSON.stringify({ version, shape, own }))
+  await unrecorded(dir)
   await build(dir, tasked, { extensions: [] })
   const kept = await keptOf(dir)
   a.alike(Object.keys(kept.history), ['2', '3'], 'it starts at the contract the spec had')
   a.is(kept.start, 2)
-  a.is(
-    kept.floor,
-    3,
-    'and its change may have been Cero rules: the floor is the contract it raised'
-  )
+  a.is(kept.floor, 2, 'Cero rules did not change: the floor is the start')
   const { meta } = (await importSpec(dir)).spec
   a.is(meta.since.types['@cero/notes'].due, 0, 'a field the spec had')
   a.is(meta.refs.notes.since, 0, 'a collection it had')
@@ -1118,6 +1118,57 @@ test('build: a Cero release that changes what a write means raises the floor, an
   a.alike([kept.version, kept.floor, kept.target], [3, 3, 3], 'the floor is the contract it raised')
   await build(dir, dated, { extensions: [] })
   a.is((await keptOf(dir)).floor, 3, 'and the next build keeps it')
+})
+
+test('build: a spec built before its history holds back what it adds, unless Cero rules changed', async (a) => {
+  const held = schema({
+    notes: t.collection({ title: t.string, body: t.string, due: t.later(t.string) })
+  })
+  const dir = await rebuilt(a, 'pre-history-later', titled)
+  await unrecorded(dir)
+  await build(dir, held, { extensions: [] })
+  const kept = await keptOf(dir)
+  a.alike([kept.version, kept.start, kept.floor, kept.target], [2, 1, 1, 1], 'it is held')
+
+  await rebuilt(a, 'pre-history-rules', titled)
+  await unrecorded(join(buildRoot, 'pre-history-rules'))
+  const was = contract.version
+  contract.version = was + 1
+  a.teardown(() => {
+    contract.version = was
+  })
+  await refused(a, 'pre-history-rules', held, /'due' in 'notes'.*in use already/)
+})
+
+test('build: a handle type added with a held thing in it is refused: it cannot be held on its own', async (a) => {
+  await rebuilt(a, 'later-handle-new', titled)
+  const board = { cards: t.later(t.collection({ x: t.string })) }
+  const grown = schema({ ...titled.defs, board })
+  await refused(a, 'later-handle-new', grown, /'board' shipped with or after 'cards'/)
+})
+
+test('build: t.later on a handle type, on t.extend or in local is refused, naming it', async (a) => {
+  const cards = t.collection({ x: t.string })
+  const marked = [
+    [{ board: t.later({ cards }) }, /'board' is a handle type: t.later holds back a field/],
+    [{ members: t.later(t.extend({ alias: t.string })) }, /'members' extends a builtin: t.later/],
+    [{ local: { drafts: t.collection({ x: t.later(t.string) }) } }, /'x' in 'drafts' is local/],
+    [{ local: { drafts: t.later(cards) } }, /'drafts' is local: t.later/]
+  ]
+  await rebuilt(a, 'later-where', titled)
+  for (const [defs, message] of marked) {
+    await refused(a, 'later-where', schema({ ...titled.defs, ...defs }), message)
+  }
+})
+
+test('build: a refusal names a field t.extend adds by the builtin the app wrote', async (a) => {
+  await rebuilt(a, 'later-extend-name', titled)
+  const grown = schema({
+    ...titled.defs,
+    members: t.extend({ alias: t.later(t.string) }),
+    tasks: t.collection({ x: t.string })
+  })
+  await refused(a, 'later-extend-name', grown, /'tasks' shipped with or after 'alias' in 'members'/)
 })
 
 test('build: a refused mark leaves the spec as it was', async (a) => {

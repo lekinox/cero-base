@@ -83,6 +83,7 @@ export declare const cero: {
         fixed64: import("@cero-base/core").Prim;
         file: import("@cero-base/core").Prim;
         required: (marker: import("@cero-base/core").Prim) => import("@cero-base/core").Prim;
+        later: <T extends import("@cero-base/core").Prim | import("@cero-base/core").TypeDef>(def: T) => T;
         single(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
             push?: boolean;
         }): import("@cero-base/core").TypeDef;

@@ -46,6 +46,7 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
   const fold = (entries, target, fromExt) => {
     for (const [k, v] of Object.entries(entries)) {
       if (v && v.kind === 'extend') {
+        if (v.later) throw CeroError.INVALID(`'${k}' extends a builtin: ${holds}`)
         const type = internal.defs.main[k]?.type
         if (!type) throw CeroError.INVALID(`'${k}' is not an extendable builtin`)
         if ('memberId' in v.fields) throw CeroError.INVALID(written('memberId', k))
@@ -149,8 +150,9 @@ function splitMain(defs) {
 function splitHandles(defs) {
   const out = {}
   for (const [k, v] of Object.entries(defs)) {
-    if (k === 'local') continue
-    if (isPlainHandle(v)) out[k] = v
+    if (k === 'local' || !isPlainHandle(v)) continue
+    if (v.later) throw CeroError.INVALID(`'${k}' is a handle type: ${holds}`)
+    out[k] = v
   }
   return out
 }
@@ -211,6 +213,8 @@ function extendBuiltins(refs, extend) {
   }
 }
 
+const holds = 't.later holds back a field, a collection, a single or an action'
+
 const written = (field, name) => `'${field}' in '${name}' is a field Cero writes, rename it`
 
 function register(name, node, ctx) {
@@ -221,6 +225,10 @@ function register(name, node, ctx) {
   if (ctx.taken.types.has(name)) throw CeroError.INVALID(`'${name}' is a builtin type, rename it`)
   const fields = Object.keys(node.fields)
   const marked = fields.filter((f) => node.fields[f].later)
+  const held = node.later ? `'${name}'` : marked.length > 0 && `'${marked[0]}' in '${name}'`
+  if (ctx.scope === 'local' && held) {
+    throw CeroError.INVALID(`${held} is local: t.later holds back what a database shares`)
+  }
   ctx.things.push({ name, type: fqn, fields, later: node.later === true, marked })
   if (node.kind === 'action') {
     ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
@@ -297,15 +305,14 @@ async function contract(specDir, prior, dirs, compiled, extend) {
     own[dir] = { ...was, ...now }
   })
   const shapes = await Promise.all(dirs.map((dir) => shapeOf(join(specDir, dir))))
-  const json = JSON.stringify([internal.contract.version, ...shapes.map((s) => s.stored)])
-  const shape = b4a.toString(crypto.hash(b4a.from(json)), 'hex')
+  const shape = hash(shapes)
   const version = kept
     ? kept.version + (kept.shape === shape ? 0 : 1)
     : Math.max(...shapes.flatMap((s) => s.versions))
 
   const rules = internal.contract.version
   const start = kept?.history ? kept.start : (kept?.version ?? version)
-  const floor = floorOf(kept, shape, version, start)
+  const floor = await floorOf(kept, prior, dirs, version, start)
   const history = kept?.history ? { ...kept.history } : { [start]: await builders(prior, dirs) }
   history[version] = Object.fromEntries(dirs.map((dir, i) => [dir, shapes[i].builders]))
 
@@ -350,10 +357,19 @@ async function contract(specDir, prior, dirs, compiled, extend) {
   return { version, start, target, dated }
 }
 
-// a spec with no history cannot tell whether its last change was Cero's rules, so it assumes so
-function floorOf(kept, shape, version, start) {
-  if (kept?.history) return kept.rules === internal.contract.version ? kept.floor : version
-  return kept && kept.shape !== shape ? version : start
+function hash(shapes) {
+  const json = JSON.stringify([internal.contract.version, ...shapes.map((s) => s.stored)])
+  return b4a.toString(crypto.hash(b4a.from(json)), 'hex')
+}
+
+// a spec with no history kept no rules: hashed under today's, its own spec gives the shape it
+// kept only when Cero's rules did not change since
+async function floorOf(kept, prior, dirs, version, start) {
+  if (!kept) return start
+  if (kept.history) return kept.rules === internal.contract.version ? kept.floor : version
+  const had = dirs.filter((dir) => existsSync(join(prior, dir)))
+  const shapes = await Promise.all(had.map((dir) => shapeOf(join(prior, dir))))
+  return hash(shapes) === kept.shape ? start : version
 }
 
 function routeOf({ kind, path, verb }, ns) {
@@ -384,11 +400,16 @@ function declared({ things, meta }, extend, types) {
       out.push({ label: `'${f}' in '${name}'`, since: types[type][f], mark, held: later || mark })
     }
   }
+  // a handle type cannot be held: what it brings turns on with it
+  for (const [name, ref] of Object.entries(meta.refs)) {
+    if (ref.kind === 'handle') out.push({ label: `'${name}'`, since: ref.since, mark: false })
+  }
   for (const [type, fields] of Object.entries(extend)) {
+    const ref = Object.keys(internal.defs.main).find((k) => internal.defs.main[k].type === type)
     for (const [f, m] of Object.entries(fields)) {
       const mark = m.later === true
       out.push({
-        label: `'${f}' in '${type}'`,
+        label: `'${f}' in '${ref}'`,
         since: types[`@${meta.ns}/${type}`][f],
         mark,
         held: mark
