@@ -2117,3 +2117,27 @@ function unsealable() {
   const fields = Invite.parse(Invite.create(sample()).toString())
   return new Invite({ ...fields, _str: null, address: b4a.alloc(32) }).toString()
 }
+
+test('confirm: a second join of the same writer that waits over its promise owes a rotation', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const counter = async (name) =>
+    (await host.db.view.get(`@${host.db.ns}/counters`, { name }))?.value ?? 0
+  const writer = crypto.keyPair()
+  const first = await joiner.join(await host.pairing.invite(), { writer })
+  t.ok(first.encryptionKey, 'the joiner holds the keys')
+  const [{ id }] = await promises(host.db)
+  t.is(await counter('_owed'), 0, 'nothing owed while promised')
+  const epochs = await counter('epochs')
+
+  const asks = await host.pairing.invite({ confirm: true })
+  const second = joiner.join(asks, { writer, timeout: 8000 }).catch((e) => e)
+  await waitFor(async () => {
+    const { data } = await host.db.get('requests', id)
+    return data && !data.promised
+  })
+  await waitFor(async () => (await counter('_owed')) > 0 || (await counter('epochs')) > epochs)
+  await host.pairing.deny(id, 'no')
+  t.is((await second).code, 'DENIED', 'the joiner is turned away')
+  t.absent(await member(host.db, joiner.identity), 'no member')
+})
