@@ -110,6 +110,22 @@ test('box: a handled row keeps its place across a reopen', async (t) => {
   t.is(row.handled, 7)
 })
 
+test('box: get reads the one row under an id, null when there is none', async (t) => {
+  const dir = await t.tmp()
+  const local = new Local(dir, spec)
+  await local.ready()
+  t.teardown(() => local.close())
+  const inbox = box(local.store, 'inbox')
+  const address = b4a.alloc(32, 1)
+  await inbox.put({ id: 'aa', address, message: b4a.alloc(0), fetched: true })
+  await inbox.put({ id: 'bb', address, message: b4a.alloc(0), handled: 7 })
+  t.alike(
+    await inbox.get('aa'),
+    (await inbox.list()).find((mail) => mail.id === 'aa')
+  )
+  t.is(await inbox.get('cc'), null)
+})
+
 // ─── pagination ───────────────────────────────────────────────────────────
 
 test('Local: get with limit paginates', async (t) => {

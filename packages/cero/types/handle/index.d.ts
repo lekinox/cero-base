@@ -302,7 +302,8 @@ export declare class Handle extends ReadyResource {
     /**
      * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
      * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
-     * closes the least recently used, on its own. The root closes at once.
+     * closes the least recently used, on its own. The root closes at once, after any `cero.link` or `cero.restore` on
+     * it: one still waiting stops, one taking its place finishes first.
      * @returns {Promise<void>}
      */
     close(): Promise<void>;

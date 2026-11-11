@@ -155,7 +155,7 @@ function onReplyRead(mailbox, onread) {
   const put = box.put
   let read = false
   box.put = async (mail) => {
-    if (!read && !mail.handled) {
+    if (!read && !mail.handled && 'fetched' in mail) {
       read = true
       await onread()
     }
@@ -748,7 +748,7 @@ test('join: two replies racing settle it once, and nothing is kept after', async
   let read = 0
   const put = joiner.mailbox.inbox.put
   joiner.mailbox.inbox.put = async (m) => {
-    if (!m.handled) read++
+    if (!m.handled && 'fetched' in m) read++
     return put(m)
   }
   const kept = []
