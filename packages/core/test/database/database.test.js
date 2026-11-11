@@ -3973,3 +3973,52 @@ test('apply: a block written without the room key lands a join and nothing else'
   await waitFor(async () => errors.length > 0 || (await db.get('messages', 'plain')).data)
   t.absent((await db.get('messages', 'plain')).data, 'a write from the seat it took does not')
 })
+
+test('apply: a join written without the room key at a newer version freezes nobody', async (t) => {
+  const { db, store } = await bootstrapped(t, { onerror: () => {} })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', {
+    id: b4a.toHex(invite.id),
+    role: 'member',
+    createdAt: 1,
+    reuse: true
+  })
+
+  const identity = await Identity.create()
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const join = (version) =>
+    wrap(
+      version,
+      spec.dispatch.encode(
+        '@cero/join',
+        sealJoin(invite, identity, core.key, Identity.randomBytes(32))
+      )
+    )
+  await core.append(
+    Autobee.encodeValue(join(db.version), { optimistic: true, encrypted: true, links: [] })
+  )
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await db.get('members', identity.id)).data)
+
+  // the seat it took holds WRITE, but not the key
+  await core.append(b4a.concat([b4a.alloc(8), Autobee.encodeValue(join(db.version + 1), {})]))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  const { plainId } = await import('../../src/database/encryption.js')
+  await waitFor(() => db.bee.plain.has(plainId(core.key, 1)))
+  await db.bee.update()
+  t.is(db.behind, null, 'nobody is held behind')
+  const err = await db.put('messages', { id: 'mine', text: 'mine' }).then(
+    () => null,
+    (e) => e
+  )
+  t.is(err?.code, undefined, 'the owner still writes')
+})

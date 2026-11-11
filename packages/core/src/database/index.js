@@ -911,7 +911,8 @@ export class Database extends ReadyResource {
         continue
       }
       // written without the key: a seat that holds none writes nothing, nor freezes anyone
-      if (this.bee.plain.has(plainId(node.key, node.length - 1)) && !this._joins(op.body)) {
+      const plain = this.bee.plain.has(plainId(node.key, node.length - 1))
+      if (plain && !this._joins(op.body)) {
         this._onerror(
           CeroError.REFUSED('key', 'a block written without the key carries a join only')
         )
@@ -920,7 +921,9 @@ export class Database extends ReadyResource {
       if (op.version > this.version) {
         // anyone holding the key appends a node: each is replayed once this version reaches it, only a writer's freezes
         this._skip(op.version)
-        if (can(await this.dispatcher.role(view, node.key), WRITE)) this._onfuture(op.version)
+        if (!plain && can(await this.dispatcher.role(view, node.key), WRITE)) {
+          this._onfuture(op.version)
+        }
         continue
       }
       ready.push({ ...node, value: op.body })
