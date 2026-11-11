@@ -32,8 +32,7 @@ export async function current(dir) {
 
 /**
  * A swap killed part way, finished or undone before anything opens `dir`: past its first rename the incoming
- * identity had opened, so it takes main's place; without it the old one comes back. What a killed swap left
- * in `main.next` goes, unless a swap is running there.
+ * identity had opened, so it takes main's place; without it the old one comes back.
  *
  * @param {string} dir
  */
@@ -44,6 +43,15 @@ export async function settle(dir) {
     if (!(await exists(main))) await fs.promises.rename(await current(dir), main)
     await rm(old)
   }
+}
+
+/**
+ * What a killed swap left in `main.next` goes, unless a swap is running there. Only once `main` is open: a swap in
+ * another process holds its lock while the incoming identity opens, and lets it go to rename, a window this misses.
+ *
+ * @param {string} dir
+ */
+export async function sweep(dir) {
   if (!running.has(dir)) await rm(nextOf(dir))
 }
 

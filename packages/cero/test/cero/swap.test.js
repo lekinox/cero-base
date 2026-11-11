@@ -228,3 +228,13 @@ test('swap: another launch of the dir while a link waits leaves the incoming ide
   t.teardown(() => linked.close().catch(() => {}), { order: 4 })
   t.is(linked.id, a.me.id, 'linked')
 })
+
+test('swap: another process launching the dir while it is open leaves main.next alone', async (t) => {
+  const { me, dir, testnet } = await mine(t)
+  // what a swap staged in another process: this process's own bookkeeping does not know it
+  fs.mkdirSync(`${dir}/main.next/main`, { recursive: true })
+  fs.writeFileSync(`${dir}/main.next/main/staged`, 'in use')
+  await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }))
+  t.ok(fs.existsSync(`${dir}/main.next/main/staged`), 'the incoming identity is still there')
+  await kept(t, me, me.id)
+})

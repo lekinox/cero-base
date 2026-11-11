@@ -9,6 +9,7 @@ import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 
 import { Identity } from '@cero-base/core/identity'
+import { CeroError } from '@cero-base/core/errors'
 import { decodeId } from '@cero-base/core/blobs/codec'
 import { Invite } from '@cero-base/core/invite'
 import { Pairing } from '@cero-base/core/pairing'
@@ -171,6 +172,36 @@ test('invites: a join survives the joiner restarting, and lands once a member is
   await cero.resume(owner)
   const again = await reopen(t, joiner.dir, testnet)
   t.ok(await joined(again, room.id), 'the join went on after the restart')
+})
+
+test('invites: a join that lands as its caller times out gives back the open it made', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const room = await open(owner.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  const { me: joiner } = await ceroOpen(t, { testnet, linger: 50 })
+
+  // the room opens in time, and the join lands from inside the timeout's own callback
+  let land
+  const landing = new Promise((resolve) => (land = resolve))
+  let entered = null
+  const enter = joiner._enter.bind(joiner)
+  joiner._enter = async (...args) => {
+    entered = await enter(...args)
+    await landing
+    return entered
+  }
+  const timeout = CeroError.TIMEOUT
+  CeroError.TIMEOUT = (...args) => (land(), timeout(...args))
+  t.teardown(() => {
+    CeroError.TIMEOUT = timeout
+  })
+  const err = await joiner._join(invite, 'team', { timeout: 5000 }).catch((e) => e)
+  CeroError.TIMEOUT = timeout
+  t.is(err.code, 'TIMEOUT', 'the caller stops waiting')
+  t.ok(entered, 'the room had opened')
+  await waitUntil(() => entered.closed || null)
+  t.pass('nobody took it, so it lingered and closed')
 })
 
 test('invites: a join the root closes on rejects with CLOSED, stays saved and lands later', async (t) => {
@@ -392,6 +423,21 @@ test('invites: a room with no invite left is not reopened at boot', async (t) =>
   await open(joiner.me.team, invite)
   await waitUntil(async () => ((await serving(owner.me)) === 0 ? true : null))
   t.pass('the used invite takes the room off the list')
+})
+
+test('invites: a room reopened at boot to serve its invite closes once it serves none', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  await owner.me.close()
+
+  const back = await reopen(t, owner.dir, testnet, { linger: 50 })
+  const served = await joined(back, room.id)
+  const joiner = await ceroOpen(t, { testnet })
+  await open(joiner.me.team, invite)
+  await waitUntil(() => served.closed || null)
+  t.pass('the used invite let the room close')
 })
 
 test('invites: a room left with invites is dropped from the list at boot', async (t) => {
