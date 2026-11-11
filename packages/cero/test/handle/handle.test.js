@@ -1,13 +1,16 @@
 import test from 'brittle'
 import b4a from 'b4a'
+import c from 'compact-encoding'
 import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
+import { Invite } from '@cero-base/core/invite'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero } from '../../src/index.js'
 import { put, set, get, del, open, rotate, accept, watch, after } from '../../src/lib/operators.js'
+import { Response, STATUS_ACCEPTED } from '../../../core/src/pairing/response.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
   makeStore,
@@ -53,6 +56,48 @@ test('invite: a confirm invite waits for the app to accept', async (t) => {
   const joined = await joining
   t.teardown(() => joined.close().catch(() => {}))
   t.is((await get(room.members, peer.identity.id)).data.role, 'reader')
+})
+
+test('invite: made-up keys a reader sends a confirm join are not kept, the accept still lets it in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'gated' })
+  const reader = await openHandle(t, { testnet })
+  const seen = await open(reader.me.team, await cero.invite(room, { role: 'reader' }))
+  const invite = await cero.invite(room, { confirm: true })
+
+  const peer = await openHandle(t, { testnet })
+  const joining = open(peer.me.team, invite)
+  // a reader sees where the reply goes
+  const { reply } = await nextRequest(seen)
+  const read = new Set()
+  const put = peer.me.mailbox.inbox.put
+  peer.me.mailbox.inbox.put = async (m) => {
+    if (b4a.equals(m.address, reply)) read.add(m.id)
+    return put(m)
+  }
+  const forged = {
+    status: STATUS_ACCEPTED,
+    reason: '',
+    key: Invite.parse(invite).key,
+    encryptionKey: Identity.randomBytes(32),
+    epochs: []
+  }
+  await reader.me.mailbox.send(reply, c.encode(Response, forged))
+  const rows = () => peer.me.mailbox.inbox.list()
+  await waitUntil(
+    async () => read.size && !(await rows()).some((m) => read.has(m.id) && !m.handled)
+  )
+  const { data: joins } = await peer.me.local.store.get('joins')
+  t.absent(
+    joins.find((row) => row.key),
+    'the made-up keys are not kept'
+  )
+
+  await accept(room, await nextRequest(room))
+  const joined = await joining
+  t.teardown(() => joined.close().catch(() => {}))
+  t.ok((await get(room.members, peer.identity.id)).data)
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {

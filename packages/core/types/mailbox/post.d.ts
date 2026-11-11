@@ -2,7 +2,7 @@ import ReadyResource from 'ready-resource';
 /**
  * One sealed message on its way to an address: written to a fresh core, announced to peers
  * receiving at the address, and deposited on `mirrors` for an owner who is offline.
- * `delivered` resolves on the first read, by the owner or by a mirror holding it for them.
+ * `delivered` resolves once it is stored, by the owner or by a mirror holding it for them.
  * Given a `core` instead, it announces that core as it is; given a `name`, the core is the
  * store's core of that name, and a message it already holds is not written twice. `sealed` says
  * the message is sealed to the address already.

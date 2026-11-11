@@ -109,7 +109,9 @@ async function start(dir, spec, opts = {}) {
       throw CeroError.INVALID('dir holds an identity: a device invite needs a fresh one')
     }
     // a device invite, this launch's or the one a killed launch was waiting on
-    const pending = done || opts.phrase ? null : await pendingLink(local)
+    const left = await pendingLink(local)
+    if (done && left) await local.store.del('joins', left.id)
+    const pending = done || opts.phrase ? null : left
     const linking = !done && !opts.phrase && !!(opts.invite || pending)
     const resolved = linking ? null : await resolveIdentity(opts, local, done)
     // cero creates only an identity it minted, in this launch or in the killed one it resumes
@@ -204,11 +206,10 @@ async function start(dir, spec, opts = {}) {
         const signer = await Identity.keyPair(identity.seed)
         await pointer.append(c.encode(c.fixed32, me.store.key), { keyPair: signer })
       }
-      if (linked) {
-        await local.store.set('device', pack(identity))
-        await local.store.del('joins', linked.id)
-      }
+      if (linked) await local.store.set('device', pack(identity))
+      // the join row goes last: until the setup clears, a killed launch resumes the link from it
       await local.store.set('keypair', { setup: null })
+      if (linked) await local.store.del('joins', linked.id)
     }
 
     for (const off of await setups) {

@@ -1,5 +1,6 @@
 import test from 'brittle'
 import process from 'process'
+import AbortController from 'bare-abort-controller'
 import fs from 'fs'
 import path from 'path'
 import b4a from 'b4a'
@@ -652,6 +653,30 @@ test('invites: a reply the joiner stopped before keeping is handed over again af
   t.ok(await joined(again, room.id), 'the kept reply opens the room')
 })
 
+test('invites: a joiner closing as its reply goes out joins once it opens again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+
+  const joiner = await ceroOpen(t, { testnet })
+  // the joiner closes the moment the member puts its reply on the wire
+  const { store } = owner.me.network
+  const get = store.get.bind(store)
+  let closing = null
+  store.get = (opts) => {
+    const core = get(opts)
+    if (opts?.name) core.on('upload', () => (closing ??= joiner.me.close()))
+    return core
+  }
+  joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
+  await waitUntil(() => !!closing)
+  await closing
+
+  const again = await reopen(t, joiner.dir, testnet)
+  t.ok(await joined(again, room.id).catch(() => null), 'the room opens after the reopen')
+})
+
 test('invites: a denial the joiner stopped before forgetting is handed over again after a restart', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
@@ -1074,8 +1099,10 @@ test('storageKey: master seed encrypted at rest, same key reopens', async (t) =>
   const a = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey: key })
   const id = a.id
   const seed = (await a.local.store.get('master')).data.seed
+  const device = a.identity.device.secretKey.subarray(0, 32)
   await a.close()
   t.absent(await diskContains(`${dir}/main`, seed), 'seed unreadable on disk with storageKey')
+  t.absent(await diskContains(`${dir}/main`, device), "and this device's key")
 
   const b = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey: key })
   t.teardown(() => b.close().catch(() => {}), { order: 5 })
@@ -1511,6 +1538,71 @@ test('link: a launch that stops waiting resumes on the next, with no new invite'
     /holds an identity/,
     'a set-up dir takes no invite'
   )
+})
+
+test('link: a launch stopped as its reply goes out links on the next', async (t) => {
+  const a = await ceroOpen(t)
+  const invite = await cero.invite(a.me)
+  const dir = await t.tmp()
+  const opts = { bootstrap: a.testnet.bootstrap }
+  // the launch stops the moment the accepting device puts its reply on the wire
+  const stop = new AbortController()
+  const { store } = a.me.network
+  const get = store.get.bind(store)
+  store.get = (o) => {
+    const core = get(o)
+    if (o?.name) core.on('upload', () => stop.abort())
+    return core
+  }
+  const first = cero(dir, spec, { ...opts, invite, signal: stop.signal }).catch((err) => err)
+  await cero.accept(a.me, await asked(a.me))
+  const stopped = await first
+  if (stopped.id) await stopped.close()
+
+  const b = await cero(dir, spec, { ...opts, recoveryTimeout: 20000 }).catch((err) => err)
+  if (b.id) t.teardown(() => b.close().catch(() => {}), { order: 4 })
+  t.is(b.id, a.me.id, 'linked on the next launch')
+})
+
+// a link launch accepted on `a` that stops on one write of its setup's end, then closes
+async function killedLinking(t, a, method, when) {
+  const invite = await cero.invite(a.me)
+  const dir = await t.tmp()
+  let launch = null
+  let stopping
+  const stopped = new Promise((resolve) => (stopping = resolve))
+  const dies = {
+    setup(me) {
+      if (launch) return
+      launch = { me, writer: me.store.keyPair.publicKey }
+      stall(me.local.store, method, when).then(stopping)
+    }
+  }
+  cero(dir, spec, { bootstrap: a.testnet.bootstrap, invite, extensions: [dies] }).catch(() => {})
+  await cero.accept(a.me, await asked(a.me))
+  await stopped
+  await launch.me.close()
+  return { dir, writer: launch.writer }
+}
+
+test('link: a launch killed at the end of its setup opens as the linked device, on the same writer', async (t) => {
+  const a = await ceroOpen(t)
+  const opts = { bootstrap: a.testnet.bootstrap }
+  const steps = [
+    ['set', (name, row) => name === 'keypair' && row.setup === null],
+    ['del', (name) => name === 'joins']
+  ]
+  for (const [method, when] of steps) {
+    const { dir, writer } = await killedLinking(t, a, method, when)
+    const b = await cero(dir, spec, opts)
+    t.teardown(() => b.close().catch(() => {}), { order: 1 })
+    t.is(b.id, a.me.id, `stopped on ${method}: the linked identity`)
+    t.alike(b.store.keyPair.publicKey, writer, 'on the writer it was linked with')
+    t.alike((await b.local.store.get('joins')).data, [], 'with no join left behind')
+    await b.close()
+  }
+  await devices(a.me, 3)
+  t.pass('one seat per linked device')
 })
 
 test('link: a removed device loses its seats in every handle, and the root rotates its key', async (t) => {

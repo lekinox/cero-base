@@ -3965,3 +3965,84 @@ test('gate: a newer op applied during a write stops it', async (t) => {
   t.is(a.db.bee.local.length, length, 'nothing reached the log')
   t.is((await b.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
 })
+
+// a joiner writes its join before it holds the key, and nothing else: a seat is no key
+test('apply: a block written without the room key lands a join and nothing else', async (t) => {
+  const errors = []
+  const { db, store } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', { id: b4a.toHex(invite.id), role: 'member', createdAt: 1 })
+
+  const identity = await Identity.create()
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const op = (verb, value) => wrap(db.version, spec.dispatch.encode(`@cero/${verb}`, value))
+  const join = op('join', sealJoin(invite, identity, core.key, Identity.randomBytes(32)))
+  await core.append(Autobee.encodeValue(join, { optimistic: true, encrypted: true, links: [] }))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await db.get('members', identity.id)).data)
+  t.pass('the join lands')
+
+  const add = op('add-messages', { id: 'plain', text: 'no key', createdAt: 1, updatedAt: 1 })
+  await core.append(b4a.concat([b4a.alloc(8), Autobee.encodeValue(add, {})]))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => errors.length > 0 || (await db.get('messages', 'plain')).data)
+  t.absent((await db.get('messages', 'plain')).data, 'a write from the seat it took does not')
+})
+
+test('apply: a join written without the room key at a newer version freezes nobody', async (t) => {
+  const { db, store } = await bootstrapped(t, { onerror: () => {} })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', {
+    id: b4a.toHex(invite.id),
+    role: 'member',
+    createdAt: 1,
+    reuse: true
+  })
+
+  const identity = await Identity.create()
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const join = (version) =>
+    wrap(
+      version,
+      spec.dispatch.encode(
+        '@cero/join',
+        sealJoin(invite, identity, core.key, Identity.randomBytes(32))
+      )
+    )
+  await core.append(
+    Autobee.encodeValue(join(db.version), { optimistic: true, encrypted: true, links: [] })
+  )
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await db.get('members', identity.id)).data)
+
+  // the seat it took holds WRITE, but not the key
+  await core.append(b4a.concat([b4a.alloc(8), Autobee.encodeValue(join(db.version + 1), {})]))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  const { plainId } = await import('../../src/database/encryption.js')
+  await waitFor(() => db.bee.plain.has(plainId(core.key, 1)))
+  await db.bee.update()
+  t.is(db.behind, null, 'nobody is held behind')
+  const err = await db.put('messages', { id: 'mine', text: 'mine' }).then(
+    () => null,
+    (e) => e
+  )
+  t.is(err?.code, undefined, 'the owner still writes')
+})

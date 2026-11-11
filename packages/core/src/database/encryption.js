@@ -45,6 +45,23 @@ AutobeeEncryption.prototype.encrypt = function (index, block, fork, ctx) {
   return baseEncrypt.call(current, index, block, fork, ctx)
 }
 
+// a block in plain (padding type 0) was written without the key: apply lets it carry a join only
+const baseDecrypt = AutobeeEncryption.prototype.decrypt
+
+AutobeeEncryption.prototype.decrypt = function (index, block, ctx) {
+  if (!this.isCompat(ctx, index) && block[0] === 0) this.auto.plain?.add(plainId(ctx.key, index))
+  return baseDecrypt.call(this, index, block, ctx)
+}
+
+/**
+ * @param {Uint8Array} key  The writer core's key.
+ * @param {number} index
+ * @returns {string}
+ */
+export function plainId(key, index) {
+  return `${b4a.toHex(key)}:${index}`
+}
+
 /**
  * Prime a keyring from a local core's persisted epoch stash.
  *
@@ -221,6 +238,8 @@ export class EpochAutobee extends Autobee {
     super(store, key, handlers)
     /** @type {Keyring | null} */
     this.keyring = handlers.keyring || null
+    /** @type {Set<string>} the writer blocks read in plain, by `plainId` */
+    this.plain = new Set()
     // a block from an unknown epoch parks what read it until the keyring learns something
     if (this.keyring) this.keyring.onchange = () => this._scheduleEpochWake()
     /** @private */

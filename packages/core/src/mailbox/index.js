@@ -14,7 +14,7 @@ import { CeroError } from '../lib/errors.js'
  * @property {Uint8Array} address        Where it goes, or where it arrived.
  * @property {Uint8Array} message      Sent: as `sealed` says. Received: empty, it stays in its core.
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
- * @property {boolean} [keep]            False erases the sender's copy once someone read it.
+ * @property {boolean} [keep]            False erases the sender's copy once a device or a mirror stored it.
  * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it; on a handled row, it still has to.
  * @property {number} [handled]          When it was handled: the id is remembered for a while.
  * @property {boolean} [sealed]          Sent: `message` is sealed to the address, not in the clear.
@@ -26,16 +26,16 @@ import { CeroError } from '../lib/errors.js'
  *
  * @typedef {object} MailboxOpts
  * @property {Box} [inbox]                   Keeps a received message until it was handled.
- * @property {Box} [outbox]                  Keeps a sent message until someone read it.
+ * @property {Box} [outbox]                  Keeps a sent message until a device or a mirror stored it.
  * @property {(err: Error) => void} [onerror] Called when a message fails to be handled or sent.
  */
 
 /**
  * A device's mailbox. It receives at the addresses it holds the secret of, and sends to any
- * address. Both ends keep their mail until it is done with: the outbox until someone read it,
- * the inbox until it was handled. Give it persistent boxes and that survives a restart: it
- * sends again what was not read and hands over again what was not handled, so a message may
- * arrive twice, never not at all.
+ * address. Both ends keep their mail until it is done with: the outbox until a device or a
+ * mirror stored it, the inbox until it was handled. Give it persistent boxes and that survives a
+ * restart: it sends again what was not stored and hands over again what was not handled, so a
+ * message may arrive twice, never not at all.
  */
 export class Mailbox extends ReadyResource {
   /**
@@ -128,11 +128,11 @@ export class Mailbox extends ReadyResource {
 
   /**
    * Send a message to an address. Resolves once the outbox keeps it; it is delivered in the
-   * background, and dropped from the outbox once someone read it.
+   * background, and dropped from the outbox once the owner or a mirror stored it.
    *
    * @param {Uint8Array} address
    * @param {Uint8Array} message
-   * @param {{ mirrors?: Uint8Array[], keep?: boolean }} [opts]  `mirrors`: where it waits for an owner who is offline, the network's by default. `keep`: false erases it from this device once someone read it.
+   * @param {{ mirrors?: Uint8Array[], keep?: boolean }} [opts]  `mirrors`: where it waits for an owner who is offline, the network's by default. `keep`: false erases it from this device once a device or a mirror stored it.
    * @returns {Promise<void>}
    */
   async send(address, message, { mirrors = this.network.mirrors, keep = true } = {}) {
@@ -192,7 +192,7 @@ export class Mailbox extends ReadyResource {
   }
 }
 
-// wait until a post is read once, then close it
+// wait until a post is stored once, then close it
 async function deliver(post, ondelivered) {
   try {
     await post.ready()

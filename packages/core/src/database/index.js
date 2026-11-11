@@ -29,7 +29,7 @@ import {
   stamp
 } from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
-import { EpochAutobee, Keyring, loadEpochs } from './encryption.js'
+import { EpochAutobee, Keyring, loadEpochs, plainId } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 import { Rotation } from './rotation.js'
@@ -916,10 +916,20 @@ export class Database extends ReadyResource {
         this._onerror(CeroError.INVALID('an op with no envelope'))
         continue
       }
+      // written without the key: a seat that holds none writes nothing, nor freezes anyone
+      const plain = this.bee.plain.has(plainId(node.key, node.length - 1))
+      if (plain && !this._joins(op.body)) {
+        this._onerror(
+          CeroError.REFUSED('key', 'a block written without the key carries a join only')
+        )
+        continue
+      }
       if (op.version > this.version) {
         // anyone holding the key appends a node: each is replayed once this version reaches it, only a writer's freezes
         this._skip(op.version)
-        if (can(await this.dispatcher.role(view, node.key), WRITE)) this._onfuture(op.version)
+        if (!plain && can(await this.dispatcher.role(view, node.key), WRITE)) {
+          this._onfuture(op.version)
+        }
         continue
       }
       ready.push({ ...node, value: op.body })
@@ -1012,6 +1022,15 @@ export class Database extends ReadyResource {
     }
     this.on('update', tick)
     return () => this.off('update', tick)
+  }
+
+  /** @private */
+  _joins(body) {
+    try {
+      return this.spec.dispatch.decode(body).name === `@${this.ns}/join`
+    } catch {
+      return false
+    }
   }
 
   // '@cero/set-messages' → { op: 'set', name: 'messages' }; an action has no dash
