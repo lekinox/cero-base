@@ -652,7 +652,11 @@ export class Database extends ReadyResource {
     ]
     if (recovering) {
       await this.claim({ timeout })
-      await this.write([device])
+      // an owner's device raises first, as at genesis; a member's leaves out what the version lacks
+      await this._raise()
+      const [op, row] = device
+      const stamp = await this._stamp(this.view)
+      await this.write([[op, this.dispatcher.cut(`@${this.ns}/${op}`, row, stamp)]])
     } else {
       // one batch: a writer is never on the log without its member row, nor the database without
       // the version its build asks for, raised first so the rest is written at it

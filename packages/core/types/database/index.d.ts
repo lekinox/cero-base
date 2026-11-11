@@ -271,6 +271,7 @@ export declare class Database extends ReadyResource {
     bee: EpochAutobee;
     dispatcher: {
         encode: (route: string, value: unknown, stamp: number) => Uint8Array;
+        cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>;
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
         version: (view: object) => Promise<number>;

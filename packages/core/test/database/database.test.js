@@ -3875,6 +3875,47 @@ test('version: a second device on the next build claims its seat as the version'
   t.is(version, 1, 'stamped with the version')
 })
 
+// a release whose Cero rules date the device's name past the version a room written before it holds
+const named = () =>
+  dated({ version: 2, start: 1, target: 2 }, { types: { '@cero/device': { name: 2 } } })
+
+test("version: an owner's device recovering on a newer release raises the version before it writes its device row", async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.create()
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { identity, topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    spec: named(),
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  await b.db.bootstrap({ recovering: true, name: 'phone' })
+  t.is(await versionRow(b.db), 2, 'raised to its target')
+  const { data: device } = await b.db.get('devices', hid.encode(b.db.writerKey))
+  t.is(device?.name, 'phone', 'and its row keeps the name')
+})
+
+test("version: a member's device linking on a newer release writes its device row without what the version does not have", async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, room)
+  await waitForConnection(a.network)
+  await admit(a.db, b.db)
+  const phone = await makePeer(t, testnet, { ...room, identity: b.identity, spec: named() })
+  await phone.db.bootstrap({ recovering: true, name: 'phone' })
+  t.ok(phone.db.writable, 'seated')
+  const { data: device } = await phone.db.get('devices', hid.encode(phone.db.writerKey))
+  t.ok(device, 'its row is written')
+  t.is(device.name, null, 'without the name its version has no field for')
+  t.is(await versionRow(phone.db), null, 'a member does not raise')
+})
+
 test('version: a write naming what the version does not have yet is refused with UNSUPPORTED, and nothing is appended', async (t) => {
   const { db, identity } = await bootstrapped(t, { spec: next })
   db.after('ping', () => {})

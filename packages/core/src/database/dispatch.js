@@ -85,7 +85,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -252,6 +252,12 @@ export function makeDispatcher({
         throw CeroError.UNSUPPORTED(`'${f}' in '${name}'`)
       }
     }
+  }
+
+  // a row without the fields its stamp has none for, which apply keeps as stored
+  function cut(route, value, stamp) {
+    const fields = since?.types[routes.get(route)?.type] ?? {}
+    return Object.fromEntries(Object.entries(value).filter(([f]) => (fields[f] ?? 0) <= stamp))
   }
 
   // what the op's author could not name, decided from its stamp and the schema before any hook
@@ -927,6 +933,7 @@ export function makeDispatcher({
 
   return {
     encode,
+    cut,
     dispatch: async (value, ctx) => router.dispatch(await decode(value, ctx.stamp, ctx.view), ctx),
     role: getSignerRole,
     version: versionOf,
