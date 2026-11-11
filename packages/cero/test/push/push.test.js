@@ -243,9 +243,13 @@ test('topics: with no point to go on from, a launch reads every handle once and 
   const opts = { bootstrap: testnet.bootstrap, linger: 0 }
   const first = await cero(dir, spec, opts)
   const room = await open(first.team, { name: 'clinic' })
+  const other = await open(first.team, { name: 'other' })
   const id = topicOf(room)
+  const kept = topicOf(other)
+  await waitUntil(async () => (await first.local.store.get('topics', kept)).data)
   await waitUntil(async () => (await first.local.store.get('topics', id)).data)
   await cero.close(room)
+  await cero.close(other)
   await first._indexing
   // as a store an earlier release wrote: no point kept, a handle with no row and a row with no handle
   const { data: row } = await first.local.store.get('topics', id)
@@ -254,14 +258,22 @@ test('topics: with no point to go on from, a launch reads every handle once and 
   await first.store.bee.local.setUserData('cero/since/topics', null)
   await first.close()
 
+  const puts = []
+  const put = Storage.prototype.put
+  Storage.prototype.put = function (name, value) {
+    if (name === 'topics') puts.push(value.name)
+    return put.call(this, name, value)
+  }
+  t.teardown(() => (Storage.prototype.put = put))
   const me = await cero(dir, spec, opts)
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   await me._indexing
   t.alike(
-    (await get(me.topics)).data.map((r) => r.id),
-    [id],
-    'the handle has its row again and the other is gone'
+    (await get(me.topics)).data.map((r) => r.id).sort(),
+    [id, kept].sort(),
+    'the handle has its row again and the row with no handle is gone'
   )
+  t.alike(puts, ['clinic'], 'a row that still describes its handle is not written again')
 })
 
 test('topics: a pass still waiting when the root closes does nothing and reports nothing', async (t) => {
@@ -271,11 +283,70 @@ test('topics: a pass still waiting when the root closes does nothing and reports
   let release
   me._indexing = new Promise((resolve) => (release = resolve))
   const queued = me._index().catch((err) => errors.push(err))
-  const closing = me.close()
+  await me.close()
   release()
-  await closing
   await queued
   t.alike(errors, [])
+  await t.execution(me._seal({ opened: false }), 'nor does the seal of a handle that never opened')
+})
+
+test('topics: a row written by a pass that kept no point goes with its handle', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { linger: 0, onerror: (err) => errors.push(err) })
+  await me._indexing
+  // the pass writes the row and fails to keep its point: as a kill between the two
+  const local = me.store.bee.local
+  const set = local.setUserData.bind(local)
+  local.setUserData = (key, value) => {
+    if (key !== 'cero/since/topics' || value === null) return set(key, value)
+    local.setUserData = set
+    return Promise.reject(new Error('disk full'))
+  }
+  const room = await open(me.team, { name: 'clinic' })
+  const id = topicOf(room)
+  await waitUntil(async () => (await me.local.store.get('topics', id)).data)
+  await waitUntil(() => errors.length > 0)
+  await leave(room)
+  await waitUntil(async () => !(await me.local.store.get('topics', id)).data)
+  t.pass('the pass after it started over and dropped the row')
+})
+
+test('topics: a failed pass over the root still reads the writers of the handles behind it', async (t) => {
+  const a = await ceroOpen(t, { onerror: () => {} })
+  const c = await ceroOpen(t, { testnet: a.testnet })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const theirs = await open(c.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(theirs.status)).data.writable)
+  await put(theirs.messages, { text: 'from c' })
+  await waitUntil(async () => (await get(room.messages)).data.length === 1)
+  const payload = await pushOf(theirs, room)
+  await waitUntil(async () => await receive(a.me, payload))
+  await a.me._indexing
+
+  // her demotion and a change to the root's rows wait behind one pass, and the root's fails
+  let release
+  a.me._indexing = new Promise((resolve) => (release = resolve))
+  a.me._follow = async () => {
+    delete a.me._follow
+    throw new Error('disk full')
+  }
+  await set(room.members, { id: c.me.identity.id, role: 'reader' })
+  const failed = a.me._index().catch(() => {})
+  release()
+  await failed
+  await waitUntil(async () => (await receive(a.me, payload)) === null)
+  t.pass('her core is refused, though the pass over the root failed')
+})
+
+test('topics: a handle writes no row the pass over the root has not written', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const id = topicOf(room)
+  await waitUntil(async () => (await me.local.store.get('topics', id)).data)
+  await me._indexing
+  await me.local.store.del('topics', id)
+  await me._index(room)
+  t.absent((await me.local.store.get('topics', id)).data, 'its writers have no row to go on')
 })
 
 test('topics: after one failed reindex the next handles change still indexes', async (t) => {

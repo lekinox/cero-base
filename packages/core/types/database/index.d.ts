@@ -491,9 +491,9 @@ export declare class Database extends ReadyResource {
     changes(name: string, query?: Query): import('streamx').Readable;
     /**
      * The rows of a collection that changed since `settle` was last called under `mark`, a name of the
-     * caller's, so what follows a collection row by row goes on after a restart where it stopped. `reset`
-     * is true with no point to start from, or one of another view: `changes` is then empty and the caller
-     * reads the collection. The point is kept on this device only.
+     * caller's, so what follows a collection row by row goes on after a restart where it stopped. With no
+     * point to start from, `reset` is true and `changes` holds every row. A caller that takes changes and
+     * does not settle starts over at its next call. The point is kept on this device only.
      *
      * @param {string} name
      * @param {string} mark

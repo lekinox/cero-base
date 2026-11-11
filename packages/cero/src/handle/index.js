@@ -639,8 +639,12 @@ export class Handle extends ReadyResource {
     const run = async () => {
       this._queued = null
       if (this.closing || this.closed) return
-      if (queued.root) await this._follow()
-      for (const child of queued.children) await this._topic(child)
+      try {
+        if (queued.root) await this._follow()
+      } finally {
+        // their writers are read whether or not the root's rows were
+        for (const child of queued.children) await this._topic(child)
+      }
     }
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
@@ -656,17 +660,16 @@ export class Handle extends ReadyResource {
   }
 
   // the topics rows follow the root's handles row by row: those that changed since the last pass that finished, so
-  // a launch reads none of the others. With no telling which changed, every row once
+  // a launch reads none of the others. A pass with no point to go on from reads them all and drops the rows of
+  // handles that are gone
   /** @private */
   async _follow() {
     const { changes, reset, settle } = await this.store.since('handles', 'topics')
     if (reset) {
-      const { data: handles } = await this.store.get('handles')
-      const wanted = new Set(handles.map(topicOf))
+      const wanted = new Set(changes.map(({ next }) => topicOf(next)))
       for (const row of (await this.local.store.get('topics')).data) {
         if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
       }
-      for (const h of handles) await this._row(h)
     }
     for (const { prev, next } of changes) {
       if (next) await this._row(next)
@@ -675,22 +678,24 @@ export class Handle extends ReadyResource {
     await settle()
   }
 
-  // an open handle's own row, as its writers stand; a handle on its way out is its seal's to read
+  // who may write to an open handle, on the row the root's pass wrote for it; a handle on its way out is its
+  // seal's to read
   /** @private */
   async _topic(child, sealing = false) {
     if (!child.opened || (child.closing && !sealing)) return
-    const { data: h } = await this.store.get('handles', child.id)
-    if (h) await this._row(h, child)
+    const { data: have } = await this.local.store.get('topics', b4a.toHex(child.store.discoveryKey))
+    if (!have) return
+    const writers = await writersOf(child.store).catch(unread)
+    if (sameBytes(have.writers, writers)) return
+    await this.local.store.put('topics', { ...have, writers })
   }
 
   // one handle's topics row, written when it differs. Who may write is read off the handle while it is open here,
   // and kept as it was otherwise
   /** @private */
-  async _row(h, child = null) {
+  async _row(h) {
     const id = topicOf(h)
-    child ??= [...this.children, ...this._pending].find(
-      (c) => c.opened && !c.closing && c.id === h.id
-    )
+    const child = [...this.children, ...this._pending].find((c) => c.opened && c.id === h.id)
     const { data: have } = await this.local.store.get('topics', id)
     const row = {
       id,

@@ -676,9 +676,9 @@ export class Database extends ReadyResource {
 
   /**
    * The rows of a collection that changed since `settle` was last called under `mark`, a name of the
-   * caller's, so what follows a collection row by row goes on after a restart where it stopped. `reset`
-   * is true with no point to start from, or one of another view: `changes` is then empty and the caller
-   * reads the collection. The point is kept on this device only.
+   * caller's, so what follows a collection row by row goes on after a restart where it stopped. With no
+   * point to start from, `reset` is true and `changes` holds every row. A caller that takes changes and
+   * does not settle starts over at its next call. The point is kept on this device only.
    *
    * @param {string} name
    * @param {string} mark
@@ -690,25 +690,23 @@ export class Database extends ReadyResource {
     const col = this.col(this.ref(name))
     const at = `cero/since/${mark}`
     const local = this.bee.local
-    const kept = await local.getUserData(at)
-    const from = kept ? c.decode(point, kept) : null
+    // taken before any await: a view being applied again would be read half way
     const snap = this.view.snapshot()
     const head = this.view.engine.head()
-    const reset = !from || !head || !b4a.equals(from.key, head.key) || from.length > head.length
-    const changes = []
     try {
-      if (!reset) {
-        for await (const { left, right } of snap.diff(col, { from })) {
-          changes.push({ prev: left, next: right })
-        }
+      const from = decodePoint(await local.getUserData(at))
+      const told = from ? await rows(snap, col, from) : null
+      const changes = told ?? (await rows(snap, col, null))
+      // what the caller writes from here on is ahead of the point: unsettled, it starts over
+      if (changes.length) await local.setUserData(at, null)
+      const settle = async () => {
+        // another core since, after a view applied again or a writer changed: the next call starts over
+        if (this.bee?.local === local) await local.setUserData(at, c.encode(point, head))
       }
+      return { changes, reset: told === null, settle }
     } finally {
       await snap.close().catch(safetyCatch)
     }
-    const settle = async () => {
-      if (head) await local.setUserData(at, c.encode(point, head))
-    }
-    return { changes, reset, settle }
   }
 
   /**
@@ -1418,6 +1416,30 @@ const point = {
   decode(state) {
     return { key: c.fixed32.decode(state), length: c.uint.decode(state) }
   }
+}
+
+// a kept point, null when there is none or it does not read
+function decodePoint(buf) {
+  try {
+    return buf ? c.decode(point, buf) : null
+  } catch {
+    return null
+  }
+}
+
+// the rows of a collection that differ from a point of its view, all of them with none; null when
+// the point's blocks do not come, as for one in a view this device never applied
+async function rows(snap, col, from) {
+  const stream = snap.diff(col, from ? { from } : {})
+  const read = async () => {
+    const changes = []
+    for await (const { left, right } of stream) changes.push({ prev: left, next: right })
+    return changes
+  }
+  if (!from) return read()
+  const done = await bounded(read())
+  if (!done) stream.destroy()
+  return done ? done.v : null
 }
 
 const NO_HOOKS = []

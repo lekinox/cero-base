@@ -4479,21 +4479,20 @@ test('changes: empty collection → empty initial batch, then deltas', async (t)
   t.is(batches[3].changes[0].next, null, 'and no next')
 })
 
-test('since: the rows that changed since the last settle, after a restart too, and again without one', async (t) => {
+test('since: the rows that changed since the last settle, after a restart too', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
   const pairs = ({ changes }) =>
-    changes.map(({ prev, next }) => [prev?.text ?? null, next?.text ?? null])
+    changes.map(({ prev, next }) => [prev?.text ?? null, next?.text ?? null]).sort()
 
   const first = await db.since('messages', 'index')
-  t.is(first.reset, true, 'nothing settled yet: the caller reads the collection')
-  t.alike(first.changes, [])
+  t.is(first.reset, true, 'nothing settled yet')
+  t.alike(first.changes, [], 'and no row yet')
   await first.settle()
 
   await db.put('messages', { text: 'a' })
   const second = await db.since('messages', 'index')
   t.is(second.reset, false)
   t.alike(pairs(second), [[null, 'a']])
-  t.alike(pairs(await db.since('messages', 'index')), [[null, 'a']], 'not settled: it comes again')
   await second.settle()
   t.alike(pairs(await db.since('messages', 'index')), [], 'settled: nothing since')
 
@@ -4513,6 +4512,22 @@ test('since: the rows that changed since the last settle, after a restart too, a
   t.is((await again.since('messages', 'other')).reset, true, 'another mark has its own point')
 })
 
+test('since: changes taken and not settled start over, with every row', async (t) => {
+  const { db } = await bootstrapped(t)
+  const texts = ({ changes }) => changes.map(({ next }) => next.text).sort()
+  await db.put('messages', { text: 'a' })
+  await (await db.since('messages', 'index')).settle()
+  await db.put('messages', { text: 'b' })
+  t.alike(texts(await db.since('messages', 'index')), ['b'], 'taken')
+  const next = await db.since('messages', 'index')
+  t.is(next.reset, true, 'what its caller wrote may be ahead of the point')
+  t.alike(texts(next), ['a', 'b'])
+  await next.settle()
+  const none = await db.since('messages', 'index')
+  t.alike([none.reset, none.changes], [false, []], 'no change taken: the point stands')
+  t.is((await db.since('messages', 'index')).reset, false)
+})
+
 test('since: a view applied again loses no change, and a call made meanwhile waits for it', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { text: 'a' })
@@ -4521,42 +4536,90 @@ test('since: a view applied again loses no change, and a call made meanwhile wai
   // a view another build applied, as one a fast-forward lands on: the log is applied again
   db.version += 1
   db._onmove()
-  const { changes, reset } = await db.since('messages', 'index')
-  const texts = changes.map(({ next }) => next?.text)
-  t.ok(reset || texts.includes('b'), 'the row written since is told, or the caller reads them all')
+  const { changes } = await db.since('messages', 'index')
+  t.ok(
+    changes.some(({ next }) => next?.text === 'b'),
+    'the row written since is told'
+  )
   t.is((await db.get('messages')).data.length, 2, 'read once the view was whole again')
 })
 
-test('since: asked while a view is applied again, it never tells a row gone', async (t) => {
+test('since: asked as a view starts being applied again, or while it is, it never tells a row gone', async (t) => {
   const { db } = await bootstrapped(t)
   for (const text of ['a', 'b', 'c']) await db.put('messages', { text })
   await (await db.since('messages', 'index')).settle()
+  const gone = ({ changes }) => changes.some(({ next }) => !next)
+  // under way before the view moves: it reads the view it started on
+  const early = db.since('messages', 'index')
   db.version += 1
   db._onmove()
   let rebuilt = false
   db._rebuilding.then(() => (rebuilt = true))
-  let gone = false
+  t.absent(gone(await early), 'one already under way')
+  let missed = false
   while (!rebuilt) {
-    const { changes, reset } = await db
-      .since('messages', 'index')
-      .catch(() => ({ changes: [], reset: true }))
-    if (reset || changes.some(({ next }) => !next)) gone = true
+    if (gone(await db.since('messages', 'index'))) missed = true
     await new Promise((resolve) => setImmediate(resolve))
   }
-  t.absent(gone, 'every call in between waited for the view')
+  t.absent(missed, 'every call in between waited for the view')
 })
 
-test('since: a point of another view, or past this one, starts over', async (t) => {
+test('since: a point of another view, one that does not read, or one whose blocks do not come, starts over', async (t) => {
   const { db } = await bootstrapped(t)
   await db.put('messages', { text: 'a' })
-  const { key, length } = db.view.engine.head()
-  const point = (key, length) => b4a.concat([key, c.encode(c.uint, length)])
-  await db.bee.local.setUserData('cero/since/index', point(Identity.randomBytes(32), 1))
-  t.is((await db.since('messages', 'index')).reset, true, 'another view')
-  await db.bee.local.setUserData('cero/since/index', point(key, length + 5))
-  t.is((await db.since('messages', 'index')).reset, true, 'a point this view has not reached')
-  await db.bee.local.setUserData('cero/since/index', point(key, length))
-  t.is((await db.since('messages', 'index')).reset, false, 'its own point goes on')
+  const head = db.view.engine.head()
+  const kept = (key, length) => b4a.concat([key, c.encode(c.uint, length)])
+  const mark = (value) => db.bee.local.setUserData('cero/since/index', value)
+  const all = async () => {
+    const { reset, changes } = await db.since('messages', 'index')
+    return [reset, changes.map(({ next }) => next.text)]
+  }
+  // the bound's timer holds nothing open: the test does, as an app's connections would
+  const busy = setInterval(() => {}, 1000)
+  t.teardown(() => clearInterval(busy))
+  await mark(kept(Identity.randomBytes(32), 1))
+  t.alike(await all(), [true, ['a']], 'another view, which nobody holds')
+  await mark(b4a.from('not a point'))
+  t.alike(await all(), [true, ['a']], 'one that does not read')
+
+  // a point in a view whose older blocks this device never fetched: its read never ends
+  await mark(kept(head.key, head.length))
+  let stuck = null
+  const snapshot = db.view.snapshot.bind(db.view)
+  db.view.snapshot = () => {
+    const snap = snapshot()
+    const diff = snap.diff.bind(snap)
+    snap.diff = (col, query) => {
+      if (!query.from) return diff(col, query)
+      // cut short, its read fails, as one whose blocks were asked of a peer does
+      stuck = {
+        destroyed: false,
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise((resolve, reject) => (stuck.cut = reject))
+        }),
+        destroy() {
+          stuck.destroyed = true
+          stuck.cut(new Error('cut'))
+        }
+      }
+      return stuck
+    }
+    return snap
+  }
+  t.alike(await all(), [true, ['a']], 'one whose blocks do not come')
+  t.ok(stuck.destroyed, 'and its read is let go')
+  db.view.snapshot = snapshot
+})
+
+test('since: a point settled after the view moved to another core is dropped, not an error', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { text: 'a' })
+  const { settle } = await db.since('messages', 'index')
+  db.version += 1
+  db._onmove()
+  await db._rebuilding
+  await t.execution(settle(), 'nothing to keep')
+  t.is((await db.since('messages', 'index')).reset, true, 'the next call starts over')
 })
 
 test('changes: bursts fold losslessly — replay always equals get', async (t) => {
