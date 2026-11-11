@@ -177,6 +177,12 @@ export const main = {
     // its invite waited for an accept: a promise made under it is one a member let in
     confirm: bool
   },
+  // a device that asked for the keys it lacks, until its own op closes it. `id` is its writer
+  owed: {
+    id: required(string),
+    // the address its keys are sent to
+    reply: required(bytes)
+  },
   deny: {
     id: required(string),
     reason: string

@@ -3061,3 +3061,165 @@ test('removal: a promise that goes with its device or its member leaves a refusa
   t.absent(await promise(db, other))
   t.is((await refusal(db, hid.encode(other)))?.reason, 'removed', 'made to a member removed')
 })
+
+// ─── keys asked for ───────────────────────────────────────────────────────
+
+const asked = (db, id) => db.view.get(`@${db.ns}/owed`, { id })
+const asks = async (db) => (await db.view.find(`@${db.ns}/owed`, {}).toArray()).map((row) => row.id)
+// a device asks for the keys it lacks, from its own core
+const ask = (db, writer, reply = crypto.randomBytes(32)) =>
+  apply(db, writer, 'ask-key', { id: hid.encode(writer), reply })
+
+test("ask-key: a seated device asks, a reader's too, and its row says where its keys go; a second ask leaves one row", async (t) => {
+  const b = await second('member')
+  const { db } = await withRole(t, 'owner', { members: [b.row] })
+  const readers = await minted(db, { role: 'reader' })
+  const reader = Identity.randomKeyPair().publicKey
+  const identity = await Identity.create()
+  t.is(await apply(db, reader, 'join', joinOp(db, readers, { identity, writer: reader })), null)
+  t.is(await seat(db, b), null)
+  const id = hid.encode(b.writer.publicKey)
+
+  const reply = crypto.randomBytes(32)
+  t.is(await ask(db, b.writer.publicKey, reply), null)
+  t.alike(await asked(db, id), { id, reply }, 'its device and the address its keys go to')
+  t.is(await ask(db, reader), null)
+  t.ok(await asked(db, hid.encode(reader)), 'a device that only reads asks the same way')
+
+  const next = crypto.randomBytes(32)
+  t.is(await ask(db, b.writer.publicKey, next), null)
+  t.alike((await asks(db)).sort(), [id, hid.encode(reader)].sort(), 'one row per device')
+  t.alike((await asked(db, id)).reply, next, 'at the address it asked with last')
+})
+
+test('ask-key: a device of nobody, of a removed member, or one removed writes nothing, and no device asks for another', async (t) => {
+  const b = await second('member')
+  const gone = await second('member')
+  const { db } = await withRole(t, 'owner', { members: [b.row, gone.row] })
+  const phone = linked(b.identity)
+  for (const device of [b, gone, phone]) t.is(await seat(db, device), null)
+
+  const stranger = Identity.randomKeyPair().publicKey
+  t.is((await ask(db, stranger))?.code, 'REFUSED', 'a core no member owns')
+  t.is(await apply(db, db.writerKey, 'del-member', { id: gone.id }), null)
+  t.is((await ask(db, gone.writer.publicKey))?.code, 'REFUSED', 'a device of a removed member')
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey)), null)
+  t.is((await ask(db, phone.writer.publicKey))?.code, 'REFUSED', 'a removed device')
+  const other = { id: hid.encode(db.writerKey), reply: crypto.randomBytes(32) }
+  const forged = await apply(db, b.writer.publicKey, 'ask-key', other)
+  t.is(forged?.code, 'REFUSED', 'a seated device, for another')
+  t.is(await ask(db, b.writer.publicKey, b4a.alloc(5)), null)
+  t.absent(await asked(db, hid.encode(b.writer.publicKey)), 'nor one at no address')
+  t.alike(await asks(db), [], 'no row')
+})
+
+test("ask-key: only the device's own op closes its row", async (t) => {
+  const b = await second('admin')
+  const { db } = await withRole(t, 'owner', { members: [b.row] })
+  t.is(await seat(db, b), null)
+  const id = hid.encode(db.writerKey)
+  t.is(await ask(db, db.writerKey), null)
+
+  const closed = await apply(db, b.writer.publicKey, 'del-owed', { id })
+  t.is(closed?.code, 'REFUSED', 'not another device, whatever its rank')
+  t.ok(await asked(db, id), 'its row stands')
+  t.is(await apply(db, db.writerKey, 'del-owed', { id }), null)
+  t.absent(await asked(db, id), 'its own closes it')
+})
+
+test('ask-key: a removal of the device, of its member, or her leaving takes its row with the seat', async (t) => {
+  const b = await second('member')
+  const left = await second('member')
+  const { db } = await withRole(t, 'owner', { members: [b.row, left.row] })
+  const phone = linked(b.identity)
+  const devices = [b, left, phone]
+  for (const device of devices) t.is(await seat(db, device), null)
+  for (const { writer } of devices) t.is(await ask(db, writer.publicKey), null)
+  t.is(await ask(db, db.writerKey), null)
+  const [mine, hers, gone] = devices.map(({ writer }) => hid.encode(writer.publicKey))
+
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey)), null)
+  t.absent(await asked(db, gone), 'a device removed')
+  t.is(await apply(db, db.writerKey, 'del-member', { id: b.id }), null)
+  t.absent(await asked(db, mine), 'a member removed')
+  t.is(await apply(db, left.writer.publicKey, 'del-member', { id: left.id }), null)
+  t.absent(await asked(db, hers), 'a member who left')
+  t.alike(await asks(db), [hid.encode(db.writerKey)], 'the others keep theirs')
+})
+
+test('ask-key: a database below the version that has it writes no row, and at it an ask stamped below writes none', async (t) => {
+  const { since } = spec.meta
+  const routes = { ...since.routes, '@cero/ask-key': 2, '@cero/del-owed': 2 }
+  const meta = { ...spec.meta, since: { ...since, routes } }
+  const b = await second('member')
+  const { db } = await withRole(t, 'owner', { spec: { ...spec, meta }, members: [b.row] })
+  const id = hid.encode(db.writerKey)
+  const row = { id, reply: crypto.randomBytes(32) }
+  const at = (stamp) =>
+    db.dispatcher
+      .dispatch(db.spec.dispatch.encode(`@${db.ns}/ask-key`, row), {
+        view: db.view,
+        host: noHost,
+        key: db.writerKey,
+        dbKey: db.key,
+        stamp
+      })
+      .then(
+        () => null,
+        (err) => err
+      )
+
+  const written = await db.write([['ask-key', row]]).then(
+    () => null,
+    (err) => err
+  )
+  t.is(written?.code, 'UNSUPPORTED', 'its own device appends none')
+  t.is((await at(1))?.code, 'REFUSED', 'and apply refuses one, as a route it does not know')
+  t.absent(await asked(db, id), 'below it: no row')
+  t.is(await seat(db, b), null)
+  t.is(
+    await apply(db, db.writerKey, 'del-member', { id: b.id }),
+    null,
+    'and a removal is as it was'
+  )
+
+  t.is(await apply(db, db.writerKey, 'upgrade', { version: 2 }), null)
+  t.is((await at(1))?.code, 'REFUSED', 'at it, one stamped below is refused the same')
+  t.absent(await asked(db, id))
+  t.is(await at(2), null)
+  t.ok(await asked(db, id), 'and one stamped at it lands')
+})
+
+test('ask-key: the same log gives the same rows on every device, a reader asking through its own core, and after the view is applied again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  const r = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db)
+  await admit(a.db, r.db, 'reader')
+  await waitFor(() => b.db.writable)
+  const [mine, reads] = [b, r].map((peer) => hid.encode(peer.db.writerKey))
+  await waitFor(async () => (await r.db.get('devices', reads)).data)
+  t.absent(r.db.writable, 'a reader has no seat')
+
+  await b.db.write([['ask-key', { id: mine, reply: crypto.randomBytes(32) }]])
+  await r.db.write([['ask-key', { id: reads, reply: crypto.randomBytes(32) }]])
+  const peers = [a, b, r]
+  const rows = (db) => db.view.find(`@${db.ns}/owed`, {}).toArray()
+  for (const { db } of peers) await waitFor(async () => (await rows(db)).length === 2)
+  const seen = await rows(a.db)
+  t.alike(seen.map((row) => row.id).sort(), [mine, reads].sort(), 'both asked')
+  t.alike(await rows(b.db), seen, 'the same on the device that asked')
+  t.alike(await rows(r.db), seen, 'and on one that only reads')
+  await a.db._rebuild()
+  await waitFor(async () => (await rows(a.db)).length === 2)
+  t.alike(await rows(a.db), seen, 'and once the view is applied again')
+
+  await r.db.write([['del-owed', { id: reads }]])
+  await a.db.del('members', b.identity.id)
+  for (const { db } of peers) await waitFor(async () => (await rows(db)).length === 0)
+  t.pass('closed by its own device, and taken with a removal, on every device')
+})
