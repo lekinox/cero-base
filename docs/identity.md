@@ -155,7 +155,8 @@ await cero.del(me.devices, lostId) // lostId: the id of the device you lost
 ```
 
 `me.device.id` is this device's own id. A removed device loses its seat in your root and in every
-handle, the root re-keys so it reads nothing written after, and its key never comes back: not by a
+handle, the root rotates its key so the device reads nothing written after, and the device's key
+never comes back: not by a
 claim, a join or a link, nor through a device it links. It returns only as a new device, after a
 wipe, with the phrase or an invite you accept. A device that holds the phrase can still come back
 that way: anyone with the phrase is you.

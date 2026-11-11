@@ -199,20 +199,20 @@ export class Rotation {
     return this.db.bee.local.setUserData('cero/epochs', entries)
   }
 
-  // a rotation seals for the rotator's view of the members; REMOVE-capable devices re-key
+  // a rotation seals for the rotator's view of the members; REMOVE-capable devices rotate
   // when the current epoch's recipients drift from the member list, or when its envelope
   // for them does not open: a rotator must not seal anyone who could heal it out
   /** @private */
   async _audit() {
     const db = this.db
-    // behind, the membership this device sees is stale: the devices that read everything re-key
+    // behind, the membership this device sees is stale: the devices that read everything rotate
     if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return
     const { data: device } = await db.get('devices', hid.encode(db.writerKey))
     const me = device?.memberId ? (await db.get('members', device.memberId)).data : null
     if (!can(me?.role, REMOVE)) return
 
     const rows = await this._epochs()
-    // a database still on its creation key re-keys at its first removal
+    // a database still on its creation key rotates at its first removal
     if (!rows.length) {
       if (await db.view.findOne(`@${db.ns}/removals`, {})) await this._heal('first removal')
       return

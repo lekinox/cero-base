@@ -302,8 +302,8 @@ test('Handle: reader-role invite can read but cannot write', async (t) => {
   await t.exception.all(() => put(reader.messages, { text: 'should fail' }), /not writable/i)
 })
 
-test('Handle: a removal re-keys the room, the removed member reads nothing new, late joiners read all', async (t) => {
-  const { room, join } = await hosted(t, 'rekey')
+test('Handle: a removal rotates the room key, the removed member reads nothing new, late joiners read all', async (t) => {
+  const { room, join } = await hosted(t, 'rotation')
   const joinRoom = async () => {
     const { me, room: h } = await join(await cero.invite(room))
     return { h, me }
@@ -451,7 +451,7 @@ test('Handle: rotation works on nested child rooms — remove, late join, reopen
   t.alike(reread.map((r) => r.text).sort(), ['after', 'before'], 'reopened child reads every era')
 })
 
-test('rotation: a second device by phrase reads a re-keyed room through the epochs its root carries', async (t) => {
+test('rotation: a second device by phrase reads a room past its rotation, through the epochs its root carries', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
   await put(room.messages, { text: 'pre' })
@@ -511,7 +511,7 @@ test('Handle: nested healer — soft delete in a rotated child auto-rotates', as
 
   await del(room.members, b.identity.id) // soft delete only — no explicit rotate
   await waitUntil(() => (room.store.keyring.seq >= 2 ? true : null))
-  t.pass('healer re-keyed the nested child on its own')
+  t.pass('healer rotated the nested child on its own')
 
   await put(room.messages, { text: 'post' })
   await new Promise((r) => setTimeout(r, 1500))
@@ -828,7 +828,7 @@ test('Handle: self-removal in a rotated room — the healer cuts the leaver off'
   await rotate(room) // activate rotation policy
   await waitUntil(() => (leaver.room.store.keyring.seq === 1 ? true : null))
 
-  // the member removes THEMSELVES (allowed) — the admin's healer must re-key
+  // the member removes THEMSELVES (allowed) — the admin's healer must rotate
   await del(leaver.room.members, leaver.identity.id)
   await waitUntil(() => (room.store.keyring.seq >= 2 ? true : null))
 

@@ -644,7 +644,7 @@ test('rpc: rotate on a room round-trips via the wire', async (t) => {
   t.is([...me.children][0].store.keyring.seq, 1, 'the worker keyring advanced')
 })
 
-test('rpc: a removal made from the UI re-keys the room', async (t) => {
+test('rpc: a removal made from the UI rotates the room key', async (t) => {
   const { client, testnet } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
   const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })

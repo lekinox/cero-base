@@ -58,7 +58,7 @@ test('rejoin: re-admission after removal while the room is still open', async (t
   await waitForConnection(a.net)
   await put(clinic.messages, { text: 'pre' })
 
-  // owner removes b; the room re-keys by itself
+  // owner removes b; the room rotates its key by itself
   await del(clinic.members, b.identity.id)
   await waitUntil(async () => (await get(clinic.status)).data.epoch === 1 || null)
   await waitUntil(async () => {
@@ -73,7 +73,7 @@ test('rejoin: re-admission after removal while the room is still open', async (t
   t.ok(back.id, 're-admitted without a pairing conflict')
 })
 
-test('rejoin: a member let back in after a re-key reopens the room and reads its history', async (t) => {
+test('rejoin: a member let back in after a rotation reopens the room and reads its history', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, clinic } = await room(t, testnet)
   const b = await openHandle(t, { testnet })

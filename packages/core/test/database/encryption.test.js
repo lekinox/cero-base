@@ -264,7 +264,7 @@ test('rotate: a removed member cannot decrypt anything written after the rotatio
   await waitFor(async () => (await texts(removed.db)).includes('before'))
 
   await a.db.call('del-member', { id: removed.identity.id })
-  // the removal re-keys on its own: epoch 1 is that heal, and a rotation of ours would race it
+  // the removal rotates on its own: epoch 1 is that heal, and a rotation of ours would race it
   await waitFor(() => a.db.keyring.seq === 1)
   t.is(a.db.keyring.seq, 1, 'the removal opened epoch 1')
 
@@ -654,7 +654,7 @@ test('rotate: an admin sealing the owner out is healed', async (t) => {
   })
   await a.db.put('messages', { text: 'after' })
   await waitFor(async () => (await texts(b.db)).includes('after'))
-  t.pass('the room re-keyed past the epoch nobody could open, and both read the new one')
+  t.pass('the room rotated past the epoch nobody could open, and both read the new one')
 })
 
 test('wakeup hints: UNKNOWN_EPOCH parks and retries instead of closing the bee', async (t) => {
@@ -928,7 +928,7 @@ test('rotate: soft delete in a rotated room auto-rotates (healer)', async (t) =>
   await a.db.rotate() // activates rotation policy for the room
   await waitFor(async () => victim.db.keyring.seq === 1)
 
-  // remove WITHOUT rotating — the healer must re-key on its own
+  // remove WITHOUT rotating — the healer must rotate on its own
   await a.db.call('del-member', { id: victim.identity.id })
   await waitFor(async () => a.db.keyring.seq >= 2, { timeout: 30000 })
 
@@ -1022,7 +1022,7 @@ test('rotate: a member leaving on its own is sealed out by a rotation', async (t
   await waitFor(() => a.db.keyring.seq === 1, { timeout: 30000 })
   const [epoch] = await a.db.view.find('@cero/epochs', {}).toArray()
   const sealed = c.decode(wraps, epoch.wrapped).map((w) => w.id)
-  t.alike(sealed, [hid.encode(a.db.writerKey)], 'the owner re-keyed to the devices that stayed')
+  t.alike(sealed, [hid.encode(a.db.writerKey)], 'the owner rotated to the devices that stayed')
 })
 
 test('rotate: a stamp collision is rejected deterministically', async (t) => {
@@ -1088,7 +1088,7 @@ test('rotate: a removed device of a member reads nothing written after the rotat
   t.is(dev2.db.keyring.seq, 0, 'no envelope was sealed to it')
 })
 
-test('rotate: the first device removal re-keys by itself, sealing the removed one out', async (t) => {
+test('rotate: the first device removal rotates by itself, sealing the removed one out', async (t) => {
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
   const phone = Identity.randomKeyPair()
   const proof = a.identity.link(phone.publicKey)
@@ -1161,7 +1161,7 @@ test('rotate: epochs announced in a batch apply refuses are learned by no one', 
   t.absent(stamps.includes(a.db.keyring.current), 'never under an epoch the removed admin minted')
 })
 
-test('rotate: an announcement whose envelopes do not decode never lands, so a later removal still re-keys', async (t) => {
+test('rotate: an announcement whose envelopes do not decode never lands, so a later removal still rotates', async (t) => {
   const {
     a,
     members: [x]
@@ -1184,5 +1184,5 @@ test('rotate: an announcement whose envelopes do not decode never lands, so a la
     () => true,
     () => false
   )
-  t.ok(healed, 'the removal re-keys')
+  t.ok(healed, 'the removal rotates')
 })

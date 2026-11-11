@@ -69,17 +69,17 @@ A new device is linked like a member joins a handle, with the root as the handle
 
 When no device of yours is around, the phrase is the way in. The first device writes the root's address into a small log only the phrase can sign. A new device given the phrase reads that address from any device of yours it reaches, over the internet or Bluetooth, or from a mirror, copies the root, and admits a fresh log of its own with the proof the phrase gave its key. Each handle is a row in the root with its keys, so the device takes a seat in a handle the same way when it opens it.
 
-Removing a device takes its logs out: from the root, and from every handle, by whichever device of yours has them open. The root re-keys, and the removed key is kept beside the removed members, so it seats no new log anywhere, nor does a device it links after. `storageKey` keeps the keys encrypted on disk.
+Removing a device takes its logs out: from the root, and from every handle, by whichever device of yours has them open. The root rotates its key, and the removed device's key is kept beside the removed members, so it seats no new log anywhere, nor does a device it links after. `storageKey` keeps the keys encrypted on disk.
 
-## Encryption and re-keying
+## Encryption and key rotation
 
 Each handle has its own key, made at creation, kept in your root and handed to joiners at step 4; the root's key comes from the phrase. Mirrors, and peers without the key, see only ciphertext.
 
-A removal takes the member's logs out at once, but their key would still read what comes next. So the handle re-keys: a new secret, sealed to each remaining device and announced in its log, for every row and file written after. A device of yours that opens the handle later reads with the keys its root carries, and is sealed to from then on.
+A removal takes the member's logs out at once, but their key would still read what comes next. So the handle rotates its key: a new secret, sealed to each remaining device and announced in its log, for every row and file written after. A device of yours that opens the handle later reads with the keys its root carries, and is sealed to from then on.
 
-- Half a second after a removal lands, a device of an admin or the owner with the handle open re-keys it, or the next one to come online. `cero.rotate(room)` re-keys at once and resolves when the key is in place: await it before writing what the removed member must not read.
-- Once a handle has re-keyed, any change of members re-keys it again, joins included.
-- Each re-key starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
+- Half a second after a removal lands, a device of an admin or the owner with the handle open rotates its key, or the next one to come online. `cero.rotate(room)` rotates it at once and resolves when the key is in place: await it before writing what the removed member must not read.
+- Once a handle has rotated its key, any change of members rotates it again, joins included.
+- Each rotation starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
 - A removed member never learns a new epoch. The removal lands first, so they see it: `status.role` turns `null` and what they read stops there.
 
 A member who joins later gets every epoch's key and can read the whole history. Without mirrors, every member's device holds all of it once caught up, so any one of them online serves it; with mirrors, a device may hold only part, and the mirror holds all of it.

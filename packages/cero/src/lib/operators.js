@@ -369,9 +369,9 @@ export function revoke(ctx, code) {
 }
 
 /**
- * Re-key a handle now: a new epoch sealed to its members, so one removed before it reads nothing
- * written after. Needs the remove permission. A removal also re-keys on its own shortly after it
- * lands; this is the one to await.
+ * Rotate a handle's key now: a new epoch sealed to its members, so one removed before it reads
+ * nothing written after. Needs the remove permission. A removal also rotates it on its own shortly
+ * after it lands; this is the one to await.
  *
  * @param {Context} ctx
  * @returns {Promise<{ epoch: number }>}

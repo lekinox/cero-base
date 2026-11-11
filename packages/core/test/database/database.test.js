@@ -3763,7 +3763,7 @@ test('gate: a member behind can still leave, and the others apply it', async (t)
   t.pass('the owner, behind as well, applied the leave')
 })
 
-test('gate: a removal applied while behind is not re-keyed by this device, nor an error', async (t) => {
+test('gate: a removal applied while behind starts no rotation on this device, nor an error', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
   const a = await makePeer(t, testnet, { topic })
@@ -3793,7 +3793,7 @@ test('gate: a removal applied while behind is not re-keyed by this device, nor a
     a.errors.find((e) => e.code === 'BEHIND'),
     'the audit did not try to write'
   )
-  t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no re-key')
+  t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no rotation')
 })
 
 // anyone holding the database key appends an optimistic node: only a seated writer's newer version freezes writes

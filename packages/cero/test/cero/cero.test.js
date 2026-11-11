@@ -1376,7 +1376,7 @@ test('devices: a removed device is re-added by the phrase, as a new device', asy
   t.ok(c.me.store.writable, 'back in')
 })
 
-test('devices: a removed device reads on until the root re-keys, then nothing written after', async (t) => {
+test('devices: a removed device reads on until the root rotates its key, then nothing written after', async (t) => {
   const a = await ceroOpen(t)
   const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
   await devices(a.me, 2)
@@ -1390,7 +1390,7 @@ test('devices: a removed device reads on until the root re-keys, then nothing wr
   await rotate(a.me)
   await set(a.me.profile, { name: 'unseen' })
   await new Promise((r) => setTimeout(r, 1500))
-  t.is((await get(b.me.profile)).data?.name, 'seen', 'nothing written after the re-key reaches it')
+  t.is((await get(b.me.profile)).data?.name, 'seen', 'nothing written after rotation reaches it')
 })
 
 // ─── link: a device joins by invite, no phrase ────────────────────────────
@@ -1467,7 +1467,7 @@ test('link: a launch that stops waiting resumes on the next, with no new invite'
   )
 })
 
-test('link: a removed device loses its seats in every handle, and the root re-keys', async (t) => {
+test('link: a removed device loses its seats in every handle, and the root rotates its key', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
   const b = await linkTo(t, a)
@@ -1482,7 +1482,7 @@ test('link: a removed device loses its seats in every handle, and the root re-ke
   await waitUntil(async () => ((await seated()) ? null : true))
   t.pass('its seat in the room went with it')
   await waitUntil(async () => ((await get(a.me.status)).data.epoch >= 1 ? true : null))
-  t.pass('and the root re-keyed')
+  t.pass('and the root rotated its key')
   await waitUntil(() => (b.me.store.writable ? null : true))
   t.pass('the device writes nowhere')
 })
