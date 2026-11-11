@@ -319,13 +319,13 @@ const hit = await verify(storage, payload, handles) // { id, key, length, newer,
 const op = await decrypt(storage, hit, { encryptionKey, epochs }) // the op's bytes, or null
 ```
 
-`topic` reads which database a push is about before anything is verified, so a device with many
-looks up that one. `newer` is whether the device is behind the proved length, `ref` the ref the write was on, as the
-sender's meta names it, `block` the written block when it fit the push. `decrypt` opens that block
-as the writer's core would, with the database's encryption key and the rotation epochs it has
-learned (`keyring.all()`), and strips the envelope: the op bytes, for the spec's dispatch to
-decode. Null without a block, for an epoch not among `epochs`, or another key. A database opened with `push: true` sends one through its network's mirrors
-after a local write to a ref whose meta entry declares `push`.
+`topic` reads which database a push is about before anything is verified. `newer` is whether the
+device is behind the proved length, `ref` the ref the write was on, as the sender's meta names it,
+`block` the written block when it fit the push. `decrypt` opens that block as the writer's core
+would, with the database's encryption key and the rotation epochs it has learned (`keyring.all()`),
+and strips the envelope: the op bytes, for the spec's dispatch to decode. Null without a block, for
+an epoch not among `epochs`, or another key. A database opened with `push: true` sends one through
+its network's mirrors after a local write to a ref whose meta entry declares `push`.
 
 ## Storage
 
