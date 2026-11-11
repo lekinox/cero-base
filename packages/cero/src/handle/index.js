@@ -727,8 +727,10 @@ export class Handle extends ReadyResource {
    */
   _resolveCore(coreKey, info) {
     const keys = this.root._coreKeys
-    const file = info.blob ? keys.get(fileEntry(coreKey, info.blob, info.type)) : undefined
-    const encryptionKey = file !== undefined ? file : keys.get(b4a.toHex(coreKey))
+    const file = (type) => (info.blob ? keys.get(fileEntry(coreKey, info.blob, type)) : undefined)
+    // a row typed '' keys its file ahead of one whose type no header carries, served as '' too
+    const encryptionKey =
+      file(info.type) ?? (info.type ? undefined : file(UNSERVED)) ?? keys.get(b4a.toHex(coreKey))
     if (encryptionKey !== undefined) return { key: coreKey, encryptionKey }
     return null
   }
@@ -772,7 +774,7 @@ export class Handle extends ReadyResource {
     try {
       // a row's stamp keys its own file: a member's row cannot pick the key of another's on the same core
       const { coreKey, blobId, type } = decodeId(id)
-      const entry = fileEntry(coreKey, blobId, servedType(type))
+      const entry = fileEntry(coreKey, blobId, servedType(type) === type ? type : UNSERVED)
       if (!this.root._coreKeys.has(entry)) {
         // no stamp on a file-field value, look it up (fire-and-forget, idempotent)
         if (stamp === undefined) {
@@ -1326,6 +1328,9 @@ function reserved(child) {
   child._pair.on('serving', release)
   release(child._pair.serving)
 }
+
+// the entry type of a row whose type no header carries: no file server url builds it
+const UNSERVED = '\n'
 
 // a file as its url names it to the file server
 function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {
