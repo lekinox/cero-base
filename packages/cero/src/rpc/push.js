@@ -55,6 +55,9 @@ async function wake(me, payload) {
   const hit = await receive(me, payload)
   if (!hit?.newer) return
   const h = await open(me[hit.type], { id: hit.id })
-  await activate(h)
-  await close(h)
+  try {
+    await activate(h)
+  } finally {
+    await close(h)
+  }
 }

@@ -922,16 +922,11 @@ export class Handle extends ReadyResource {
     if (known) return known
 
     const join = this._start(invite, type)
-    join.waiting++
-    try {
-      const child = await wait(join.done, timeout)
-      // every caller holds the room: the first takes the open the join made, each other one its own
-      if (join.claimed) child._hold()
-      join.claimed = true
-      return child
-    } finally {
-      join.waiting--
-    }
+    const child = await wait(join, timeout)
+    // every caller holds the room: the first takes the open the join made, each other one its own
+    if (join.claimed) child._hold()
+    join.claimed = true
+    return child
   }
 
   /** @private */
@@ -1277,7 +1272,7 @@ export class Handle extends ReadyResource {
   /** @private */
   async _reserve() {
     for (const { id, type } of (await this.local.store.get('serving')).data) {
-      this._load(type, id).catch((err) => {
+      this._load(type, id).then(reserved, (err) => {
         if (err.code === 'UNKNOWN') return this.local.store.del('serving', id).catch(safetyCatch)
         // a close cut it short: the room is served again at the next launch
         if (err.code === 'CLOSED') return
@@ -1319,6 +1314,17 @@ export class Handle extends ReadyResource {
 // the keys a pairing reply delivered, as a handle opens with them
 function delivered({ key, encryptionKey, epochs, writer }) {
   return { key, encryptionKey, epochs, keyPair: writer }
+}
+
+// the hold a boot took on a handle to serve its invites goes back once it serves none
+function reserved(child) {
+  const release = (serving) => {
+    if (serving) return
+    child._pair.off('serving', release)
+    child.close().catch(child._onerror)
+  }
+  child._pair.on('serving', release)
+  release(child._pair.serving)
 }
 
 // a file as its url names it to the file server

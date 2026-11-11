@@ -9,6 +9,7 @@ import hid from 'hypercore-id-encoding'
 import { cero, put, set, get, del, open, leave, receive } from '../../src/index.js'
 import { serve } from '../../src/rpc/server.js'
 import { connect } from '../../src/rpc/client.js'
+import { Handle } from '../../src/handle/index.js'
 import { receive as cold, push as entry } from '../../src/push/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import { ceroOpen, makeTestnet, makeGateway, makeMirror, waitUntil } from '../helpers/index.js'
@@ -610,6 +611,24 @@ test('push: a wake lets go of the handle it opened', async (t) => {
   t.absent(server.handles.has(room.id), 'the app holds nothing')
   await waitUntil(() => !served())
   t.pass('the room closes once it lingered')
+})
+
+test('push: a wake whose activation fails still lets go of the handle it opened', async (t) => {
+  const { server, messaging, room, served, released } = await woken(t, { linger: 500 })
+  await cero.close(room)
+  await waitUntil(() => !served())
+  const active = Handle.prototype._active
+  Handle.prototype._active = () => {
+    throw new Error('activation failed')
+  }
+  t.teardown(() => {
+    Handle.prototype._active = active
+  })
+  messaging.push(new Uint8Array(1))
+  // the app's close, then the wake's
+  await waitUntil(() => released.count === 2)
+  Handle.prototype._active = active
+  t.absent(server._held.has(room.id), 'the wake holds nothing')
 })
 
 test('push: a wake leaves a room the app holds open', async (t) => {

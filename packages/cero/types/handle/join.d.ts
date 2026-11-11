@@ -54,10 +54,10 @@ export declare class Join {
     private _end;
 }
 /**
- * Wait for a join, but stop waiting after `ms`; the join itself goes on.
+ * Wait for a join as one of its waiters, but stop waiting after `ms`; the join itself goes on.
  *
- * @param {Promise<import('./index.js').Handle>} done
+ * @param {Join} join
  * @param {number} ms  `0` waits as long as the join takes.
  * @returns {Promise<import('./index.js').Handle>}
  */
-export declare function wait(done: Promise<import('./index.js').Handle>, ms: number): Promise<import('./index.js').Handle>;
+export declare function wait(join: Join, ms: number): Promise<import('./index.js').Handle>;
