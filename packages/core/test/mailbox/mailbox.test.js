@@ -2016,3 +2016,46 @@ test('Inbox: one that closed reads no more of the rows it found', async (t) => {
   t.is(reads, 16, 'the rest wait for the next start')
   t.is(box.pending(), 4)
 })
+
+test('Inbox: a key announced while its row waits to be read is read from that announce', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const address = Mailbox.getAddress(secret)
+  const post = new Post(a, address, b4a.from('late'))
+  t.teardown(() => post.close())
+  await post.ready()
+  // a row from before a kill, its block never stored
+  const id = b4a.toHex(post.key)
+  const box = kept()
+  await box.put({ id, address, message: b4a.alloc(0) })
+
+  const got = []
+  const inbox = new Inbox(b, secret, {
+    box,
+    onmessage: (message) => got.push(b4a.toString(message)),
+    onerror: () => {}
+  })
+  t.teardown(() => inbox.close())
+  let announced = 0
+  const onannounce = inbox._onannounce.bind(inbox)
+  inbox._onannounce = (entries, from) => {
+    announced++
+    return onannounce(entries, from)
+  }
+  // the row is read back only once its key was announced
+  const unseal = inbox._unseal.bind(inbox)
+  let waited = false
+  inbox._unseal = async (...args) => {
+    if (!waited) {
+      waited = true
+      await waitFor(() => inbox._mail.get(id).queued > 0, { timeout: 30000 })
+    }
+    return unseal(...args)
+  }
+  await inbox.ready()
+  await waitFor(() => got.length > 0, { timeout: 10000 }).catch(() => {})
+  t.alike(got, ['late'], 'read from the peer that announced it')
+  t.is(announced, 1, 'without a second announce')
+})

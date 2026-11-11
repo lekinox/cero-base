@@ -305,7 +305,8 @@ export class Inbox extends ReadyResource {
     // a read its own close cut short says nothing of the row: it waits for the next inbox at its address
     if (this.closing) return this._settle(id)
     await this.box.del(id)
-    await this._drop(id, fetched && held, false)
+    // a peer that announced it while its row waited still has it queued: it is read from there
+    await this._drop(id, fetched && held, true)
   }
 
   // the message in a core, and whether this device held the core before
