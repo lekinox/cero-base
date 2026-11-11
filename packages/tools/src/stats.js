@@ -1,5 +1,6 @@
 /**
  * Read-only snapshot of a handle's existing p2p/storage counters.
+ * `cores` lists every open core in the handle's corestore, which a child shares with its root.
  *
  * @param {import('@cero-base/cero').Handle} handle  A cero root or child handle.
  * @param {number} [at]  Sample timestamp, stamped by the caller.
@@ -13,11 +14,12 @@ export function stats(handle, at = 0) {
   try {
     const map = handle.store?.store?.cores
     if (map) {
-      for (const core of map.values()) {
+      // corestore tracks its open cores, not sessions: the counters sit on their state
+      for (const core of map) {
         cores.push({
-          length: core.length ?? 0,
-          byteLength: core.byteLength ?? 0,
-          peers: core.peers?.length ?? 0
+          length: core.state?.length ?? 0,
+          byteLength: core.state?.byteLength ?? 0,
+          peers: core.replicator?.peers?.length ?? 0
         })
       }
     }

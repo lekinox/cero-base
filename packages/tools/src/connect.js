@@ -37,6 +37,7 @@ export class Session {
     this.wire = new Framed(stream, (msg) => this._onmessage(msg))
     stream.on('error', () => {}) // a transport error shouldn't crash the consumer
     stream.on('close', () => this._onclose())
+    if (this.token) this.wire.send({ token: this.token })
   }
 
   /**
@@ -137,7 +138,7 @@ export class Session {
 
   /** @private */
   _send(frame) {
-    this.wire.send(this.token ? { token: this.token, ...frame } : frame)
+    this.wire.send(frame)
   }
 
   /** @private */
