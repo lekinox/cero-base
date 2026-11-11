@@ -339,8 +339,9 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)
   const xns = d.namespace(ns)
-  for (const desc of internal.dispatches(ns)) xns.register(desc)
-  for (const desc of dispatches) xns.register(desc)
+  const numbered = routeIds(dispatchDir, ns)
+  for (const desc of internal.dispatches(ns)) xns.register(numbered(desc))
+  for (const desc of dispatches) xns.register(numbered(desc))
   Hyperdispatch.toDisk(d, dispatchDir, { esm: true })
 
   if (rpc) {
@@ -371,6 +372,17 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })
 }
 
+// a route keeps the id the built spec gave it, and one the spec lacks takes the next free: its id
+// is what an op starts with on the wire, and left to hyperdispatch a new route takes its position
+// in the list, which a route registered after it already has
+function routeIds(dispatchDir, ns) {
+  const file = join(dispatchDir, 'dispatch.json')
+  const built = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')).schema : []
+  const had = new Map(built.map((route) => [route.name, route.id]))
+  let next = built.reduce((max, route) => Math.max(max, route.id + 1), 0)
+  return (desc) => ({ ...desc, id: had.get(`@${ns}/${desc.name}`) ?? next++ })
+}
+
 // a field keeps the slot the built spec gave it, whichever schema declares it: hyperschema stores
 // a row by position, and a type's fields are cero's, then its extensions', then the app's, so one
 // more of cero's would take an extension's slot. A field the spec lacks goes after the ones it has
@@ -386,10 +398,18 @@ function slots(schemaDir, ns, stored) {
     const names = had.get(desc.name)
     if (!names || !desc.fields) return desc
     const lost = (n) => !desc.fields.some((f) => f.name === n)
-    const gone = stored.has(`@${ns}/${desc.name}`) && names.find(lost)
+    const kept = stored.has(`@${ns}/${desc.name}`)
+    const gone = kept && names.find(lost)
     if (gone) {
       throw CeroError.INVALID(
         `'${gone}' was removed from '${desc.name}': fields are stored by position`
+      )
+    }
+    // a required field is stored with no sign of its absence: a row written before it would not decode
+    const late = kept && desc.fields.find((f) => f.required && !names.includes(f.name))
+    if (late) {
+      throw CeroError.INVALID(
+        `'${late.name}' on '${desc.name}' is required, and rows stored before it lack it: add it without required`
       )
     }
     const at = (f) => (names.includes(f.name) ? names.indexOf(f.name) : names.length)

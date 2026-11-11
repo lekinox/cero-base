@@ -169,7 +169,7 @@ export function collections(ns, scope) {
  * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
-// frozen once an app ships: routes number by position, so a new one goes after the app's
+// a route keeps the id a built spec gave it, and one added here takes the next free id there
 export function dispatches(ns) {
   return [
     { name: 'add-writer', requestType: `@${ns}/writer` },
