@@ -39,6 +39,7 @@ packages/core/test/
   manual/               probes and benches, not part of the suite
 packages/cero/test/
   cero/ handle/ lib/ local/ extensions/ rpc/ build/
+  manual/               capacity.js, one process of `npm run test:capacity`, not part of the suite
 ```
 
 Imports from a nested file go one level up: `../../src/...`, `../helpers/index.js`,
