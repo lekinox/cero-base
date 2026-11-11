@@ -1584,12 +1584,16 @@ test('rotate: a device taken out by its writer key carries the rotation too', as
 
 test('rotate: a removal carries its rotation to a device promised a seat, which reads on once it claims', async (t) => {
   const testnet = await makeTestnet(t)
-  const { host, join, open } = await promised(t, testnet)
+  const { host, pairing, join, open } = await promised(t, testnet)
   const { key, encryptionKey } = host.db
   const removed = await makePeer(t, testnet, { topic: host.topic, key, encryptionKey })
   await admit(host.db, removed.db)
-  const keys = await join()
-  const { id } = (await host.db.get('requests')).data.find((row) => row.promised)
+  // let in by an accept: a removal withdraws the promise an invite made on its own
+  const joining = join({ confirm: true, reuse: true })
+  const waits = (row) => !row.admitted
+  const { id } = await waitFor(async () => (await host.db.get('requests')).data.find(waits))
+  await pairing.accept(id)
+  const keys = await joining
 
   await host.db.del('members', removed.identity.id)
   t.is(host.db.keyring.seq, 1, 'the key is in place as the removal resolves')

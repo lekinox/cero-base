@@ -528,20 +528,26 @@ export function makeDispatcher({
     if (device) await owe(ctx.view)
     // with the seat go the keys its writer was still owed, and what its device key was promised:
     // a rotation is sealed to the promised
-    await forget(ctx, await ctx.view.get(requests, { id }))
+    const own = await ctx.view.get(requests, { id })
+    await (device ? forget(ctx, own) : withdraw(ctx, own))
     const stood = (row) => chainOf(row).some((key) => b4a.equals(key, device.key))
     for (const row of device?.key ? await ctx.view.find(requests, {}).toArray() : []) {
       // waiting or promised: one admitted at its join has a seat of its own to lose
       if (row.admitted && !row.promised) continue
-      if (stood(row)) await forget(ctx, row)
+      if (stood(row)) await withdraw(ctx, row)
     }
     if (device && may) await shut(ctx)
   }
   // a removal by someone who may remove spends the invites that let in on their own: one the
-  // removed held, or saw, brings nobody in after it. Those that wait for an accept stay
+  // removed held, or saw, brings nobody in after it. Those that wait for an accept stay. A promise
+  // no device claimed goes too where its invite was used up: only one that waits is live by now
   async function shut(ctx) {
     for (const invite of await ctx.view.find(invites, {}).toArray()) {
       if (invite.secret && !invite.confirm) await spend(ctx, invite, 'removed')
+    }
+    for (const row of await ctx.view.find(requests, {}).toArray()) {
+      if (!row.promised || (await ctx.view.get(invites, { id: row.invite }))) continue
+      if (!(await sat(ctx.view, row))) await withdraw(ctx, row)
     }
   }
   // a request goes: a promise among them was handed the keys, so a rotation is owed
@@ -549,6 +555,13 @@ export function makeDispatcher({
     if (!row) return
     await drop(ctx, 'requests', row.id)
     if (row.promised) await owe(ctx.view)
+  }
+  // a promise goes with the member or device it stood on: one no device claimed hears why, so
+  // its claim ends
+  async function withdraw(ctx, row) {
+    if (!row?.promised || (await sat(ctx.view, row))) return forget(ctx, row)
+    await forget(ctx, row)
+    await refuse(ctx, row, 'removed')
   }
   add('del-writer', async (op, ctx) => {
     if (!isKey(op.writer)) return
@@ -649,7 +662,7 @@ export function makeDispatcher({
         await owe(ctx.view)
         await drop(ctx, 'requests', device.id)
       }
-      for (const row of await promised(ctx.view, hid.decode(op.id))) await forget(ctx, row)
+      for (const row of await promised(ctx.view, hid.decode(op.id))) await withdraw(ctx, row)
     }
     if (leaving) {
       if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
@@ -962,6 +975,8 @@ export function makeDispatcher({
     const older = gone && (invite.index ?? 0) <= gone.index
     if ((invite.confirm || older) && !known) {
       const waiting = request(invite, join.identity, signed.device, ctx.key, join.reply, ts)
+      // a promise it writes over was handed the keys
+      if ((await ctx.view.get(requests, { id }))?.promised) await owe(ctx.view)
       return save(ctx, 'put', 'requests', { ...waiting, proof: join.proof })
     }
     await admit(ctx, {
@@ -1006,6 +1021,8 @@ export function makeDispatcher({
     if (!row || (row.admitted && !row.promised)) return
     const [perm, rule] = row.promised ? [REMOVE, 'remove'] : [INVITE, 'invite']
     if (!can(await getSignerRole(ctx.view, ctx.key), perm)) throw CeroError.REFUSED(rule)
+    // a promise its device claimed is settled: nobody is turned away and no keys are owed
+    if (row.promised && (await sat(ctx.view, row))) return drop(ctx, 'requests', row.id)
     await forget(ctx, row)
     await refuse(ctx, row, op.reason || '')
   })
@@ -1016,13 +1033,19 @@ export function makeDispatcher({
   add('add-request', joinsOnly)
   add('set-request', joinsOnly)
   // a denial, or keys delivered. A promise dropped before the device it was made to sat under its
-  // member is one withdrawn
+  // member is one withdrawn: its joiner may hold the keys, so it takes the right to remove, unless
+  // a key of its chain was removed since
   add('del-request', async (op, ctx) => {
-    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    const r = await getSignerRole(ctx.view, ctx.key)
+    if (!can(r, INVITE)) throw CeroError.REFUSED('invite')
     const row = await ctx.view.get(requests, { id: op.id })
     if (!row) return
+    const open = row.promised && !(await sat(ctx.view, row))
+    if (open && !can(r, REMOVE) && !(await gone(ctx.view, chainOf(row)))) {
+      throw CeroError.REFUSED('remove')
+    }
     await drop(ctx, 'requests', op.id)
-    if (row.promised && !(await sat(ctx.view, row))) await owe(ctx.view)
+    if (open) await owe(ctx.view)
   })
   async function sat(view, { identity, key }) {
     const memberId = hid.encode(identity)

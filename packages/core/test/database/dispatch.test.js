@@ -2944,3 +2944,87 @@ test('owed: a rotation clears it where every device it names is seated or promis
   t.is(await rotate(seated), null)
   t.is(await owed(db), 1, 'one that names the device removed before it landed leaves it owed')
 })
+
+test('deny: one that lands after the claim it raced drops the request, with no refusal and nothing owed', async (t) => {
+  const { db } = await withMember(t, 'member')
+  const invite = await addressed(db, { reuse: true })
+  const here = await Identity.create()
+  const sat = Identity.randomKeyPair().publicKey
+  await apply(db, sat, 'join', named(db, invite, { identity: here, writer: sat }))
+  t.is(await claimed(db, here, sat), null, 'the claim lands first')
+  const before = await owed(db)
+  t.is(await apply(db, db.writerKey, 'deny', { id: hid.encode(sat), reason: 'no' }), null)
+  t.absent(await promise(db, sat), 'the request goes')
+  t.ok((await db.get('members', here.id)).data, 'still a member')
+  t.ok((await db.get('devices', hid.encode(sat))).data, 'still seated')
+  t.absent(await refusal(db, hid.encode(sat)), 'a seated device has no refusal of its join')
+  t.is(await owed(db), before, 'and nothing is owed')
+})
+
+test('del-request: a promise no device claimed is withdrawn only by one who may remove', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const invite = await addressed(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  await apply(db, writer, 'join', named(db, invite, { identity, writer }))
+  t.is((await as('deny', { id }))?.rule, 'remove', 'a member may not deny a promise')
+  t.is((await as('del-request', { id }))?.rule, 'remove', 'nor drop it')
+  t.ok(await promise(db, writer), 'the promise stands')
+  t.is(await owed(db), null, 'nothing owed')
+  t.is(await claimed(db, identity, writer), null, 'the joiner still claims')
+  t.is(await as('del-request', { id }), null, 'kept, a member who may invite settles it')
+  t.absent(await promise(db, writer))
+  t.is(await owed(db), null)
+})
+
+test('removal: a promise no device claimed goes with it, its single-use invite used up or not, and hears why', async (t) => {
+  const { db, id } = await withMember(t, 'member')
+  const once = await addressed(db)
+  const many = await addressed(db, { reuse: true })
+  const asked = await addressed(db, { reuse: true, confirm: true })
+  const x = await Identity.create()
+  const xw = Identity.randomKeyPair().publicKey
+  const y = await Identity.create()
+  const yw = Identity.randomKeyPair().publicKey
+  const z = await Identity.create()
+  const zw = Identity.randomKeyPair().publicKey
+  await apply(db, xw, 'join', named(db, once, { identity: x, writer: xw }))
+  await apply(db, yw, 'join', named(db, many, { identity: y, writer: yw }))
+  await apply(db, zw, 'join', named(db, asked, { identity: z, writer: zw }))
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(zw) }), null)
+  t.ok((await promise(db, xw))?.promised)
+  t.ok((await promise(db, zw))?.promised)
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.absent(await promise(db, yw), 'under a reusable invite')
+  t.absent(await promise(db, xw), 'and under a single-use one, used up by its join')
+  t.is((await refusal(db, hid.encode(xw)))?.reason, 'removed')
+  t.is((await claimed(db, x, xw))?.code, 'REFUSED', 'it claims nothing after')
+  t.ok((await promise(db, zw))?.promised, "one made by a member's accept stays")
+})
+
+test('removal: a promise that goes with its device or its member leaves a refusal', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db, { reuse: true })
+  // one that waits for an accept, which a removal leaves: a member's device is let in at once
+  const asked = await addressed(db, { reuse: true, confirm: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  await apply(db, again, 'join', named(db, asked, { identity, writer: again }))
+  t.ok((await promise(db, again))?.promised)
+  t.is(await apply(db, db.writerKey, 'del-device', { id: hid.encode(writer) }), null)
+  t.absent(await promise(db, again))
+  t.is((await refusal(db, hid.encode(again)))?.reason, 'removed', 'made to a device removed')
+  t.absent(await refusal(db, hid.encode(writer)), 'the device that sat has none')
+
+  const tablet = await Identity.create({ seed: identity.seed })
+  const other = Identity.randomKeyPair().publicKey
+  await apply(db, other, 'join', named(db, asked, { identity: tablet, writer: other }))
+  t.ok((await promise(db, other))?.promised)
+  t.is(await apply(db, db.writerKey, 'del-member', { id: identity.id }), null)
+  t.absent(await promise(db, other))
+  t.is((await refusal(db, hid.encode(other)))?.reason, 'removed', 'made to a member removed')
+})
