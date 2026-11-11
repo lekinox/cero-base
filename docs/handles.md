@@ -220,8 +220,9 @@ handle still rotates its key, sealing you out. Removed by someone else, only a c
 `cero.close(room)` lets go of a handle on this device and keeps it in your list, to reopen by id.
 A device opens a handle once and counts who holds it: every `open`
 (by id, name or code) holds it once and every `cero.close` lets go once. After the last close it
-stays open for `linger` ms, so a quick reopen gets it as it is, then closes. Leaving, a removal and
-`cero.close(me)` close it at once. Over RPC, the page's holds end when it reloads.
+stays open, so a reopen gets it as it is. A device keeps `idle` of them, 16 by default; one more
+closes the least recently used. Leaving, a removal and `cero.close(me)` close it at once. Over RPC,
+the page's holds end when it reloads.
 
 ## List your handles
 

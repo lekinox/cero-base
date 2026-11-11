@@ -1,7 +1,7 @@
 import test from 'brittle'
 
 import { open, invite } from '../../src/lib/operators.js'
-import { makeTestnet, openHandle, waitUntil } from '../helpers/index.js'
+import { makeTestnet, openHandle } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -27,38 +27,81 @@ test('a room opened twice and closed once still works for the other holder', asy
   }
 })
 
-// the last close lets the room linger, a quick reopen gets it still open, and it closes once nobody opened it again
-test('a room its last holder closed lingers for a quick reopen, then closes', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await openHandle(t, { testnet, opts: { linger: 500 } })
-  const room = await open(a.me.team, { name: 'clinic' })
-  await room.close()
-  t.absent(room.closing, 'still open right after its last close')
-  const again = await open(a.me.team, { id: room.id })
-  t.is(again, room, 'a reopen gets the same room, never rebuilt')
-  await new Promise((r) => setTimeout(r, 1000))
-  t.absent(room.closing, 'reopened: no close comes')
-  await again.close()
-  await waitUntil(() => room.closed, 5000)
-  t.ok(room.closed, 'closed once it lingered with nobody holding it')
+// a device that keeps `idle` rooms nobody holds, with `count` rooms it made and still holds
+async function rooms(t, idle, count) {
+  const { me } = await openHandle(t, { opts: { idle } })
+  const made = []
+  for (let i = 0; i < count; i++) made.push(await open(me.team, { name: `room ${i}` }))
+  return { me, made }
+}
+
+test('past the idle count, the room let go longest ago closes and the others stay open', async (t) => {
+  const { made } = await rooms(t, 2, 4)
+  const [first, second, third, fourth] = made
+  await first.close()
+  await second.close()
+  t.absent(first.closing, 'two rooms nobody holds stay open')
+  await second.close()
+  t.absent(second.closing, 'a close nobody held it for changes nothing')
+  await third.close()
+  t.ok(first.closed, 'the third one closed the least recently used')
+  t.absent(second.closing, 'the second stays open')
+  t.absent(third.closing, 'and the third')
+  await fourth.close()
+  t.ok(second.closed, 'the fourth one closed the next')
+  t.absent(third.closing)
+  t.absent(fourth.closing)
 })
 
-test('linger 0 closes with the last holder at once', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await openHandle(t, { testnet, opts: { linger: 0 } })
-  const room = await open(a.me.team, { name: 'clinic' })
+test('an idle room opened again is the same room, and the most recently used', async (t) => {
+  const { me, made } = await rooms(t, 2, 3)
+  const [first, second, third] = made
+  await first.close()
+  await second.close()
+  const again = await open(me.team, { id: first.id })
+  t.is(again, first, 'a reopen gets the same room, never rebuilt')
+  await again.close()
+  await third.close()
+  t.ok(second.closed, 'the one let go before it closed')
+  t.absent(first.closing, 'the reopened one stays open')
+  t.absent(third.closing)
+})
+
+test('a room somebody holds is never closed by the count', async (t) => {
+  const { me, made } = await rooms(t, 1, 3)
+  const [held, second, third] = made
+  const also = await open(me.team, { id: held.id })
+  await also.close()
+  await second.close()
+  await third.close()
+  t.ok(second.closed, 'the idle one made room')
+  t.absent(held.closing, 'the held one stays, however long ago it was opened')
+  t.ok(await invite(held, {}), 'and it works')
+})
+
+test('idle 0 closes with the last holder at once', async (t) => {
+  const { made } = await rooms(t, 0, 2)
+  const [room, broken] = made
   await room.close()
   t.ok(room.closed)
+  // its own close, so its failure is the caller's
+  const close = broken.store.close.bind(broken.store)
+  broken.store.close = async () => {
+    await close()
+    throw new Error('disk full')
+  }
+  const err = await broken.close().catch((e) => e)
+  t.is(err?.message, 'disk full')
 })
 
-// an owner with a room and its code, and a second device to join it (linger 0: a let-go room closes at once)
+// an owner with a room and its code, and a second device to join it (idle 0: a let-go room closes at once)
 async function joining(t) {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.store.bootstrap({ name: 'owner-root' })
   const room = await open(a.me.team, { name: 'clinic' })
   const code = await invite(room, { reuse: true })
-  const b = await openHandle(t, { testnet, opts: { linger: 0 } })
+  const b = await openHandle(t, { testnet, opts: { idle: 0 } })
   return { b, code }
 }
 
@@ -87,15 +130,15 @@ test('joining a room this device already holds adds a hold', async (t) => {
   t.ok(first.closed)
 })
 
-test('leaving a room that lingers closes it at once', async (t) => {
-  const testnet = await makeTestnet(t)
-  const a = await openHandle(t, { testnet, opts: { linger: 60000 } })
-  await a.me.store.bootstrap({ name: 'owner-root' })
-  const room = await open(a.me.team, { name: 'clinic' })
-  const other = await open(a.me.team, { name: 'other' })
-  await other.close()
-  t.absent(other.closing, 'lingering')
-  await a.me.close()
-  t.ok(other.closed, 'closing the device closes a lingering room with it')
-  t.ok(room.closed)
+test('closing the device closes its idle rooms with it', async (t) => {
+  const { me, made } = await rooms(t, 2, 3)
+  const [held, first, second] = made
+  await first.close()
+  await second.close()
+  t.absent(first.closing, 'idle')
+  t.absent(second.closing, 'idle')
+  await me.close()
+  t.ok(first.closed, 'the idle rooms closed with the device')
+  t.ok(second.closed)
+  t.ok(held.closed, 'and the held one')
 })

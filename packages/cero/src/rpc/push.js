@@ -49,7 +49,7 @@ export function follow(me, messaging) {
 }
 
 // while the app sleeps the OS shows the push; the handle syncs first once it wakes on its own, for
-// as long as it lingers after this close
+// as long as it stays idle after this close
 async function wake(me, payload) {
   if ((await get(me.status)).data.suspended) return
   const hit = await receive(me, payload)

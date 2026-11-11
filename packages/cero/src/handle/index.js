@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
+import { IDLE, NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { Join, wait } from './join.js'
@@ -127,7 +127,7 @@ export class Handle extends ReadyResource {
     // children still opening, not adopted yet: a close must close them too
     /** @private */
     this._pending = parent ? null : new Set()
-    // children closing on their own, their linger over: a close waits for them, they still read its stores
+    // children closing on their own, past the idle count: a close waits for them, they still read its stores
     /** @private */
     this._ending = parent ? null : new Set()
     /** @private */
@@ -152,11 +152,12 @@ export class Handle extends ReadyResource {
     /** @private */
     this._owned = new Set()
     // a child's holders: open hands every caller on this device the same handle, so each close lets one go and the
-    // last one lets it linger
+    // last one leaves it idle
     /** @private */
     this._refs = 0
+    // the children nobody holds, the least recently used first
     /** @private */
-    this._idle = null
+    this._idle = parent ? null : new Set()
 
     this.store = new Database({
       store: store,
@@ -456,39 +457,40 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+   * One holder done with it: a child stays open for the others. With its last it stays open, idle, so a reopen
+   * finds it as it is; the root keeps `idle` of them (16 by default) and one more closes the least recently used.
+   * The root closes at once.
    * @returns {Promise<void>}
    */
-  close() {
+  async close() {
     if (!this.parent) return this._end()
     if (this._refs > 1) {
       this._refs--
-      return Promise.resolve()
+      return
     }
-    if (this._idle) return Promise.resolve()
-    const linger = this.root._opts.linger ?? LINGER
-    if (!linger || this._refs === 0) return this._end()
+    const idle = this.root._idle
+    if (idle.has(this)) return
+    const max = this.root._opts.idle ?? IDLE
+    if (!max || this._refs === 0) return this._end()
     this._refs = 0
-    this._idle = setTimeout(() => this._end().catch(this._onerror), linger)
-    this._idle.unref?.()
-    return Promise.resolve()
+    idle.add(this)
+    if (idle.size <= max) return
+    const [oldest] = idle
+    await oldest._end().catch(this._onerror)
   }
 
-  /** @private one more holder: a lingering handle is kept */
+  /** @private one more holder: an idle handle is kept */
   _hold() {
-    clearTimeout(this._idle)
-    this._idle = null
+    this.root._idle.delete(this)
     this._refs++
   }
 
   /**
-   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+   * Closed for every holder at once: past the idle count, the parent closing, or the handle left for good.
    * @private
    */
   _end() {
-    clearTimeout(this._idle)
-    this._idle = null
+    this.root._idle.delete(this)
     this._refs = 0
     return super.close()
   }

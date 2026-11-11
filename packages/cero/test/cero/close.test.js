@@ -137,7 +137,7 @@ test('close: a root suspended with nothing in flight closes', async (t) => {
 })
 
 test('close: a room still closing on its own is waited for, so the local store outlives it', async (t) => {
-  const { me } = await device(t, { linger: 1 })
+  const { me } = await device(t, { idle: 0 })
   const room = await cero.open(me.team, { name: 'clinic' })
   await me._indexing
   const errors = []
@@ -155,10 +155,10 @@ test('close: a room still closing on its own is waited for, so the local store o
     await new Promise((resolve) => setTimeout(resolve, 300))
     return seal(child)
   }
-  await cero.close(room)
+  const closing = cero.close(room)
   await waitUntil(() => !!room.closing)
   await me.close()
-  await room.closing.catch(() => {})
+  await closing.catch(() => {})
   t.alike(order, ['room', 'local'], 'the room closed first')
   t.alike(
     errors.map((e) => e.message),
@@ -183,7 +183,7 @@ function hold(target, method) {
 }
 
 test('close: a room opened as the root closes fails as closed, and none is opened', async (t) => {
-  const { me, errors } = await device(t, { linger: 0 })
+  const { me, errors } = await device(t, { idle: 0 })
   const room = await cero.open(me.team, { name: 'clinic' })
   const { id } = room
   await cero.close(room)
@@ -210,7 +210,7 @@ test('close: a room opened as the root closes fails as closed, and none is opene
 })
 
 test('close: a room opened as the stores close under it fails as closed, not as its storage', async (t) => {
-  const { me } = await device(t, { linger: 0 })
+  const { me } = await device(t, { idle: 0 })
   const room = await cero.open(me.team, { name: 'clinic' })
   const { id } = room
   await cero.close(room)
@@ -249,7 +249,7 @@ test('close: an app closed as a room it serves reopens at launch reports nothing
 })
 
 test("close: a room's failure in the background reaches the app's onerror", async (t) => {
-  const { me, errors } = await device(t, { linger: 0 })
+  const { me, errors } = await device(t, { idle: 0 })
   const room = await cero.open(me.team, { name: 'clinic' })
   await me._indexing
   // its last writers row fails to write

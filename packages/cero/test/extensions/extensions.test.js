@@ -347,7 +347,7 @@ test('before(ref): an operator called inside a hook throws INVALID', async (t) =
 // ─── me.on('handle') ────────────────────────────────────────────────────────
 
 test('me.on("handle"): fires on create and on re-open', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'handle-evt'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'handle-evt'), { idle: 0 })
   const seen = []
   me.on('handle', (room) => seen.push(room))
 
@@ -380,7 +380,7 @@ test('me.on("handle"): re-loading an already-open handle is idempotent — no re
 })
 
 test('me.on("handle"): concurrent open() of the same id loads once', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'concurrent-open'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'concurrent-open'), { idle: 0 })
   const room = await open(me.room)
   const { id } = room
   await room.close() // drop it from me.children so the reopen goes through _load
@@ -449,7 +449,7 @@ test('hooks: a hook on a type ref covers rooms already open, and off() lifts it'
 })
 
 test('hooks: a type hook registered while a handle opens runs on its ops', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'type-hook-pending'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending'), { idle: 0 })
   const first = await open(me.room, { name: 'clinic' })
   const { id } = first
   await first.close()
@@ -468,7 +468,7 @@ test('hooks: a type hook registered while a handle opens runs on its ops', async
 })
 
 test('hooks: a type hook lifted while a handle opens never runs on it', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'type-hook-pending-off'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending-off'), { idle: 0 })
   const first = await open(me.room, { name: 'clinic' })
   const { id } = first
   await first.close()
@@ -1136,7 +1136,7 @@ test('watch: a handle-ref stream is destroyed when its handle closes', async (t)
 })
 
 test('watch: a child stream dies with the child, not the root', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'own-child'))
+  const me = await openCero(t, await buildSpec(t, 'own-child'), { idle: 0 })
   const room = await open(me.room)
   const stream = watch(room.messages)
   t.absent(stream.destroyed)
@@ -1163,7 +1163,7 @@ test('watch: destroying manually de-registers — close does not double-destroy'
 })
 
 test('watch: open/close churn does not accumulate owned streams', async (t) => {
-  const me = await openManual(t, await buildSpec(t, 'own-churn'))
+  const me = await openCero(t, await buildSpec(t, 'own-churn'), { idle: 0 })
   const streams = []
   for (let i = 0; i < 20; i++) {
     const room = await open(me.room)

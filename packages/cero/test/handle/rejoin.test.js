@@ -19,9 +19,9 @@ import {
 
 test.configure({ timeout: 90000 })
 
-// linger 0: the owner closing the room is the owner gone, nobody serving it
+// idle 0: the owner closing the room is the owner gone, nobody serving it
 async function room(t, testnet) {
-  const a = await openHandle(t, { testnet, opts: { linger: 0 } })
+  const a = await openHandle(t, { testnet, opts: { idle: 0 } })
   await a.me.store.bootstrap({ name: 'owner-root' })
   const clinic = await open(a.me.team, { name: 'clinic' })
   t.teardown(() => clinic.close().catch(() => {}))

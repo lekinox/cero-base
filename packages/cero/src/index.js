@@ -52,7 +52,7 @@ export { t, schema } from './lib/spec.js'
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.
- * @property {number} [linger]                       Ms a handle stays open after its last close, for a quick reopen; 0 closes at once. Defaults to 20000.
+ * @property {number} [idle]                         How many handles stay open after their last close, for a reopen; one more closes the least recently used, 0 closes at once. Defaults to 16.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
  * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
