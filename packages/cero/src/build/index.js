@@ -339,9 +339,9 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)
   const xns = d.namespace(ns)
-  const numbered = routeIds(dispatchDir, ns)
-  for (const desc of internal.dispatches(ns)) xns.register(numbered(desc))
-  for (const desc of dispatches) xns.register(numbered(desc))
+  const routes = [...internal.dispatches(ns), ...dispatches]
+  const numbered = routeIds(dispatchDir, ns, routes)
+  for (const desc of routes) xns.register(numbered(desc))
   Hyperdispatch.toDisk(d, dispatchDir, { esm: true })
 
   if (rpc) {
@@ -375,9 +375,17 @@ function emitLocal(dir, ns, { types, collections, indexes = [] }) {
 // a route keeps the id the built spec gave it, and one the spec lacks takes the next free: its id
 // is what an op starts with on the wire, and left to hyperdispatch a new route takes its position
 // in the list, which a route registered after it already has
-function routeIds(dispatchDir, ns) {
+function routeIds(dispatchDir, ns, routes) {
   const file = join(dispatchDir, 'dispatch.json')
   const built = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')).schema : []
+  // a built route stays in the spec: with no handler left for it, the first write would fail
+  const names = new Set(routes.map((route) => `@${ns}/${route.name}`))
+  const gone = built.find((route) => !names.has(route.name))
+  if (gone) {
+    throw CeroError.INVALID(
+      `route '${gone.name}' shipped and this schema lacks it: every log holds writes to it, so what shipped stays declared as it was`
+    )
+  }
   const had = new Map(built.map((route) => [route.name, route.id]))
   let next = built.reduce((max, route) => Math.max(max, route.id + 1), 0)
   return (desc) => ({ ...desc, id: had.get(`@${ns}/${desc.name}`) ?? next++ })
