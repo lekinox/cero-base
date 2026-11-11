@@ -6,7 +6,7 @@ import crypto from 'hypercore-crypto'
 import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
-import { Invite } from './invite.js'
+import { Invite, STAMPED } from './invite.js'
 import { Response, STATUS_ACCEPTED, STATUS_DENIED } from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
@@ -134,6 +134,7 @@ export class Pairing extends ReadyResource {
       createdAt: Date.now()
     }
     invite.stamp = await this.db.write([['add-invite', row]])
+    if (invite.stamp > this.db.start) invite.version = STAMPED
     invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()

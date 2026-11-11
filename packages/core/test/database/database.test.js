@@ -3483,21 +3483,25 @@ test('gate: the view carries the build that applied it, and what it skipped', as
   )
 })
 
-// a device on a newer build away while an admin's device on the older one writes, through a hook
-// that build has and this one does not: it lands on that admin's view, the owner gone
-async function landing(t, { checked = (built) => built } = {}) {
+// a device on one build away while an admin's device on another writes, through a hook that
+// build has and this one does not: the owner gone, it is about to land on that admin's view
+async function away(t, { mine = rebuilt({ version: spec.meta.version + 1 }), theirs = spec } = {}) {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const newer = rebuilt({ version: spec.meta.version + 1 })
-  const a = await makePeer(t, testnet, { topic, spec: newer })
+  const a = await makePeer(t, testnet, { topic, spec: mine })
   await a.db.bootstrap({ name: 'a' })
   const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
-  const b = await makePeer(t, testnet, { ...room, spec: newer, identity: await Identity.create() })
+  const b = await makePeer(t, testnet, { ...room, spec: mine, identity: await Identity.create() })
   await admit(a.db, b.db)
   const after = {
     put: (ctx) => ctx.name === 'messages' && ctx.put('records', { text: 'hooked' })
   }
-  const c = await makePeer(t, testnet, { ...room, after, identity: await Identity.create() })
+  const c = await makePeer(t, testnet, {
+    ...room,
+    spec: theirs,
+    after,
+    identity: await Identity.create()
+  })
   await admit(a.db, c.db, 'admin')
   await waitFor(() => b.db.writable && c.db.writable)
   await b.network.suspend()
@@ -3509,14 +3513,18 @@ async function landing(t, { checked = (built) => built } = {}) {
   }
   await waitFor(async () => (await messages(a.db)) === 300, { timeout: 30000 })
   const applied = await rows(a.db)
-  t.is((await c.db.get('records')).data.length, 300, "the older build's hook wrote its rows")
+  t.is((await c.db.get('records')).data.length, 300, "the other build's hook wrote its rows")
   await offline(a)
+  return { b, c, mine, applied }
+}
 
+async function landing(t, { checked = (built) => built, ...builds } = {}) {
+  const { b, c, mine, applied } = await away(t, builds)
   const bee = b.db.bee
-  b.db.dispatcher.built = checked(b.db.dispatcher.built, bee, newer)
+  b.db.dispatcher.built = checked(b.db.dispatcher.built, bee, mine)
   await b.network.resume()
   await waitFor(() => bee.stats.fastForwards > 0, { timeout: 30000 })
-  t.pass("it landed on the older build's view")
+  t.pass("it landed on the other build's view")
   // the view it landed on holds every message already: the rows count once a bee of its own applied them
   await waitFor(() => b.db.bee !== bee && !b.db._rebuilding, { timeout: 30000 })
   await waitFor(async () => (await messages(b.db)) === 300, { timeout: 30000 })
@@ -3555,6 +3563,78 @@ test('gate: a batch applied between a landing and its check leaves the row of th
       return built(view)
     }
   })
+})
+
+test('gate: a landing on a view of the same contract under other rules is applied again', async (t) => {
+  await landing(t, { mine: spec, theirs: rebuilt({ rules: (spec.meta.rules || 1) + 1 }) })
+})
+
+test('gate: a device that stops between a landing and its check applies its log again at the next open', async (t) => {
+  const { b, mine, applied } = await away(t)
+  // the process ends once the landing is stored, before its check runs
+  b.db._onmove = async () => {}
+  const bee = b.db.bee
+  await b.network.resume()
+  await waitFor(() => bee.stats.fastForwards > 0, { timeout: 30000 })
+  // a batch it applies on that view meanwhile leaves the row of the build that applied it
+  await bee.append(wrap(1, mine.dispatch.encode('@cero/del-messages', { id: genId() })))
+  await bee.update()
+  t.is((await b.db.get('records')).data.length, 300, "it holds the other build's rows")
+  const { key, keyPair, encryptionKey } = b.db
+  await b.db.close()
+
+  const again = new Database({
+    store: b.store,
+    identity: b.identity,
+    network: b.network,
+    spec: mine,
+    key,
+    keyPair,
+    encryptionKey
+  })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await waitFor(async () => (await rows(again)).length === applied.length, { timeout: 30000 })
+  t.alike(
+    await rows(again),
+    applied,
+    'and the rows of the device that applied the log once it opens'
+  )
+})
+
+test('gate: writes in flight as a landing is checked are all saved', async (t) => {
+  const { db } = await bootstrapped(t)
+  const writes = []
+  for (let i = 0; i < 20; i++) {
+    for (let j = 0; j < 5; j++) writes.push(db.put('messages', { text: `${i}.${j}` }))
+    // a view another build applied, as one a fast-forward lands on
+    db.version += 1
+    db._onmove()
+    await db._rebuilding
+  }
+  const failed = (await Promise.allSettled(writes)).filter((r) => r.status === 'rejected')
+  t.alike(
+    failed.map((r) => r.reason.message),
+    [],
+    'none fails'
+  )
+  t.is(await messages(db), 100, 'and every one is kept')
+})
+
+test('gate: two landings checked back to back apply the log again once', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const bee = db.bee
+  let boots = 0
+  const boot = db._boot
+  db._boot = (...args) => (boots++, boot.apply(db, args))
+  db.version += 1
+  db._onmove()
+  db._onmove()
+  await waitFor(() => db.bee !== bee && !db._rebuilding)
+  t.alike(errors, [], 'nothing reported')
+  t.is(boots, 1, 'one rebuild')
+  t.ok(db.bee.opened && !db.bee.closing, 'and its bee open')
 })
 
 test('gate: a write made as the log is applied again waits for it', async (t) => {

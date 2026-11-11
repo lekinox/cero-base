@@ -1,3 +1,4 @@
+export declare const STAMPED = 2;
 export type InviteFields = {
     /**
      * Absolute expiry timestamp; `0` means never.
@@ -30,6 +31,10 @@ export type InviteFields = {
      * The stamp its record was written with, which its joins take; `0` for none.
      */
     stamp?: number;
+    /**
+     * The invite's form: `STAMPED` once the stamp is past its database's start.
+     */
+    version?: number;
 };
 /**
  * @typedef {object} InviteFields
@@ -40,6 +45,7 @@ export type InviteFields = {
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
+ * @property {number} [version]         The invite's form: `STAMPED` once the stamp is past its database's start.
  */
 /**
  * An invite: the database it opens, the address a join is sealed to, and a seed whose keypair
@@ -63,7 +69,7 @@ export declare class Invite {
     /** @private */
     _keyPair;
     /** @param {InviteFields & { _str?: string }} fields */
-    constructor({ expires, key, address, seed, link, data, stamp, _str }: InviteFields & {
+    constructor({ version, expires, key, address, seed, link, data, stamp, _str }: InviteFields & {
         _str?: string;
     });
     /** @returns {boolean} Whether the invite is past its expiry (never when `expires === 0`). */

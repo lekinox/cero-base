@@ -338,9 +338,11 @@ test('invite: carries the stamp its record was written with, and a join is stamp
   const host = await makeHost(t, testnet, { spec: at(2) })
   const before = await host.pairing.invite({ reuse: true })
   t.is(Invite.parse(before).stamp, 1, 'the version it was written at')
+  t.is(Invite.parse(before).version, 1, 'in the form every release joins with')
   await host.db.write([['upgrade', { version: 2 }]])
   const after = await host.pairing.invite()
   t.is(Invite.parse(after).stamp, 2, 'and the raised one after a raise')
+  t.is(Invite.parse(after).version, 2, 'in a form a release from before the stamp refuses')
 
   const joiner = await makeJoiner(t, testnet, { spec: at(2) })
   const { writer } = await joiner.join(after)

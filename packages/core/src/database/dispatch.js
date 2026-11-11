@@ -79,7 +79,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {number} opts.start  The version of a database that holds no version row.
  * @param {() => number} opts.contract  This build's contract: an op whose effective stamp is past it is skipped.
  * @param {(stamp: number) => void} opts.onskip  Called with the effective stamp of each op skipped as past the contract.
- * @param {() => number[] | null} [opts.build]  The row describing this build, kept in the view after each batch: its database, rules, contract and the lowest version it skipped; none while it writes nothing there.
+ * @param {() => number[]} opts.build  The row describing this build, kept in the view it applies: its database, rules, contract and the lowest version it skipped.
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
@@ -87,7 +87,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null>>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -95,7 +95,7 @@ export function makeDispatcher({
   start,
   contract,
   onskip,
-  build = () => null,
+  build,
   onerror,
   key,
   onepoch,
@@ -208,9 +208,15 @@ export function makeDispatcher({
   // the database's version: its row, or the start for a database that never wrote one
   const versionOf = async (view) => (await view.get(countersCol, { name: VERSION }))?.value ?? start
 
-  // the build that applied a view, as the view holds it
-  const built = (view) =>
-    Promise.all(BUILT.map(async (name) => (await view.get(countersCol, { name }))?.value ?? null))
+  // the build that applied a view, as the view holds it: null for an empty view, nulls for one a
+  // build from before the row applied
+  const built = async (view) => {
+    const row = await Promise.all(
+      BUILT.map(async (name) => (await view.get(countersCol, { name }))?.value ?? null)
+    )
+    if (row[0] === null && !(await view.findOne(`@${ns}/devices`, {}))) return null
+    return row
+  }
 
   // each route's request type, and for a ref's add and set the ref its row is stored in
   const routes = new Map()
@@ -947,6 +953,7 @@ export function makeDispatcher({
     built,
     async apply(nodes, view, host) {
       const dbKey = key()
+      const before = await built(view)
       // a batch is one writer's contiguous run, so a refusal discards only that writer's ops
       const tx = view.transaction()
       // host calls survive a discarded transaction, so they replay once the batch commits
@@ -998,14 +1005,13 @@ export function makeDispatcher({
         onerror(refusal)
       } else {
         changed = tx.updated()
-        // a device landing on this view by a fast-forward reads which build applied it
+        // a view another build applied keeps its row until this device applies the log again; what
+        // it skipped follows this device, since a reorder takes it back in the view alone
         const own = build()
-        if (own) {
-          const stored = await built(tx)
-          for (let i = 0; i < BUILT.length; i++) {
-            if (stored[i] === own[i]) continue
-            await tx.insert(countersCol, { name: BUILT[i], value: own[i] })
-          }
+        const ours = !before || before.slice(0, 3).every((n, i) => n === own[i])
+        for (let i = 0; ours && i < BUILT.length; i++) {
+          if (before?.[i] === own[i]) continue
+          await tx.insert(countersCol, { name: BUILT[i], value: own[i] })
         }
         await tx.flush()
         if (changed) for (const name of touched) touch(name)

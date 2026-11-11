@@ -125,11 +125,10 @@ export class Database extends ReadyResource {
     this._applied = false
     /** @private */
     this._landed = false
-    // a fast-forward landed and the build that applied its view is not checked yet
-    /** @private */
-    this._landing = false
     /** @private */
     this._rebuilding = null
+    /** @private */
+    this._writes = new Set()
     this.namespace = opts.namespace || NAMESPACE
     this._writable = false
     this.encryptionKey = opts.encryptionKey
@@ -235,8 +234,7 @@ export class Database extends ReadyResource {
       start: this.start,
       contract: () => this.version,
       onskip: (stamp) => this._skip(stamp),
-      // a view a fast-forward landed on keeps the row of the build that applied it until it is checked
-      build: () => (this._landing ? null : this._build()),
+      build: () => this._build(),
       onerror: this._onerror,
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
@@ -288,7 +286,8 @@ export class Database extends ReadyResource {
     // a failed background remap is only a warning: the store reads its old cores until a reopen or a fast-forward
     // tries again
     this.bee.on('warning', this._onerror)
-    this.bee.on('move-to', () => this._onmove().catch(safetyCatch))
+    const bee = this.bee
+    this.bee.on('move-to', () => this._onmove(bee))
 
     // with no mirror to hold the database, every member holds it: any member serves a joiner, offline
     if (this.network && !this.network.mirrors.length) {
@@ -479,7 +478,19 @@ export class Database extends ReadyResource {
       return
     }
     this.guard()
-    if (this._rebuilding) await this._rebuilding
+    // a write goes in on the bee it started on: a rebuild closes it once the write is done
+    while (this._rebuilding) await this._rebuilding
+    const writing = this._commit(ops, frozen)
+    this._writes.add(writing)
+    try {
+      return await writing
+    } finally {
+      this._writes.delete(writing)
+    }
+  }
+
+  /** @private */
+  async _commit(ops, frozen) {
     // leaving takes no seat: a reader's own removal goes in optimistically, apply admits it
     const optimistic = !this.bee.writable && leaving(ops, this.identity.id)
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
@@ -891,8 +902,10 @@ export class Database extends ReadyResource {
     const built = await local.getUserData('cero/view')
     const { db } = this.spec.database.versions
     const view = built ? viewMarker(built) : null
+    // or a view another build applied, landed on as a close cut its check short
     const grown =
-      !!view && (view.db < db || view.rules < this.rules || view.contract < this.version)
+      (!!view && (view.db < db || view.rules < this.rules || view.contract < this.version)) ||
+      (await this._foreign(this.view))
     const marker = b4a.concat([db, this.rules, this.version].map((n) => c.encode(c.uint, n)))
     if (!caught && !grown) {
       if (!view) await local.setUserData('cero/view', marker)
@@ -1119,21 +1132,29 @@ export class Database extends ReadyResource {
     return [this.spec.database.versions.db, this.rules, this.version, this._skipped ?? 0]
   }
 
-  // a fast-forward landed on a view: one another build applied is applied again here, from the log
+  // a view another build applied: its row is not this build's, or it predates the row
   /** @private */
-  async _onmove() {
-    this._landing = true
-    let built
-    try {
-      built = await this.dispatcher.built(this.view)
-    } finally {
-      this._landing = false
-    }
+  async _foreign(view) {
+    const built = await this.dispatcher.built(view)
     const own = this._build()
-    if (built.every((n, i) => n === own[i])) return
-    this._rebuilding = this._rebuild()
+    return built !== null && built.some((n, i) => n !== own[i])
+  }
+
+  // a fast-forward landed on a view: one another build applied is applied again here, from the
+  // log. Writes wait from the landing on, and a second landing is checked once the first is done
+  /** @private */
+  _onmove(bee = this.bee) {
+    const prev = this._rebuilding
+    const next = (async () => {
+      await prev
+      if (bee !== this.bee || this.closing) return
+      if (await this._foreign(bee.view)) await this._rebuild()
+    })()
       .catch(this._onerror)
-      .finally(() => (this._rebuilding = null))
+      .finally(() => {
+        if (this._rebuilding === next) this._rebuilding = null
+      })
+    this._rebuilding = next
   }
 
   // as an open does past skipped ops, with no fast-forward until it closes: one would land on such
@@ -1144,6 +1165,7 @@ export class Database extends ReadyResource {
     // where the new bee starts looking
     const heads = []
     for await (const { key, length } of this.bee.system.list()) heads.push({ key, length })
+    await Promise.allSettled(this._writes)
     // the bee closes first: open, a batch it applied meanwhile would store what it applied again
     await this.bee.close()
     await this._onWriter(async (writer) => {

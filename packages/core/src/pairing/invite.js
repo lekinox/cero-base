@@ -8,6 +8,8 @@ import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 
 const VERSION = 1
+// an invite past its database's start: a release from before the stamp refuses it instead of joining
+export const STAMPED = 2
 const Encoding = getEncoding('@cero/invite')
 const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
 
@@ -20,6 +22,7 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  * @property {{ key: Uint8Array, length: number } | null} link  The node that added its record: a join links it, so no member applies the join first.
  * @property {Uint8Array | null} [data] The app's payload, readable before joining. Unsigned: a hint, not proof.
  * @property {number} [stamp]           The stamp its record was written with, which its joins take; `0` for none.
+ * @property {number} [version]         The invite's form: `STAMPED` once the stamp is past its database's start.
  */
 
 /**
@@ -29,8 +32,18 @@ const [NS_KEY, NS_PROOF] = crypto.namespace('cero/invite', 2)
  */
 export class Invite {
   /** @param {InviteFields & { _str?: string }} fields */
-  constructor({ expires, key, address, seed, link = null, data = null, stamp = 0, _str = null }) {
-    this.version = VERSION
+  constructor({
+    version = VERSION,
+    expires,
+    key,
+    address,
+    seed,
+    link = null,
+    data = null,
+    stamp = 0,
+    _str = null
+  }) {
+    this.version = version
     this.expires = expires
     this.key = key
     this.address = address
@@ -130,7 +143,9 @@ export class Invite {
     } catch {
       throw CeroError.INVALID_INVITE('not an invite')
     }
-    if (fields.version !== VERSION) throw CeroError.INVALID_INVITE('unknown invite version')
+    if (fields.version !== VERSION && fields.version !== STAMPED) {
+      throw CeroError.INVALID_INVITE('unknown invite version')
+    }
     if (!sealable(fields.address)) throw CeroError.INVALID_INVITE('address cannot be sealed to')
     return new Invite({ ...fields, _str: str })
   }
