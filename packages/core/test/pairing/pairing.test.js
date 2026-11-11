@@ -1222,6 +1222,49 @@ test('refused: with two member devices online, the joiner is answered and both f
   t.pass('neither keeps answering')
 })
 
+// three joins on an invite the host spent, one after the other while none of its devices
+// answers: the last one, still waiting, and how to stop the others
+async function late(t, testnet, host) {
+  const first = await makeJoiner(t, testnet)
+  const invite = await host.pairing.invite()
+  await first.join(invite)
+  await host.pairing.close()
+  const stop = new AbortController()
+  const seen = new Set()
+  let last
+  for (let i = 0; i < 3; i++) {
+    const { join } = await makeJoiner(t, testnet)
+    last = join(invite, { timeout: 0, signal: stop.signal }).catch((e) => e)
+    await waitFor(async () => (await refusals(host.db)).some((row) => !seen.has(row.id)))
+    for (const row of await refusals(host.db)) seen.add(row.id)
+  }
+  return { last, stop }
+}
+
+test('refused: a spent invite keeps one answer, and the newest of its joiners hears why', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: built })
+  const { last, stop } = await late(t, testnet, host)
+  t.is((await refusals(host.db)).length, 1, 'one row, whoever joined before')
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  const err = await last
+  t.is(err.code, 'DENIED', 'answered once a device of the host is back')
+  t.is(err.reason, 'spent')
+  stop.abort()
+})
+
+test("refused: below the version that has an invite's secret, a spent invite keeps an answer for each join", async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
+  const { last, stop } = await late(t, testnet, host)
+  t.is((await refusals(host.db)).length, 3)
+  stop.abort()
+  t.is((await last).code, 'CLOSED')
+})
+
 test('expiry: a member who can remove drops the invite once it runs out', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await makeHost(t, testnet)

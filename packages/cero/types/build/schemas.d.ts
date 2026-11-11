@@ -127,6 +127,7 @@ export declare const main: {
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
         invite: import("@cero-base/core").Prim;
+        spent: import("@cero-base/core").Prim;
     };
     spent: {
         id: import("@cero-base/core").Prim;

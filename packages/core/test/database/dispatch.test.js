@@ -1995,6 +1995,136 @@ test('join: a writer has a request or a refusal, never both', async (t) => {
   t.is((await db.get('requests', hid.encode(admitted))).data?.admitted, true)
 })
 
+const refused = (db) => db.view.find(`@${db.ns}/refusals`, {}).toArray()
+
+// a join on `invite` from a writer of its own, as `op` seals it: the writer's id
+async function joined(db, invite, { op = joinOp, identity, ...ctx } = {}) {
+  identity ??= await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const value = db.spec.dispatch.encode(`@${db.ns}/join`, op(db, invite, { identity, writer }))
+  await db.dispatcher.dispatch(value, {
+    view: db.view,
+    host: noHost,
+    key: writer,
+    dbKey: db.key,
+    ...ctx
+  })
+  return hid.encode(writer)
+}
+
+test("refusal: a hundred joins on one spent invite leave one row, the newest join's", async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const once = await minted(db)
+  const revoked = await addressed(db, { reuse: true })
+  await db.call('del-invite', { id: b4a.toHex(revoked.id) })
+  await joined(db, once)
+  const identity = await Identity.create()
+
+  let newest
+  for (let i = 0; i < 100; i++) newest = await joined(db, once, { identity })
+  const rows = await refused(db)
+  t.is(rows.length, 1, 'one row')
+  t.is(rows[0].id, newest, 'of the newest join')
+  t.is(rows[0].reason, 'spent', 'which hears why')
+
+  const other = await joined(db, revoked, { op: named, identity })
+  await joined(db, once, { identity })
+  const kept = await refused(db)
+  t.is(kept.length, 2, 'one for each spent invite')
+  t.is(kept.find((row) => row.id === other)?.reason, 'revoked', "the other invite's stays")
+})
+
+test('refusal: a request a member turned away keeps its row, whatever its invite turns away after', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const gated = await minted(db, { confirm: true, reuse: true })
+  const open = await addressed(db, { reuse: true })
+  const waiting = [await joined(db, gated), await joined(db, gated), await joined(db, gated)]
+  const promised = await joined(db, open, { op: named })
+
+  for (const id of waiting.slice(0, 2)) await apply(db, db.writerKey, 'deny', { id, reason: 'no' })
+  t.alike(
+    (await refused(db)).map((row) => row.id).sort(),
+    waiting.slice(0, 2).sort(),
+    'two denied, two rows'
+  )
+  await apply(db, db.writerKey, 'deny', { id: promised, reason: 'no' })
+  await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(gated.id) })
+  await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(open.id) })
+  const turned = [...waiting, promised].sort()
+  t.alike((await refused(db)).map((row) => row.id).sort(), turned, 'one row for each request')
+
+  for (let i = 0; i < 5; i++) await joined(db, gated)
+  for (let i = 0; i < 5; i++) await joined(db, open, { op: named })
+  const rows = (await refused(db)).map((row) => row.id)
+  t.is(rows.length, turned.length + 2, 'and one more for each invite, spent since')
+  t.ok(
+    turned.every((id) => rows.includes(id)),
+    'the requests keep theirs'
+  )
+})
+
+test("refusal: a database below the version that has an invite's secret keeps a row for each join, and at it a join stamped below is bounded too", async (t) => {
+  const { since } = spec.meta
+  const invite = { ...since.types['@cero/invite'], secret: 2 }
+  const meta = {
+    ...spec.meta,
+    since: { ...since, types: { ...since.types, '@cero/invite': invite } }
+  }
+  const { db } = await withRole(t, 'owner', { spec: { ...spec, meta } })
+  const revoked = await minted(db, { reuse: true })
+  await db.call('del-invite', { id: b4a.toHex(revoked.id) })
+
+  const before = [await joined(db, revoked), await joined(db, revoked), await joined(db, revoked)]
+  t.alike(
+    (await refused(db)).map((row) => row.id).sort(),
+    [...before].sort(),
+    'below it: a row each'
+  )
+
+  t.is(await apply(db, db.writerKey, 'upgrade', { version: 2 }), null)
+  await joined(db, revoked, { stamp: 1 })
+  const newest = await joined(db, revoked, { stamp: 1 })
+  const rows = (await refused(db)).map((row) => row.id)
+  t.alike(rows.sort(), [...before, newest].sort(), 'at it: one row for the joins since')
+})
+
+test('refusal: the joins a spent invite turned away leave the same row on every device, and after the view is applied again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db, 'admin')
+  await waitFor(() => b.db.writable)
+
+  const secret = crypto.randomBytes(32)
+  const invite = Invite.create({ key: a.db.key, address: Mailbox.getAddress(secret), own: true })
+  const id = b4a.toHex(invite.id)
+  const stamp = await a.db.write([['add-invite', inviteRow(id, { secret, reuse: true })]])
+  await a.db.call('del-invite', { id })
+  let newest
+  for (let i = 0; i < 3; i++) {
+    const { db } = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+    const payload = sealJoin(invite, db.identity, db.writerKey, crypto.randomBytes(32))
+    await waitFor(() => spent(db, id))
+    const op = db.spec.dispatch.encode(`@${db.ns}/join`, payload)
+    await db.bee.append(wrap(stamp, op), { optimistic: true })
+    newest = hid.encode(db.writerKey)
+    for (const peer of [a, b]) await waitFor(() => refusal(peer.db, newest))
+  }
+  const seen = await refused(a.db)
+  t.alike(
+    seen.map((row) => row.id),
+    [newest],
+    'one row, of the newest join'
+  )
+  t.alike(await refused(b.db), seen, 'the same on another device')
+  await a.db._rebuild()
+  await waitFor(() => refusal(a.db, newest))
+  t.alike(await refused(a.db), seen, 'and once the view is applied again')
+})
+
 test('accept: with a proof, the joiner is admitted as a device of the accepter, under its member', async (t) => {
   const { db, identity } = await withRole(t, 'owner')
   const invite = await minted(db, { confirm: true })

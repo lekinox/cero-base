@@ -163,7 +163,9 @@ export const main = {
     reason: required(string),
     expires: int,
     // the invite it joined with, whose secret proves the answer
-    invite: string
+    invite: string,
+    // turned away by a spent invite, which keeps one: its next join takes this one's place
+    spent: bool
   },
   // an invite spent or revoked, kept until it expires so a join with it hears why
   spent: {

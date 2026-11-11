@@ -818,11 +818,18 @@ export function makeDispatcher({
   }
 
   // a join turned away is answered at its reply address, under its invite. A writer with a request
-  // hears through that: one of the two per writer, or a denial could race its keys
-  async function refuse(ctx, { id, reply, expires, invite }, reason) {
+  // hears through that: one of the two per writer, or a denial could race its keys. A spent
+  // invite keeps the answer to its newest join alone, so nobody holding one fills the log
+  async function refuse(ctx, { id, reply, expires, invite }, reason, last = false) {
     if (await ctx.view.get(requests, { id })) return
-    await ctx.view.insert(refusals, { id, reply, reason, expires, invite })
+    const rows = last ? await ctx.view.find(refusals, {}).toArray() : []
+    for (const row of rows) {
+      if (row.spent && row.invite === invite) await ctx.view.delete(refusals, { id: row.id })
+    }
+    await ctx.view.insert(refusals, { id, reply, reason, expires, invite, spent: last })
   }
+  // from the version that has an invite's secret, whatever stamp a join carries
+  const bounded = async (view) => since?.types[`@${ns}/invite`]?.secret <= (await versionOf(view))
 
   // the member, when new, and its device, seated when the member writes; its request stays until
   // a member delivered the keys. The invite is spent unless it is reusable
@@ -938,7 +945,7 @@ export function makeDispatcher({
       // an invite the database never held could be anyone's: nobody answers it
       if (!record) return
       const turned = { id, reply: join.reply, expires: record.expires, invite: record.id }
-      return refuse(ctx, turned, record.reason)
+      return refuse(ctx, turned, record.reason, await bounded(ctx.view))
     }
     const ts = join.ts || 0
     const memberId = hid.encode(join.identity)
