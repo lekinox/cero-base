@@ -9,6 +9,7 @@ import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import { wrap } from '../../src/database/envelope.js'
 import { chainOf, linkOf } from '../../src/database/dispatch.js'
+import { wraps } from '../../src/database/encryption.js'
 import {
   makeStore,
   makeTestnet,
@@ -2446,4 +2447,130 @@ test('rotate-key: an announcement whose commitment is not 32 bytes is no epoch',
   t.is((await epochs()).length, 0, 'none landed')
   t.is(await apply(db, db.writerKey, 'rotate-key', announce(7, b4a.alloc(32, 1))), null)
   t.is((await epochs()).length, 1, 'a 32-byte one does')
+})
+
+// ─── a rotation owed ──────────────────────────────────────────────────────
+
+// what the log keeps: 1 while a rotation is owed, 0 once one cleared it, null when none ever was
+const owed = async (db) =>
+  (await db.view.get(`@${db.ns}/counters`, { name: '_owed' }))?.value ?? null
+
+// a rotation naming these writers, as its device announces it
+let stamps = 0
+const rotation = (ids) => ({
+  epoch: 0,
+  stamp: ++stamps,
+  wrapped: c.encode(
+    wraps,
+    ids.map((id) => ({ id, box: b4a.alloc(48, 1) }))
+  ),
+  commit: b4a.alloc(32, 1),
+  createdAt: 1
+})
+
+// the owner's room with its key check held back: these read what apply stored
+async function owing(t, opts) {
+  const { db } = await withRole(t, 'owner', opts)
+  db.rotation._audit = async () => {}
+  const me = hid.encode(db.writerKey)
+  const rotate = (...ids) => apply(db, db.writerKey, 'rotate-key', rotation([me, ...ids]))
+  return { db, rotate }
+}
+
+test('owed: a join, a new device and a promise owe no rotation; a seat dropped, a member removed and a member leaving each owe one', async (t) => {
+  const b = await second('member')
+  const left = await second('member')
+  const { db, rotate } = await owing(t, { members: [b.row, left.row] })
+  const invite = await addressed(db, { reuse: true })
+  const joiner = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const phone = linked(b.identity)
+  const id = hid.encode(phone.writer.publicKey)
+
+  t.is(await seat(db, b), null)
+  t.is(await seat(db, left), null)
+  t.is(await seat(db, phone), null)
+  t.is(await apply(db, writer, 'join', named(db, invite, { identity: joiner, writer })), null)
+  t.ok((await promise(db, writer))?.promised)
+  t.is(await owed(db), null, 'a member seated, another device of hers and a promise owe nothing')
+
+  t.is(await apply(db, b.writer.publicKey, 'del-device', { id }), null)
+  t.is(await owed(db), 1, 'a device its own member took out owes one')
+  t.is(await rotate(hid.encode(b.writer.publicKey), hid.encode(left.writer.publicKey)), null)
+  t.is(await owed(db), 0, 'cleared by a rotation that names only seated devices')
+
+  t.is(await apply(db, left.writer.publicKey, 'del-member', { id: left.id }), null)
+  t.is(await owed(db), 1, 'a member leaving owes one')
+  t.is(await rotate(hid.encode(b.writer.publicKey)), null)
+  t.is(await owed(db), 0)
+
+  t.is(await claimed(db, joiner, writer), null)
+  t.is(await owed(db), 0, 'a promise kept owes nothing')
+  t.is(await apply(db, db.writerKey, 'del-member', { id: b.id }), null)
+  t.is(await owed(db), 1, 'a member removed owes one')
+})
+
+test('owed: a promise withdrawn owes a rotation: denied, its invite revoked, swept with its writer, or dropped before it was kept; one settled once kept owes none', async (t) => {
+  const { db, rotate } = await owing(t)
+  const invite = await addressed(db, { reuse: true })
+  const letIn = async () => {
+    const identity = await Identity.create()
+    const writer = Identity.randomKeyPair().publicKey
+    t.is(await apply(db, writer, 'join', named(db, invite, { identity, writer })), null)
+    return { identity, writer, id: hid.encode(writer) }
+  }
+  const cleared = async () => {
+    t.is(await rotate(), null)
+    t.is(await owed(db), 0)
+  }
+
+  const kept = await letIn()
+  t.is(await claimed(db, kept.identity, kept.writer), null)
+  t.is(await apply(db, db.writerKey, 'del-request', { id: kept.id }), null)
+  t.is(await owed(db), null, 'settled once its device sat: nothing owed')
+
+  const denied = await letIn()
+  t.is(await apply(db, db.writerKey, 'deny', { id: denied.id }), null)
+  t.is(await owed(db), 1, 'denied')
+  await cleared()
+
+  const dropped = await letIn()
+  t.is(await apply(db, db.writerKey, 'del-request', { id: dropped.id }), null)
+  t.is(await owed(db), 1, 'dropped with no device of hers seated')
+  await cleared()
+
+  const swept = await letIn()
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(swept.writer)), null)
+  t.is(await owed(db), 1, 'swept with its writer')
+  await cleared()
+
+  await letIn()
+  t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(invite.id) }), null)
+  t.is(await owed(db), 1, 'its invite revoked')
+})
+
+test('owed: a rotation clears it where every device it names is seated or promised, and leaves it owed where one is not', async (t) => {
+  const b = await second('member')
+  const { db, rotate } = await owing(t, { members: [b.row] })
+  const invite = await addressed(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const seated = hid.encode(b.writer.publicKey)
+  t.is(await seat(db, b), null)
+  t.is(await apply(db, writer, 'join', named(db, invite, { identity, writer })), null)
+
+  t.is(await rotate(seated, hid.encode(writer)), null)
+  t.is(await owed(db), 0, 'a seated device and a promised one: nothing owed')
+  t.is(await rotate(hid.encode(Identity.randomKeyPair().publicKey)), null)
+  t.is(await owed(db), 1, 'a device with no seat and no promise: one more is owed')
+  t.is(await rotate(seated), null)
+  t.is(await owed(db), 0)
+
+  // a removal that carries its rotation, and one sealed before a removal it crossed
+  t.is(await apply(db, db.writerKey, 'del-member', { id: b.id }), null)
+  t.is(await owed(db), 1)
+  t.is(await rotate(), null)
+  t.is(await owed(db), 0, 'the rotation a removal carries clears what it owed')
+  t.is(await rotate(seated), null)
+  t.is(await owed(db), 1, 'one that names the device removed before it landed leaves it owed')
 })

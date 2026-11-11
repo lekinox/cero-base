@@ -11,6 +11,7 @@ import {
   COUNTERS,
   VERSION,
   BUILT,
+  OWED,
   EPOCHS,
   REMOVALS,
   REFUSALS,
@@ -171,6 +172,9 @@ export function makeDispatcher({
     await view.insert(countersCol, { name, value })
     return value
   }
+
+  // set where someone who may hold the keys is taken out, decided again by each rotation that lands
+  const owe = (view, value = 1) => view.insert(countersCol, { name: OWED, value })
 
   // every reader decodes a file id it renders: one that does not decode never lands
   function checkFiles(name, row) {
@@ -519,16 +523,23 @@ export function makeDispatcher({
     await ctx.host.removeWriter(hid.decode(id))
     await revoke(ctx, device)
     await drop(ctx, 'devices', id)
+    if (device) await owe(ctx.view)
     // with the seat go the keys its writer was still owed, and what its device key was promised:
     // a rotation is sealed to the promised
-    await drop(ctx, 'requests', id)
+    await forget(ctx, await ctx.view.get(requests, { id }))
     if (!device?.key) return
     const stood = (row) => chainOf(row).some((key) => b4a.equals(key, device.key))
     for (const row of await ctx.view.find(requests, {}).toArray()) {
       // waiting or promised: one admitted at its join has a seat of its own to lose
       if (row.admitted && !row.promised) continue
-      if (stood(row)) await drop(ctx, 'requests', row.id)
+      if (stood(row)) await forget(ctx, row)
     }
+  }
+  // a request goes: a promise among them was handed the keys, so a rotation is owed
+  async function forget(ctx, row) {
+    if (!row) return
+    await drop(ctx, 'requests', row.id)
+    if (row.promised) await owe(ctx.view)
   }
   add('del-writer', async (op, ctx) => {
     if (!isKey(op.writer)) return
@@ -620,11 +631,10 @@ export function makeDispatcher({
         if (device.memberId !== op.id) continue
         await ctx.host.removeWriter(hid.decode(device.id))
         await drop(ctx, 'devices', device.id)
+        await owe(ctx.view)
         await drop(ctx, 'requests', device.id)
       }
-      for (const row of await promised(ctx.view, hid.decode(op.id))) {
-        await drop(ctx, 'requests', row.id)
-      }
+      for (const row of await promised(ctx.view, hid.decode(op.id))) await forget(ctx, row)
     }
     if (leaving) {
       if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
@@ -649,8 +659,7 @@ export function makeDispatcher({
       await hooked(pick('del', ctx), meta, ctx, write, 'remove')
     }
     // an invite they could hold, or saw, does not bring them back on its own: after a removal it is turned away, after
-    // leaving it waits for a member to accept her again, so leaving first never dodges a removal. Either row rotates
-    // the handle's key at its first removal (rotation.js)
+    // leaving it waits for a member to accept her again, so leaving first never dodges a removal
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted })
   })
@@ -678,10 +687,22 @@ export function makeDispatcher({
       commit: op.commit
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
+    // sealed before a removal it crossed, it names a device taken out since: one more is owed
+    await owe(ctx.view, (await outsider(ctx.view, op.wrapped)) ? 1 : 0)
     ctx.touched?.push(EPOCHS)
     // learned once its batch commits: a refused batch teaches no epoch, and a dry run commits nothing
     ctx.epochs?.push(row)
   })
+
+  // whether a rotation names a device with no seat and no promise where it lands. A promise row
+  // is one that stands: a removal takes those on its key, and past its invite a member withdraws it
+  async function outsider(view, wrapped) {
+    for (const { id } of c.decode(wraps, wrapped)) {
+      if (await getDevice(view, id)) continue
+      if (!(await view.get(requests, { id }))?.promised) return true
+    }
+    return false
+  }
 
   // only an owner moves the version, and only up: a lower one is no change and no error. The
   // genesis batch raises first, before the member row it writes, so all of it runs at the version
@@ -770,7 +791,7 @@ export function makeDispatcher({
     const kept = (request) => request.admitted && (!request.promised || reason === 'spent')
     for (const request of await ctx.view.find(requests, {}).toArray()) {
       if (request.invite !== invite.id || kept(request)) continue
-      await drop(ctx, 'requests', request.id)
+      await forget(ctx, request)
       await refuse(ctx, request, reason)
     }
   }
@@ -957,7 +978,7 @@ export function makeDispatcher({
     if (!row || (row.admitted && !row.promised)) return
     const [perm, rule] = row.promised ? [REMOVE, 'remove'] : [INVITE, 'invite']
     if (!can(await getSignerRole(ctx.view, ctx.key), perm)) throw CeroError.REFUSED(rule)
-    await drop(ctx, 'requests', op.id)
+    await forget(ctx, row)
     await refuse(ctx, row, op.reason || '')
   })
   // only a join writes a request
@@ -966,11 +987,20 @@ export function makeDispatcher({
   }
   add('add-request', joinsOnly)
   add('set-request', joinsOnly)
-  // a denial, or keys delivered
+  // a denial, or keys delivered. A promise dropped before the device it was made to sat under its
+  // member is one withdrawn
   add('del-request', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    const row = await ctx.view.get(requests, { id: op.id })
+    if (!row) return
     await drop(ctx, 'requests', op.id)
+    if (row.promised && !(await sat(ctx.view, row))) await owe(ctx.view)
   })
+  async function sat(view, { identity, key }) {
+    const memberId = hid.encode(identity)
+    const devices = await view.find(`@${ns}/devices`, {}).toArray()
+    return devices.some((d) => d.memberId === memberId && d.key && b4a.equals(d.key, key))
+  }
   // read by the joiner, or past its expiry with nobody waiting
   add('del-refusal', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')

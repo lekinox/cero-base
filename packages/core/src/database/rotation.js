@@ -3,7 +3,7 @@ import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 
-import { REMOVE } from '../lib/constants.js'
+import { REMOVE, COUNTERS, OWED } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
 import { wraps, epochEntries, seal, opened } from './encryption.js'
 import { chainOf } from './dispatch.js'
@@ -311,8 +311,8 @@ export class Rotation {
   }
 
   // a rotation seals for the rotator's view of the members; REMOVE-capable devices rotate
-  // when the current epoch's recipients drift from the member list, or when its envelope
-  // for them does not open: a rotator must not seal anyone who could heal it out
+  // when the log owes one, someone taken out since the newest key may hold it, or when its
+  // envelope for them does not open: a rotator must not seal anyone who could heal it out
   /** @private */
   async _audit() {
     if (!(await this._due())) return
@@ -325,7 +325,7 @@ export class Rotation {
     })
   }
 
-  // the (epoch, membership) state a rotation is due for, one attempt each: a failing rotate must
+  // the (epoch, devices) state a rotation is due for, one attempt each: a failing rotate must
   // not loop
   /** @private */
   async _due() {
@@ -343,22 +343,15 @@ export class Rotation {
     if (!can(me?.role, REMOVE)) return null
 
     const rows = await this._epochs()
-    // a database still on its creation key rotates at its first removal
-    if (!rows.length) {
-      return (await db.view.findOne(`@${db.ns}/removals`, {})) ? 'first removal' : null
-    }
-    const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
-    const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
-    const devices = await this._devices()
-    const ids = new Set(devices.map((d) => d.id))
-    const sealedOut = !db.keyring.entropy(top.stamp)
-    // a promised device may be named, a seated one must be
-    const named = devices.every((d) => d.promised || recipients.has(d.id))
-    if (!sealedOut && named && [...recipients].every((id) => ids.has(id))) {
+    const top = rows.length ? rows.reduce((a, b) => (b.epoch > a.epoch ? b : a)) : null
+    const sealedOut = top !== null && !db.keyring.entropy(top.stamp)
+    const owed = await db.view.get(`@${db.ns}/${COUNTERS}`, { name: OWED })
+    if (!sealedOut && !owed?.value) {
       this._healedFor = null
       return null
     }
-    return `${top.stamp}:${[...ids].sort().join(',')}`
+    const ids = (await this._devices()).map((d) => d.id)
+    return `${top?.stamp ?? 0}:${ids.sort().join(',')}`
   }
 }
 

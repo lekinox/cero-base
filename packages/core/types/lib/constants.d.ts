@@ -31,6 +31,7 @@ export declare const QUERY_RESERVED: Set<string>;
 export declare const COUNTERS = "counters";
 export declare const VERSION = "_version";
 export declare const BUILT: string[];
+export declare const OWED = "_owed";
 export declare const EPOCHS = "epochs";
 export declare const REMOVALS = "removals";
 export declare const REFUSALS = "refusals";
