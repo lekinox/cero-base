@@ -191,15 +191,15 @@ again, for someone who never was one, and while her going has not reached this d
 `members` row is not that record: on a device still catching up it only means not yet. Read it to
 end what the handle gave her elsewhere, a seat in another handle say.
 
-## Remove and re-key
+## Remove and rotate the key
 
 ```js
 await cero.del(room.members, memberId)
 await cero.rotate(room) // { epoch }: the room has a new key
 ```
 
-A removal re-keys the handle shortly after on its own, on a device that can remove, so the removed
-member reads nothing written after it. `cero.rotate` re-keys at once: await it before writing
+A removal rotates the handle's key shortly after on its own, on a device that can remove, so the
+removed member reads nothing written after it. `cero.rotate` rotates it at once: await it before writing
 something they must not see. It needs the remove permission, `REFUSED` otherwise, and cannot run
 inside a transaction: `cero.rotate(tx)` throws `INVALID`. [How it works](how-it-works.md) has the
 mechanism.
@@ -215,7 +215,7 @@ last owner of a handle others are in gets `INVALID`: make another member an owne
 `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
 after you left brings you back; an older one, or the handle's reusable one, puts you in
 `room.requests` until a member accepts or denies you, so leaving first never dodges a removal. The
-handle still re-keys you out. Removed by someone else, only a code minted after the removal does.
+handle still rotates its key, sealing you out. Removed by someone else, only a code minted after the removal does.
 
 `cero.close(room)` lets go of a handle on this device and keeps it in your list, to reopen by id.
 A device opens a handle once and counts who holds it: every `open`
@@ -239,4 +239,4 @@ the list, joined handles included. [Network](network.md) covers `cero.activate`.
 
 - [Your devices](identity.md) to be the same member on every device.
 - [Network](network.md) to sync through mirrors, over Bluetooth, and across many handles.
-- [How it works](how-it-works.md) for what happens on join, removal and re-key.
+- [How it works](how-it-works.md) for what happens on join, removal and rotation.

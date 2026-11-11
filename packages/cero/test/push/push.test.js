@@ -436,7 +436,7 @@ test('receive: a member who removes one of her two devices: its push reads as no
   const gone = await pushOf(second, room)
   await waitUntil(async () => (await receive(b.me, kept)) && (await receive(b.me, gone)))
 
-  // with the owner away nobody re-keys, so the removal is the only update that lands
+  // with the owner away nobody rotates, so the removal is the only update that lands
   await a.me.close()
   await del(mine.devices, hid.encode(second.store.writerKey))
   await waitUntil(async () => (await receive(b.me, gone)) === null)

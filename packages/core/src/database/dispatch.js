@@ -492,8 +492,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       await hooked(pick('del', ctx), meta, ctx, write, 'remove')
     }
     // an invite they could hold, or saw, does not bring them back on its own: after a removal it is turned away, after
-    // leaving it waits for a member to accept her again, so leaving first never dodges a removal. Either row re-keys
-    // the handle at its first removal (rotation.js)
+    // leaving it waits for a member to accept her again, so leaving first never dodges a removal. Either row rotates
+    // the handle's key at its first removal (rotation.js)
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted })
   })

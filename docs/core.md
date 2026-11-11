@@ -173,7 +173,7 @@ Who writes:
 - **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat.
 - Only the genesis batch names a member directly. Everyone after comes in through a join, and a device seats only itself: an add-writer for another core is ignored.
 
-Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on one device run one after another. A device that may remove also re-keys by itself when the devices change, a database's first removal included. A device joining later reads the epochs it is handed, `epochs`, never the envelopes sealed to others. See [How it works](how-it-works.md).
+Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on one device run one after another. A device that may remove also rotates the key by itself when the devices change, a database's first removal included. A device joining later reads the epochs it is handed, `epochs`, never the envelopes sealed to others. See [How it works](how-it-works.md).
 
 ## Mailbox
 

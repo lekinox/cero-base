@@ -230,7 +230,7 @@ const { data: messages } = await cero.get(room.messages) // messages[0].photo.ur
 - Files have no timestamps, they read `0`: order them by `index`.
 - `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
   admin or an owner deletes one.
-- A member removed from a handle can't read files added after the handle re-keys. See
+- A member removed from a handle can't read files added after the handle rotates its key. See
   [How it works](how-it-works.md).
 
 ## Handle errors

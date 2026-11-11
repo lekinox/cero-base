@@ -397,7 +397,7 @@ export class Database extends ReadyResource {
    * @returns {Promise<{ epoch: number }>}
    */
   async rotate() {
-    // queued in tx() the epoch is unobservable, and a batched rekey blurs the epoch
+    // queued in tx() the epoch is unobservable, and a batched rotation blurs the epoch
     if (this.txQueue) throw CeroError.INVALID('rotate() cannot run inside tx()')
     return this.rotation.rotate()
   }
