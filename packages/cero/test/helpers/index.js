@@ -1,5 +1,6 @@
 import ReadyResource from 'ready-resource'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import createTestnet from '@hyperswarm/testnet'
@@ -208,6 +209,29 @@ export async function ceroOpen(t, opts = {}) {
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return { me, dir, testnet }
+}
+
+// `count` handles rows added to a root in one transaction, rooms it holds and never opened: their ids
+export async function addHandles(me, count, from = 0) {
+  const ids = []
+  const ts = Date.now()
+  await me.store.tx(async (tx) => {
+    for (let i = from; i < from + count; i++) {
+      const key = Identity.randomBytes(32)
+      const id = hid.encode(key)
+      ids.push(id)
+      await tx.call('add-handle', {
+        id,
+        type: 'team',
+        key,
+        encryptionKey: Identity.randomBytes(32),
+        name: `room ${i}`,
+        createdAt: ts + i,
+        updatedAt: ts + i
+      })
+    }
+  })
+  return ids
 }
 
 // a bare root handle and its device store on their own network, bootstrapped unless it opens a key
