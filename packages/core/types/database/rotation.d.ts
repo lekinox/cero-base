@@ -43,7 +43,7 @@ export declare class Rotation {
      * rotation's append and its save, is learned from the epochs collection.
      */
     hydrate(): Promise<void>;
-    /** Debounced audit, run after every update. */
+    /** Debounced audit, run at open and after every update. */
     heal(): void;
     /** @private */
     private _rotate;

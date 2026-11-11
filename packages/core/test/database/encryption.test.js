@@ -937,7 +937,80 @@ test('rotate: soft delete in a rotated room auto-rotates (healer)', async (t) =>
   t.absent((await texts(victim.db)).includes('post'), 'victim cannot read past the healed epoch')
 })
 
-test('rotate: a member leaving on its own is re-keyed out', async (t) => {
+test('rotate: a rotation its database closed under reports nothing, and is done when it opens again', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const { store, identity, network } = a
+  const { key, keyPair, encryptionKey } = a.db
+  // the owner removes a member and its database closes as the rotation that follows begins
+  const rotate = a.db.rotation._rotate.bind(a.db.rotation)
+  let closing = null
+  a.db.rotation._rotate = (...args) => {
+    closing ??= a.db.close()
+    return rotate(...args)
+  }
+  await a.db.del('members', b.identity.id)
+  await waitFor(() => closing !== null)
+  await closing
+  t.is(a.db.keyring.seq, 0, 'closed before its rotation')
+  t.alike(
+    a.errors.map((e) => e.message),
+    [],
+    'and nothing is reported'
+  )
+
+  const again = new Database({ store, identity, network, spec, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await waitFor(() => again.keyring.seq === 1, { timeout: 10000 }).catch(() => {})
+  t.is(again.keyring.seq, 1, 'rotated at its next open, with no write to wake it')
+  const [epoch] = await again.view.find('@cero/epochs', {}).toArray()
+  const sealed = epoch ? c.decode(wraps, epoch.wrapped).map((w) => w.id) : []
+  t.alike(sealed, [hid.encode(again.writerKey)], 'to the devices that stayed')
+})
+
+test('rotate: an audit its database closed under reports nothing', async (t) => {
+  const { a } = await makeRoom(t, [])
+  const db = a.db
+  // the audit that follows a write has done its first read when the database closes
+  const audit = db.rotation._audit.bind(db.rotation)
+  let closing = null
+  db.rotation._audit = () => {
+    const get = db.get.bind(db)
+    db.get = async (...args) => {
+      const row = await get(...args)
+      closing ??= db.close()
+      return row
+    }
+    return audit()
+  }
+  await db.put('messages', { text: 'bye' })
+  await waitFor(() => closing !== null)
+  await closing
+  t.alike(
+    a.errors.map((e) => e.message),
+    [],
+    'nothing is reported'
+  )
+})
+
+test('rotate: an audit that fails while its database is open is reported', async (t) => {
+  const { a } = await makeRoom(t, [])
+  a.db.rotation._epochs = async () => {
+    throw new Error('disk full')
+  }
+  await a.db.put('messages', { text: 'wakes the audit' })
+  await waitFor(() => a.errors.length > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(
+    a.errors.map((e) => e.message),
+    ['disk full']
+  )
+})
+
+test('rotate: a member leaving on its own is sealed out by a rotation', async (t) => {
   const {
     a,
     members: [b]

@@ -106,7 +106,8 @@ export class Handle extends ReadyResource {
       ? parent.root.mailbox
       : new Mailbox(network, {
           inbox: box(this.local.store, 'inbox'),
-          outbox: box(this.local.store, 'outbox')
+          outbox: box(this.local.store, 'outbox'),
+          onerror: (err) => this._onerror(err)
         })
     /** @private */
     this._storage = opts.storage || null
@@ -118,8 +119,9 @@ export class Handle extends ReadyResource {
     this._opts = opts.opts || {}
     /** @type {import('../extensions/index.js').Extension[]} */
     this.extensions = parent?.extensions || extensionsOf(spec, this._opts.extensions)
+    // one for the app: what a handle does on its own reaches the root's
     /** @private */
-    this._onerror = this._opts.onerror || ((err) => console.error(err))
+    this._onerror = parent ? parent._onerror : this._opts.onerror || ((err) => console.error(err))
     /** @type {Set<Handle> | null} */
     this.children = parent ? null : new Set()
     // children still opening, not adopted yet: a close must close them too

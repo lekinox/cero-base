@@ -248,8 +248,10 @@ export class Database extends ReadyResource {
       throw err
     }
 
-    // REMOVE-capable devices re-key when the epoch drifts from the member set
+    // REMOVE-capable devices rotate when the epoch drifts from the member set, as it may have
+    // while this one was closed, or as a close cut its rotation short
     this.on('update', () => this.rotation.heal())
+    this.rotation.heal()
     this._writable = this.bee.writable
     this.bee.on('writable', () => this._onwritable())
     // falling edge: apps freeze the UI the moment access ends
