@@ -249,7 +249,7 @@ const before = await cero.tx(room, async (tx) => {
 ```
 
 - `cero.tx(ctx, fn)` resolves what `fn` returns. Writes through `tx`, the context `fn` receives, land as one batch, or none do when one is refused. A write through `room` itself lands on its own, outside the batch.
-- `fn` must take `tx` (`INVALID` otherwise). Reads through `tx` see what has landed, not the batch's own writes.
+- `fn` must take `tx` (`INVALID` otherwise). Reads through `tx` see what has landed, not the batch's own writes. A write through `tx` after `fn` returns is refused (`INVALID`): await every write inside `fn`.
 - Atomic, not isolated: other writes, from this device or another, can land between `fn`'s reads and the commit.
 - `cero.rotate` cannot run inside (`INVALID`). Not on a client.
 
