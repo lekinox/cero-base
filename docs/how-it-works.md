@@ -79,7 +79,8 @@ Each handle has its own key, made at creation, kept in your root and handed to j
 
 A removal takes the member's logs out at once, but their key would still read what comes next. So the handle rotates its key: a new secret, sealed to each remaining device and announced in its log, for every row and file written after. A device of yours that opens the handle later reads with the keys its root carries, and is sealed to from then on.
 
-- Half a second after a removal lands, a device of an admin or the owner with the handle open rotates its key, or the next one to come online. `cero.rotate(room)` rotates it at once and resolves when the key is in place: await it before writing what the removed member must not read.
+- A removal by an admin or the owner carries the rotation: the removal goes into the log, then the new key, sealed to the devices that stay, and nothing else this device writes goes between them. When `cero.del` resolves the key is in place, and what this device writes next the removed member does not read.
+- A member who leaves, or who removes a device of her own where she cannot remove members, rotates nothing: half a second after it lands, a device of an admin or the owner with the handle open rotates the key, or the next one to come online. `cero.rotate(room)` rotates it at once and resolves when the key is in place.
 - Once a handle has rotated its key, any change of members rotates it again, joins included.
 - Each rotation starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
 - A removed member never learns a new epoch. The removal lands first, so they see it: `status.role` turns `null` and what they read stops there.

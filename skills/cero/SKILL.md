@@ -103,8 +103,8 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 8. **Invites come from handles.** `cero.invite(room, { role })` admits a member at that rank
    (`owner`, `admin`, `member`, `reader`; `member` by default). A `confirm` invite holds each join in
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
-   `cero.del(room.members, id)` removes a member and rotates the handle's key shortly after;
-   `await cero.rotate(room)` rotates it at once.
+   `cero.del(room.members, id)` removes a member and rotates the handle's key in the same step;
+   `await cero.rotate(room)` rotates it at any other time.
 9. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
    show `await cero.phrase(me)` to the user once. With a phrase, Cero finds one of the user's devices
    (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT`.

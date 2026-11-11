@@ -443,6 +443,10 @@ export declare class Database extends ReadyResource {
      */
     write(ops: Array<[string, unknown]>): Promise<number | undefined>;
     /** @private */
+    private _frozen;
+    /** @private */
+    private _write;
+    /** @private */
     private _commit;
     /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
     get pushing(): boolean;

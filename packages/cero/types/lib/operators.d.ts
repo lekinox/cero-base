@@ -143,8 +143,8 @@ export declare function invite(ctx: Context, opts?: import('@cero-base/core/pair
 export declare function revoke(ctx: Context, code: string): Promise<boolean>;
 /**
  * Rotate a handle's key now: a new epoch sealed to its members, so one removed before it reads
- * nothing written after. Needs the remove permission. A removal also rotates it on its own shortly
- * after it lands; this is the one to await.
+ * nothing written after. Needs the remove permission. A removal by an admin or the owner rotates
+ * it as it resolves; this is for any other time.
  *
  * @param {Context} ctx
  * @returns {Promise<{ epoch: number }>}

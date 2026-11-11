@@ -19,6 +19,8 @@ export class Rotation {
   constructor(db) {
     this.db = db
     this.current = null
+    /** @type {Promise<void> | null} Pending while a removal and its rotation go in. */
+    this.carrying = null
     /** @private */
     this._queue = Promise.resolve()
     /** @private */
@@ -39,7 +41,24 @@ export class Rotation {
    * @returns {Promise<{ epoch: number }>}
    */
   rotate() {
-    const run = this._queue.catch(() => {}).then(() => this._rotate(false))
+    return this._queued(() => this._rotate(false))
+  }
+
+  /**
+   * A removal by a device that may remove carries its rotation: the removal, then the key sealed
+   * to the devices that stay, with nothing else of this device in between. The key is a block of
+   * its own, so it lands even when a reorder refuses the removal.
+   *
+   * @param {Array<[string, unknown]>} ops  A batch that takes a member or a device out.
+   * @returns {Promise<number | undefined>}  What the removal's write resolves.
+   */
+  carry(ops) {
+    return this._queued(() => this._carry(ops))
+  }
+
+  /** @private */
+  _queued(fn) {
+    const run = this._queue.catch(() => {}).then(fn)
     this._queue = run
     return run
   }
@@ -127,7 +146,46 @@ export class Rotation {
   }
 
   /** @private */
-  async _rotate(retried) {
+  async _carry(ops) {
+    const db = this.db
+    let done = null
+    this.carrying = new Promise((resolve) => (done = resolve))
+    try {
+      // a write on its way goes in first
+      await Promise.allSettled(db._writes)
+      const devices = await this._staying(ops)
+      const stamp = await db._write(ops, true)
+      if (!devices || stamp === undefined) return stamp
+      try {
+        await this._rotate(false, devices)
+      } catch (err) {
+        // the removal is in: the key check rotates. Behind, it says nothing, as that check does
+        if (!db.closing && !db.closed && db.behind === null) db._onerror(err)
+        this.heal()
+      }
+      return stamp
+    } finally {
+      this.carrying = null
+      done()
+    }
+  }
+
+  // the devices a removal leaves, read before it is appended, or null when this device carries no
+  // rotation: its own seat goes, or its member may not remove
+  /** @private */
+  async _staying(ops) {
+    const db = this.db
+    const { data: devices } = await db.get('devices')
+    const gone = new Set(ops.flatMap(([op, data]) => SEATS.get(op)?.(data, devices) ?? []))
+    const me = devices.find((d) => d.id === hid.encode(db.writerKey))
+    if (!me || gone.has(me.id)) return null
+    const { data: member } = await db.get('members', me.memberId)
+    if (!can(member?.role, REMOVE)) return null
+    return devices.filter((d) => d.key && !gone.has(d.id))
+  }
+
+  /** @private */
+  async _rotate(retried, devices) {
     const db = this.db
     db.guard()
     if (!db.writable) throw CeroError.NOT_WRITABLE('Database')
@@ -140,13 +198,13 @@ export class Rotation {
     const stamp = this._mint()
     this.current = { entropy, stamp, epoch: 0 }
     try {
-      const wrapped = seal(await this._devices(), entropy)
+      const wrapped = seal(devices || (await this._devices()), entropy)
       const epoch = await this._announce(stamp, entropy, wrapped)
       if (!epoch) {
         // a stamp collision (~2^-32, or an adversarial pre-claim) is not a refusal
         if (!retried && (await this._taken(stamp))) {
           this.current = null
-          return this._rotate(true)
+          return this._rotate(true, devices)
         }
         // permission is refused before the append, so the dry-run missed something
         throw CeroError.INVALID('rotation was not applied')
@@ -189,13 +247,14 @@ export class Rotation {
   async _announce(stamp, entropy, wrapped) {
     const { bee } = this.db
     const from = bee.local.length
-    await this.db.call('rotate-key', {
+    const op = {
       epoch: 0, // sequence assigned deterministically at apply time
       stamp,
       wrapped: c.encode(wraps, wrapped),
       createdAt: Date.now(),
       commit: crypto.hash(entropy)
-    })
+    }
+    await this.db._write([['rotate-key', op]], true)
     await bee.update()
     // a block appended during a rotation must not carry the stamp it announces
     for (let i = from; i < bee.local.length; i++) {
@@ -250,18 +309,37 @@ export class Rotation {
   // for them does not open: a rotator must not seal anyone who could heal it out
   /** @private */
   async _audit() {
+    if (!(await this._due())) return
+    // decided again once it holds the queue: a removal carried meanwhile brought its key
+    await this._queued(async () => {
+      const state = await this._due()
+      if (!state) return
+      this._healedFor = state
+      await this._rotate(false)
+    })
+  }
+
+  // the (epoch, membership) state a rotation is due for, one attempt each: a failing rotate must
+  // not loop
+  /** @private */
+  async _due() {
+    const state = await this._drift()
+    return state === this._healedFor ? null : state
+  }
+
+  /** @private */
+  async _drift() {
     const db = this.db
     // behind, the membership this device sees is stale: the devices that read everything rotate
-    if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return
+    if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return null
     const { data: device } = await db.get('devices', hid.encode(db.writerKey))
     const me = device?.memberId ? (await db.get('members', device.memberId)).data : null
-    if (!can(me?.role, REMOVE)) return
+    if (!can(me?.role, REMOVE)) return null
 
     const rows = await this._epochs()
     // a database still on its creation key rotates at its first removal
     if (!rows.length) {
-      if (await db.view.findOne(`@${db.ns}/removals`, {})) await this._heal('first removal')
-      return
+      return (await db.view.findOne(`@${db.ns}/removals`, {})) ? 'first removal' : null
     }
     const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
     const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
@@ -272,18 +350,25 @@ export class Rotation {
     const named = devices.every((d) => d.promised || recipients.has(d.id))
     if (!sealedOut && named && [...recipients].every((id) => ids.has(id))) {
       this._healedFor = null
-      return
+      return null
     }
-    await this._heal(`${top.stamp}:${[...ids].sort().join(',')}`)
+    return `${top.stamp}:${[...ids].sort().join(',')}`
   }
+}
 
-  // one attempt per (epoch, membership) state, a failing rotate must not loop
-  /** @private */
-  async _heal(state) {
-    if (this._healedFor === state) return
-    this._healedFor = state
-    await this.rotate()
-  }
+// the seats an op takes out: a device by its row or by its writer, a member's every device
+const SEATS = new Map([
+  ['del-device', (op) => [op.id]],
+  ['del-writer', (op) => [hid.encode(op.writer)]],
+  ['del-member', (op, devices) => devices.filter((d) => d.memberId === op.id).map((d) => d.id)]
+])
+
+/**
+ * @param {Array<[string, unknown]>} ops
+ * @returns {boolean} Whether a batch takes a member or a device out.
+ */
+export function removes(ops) {
+  return ops.some(([op]) => SEATS.has(op))
 }
 
 // the epoch stamp autobee's encryption writes into every block header

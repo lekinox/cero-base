@@ -689,18 +689,29 @@ test('rpc: rotate on a room round-trips via the wire', async (t) => {
   t.is([...me.children][0].store.keyring.seq, 1, 'the worker keyring advanced')
 })
 
-test('rpc: a removal made from the UI rotates the room key', async (t) => {
-  const { client, testnet } = await openPair(t)
+test('rpc: a removal made from the UI rotates the room key as it resolves, and the removed device does not read the next write', async (t) => {
+  const { me, client, testnet } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
   const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => other.close().catch(() => {}), { order: 5 })
-  await open(other.team, await cero.invite(team))
+  const theirs = await open(other.team, await cero.invite(team))
+  await put(team.messages, { text: 'pre' })
+  await waitUntil(async () => (await get(theirs.messages)).data.length === 1 || null)
 
   await del(team.members, other.id)
-  await waitUntil(async () => (await get(team.status)).data.epoch === 1 || null)
-  t.pass('the worker opened epoch 1')
+  t.is((await get(team.status)).data.epoch, 1, 'the worker opened epoch 1')
   await put(team.messages, { text: 'post' })
-  t.is((await get(team.messages)).data.length, 1, 'writes go on in the new epoch')
+  t.is((await get(team.messages)).data.length, 2, 'writes go on in the new epoch')
+
+  await waitUntil(async () => !(await get(theirs.members, other.id)).data || null)
+  const key = [...me.children][0].store.keyring.current
+  t.absent(theirs.store.keyring.entropy(key), 'the removed device holds no key for it')
+  const { data } = await get(theirs.messages)
+  t.alike(
+    data.map((r) => r.text),
+    ['pre'],
+    'and reads nothing written after'
+  )
 })
 
 test('rpc: a watch stream over the wire survives a rotation mid-stream', async (t) => {

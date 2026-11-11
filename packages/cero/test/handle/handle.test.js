@@ -491,7 +491,7 @@ test('Handle: rotation works on nested child rooms — remove, late join, reopen
 
   await del(room.members, b.identity.id)
   const { epoch } = await rotate(room)
-  t.is(epoch, 1, 'nested child rotates through the operator')
+  t.is(epoch, 2, 'nested child rotates through the operator, after the removal did')
   await put(room.messages, { text: 'after' })
 
   // late joiner through a nested child reads everything (confirm delivery)
@@ -564,6 +564,33 @@ async function nestedRoom(t, testnet) {
     })
   return { a, room, joinAsRoot, sees }
 }
+
+test('Handle: a removal rotates the key as it resolves, and the removed device does not read the next write', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { a, room, joinAsRoot, sees } = await nestedRoom(t, testnet)
+
+  await put(room.messages, { text: 'pre' })
+  const stays = await joinAsRoot()
+  const removed = await joinAsRoot()
+  await waitForConnection(a.net)
+  await sees(stays.room, 'pre')
+  await sees(removed.room, 'pre')
+
+  await del(room.members, removed.identity.id)
+  t.is((await get(room.status)).data.epoch, 1, 'the key is in place')
+  await put(room.messages, { text: 'post' })
+
+  await sees(stays.room, 'post')
+  const key = room.store.keyring.current
+  t.ok(stays.room.store.keyring.entropy(key), 'a member who stays holds it')
+  t.absent(removed.room.store.keyring.entropy(key), 'the removed device does not')
+  const { data } = await get(removed.room.messages)
+  t.alike(
+    data.map((r) => r.text),
+    ['pre'],
+    'and reads nothing written after'
+  )
+})
 
 test('Handle: nested healer — soft delete in a rotated child auto-rotates', async (t) => {
   const testnet = await makeTestnet(t)

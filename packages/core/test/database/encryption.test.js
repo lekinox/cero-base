@@ -272,8 +272,7 @@ test('rotate: a removed member cannot decrypt anything written after the rotatio
   await waitFor(async () => (await texts(removed.db)).includes('before'))
 
   await a.db.call('del-member', { id: removed.identity.id })
-  // the removal rotates on its own: epoch 1 is that heal, and a rotation of ours would race it
-  await waitFor(() => a.db.keyring.seq === 1)
+  // the removal carries its rotation: a rotation of ours would open a second epoch
   t.is(a.db.keyring.seq, 1, 'the removal opened epoch 1')
 
   await a.db.put('messages', { text: 'after' })
@@ -1200,9 +1199,8 @@ test('rotate: a removed device of a member reads nothing written after the rotat
   await waitFor(async () => (await texts(dev1.db)).includes('pre'))
   await waitFor(async () => (await texts(dev2.db)).includes('pre'))
 
-  // "lost phone": remove device 2, then rotate
+  // "lost phone": removing device 2 rotates
   await a.db.call('del-device', { id: hid.encode(dev2.db.writerKey) })
-  await a.db.rotate()
   await a.db.put('messages', { text: 'post' })
 
   await waitFor(async () => (await texts(dev1.db)).includes('post'))
@@ -1452,4 +1450,403 @@ test('rotate: an announcement whose envelopes do not decode never lands, so a la
     () => false
   )
   t.ok(healed, 'the removal rotates')
+})
+
+// the epoch a block of this device's log was written under
+const stampAt = async (db, i) => b4a.readUInt32LE(await db.bee.local.get(i, { raw: true }), 4)
+
+// the devices the newest key is sealed to
+async function sealedTo(db) {
+  const rows = await db.view.find('@cero/epochs', {}).toArray()
+  if (!rows.length) return []
+  const top = rows.reduce((x, y) => (y.epoch > x.epoch ? y : x))
+  return c
+    .decode(wraps, top.wrapped)
+    .map((w) => w.id)
+    .sort()
+}
+
+const seats = (...peers) => peers.map((p) => hid.encode(p.db.writerKey)).sort()
+
+// a member's two devices in the owner's room, the second linked by her identity
+async function twoDevices(t, { a, testnet, topic, encryptionKey }, role) {
+  const identity = await Identity.create()
+  const phone = Identity.randomKeyPair()
+  const linked = Identity.from({
+    ...identity,
+    device: phone,
+    proof: identity.link(phone.publicKey)
+  })
+  const opts = { topic, encryptionKey, key: a.db.key }
+  const first = await makePeer(t, testnet, { ...opts, identity })
+  const second = await makePeer(t, testnet, { ...opts, identity: linked })
+  await admit(a.db, first.db, role)
+  await admit(a.db, second.db, role)
+  await waitFor(async () => first.db.writable && (await first.db.get('devices')).data.length === 3)
+  return [first, second]
+}
+
+test('rotate: a removal carries its rotation, the next write is under a key the removed member is not handed, and the key check adds none', async (t) => {
+  const {
+    a,
+    members: [b, removed]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 3)
+  const length = a.db.length
+  let after = false
+  let checked = false
+  const check = a.db.rotation._audit.bind(a.db.rotation)
+  a.db.rotation._audit = async () => {
+    const counts = after
+    await check()
+    if (counts) checked = true
+  }
+
+  await a.db.del('members', removed.identity.id)
+  t.is(a.db.keyring.seq, 1, 'the key is in place as the removal resolves')
+  t.is(a.db.length, length + 2, 'the removal, then the rotation in a block of its own')
+  t.alike(await sealedTo(a.db), seats(a, b), 'sealed to the devices that stay')
+
+  after = true
+  await a.db.put('messages', { text: 'after' })
+  t.is(await stampAt(a.db, a.db.length - 1), a.db.keyring.current, 'the next write is under it')
+  await waitFor(async () => (await texts(b.db)).includes('after'))
+  t.absent(removed.db.keyring.entropy(a.db.keyring.current), 'a key the removed device never holds')
+  t.absent((await texts(removed.db)).includes('after'), 'so it does not read the write')
+
+  await waitFor(() => checked)
+  t.is(
+    (await a.db.view.find('@cero/epochs', {}).toArray()).length,
+    1,
+    'the key check found nothing to do'
+  )
+})
+
+test('rotate: a member leaving carries no rotation', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['admin'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
+  const length = b.db.length
+
+  await b.db.del('members', b.identity.id)
+  t.is(b.db.length, length + 1, 'her removal and nothing after it')
+  t.alike(
+    b.errors.map((e) => e.message),
+    [],
+    'no rotation was tried'
+  )
+  await waitFor(() => a.db.keyring.seq === 1, { timeout: 30000 })
+  t.alike(await sealedTo(a.db), seats(a), 'the owner rotated to the devices that stayed')
+})
+
+test('rotate: a member who may not remove takes her own device out with no rotation', async (t) => {
+  const room = await makeRoom(t, [])
+  const [first, second] = await twoDevices(t, room, 'member')
+  const length = first.db.length
+
+  await first.db.del('devices', hid.encode(second.db.writerKey))
+  t.is(first.db.length, length + 1, 'the removal and nothing after it')
+  t.alike(
+    first.errors.map((e) => e.message),
+    [],
+    'no rotation was tried'
+  )
+  await waitFor(() => room.a.db.keyring.seq === 1, { timeout: 30000 })
+  t.alike(await sealedTo(room.a.db), seats(room.a, first), 'a device that may remove rotated')
+})
+
+test('rotate: an admin taking her other device out carries the rotation', async (t) => {
+  const room = await makeRoom(t, [])
+  const [first, second] = await twoDevices(t, room, 'admin')
+  const length = first.db.length
+
+  await first.db.del('devices', hid.encode(second.db.writerKey))
+  t.is(first.db.keyring.seq, 1, 'the key is in place as the removal resolves')
+  t.is(first.db.length, length + 2)
+  t.alike(await sealedTo(first.db), seats(room.a, first), 'sealed to the devices that stay')
+})
+
+test('rotate: a device taken out by its writer key carries the rotation too', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+
+  await a.db.removeWriter(b.db.keyPair.publicKey)
+  t.is(a.db.keyring.seq, 1)
+  t.alike(await sealedTo(a.db), seats(a))
+})
+
+test('rotate: a removal of nobody, or one a rule refuses, appends no rotation', async (t) => {
+  const {
+    members: [x, y]
+  } = await makeRoom(t, ['admin', 'admin'])
+  await waitFor(async () => x.db.writable && (await x.db.get('members')).data.length === 3)
+  const length = x.db.length
+
+  await x.db.del('members', b4a.toString(Identity.randomBytes(32), 'hex'))
+  const err = await x.db.del('members', y.identity.id).catch((e) => e)
+  t.is(err.code, 'REFUSED', 'an admin does not outrank an admin')
+  t.is(x.db.length, length, 'nothing was appended')
+  t.absent(await x.db.view.findOne('@cero/epochs', {}), 'no rotation among it')
+
+  await x.db.put('messages', { text: 'still writing' })
+  t.is(x.db.length, length + 1, 'and writes go on')
+})
+
+test('rotate: a removal racing rotate() waits its turn, sealed to the devices that stay', async (t) => {
+  const {
+    a,
+    members: [b, removed]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 3)
+
+  const [first] = await Promise.all([a.db.rotate(), a.db.del('members', removed.identity.id)])
+  t.is(first.epoch, 1)
+  t.is(a.db.keyring.seq, 2, 'the carried rotation is the second')
+  t.is((await a.db.view.find('@cero/epochs', {}).toArray()).length, 2)
+  t.alike(await sealedTo(a.db), seats(a, b))
+})
+
+test('rotate: a write made between a removal and its key goes in after the key, under it', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const rotate = a.db.rotation._rotate.bind(a.db.rotation)
+  let racing = null
+  a.db.rotation._rotate = (...args) => {
+    racing ??= a.db.put('messages', { text: 'racing' })
+    return rotate(...args)
+  }
+
+  await a.db.del('members', b.identity.id)
+  await racing
+  t.is(a.db.keyring.seq, 1)
+  t.is(await stampAt(a.db, a.db.length - 1), a.db.keyring.current)
+})
+
+test('rotate: a write on its way when a removal starts goes in before it, not between it and its key', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const own = []
+  let release = null
+  const held = new Promise((resolve) => (release = resolve))
+  a.db.on('apply', (e) => {
+    if (!b4a.equals(e.writerKey, a.db.writerKey)) return
+    own.push(`${e.op}-${e.name}`)
+    // a removal that overtook the write lets it in here, before the key
+    if (e.op === 'del') release()
+  })
+  const dry = a.db._dryRun.bind(a.db)
+  a.db._dryRun = async (ops) => {
+    if (ops[0][0] === 'add-messages') await held
+    return dry(ops)
+  }
+
+  const put = a.db.put('messages', { text: 'on its way' })
+  const del = a.db.del('members', b.identity.id)
+  await waitFor(() => a.db.rotation.carrying !== null)
+  release()
+  await Promise.all([put, del])
+  t.alike(own.slice(-3), ['add-messages', 'del-member', 'rotate-key'])
+})
+
+test('rotate: a failure between a removal and its key is reported, and the key check rotates', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  let checks = 0
+  const check = a.db.rotation._audit.bind(a.db.rotation)
+  a.db.rotation._audit = () => {
+    checks++
+    return check()
+  }
+  const announce = a.db.rotation._announce.bind(a.db.rotation)
+  let failed = false
+  a.db.rotation._announce = async (...args) => {
+    if (failed) return announce(...args)
+    failed = true
+    // the key check the removal woke finds a rotation on its way and does nothing
+    const seen = checks
+    await waitFor(() => checks > seen)
+    throw new Error('disk full')
+  }
+
+  await a.db.del('members', b.identity.id)
+  t.absent((await a.db.get('members', b.identity.id)).data, 'the removal landed')
+  t.is(a.db.keyring.seq, 0, 'with no key')
+  t.alike(
+    a.errors.map((e) => e.message),
+    ['disk full']
+  )
+  await waitFor(() => a.db.keyring.seq === 1)
+  t.alike(await sealedTo(a.db), seats(a), 'the key check rotated to the devices that stay')
+})
+
+test('rotate: a device with no seat is refused a removal as it is any write', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  const stranger = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
+  await waitFor(async () => (await stranger.db.get('members', a.identity.id)).data)
+
+  const err = await stranger.db.del('members', a.identity.id).catch((e) => e)
+  t.is(err.code, 'NOT_WRITABLE')
+})
+
+test('rotate: a write waiting for a removal and its key is CLOSED when its database closes meanwhile', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const rotate = a.db.rotation._rotate.bind(a.db.rotation)
+  let waiting = null
+  a.db.rotation._rotate = async (...args) => {
+    waiting = a.db.put('messages', { text: 'waiting' }).catch((e) => e)
+    await a.db.close()
+    return rotate(...args)
+  }
+
+  await a.db.del('members', b.identity.id)
+  t.is((await waiting).code, 'CLOSED')
+  t.alike(a.errors, [], 'and the rotation it closed under reports nothing')
+})
+
+test('rotate: a removal whose database closes while it reads the devices is CLOSED', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const staying = a.db.rotation._staying.bind(a.db.rotation)
+  a.db.rotation._staying = async (ops) => {
+    const devices = await staying(ops)
+    await a.db.close()
+    return devices
+  }
+
+  const err = await a.db.del('members', b.identity.id).catch((e) => e)
+  t.is(err.code, 'CLOSED')
+})
+
+// a key check whose reads straddle a member's removal: the epochs before it, the rest after
+function straddling(db, id) {
+  const r = db.rotation
+  const epochs = r._epochs.bind(r)
+  let read = null
+  const reading = new Promise((resolve) => (read = resolve))
+  r._epochs = async () => {
+    r._epochs = epochs
+    const rows = await epochs()
+    read()
+    await waitFor(async () => !(await db.get('members', id)).data)
+    return rows
+  }
+  return { check: r._audit(), reading }
+}
+
+test('rotate: a key check that starts while a removal is on its way adds no rotation', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const staying = a.db.rotation._staying.bind(a.db.rotation)
+  let check = null
+  a.db.rotation._staying = async (ops) => {
+    const devices = await staying(ops)
+    const started = straddling(a.db, b.identity.id)
+    check = started.check
+    await started.reading
+    return devices
+  }
+
+  await a.db.del('members', b.identity.id)
+  t.is(a.db.keyring.seq, 1, 'carried')
+  await check
+  t.is((await a.db.view.find('@cero/epochs', {}).toArray()).length, 1, 'one rotation, one removal')
+})
+
+test('rotate: a key check that began before a removal and decides after it adds no rotation', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+
+  const { check, reading } = straddling(a.db, b.identity.id)
+  await reading
+  await a.db.del('members', b.identity.id)
+  t.is(a.db.keyring.seq, 1, 'carried')
+  await check
+  t.is((await a.db.view.find('@cero/epochs', {}).toArray()).length, 1, 'one rotation, one removal')
+})
+
+test('rotate: a removal a reorder refuses after its key was sealed leaves the member in, and the next rotation is sealed to her again', async (t) => {
+  const {
+    a,
+    members: [b, kept],
+    testnet,
+    topic,
+    encryptionKey
+  } = await makeRoom(t, ['admin', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  await waitFor(async () => (await kept.db.get('devices')).data.length === 3)
+
+  const { keyPair } = b.db
+  await b.db.close()
+  await b.network.close().catch(() => {})
+
+  // promoted while the admin is away: an admin does not outrank an admin
+  await a.db.set('members', { id: kept.identity.id, role: 'admin' })
+  const opts = {
+    store: b.store,
+    identity: b.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey,
+    onerror() {}
+  }
+  const off = new Database(opts)
+  await off.ready()
+  await off.del('members', kept.identity.id)
+  t.is(off.keyring.seq, 1, 'the removal carried its key')
+  t.alike(await sealedTo(off), seats(a, { db: off }), 'sealed to the devices it saw staying')
+  await off.close()
+
+  const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
+  await net.ready()
+  const disc = net.join(topic)
+  await disc.flush()
+  const back = new Database({ ...opts, network: net })
+  await back.ready()
+  t.teardown(
+    async () => {
+      await back.close().catch(() => {})
+      await disc.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 4 }
+  )
+
+  const everyone = seats(a, { db: back }, kept).join()
+  const sealedIn = async ({ db }) =>
+    (await sealedTo(db)).join() === everyone && !!db.keyring.entropy(db.keyring.current)
+  await waitFor(async () => (await sealedIn(a)) && (await sealedIn(kept)), { timeout: 30000 })
+  t.pass('the newest key is sealed to all three, and she holds it')
+  t.is(
+    (await a.db.get('members', kept.identity.id)).data?.role,
+    'admin',
+    'the promotion sorts first: the removal is refused'
+  )
 })
