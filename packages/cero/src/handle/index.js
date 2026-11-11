@@ -714,13 +714,13 @@ export class Handle extends ReadyResource {
   /** @private */
   async _put(row) {
     await this.local.store.put('topics', row)
-    this.root.emit('topics')
+    this.emit('topics')
   }
 
   /** @private */
   async _drop(id) {
     await this.local.store.del('topics', id)
-    this.root.emit('topics')
+    this.emit('topics')
   }
 
   // who may write to an open handle, on the row the root's pass wrote for it; a handle on its way out is its
@@ -737,7 +737,9 @@ export class Handle extends ReadyResource {
       if (!have) return
     }
     const writers = await writersOf(child.store).catch(unread)
-    if (!sameBytes(have.writers, writers)) await this._put({ ...have, writers })
+    if (sameBytes(have.writers, writers)) return
+    // me.topics shows no writers: this one wakes no watch
+    await this.local.store.put('topics', { ...have, writers })
   }
 
   // one handle's topics row, written when it differs from `have`, the row there is, read when not given. Who may
