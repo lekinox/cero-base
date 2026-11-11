@@ -1388,12 +1388,16 @@ export class Database extends ReadyResource {
   }
 
   // a writer has a refusal only where it has no request: its join turned away, or what it was
-  // promised withdrawn
+  // promised withdrawn. One under another invite than the join its core carries answers a join
+  // it made before, read while its view has yet to reach this one
   /** @private */
   async _refused() {
     const id = hid.encode(this.writerKey)
     const refusal = await this.view.get(`@${this.ns}/${REFUSALS}`, { id })
-    if (refusal) throw CeroError.DENIED(refusal.reason || null)
+    if (!refusal) return
+    const joined = refusal.invite && (await this.bee.local.getUserData('cero/join'))
+    if (joined && b4a.toHex(joined) !== refusal.invite) return
+    throw CeroError.DENIED(refusal.reason || null)
   }
 
   // the add-writer row for `writer`, appended by this device and proven by its device key

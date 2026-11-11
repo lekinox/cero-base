@@ -1996,6 +1996,47 @@ test('withdrawn: a claim appended as its promise is withdrawn ends DENIED too', 
   t.absent(await member(host.db, joiner.identity), 'and she is no member')
 })
 
+test('withdrawn: a writer turned away under one invite, joining again under another, does not end its claim on the old refusal', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner: one } = await makeHostJoiner(t, testnet, { spec: built })
+  const two = await makeJoiner(t, testnet)
+  const once = await host.pairing.invite()
+  await one.join(once)
+  // no device of the host answers, so the refusal stays in the log
+  await host.pairing.close()
+  const writer = crypto.keyPair()
+  const stop = new AbortController()
+  const first = two.join(once, { writer, timeout: 0, signal: stop.signal }).catch((e) => e)
+  await waitFor(async () => (await refusals(host.db)).length === 1)
+  stop.abort()
+  await first
+  // what the host writes next carries her join to every device
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  await pairing.invite()
+
+  const { key, encryptionKey } = host.db
+  const keys = { key, encryptionKey, epochs: host.db.keyring.all(), writer }
+  const db = await opened(t, two, keys)
+  for (const net of [host.net, two.net]) await net.join(host.db.discoveryKey).flush()
+  await waitFor(async () => (await refusals(db)).length === 1)
+  const err = await db.claim({ timeout: 8000 }).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'the refusal of the join its core carries ends its claim')
+  t.is(err?.reason, 'spent')
+  await db.close()
+
+  // an invite her device has not read yet: her join with it lands on no view, and hers still
+  // holds the old refusal
+  await host.net.suspend()
+  const next = await pairing.invite()
+  t.is(await code(two.join(next, { writer, timeout: 2000 })), 'TIMEOUT')
+  const again = await opened(t, two, keys)
+  t.is((await refusals(again)).length, 1)
+  const waited = await again.claim({ timeout: 3000 }).catch((e) => e)
+  t.is(waited?.code, 'TIMEOUT', 'which is no answer to the join it carries now')
+})
+
 // a member of the host's database at `role`, on its own device, answering joins
 async function seated(t, testnet, host, role) {
   const { mailbox, net, identity, join } = await makeJoiner(t, testnet)
