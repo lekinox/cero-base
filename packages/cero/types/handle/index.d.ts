@@ -220,7 +220,7 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _ac;
     _queued: {
-        all: boolean;
+        root: boolean;
         children: Set<any>;
     };
     _indexing: any;
@@ -346,7 +346,11 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _seal;
     /** @private */
-    private _reindex;
+    private _follow;
+    /** @private */
+    private _topic;
+    /** @private */
+    private _row;
     /** @private */
     private _receive;
     /** @private */
