@@ -552,6 +552,27 @@ test('get: reverse/limit reads push down to the order index (bounded read)', asy
   )
 })
 
+test('get: an unlimited read returns the order index rows, in its order', async (t) => {
+  const { db } = await bootstrapped(t)
+  for (const id of ['c', 'a', 'e', 'b', 'd']) await db.put('messages', { id, text: id })
+  await db.put('messages', { id: 'a', text: 'again' })
+  await db.set('messages', { id: 'e', text: 'merged' })
+  const col = db.col(db.ref('messages'))
+  for (const reverse of [false, true]) {
+    const indexed = await db.view.find(`${col}-index`, { reverse }).toArray()
+    const { data, total, size } = await db.get('messages', reverse ? { reverse } : undefined)
+    t.alike(data, indexed, `same rows, same order${reverse ? ', reversed' : ''}`)
+    t.is(total, 5)
+    t.is(size, 5)
+  }
+  const { data } = await db.get('messages')
+  t.alike(
+    data.map((m) => m.id),
+    ['c', 'a', 'e', 'b', 'd'],
+    'an overwrite keeps its place'
+  )
+})
+
 // ─── field validation ───────────────────────────────────────────────────────
 
 test('put: rejects an undeclared field instead of silently dropping it', async (t) => {

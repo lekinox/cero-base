@@ -1157,7 +1157,8 @@ export class Database extends ReadyResource {
       pushWindow(range, rest)
       return { path: col, range, rest, sorted: true }
     }
-    if (ref?.orderIndex) {
+    // a full read scans and sorts in about half the time the order index takes to walk
+    if (ref?.orderIndex && query.limit !== undefined) {
       const range = {}
       pushWindow(range, rest)
       return { path: `${col}-index`, range, rest, sorted: true }
