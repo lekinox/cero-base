@@ -173,7 +173,9 @@ export const main = {
     reason: required(string),
     expires: int,
     // kept from its invite, so a join with it is still opened and answered
-    secret: bytes
+    secret: bytes,
+    // its invite waited for an accept: a promise made under it is one a member let in
+    confirm: bool
   },
   deny: {
     id: required(string),

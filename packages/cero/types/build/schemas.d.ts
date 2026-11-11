@@ -134,6 +134,7 @@ export declare const main: {
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
         secret: import("@cero-base/core").Prim;
+        confirm: import("@cero-base/core").Prim;
     };
     deny: {
         id: import("@cero-base/core").Prim;
