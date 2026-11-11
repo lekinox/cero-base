@@ -755,14 +755,16 @@ export function makeDispatcher({
     if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
     await ctx.view.delete(spent, { id: op.id })
   })
-  // its joins still waiting for a member are turned away with it; admitted ones are still owed
-  // their keys. Its id stays, and its secret, so a later join with it is opened and hears why
+  // its joins still waiting for a member are turned away with it, and the promises made under it
+  // withdrawn, unless it was used up by the join it let in; admitted ones are still owed their
+  // keys. Its id stays, and its secret, so a later join with it is opened and hears why
   async function spend(ctx, invite, reason) {
     const expires = invite.expires || 0
     await drop(ctx, 'invites', invite.id)
     await ctx.view.insert(spent, { id: invite.id, reason, expires, secret: invite.secret })
+    const kept = (request) => request.admitted && (!request.promised || reason === 'spent')
     for (const request of await ctx.view.find(requests, {}).toArray()) {
-      if (request.invite !== invite.id || request.admitted) continue
+      if (request.invite !== invite.id || kept(request)) continue
       await drop(ctx, 'requests', request.id)
       await refuse(ctx, request, reason)
     }
@@ -939,13 +941,15 @@ export function makeDispatcher({
     }
     await admit(ctx, { invite, identity, key, writer, reply, role, ts })
   })
-  // answered through the log like every refusal; a deny that lost the race to an accept is nothing
+  // a waiting join is turned away by one who may invite; a promise is withdrawn by one who may
+  // remove, since its joiner may hold the keys. Answered through the log like every refusal
   add('deny', async (op, ctx) => {
-    const waiting = await ctx.view.get(requests, { id: op.id })
-    if (!waiting || waiting.admitted) return
-    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    const row = await ctx.view.get(requests, { id: op.id })
+    if (!row || (row.admitted && !row.promised)) return
+    const [perm, rule] = row.promised ? [REMOVE, 'remove'] : [INVITE, 'invite']
+    if (!can(await getSignerRole(ctx.view, ctx.key), perm)) throw CeroError.REFUSED(rule)
     await drop(ctx, 'requests', op.id)
-    await refuse(ctx, waiting, op.reason || '')
+    await refuse(ctx, row, op.reason || '')
   })
   // only a join writes a request
   const joinsOnly = async () => {

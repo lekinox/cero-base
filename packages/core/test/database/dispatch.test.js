@@ -1330,7 +1330,6 @@ test('promise: accepting a waiting join on an invite with its own address promis
   t.absent((await db.get('devices', id)).data, 'no seat')
   t.absent((await db.get('invites', b4a.toHex(invite.id))).data, 'spent')
   t.is(await apply(db, db.writerKey, 'accept', { id, role: 'member' }), null, 'again: nothing')
-  t.is(await apply(db, db.writerKey, 'deny', { id }), null, 'nor a deny')
   t.is((await promise(db, writer))?.role, 'reader')
 
   t.is(await claimed(db, identity, writer, host), null)
@@ -1378,16 +1377,17 @@ test("promise: an accept with a proof promises with the chain, which the linked 
   t.absent((await db.get('devices', tablet.writer.id)).data?.proof, 'and its seat carries none')
 })
 
-test('promise: one never kept leaves no member, a spent invite leaves it, and a removal takes it', async (t) => {
+test('promise: a revoked invite withdraws the promises made under it, and a removal takes her own', async (t) => {
   const { db } = await withRole(t, 'owner')
   const invite = await addressed(db, { reuse: true })
   const identity = await Identity.create()
   const writer = Identity.randomKeyPair().publicKey
   await apply(db, writer, 'join', named(db, invite, { identity, writer }))
   t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(invite.id) }), null)
-  t.ok((await promise(db, writer))?.promised, 'revoking its invite leaves the promise')
-  t.absent(await refusal(db, hid.encode(writer)), 'and turns nobody away')
-  t.absent((await db.get('members', identity.id)).data, 'no member without a claim')
+  t.absent(await promise(db, writer), 'revoking its invite withdraws the promise')
+  t.is((await refusal(db, hid.encode(writer)))?.reason, 'revoked', 'and tells her why')
+  t.is((await claimed(db, identity, writer))?.code, 'REFUSED', 'a claim made after finds nothing')
+  t.absent((await db.get('members', identity.id)).data, 'no member')
 
   const stranger = await Identity.create()
   const stray = Identity.randomKeyPair().publicKey
@@ -1431,6 +1431,33 @@ test("promise: a device removed takes its writer's request with it, and what its
 
   t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(other)), null)
   t.absent(await promise(db, other), 'a writer unseated before it sat loses what it was owed')
+})
+
+test('deny: a promise is withdrawn by one who may remove, with its reason, and by nobody below', async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const invite = await addressed(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  const id = hid.encode(writer)
+  const reply = crypto.randomBytes(32)
+  await apply(db, writer, 'join', named(db, invite, { identity, writer, reply }))
+  t.ok((await promise(db, writer))?.promised, 'let in, its invite spent by its own join')
+
+  t.is(
+    (await as('deny', { id, reason: 'no' }))?.rule,
+    'remove',
+    'one who may only invite is refused'
+  )
+  t.ok(await promise(db, writer), 'and the promise stands')
+  t.is(await apply(db, db.writerKey, 'deny', { id, reason: 'not you' }), null)
+  t.absent(await promise(db, writer), 'withdrawn by one who may remove')
+  const refused = await refusal(db, id)
+  t.is(refused?.reason, 'not you', 'with its reason')
+  t.alike(refused.reply, reply, 'at the address its join named')
+  t.is(refused.invite, b4a.toHex(invite.id), 'under its invite')
+  t.is((await claimed(db, identity, writer))?.code, 'REFUSED', 'a claim made after finds nothing')
+  t.is(await apply(db, db.writerKey, 'accept', { id }), null, 'and nothing is left to accept')
+  t.absent((await db.get('members', identity.id)).data)
 })
 
 test('promise: a device removed takes the requests that stand on its key, linked through it or waiting on it', async (t) => {

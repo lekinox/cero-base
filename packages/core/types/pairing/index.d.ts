@@ -196,6 +196,8 @@ export declare class Pairing extends ReadyResource {
     accept(id: string, { role, proof }?: AcceptOpts): Promise<void>;
     /**
      * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+     * On a join already let in by a promise, it withdraws the promise: that needs the remove
+     * permission.
      *
      * @param {string} id
      * @param {string} [reason]

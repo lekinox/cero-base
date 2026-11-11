@@ -1611,6 +1611,7 @@ test('proven: the tag of a fixed answer, the same from either end, over the byte
 // ─── let in through an invite with its own address: a promise ──────────────
 
 const promises = async (db) => (await db.get('requests')).data.filter((row) => row.promised)
+const memberOf = member
 
 // a device with the keys a join got: the database, opened with the join's writer or its own
 async function opened(t, { net, identity }, { key, encryptionKey, epochs, writer }) {
@@ -1817,7 +1818,6 @@ test('promised: accepting a waiting join promises at the accepted role, and its 
   t.is((await promises(host.db))[0]?.role, 'reader', 'promised at the accepted role')
   t.absent(await member(host.db, joiner.identity), 'no member yet')
   t.is(await code(host.pairing.accept(request.id)), 'UNKNOWN', 'accepting again writes nothing')
-  t.is(await code(host.pairing.deny(request.id)), 'UNKNOWN', 'nor a deny')
 
   const db = await opened(t, joiner, reply)
   await db.claim()
@@ -1897,18 +1897,62 @@ test('promised: a device linked through a device that is then removed is offered
   t.alike(await pairing._done([{ ...row, proof: host.identity.link(phone.publicKey) }]), [])
 })
 
-test('promised: one never kept leaves no member, and past its invite nobody offers its keys or settles it', async (t) => {
+test('withdrawn: a promise denied by a member who may remove reaches the joiner with the reason', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
-  await joiner.join(await host.pairing.invite({ ttl: 2000 }))
+  const invite = await host.pairing.invite({ reuse: true })
+  const writer = crypto.keyPair()
+  await joiner.join(invite, { writer })
   const [owed] = await promises(host.db)
-  t.ok(host.pairing._replies.has(owed.id), 'offered its keys while the invite lasts')
-  await waitFor(() => !host.pairing._replies.has(owed.id), { timeout: 8000 })
-  await waitFor(async () => (await spent(host.db)).length === 0)
-  t.is((await promises(host.db)).length, 1, 'the promise stands: nothing settles it')
-  t.absent(await member(host.db, joiner.identity), 'and there is no member to remove')
-  await waitFor(() => !host.pairing.serving)
-  t.pass('a device serves nobody for it')
+
+  await host.pairing.deny(owed.id, 'not you')
+  t.is((await promises(host.db)).length, 0, 'the promise is withdrawn')
+  const answers = heard(joiner.mailbox)
+  const err = await joiner.join(invite, { writer, timeout: 8000 }).catch((e) => e)
+  t.is(err.code, 'DENIED', 'her join, taken up again, hears it')
+  t.is(err.reason, 'not you')
+  const mine = Mailbox.keyPair(writer.secretKey)
+  const answer = proven(answers[0], mine.secretKey, Invite.parse(invite).address)
+  t.is(c.decode(Response, answer).reason, 'not you', "after her invite's tag")
+  t.absent(await member(host.db, joiner.identity))
+})
+
+// a member of the host's database at `role`, on its own device, answering joins
+async function seated(t, testnet, host, role) {
+  const { mailbox, net, identity, join } = await makeJoiner(t, testnet)
+  const db = await opened(t, { net, identity }, await join(await host.pairing.invite({ role })))
+  await db.claim()
+  const pairing = new Pairing({ mailbox, db })
+  await pairing.ready()
+  t.teardown(() => pairing.close().catch(() => {}), { order: 0 })
+  return { db, pairing }
+}
+
+test("withdrawn: past its invite, a promise nobody kept is denied 'expired' by a device that may remove, and left alone by one that may not", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const member = await seated(t, testnet, host, 'member')
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  const invite = await host.pairing.invite({ ttl: 2000 })
+  // only the member's device answers: it may invite, not remove
+  await host.pairing.close()
+  const denies = []
+  const call = member.db.call.bind(member.db)
+  member.db.call = async (verb, row) => (verb === 'deny' ? denies.push(row) : call(verb, row))
+  await joiner.join(invite)
+  const [owed] = await promises(member.db)
+  t.ok(member.pairing._replies.has(owed.id), 'offered its keys while the invite lasts')
+  await waitFor(() => Date.now() > owed.expires && !member.pairing._replies.has(owed.id))
+  await waitFor(() => !member.pairing.serving)
+  t.is((await promises(member.db)).length, 1, 'past it, one who may not remove only stops offering')
+  t.is(denies.length, 0, 'and denies nothing')
+
+  const pairing = new Pairing({ mailbox: host.mailbox, db: host.db })
+  t.teardown(() => pairing.close())
+  await pairing.ready()
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.pass('one who may remove withdraws it')
+  t.absent(await memberOf(host.db, joiner.identity), 'and nobody became a member')
 })
 
 // ─── errors ────────────────────────────────────────────────────────────────

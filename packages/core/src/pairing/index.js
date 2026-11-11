@@ -205,13 +205,16 @@ export class Pairing extends ReadyResource {
 
   /**
    * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+   * On a join already let in by a promise, it withdraws the promise: that needs the remove
+   * permission.
    *
    * @param {string} id
    * @param {string} [reason]
    * @returns {Promise<void>}
    */
   async deny(id, reason = '') {
-    await this._waiting(id)
+    const { data: row } = await this.db.get('requests', id)
+    if (!row?.promised) await this._waiting(id)
     await this.db.call('deny', { id, reason })
   }
 
@@ -234,19 +237,26 @@ export class Pairing extends ReadyResource {
     const spent = await this._list(SPENT)
     if (this.closing || this.closed) return
     const role = me?.role
-    // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting,
-    // and a spent one forgotten, since no joiner uses it past then
+    // behind, this device's view of the room is stale: it answers no join until it updates
+    const inviter = can(role, INVITE) && this.db.behind === null
+    // a promise is settled here once it is kept or void, never by a read of its keys
+    const done = inviter ? await this._done(requests) : []
+    for (const { id } of done) await this.db.call('del-request', { id }).catch(safetyCatch)
+    // apply has no clock: past its invite, a promise nobody kept is withdrawn here
+    if (inviter && can(role, REMOVE)) {
+      for (const row of requests) {
+        if (!row.promised || !expired(row)) continue
+        await this.db.call('deny', { id: row.id, reason: 'expired' }).catch(safetyCatch)
+      }
+    }
+    // past its expiry an invite is dropped, so the log stops admitting, and a spent one
+    // forgotten, since no joiner uses it past then
     if (can(role, REMOVE)) {
       for (const row of [...invites, ...spent].filter(expired)) {
         await this.db.call('del-invite', { id: row.id }).catch(safetyCatch)
       }
     }
     this._arm([...invites, ...requests, ...spent])
-    // behind, this device's view of the room is stale: it answers no join until it updates
-    const inviter = can(role, INVITE) && this.db.behind === null
-    // a promise is settled here once it is kept or void, never by a read of its keys
-    const done = inviter ? await this._done(requests) : []
-    for (const { id } of done) await this.db.call('del-request', { id }).catch(safetyCatch)
     // an admission is owed its keys until they are read; a promise, until done or past its invite
     const over = (row) => row.promised && (done.includes(row) || expired(row))
     const owed = inviter ? requests.filter((row) => row.admitted && !over(row)) : []
