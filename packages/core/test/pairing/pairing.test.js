@@ -1777,6 +1777,41 @@ test("promised: a member's other device let in by an invite gets its keys, and i
   t.pass('settled once its own device is seated')
 })
 
+test("promised: a reader's other device let in by an invite claims its device row and no seat, is settled, and reads", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const invite = await host.pairing.invite({ role: 'reader', reuse: true })
+  const first = await opened(t, joiner, await joiner.join(invite))
+  await first.claim()
+  await waitFor(async () => (await promises(host.db)).length === 0)
+
+  const other = await makeMailbox(t, testnet)
+  const device = Identity.randomKeyPair()
+  const proof = joiner.identity.link(device.publicKey)
+  const identity = Identity.from({ ...joiner.identity, device, proof })
+  const reply = await Pairing.join(other.mailbox, invite, { identity, spec: built, timeout: 8000 })
+  t.is((await promises(host.db)).length, 1, 'promised to a reader already')
+  // the promise stands while its device claims twice: the host settles it after
+  const done = host.pairing._done
+  host.pairing._done = async () => []
+  const db = await opened(t, { net: other.net, identity }, reply)
+  await db.claim({ timeout: 8000 })
+  t.absent(db.writable, 'no seat')
+  const { data: seat } = await db.get('devices', hid.encode(db.writerKey))
+  t.is(seat?.memberId, joiner.identity.id, 'its device row')
+  t.alike(seat?.key, device.publicKey, 'with its device key')
+  const { length } = db
+  await db.claim({ timeout: 8000 })
+  t.is(db.length, length, 'kept, its next claim appends nothing')
+
+  host.pairing._done = done
+  const { data: row } = await host.db.put('messages', { text: 'for her' })
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  t.is((await memberOf(host.db, joiner.identity))?.role, 'reader', 'settled, a reader still')
+  await waitFor(async () => (await db.get('messages', row.id)).data?.text === 'for her')
+  t.pass('and reads what the room writes')
+})
+
 test("promised: a member's device that joined claims only once its view holds its own join", async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
@@ -1799,6 +1834,10 @@ test("promised: a member's device that joined claims only once its view holds it
     if (!behind || (name !== 'requests' && name !== 'devices')) return get(name, query)
     return { data: typeof query === 'string' ? null : [] }
   }
+  const { system } = db.bee
+  const read = system.get.bind(system)
+  system.get = async (key, opts) =>
+    behind && b4a.equals(key, db.writerKey) ? null : read(key, opts)
   const claiming = db.claim()
   await waitFor(() => looked > 0)
   const early = await waitFor(() => db.length > 1, { timeout: 1500 }).catch(() => false)

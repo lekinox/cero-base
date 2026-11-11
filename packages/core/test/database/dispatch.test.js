@@ -1338,6 +1338,48 @@ test("promise: a reader's completes with a member row and no seat", async (t) =>
   t.alike(seated, [], 'no writer seat')
 })
 
+test("promise: one made to a member is kept by her other device at the role she holds: a reader's gets its device row and no seat, a writer's its seat", async (t) => {
+  const b = await second('member')
+  const { db } = await withRole(t, 'owner', { members: [b.row] })
+  const invite = await addressed(db, { reuse: true })
+  const identity = await Identity.create()
+  const first = Identity.randomKeyPair().publicKey
+  const { seated, host } = seating()
+  const once = await addressed(db, { role: 'reader' })
+  await apply(db, first, 'join', named(db, once, { identity, writer: first }), host)
+  t.is(await claimed(db, identity, first, host), null)
+  t.is(await apply(db, db.writerKey, 'del-request', { id: hid.encode(first) }), null)
+  const { data: reader } = await db.get('members', identity.id)
+  t.is(reader?.role, 'reader')
+
+  const phone = linked(identity)
+  const writer = phone.writer.publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity: phone.identity, writer }), host)
+  t.is((await promise(db, writer))?.role, 'member', 'a reader already, her device is promised')
+  t.is(await claimed(db, phone.identity, writer, host), null, 'and keeps it')
+  const { data: device } = await db.get('devices', hid.encode(writer))
+  t.is(device?.memberId, identity.id, 'a device row')
+  t.alike(device?.key, phone.identity.device.publicKey, 'with the device key its chain ends at')
+  t.alike(seated, [], 'no seat at a role that cannot write')
+  t.alike((await db.get('members', identity.id)).data, reader, 'her row as it was, its role too')
+
+  t.is(await seat(db, b), null)
+  const tablet = linked(b.identity)
+  const other = tablet.writer.publicKey
+  await apply(db, other, 'join', named(db, invite, { identity: tablet.identity, writer: other }))
+  t.ok((await promise(db, other))?.promised)
+  t.is(await claimed(db, tablet.identity, other, host), null)
+  t.is((await db.get('devices', hid.encode(other))).data?.memberId, b.id)
+  t.alike(seated, [hid.encode(other)], "a writer's other device is seated")
+
+  const stranger = await Identity.create()
+  const stray = Identity.randomKeyPair().publicKey
+  await apply(db, stray, 'join', named(db, invite, { identity: stranger, writer: stray }), host)
+  t.is(await claimed(db, stranger, stray, host), null)
+  t.is((await db.get('members', stranger.id)).data?.role, 'member', 'a stranger, at its role')
+  t.alike(seated, [hid.encode(other), hid.encode(stray)])
+})
+
 test('promise: another device of the identity completes it at the earliest role, and the one that joined then seats itself', async (t) => {
   const { db } = await withRole(t, 'owner')
   const invite = await addressed(db, { role: 'reader', reuse: true })

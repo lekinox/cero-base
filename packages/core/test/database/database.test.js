@@ -1531,6 +1531,29 @@ test("claim: a reader's second device takes no seat", async (t) => {
   t.is(second.db.length, 0, 'and appends nothing')
 })
 
+test('claim: a device whose first add-writer was refused claims again and is seated', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const shared = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const first = await makePeer(t, testnet, shared)
+  const b = await makePeer(t, testnet, { ...shared, identity: first.identity })
+
+  // its claim lands before its identity is a member: refused, it leaves no row
+  const stamp = await b.db._stamp(b.db.view)
+  const seat = b.db._admission(b.db.writerKey)
+  const op = b.db.dispatcher.encode(`@${b.db.ns}/add-writer`, seat, stamp)
+  await b.db.bee.append(wrap(stamp, op), { optimistic: true })
+  await waitFor(async () => (await a.db.bee.system.get(b.db.writerKey))?.length === 1)
+  t.absent((await a.db.get('devices', hid.encode(b.db.writerKey))).data, 'refused')
+
+  await admit(a.db, first.db)
+  await b.db.claim({ timeout: 10000 })
+  t.ok(b.db.writable, 'seated by the claim it makes again')
+  t.is(b.db.length, 2, 'a second add-writer, where the first left nothing')
+})
+
 // ─── key-type invariants ──────────────────────────────────────────────────
 
 test('the genesis device row is keyed by the writer, bound to the identity', async (t) => {

@@ -774,7 +774,7 @@ export class Database extends ReadyResource {
    * Seat this device's writer where its identity is a member, or was promised to be one: wait
    * for the member row or the promise, append the add-writer the identity signs from this
    * device's own core, and resolve once it writes. A member whose role cannot write takes no
-   * seat; a promise at such a role is kept all the same, and resolves at the member row. Rejects
+   * seat; a promise made to her is kept all the same, and resolves at this device's row. Rejects
    * `DENIED`, with the reason, once the room shows this writer turned away: its promise withdrawn.
    *
    * @param {{ timeout?: number }} [opts]
@@ -1402,27 +1402,36 @@ export class Database extends ReadyResource {
     })
   }
 
-  // the member row, or the first promise made to the identity, as apply picks it
+  // the member's role, or that of the first promise made to the identity, as apply picks it, and
+  // whether this device has a promise to keep
   /** @private */
   async _standing() {
     const { data: member } = await this.get('members', this.identity.id)
     const { data: requests } = await this.get('requests')
     // a core that wrote already, its join or an earlier claim, claims once the view holds what it
-    // wrote: appended on a view still catching up with it, a claim is lost. Turned away, it hears
+    // wrote: appended on a view still catching up with it, a claim is lost. Turned away, it hears.
+    // What the view read and kept no row of, a claim refused where it landed, is made again
     const id = hid.encode(this.writerKey)
-    const landed = requests.some((row) => row.id === id) || (await this.get('devices', id)).data
-    if (this.length > 0 && !landed) return this._refused()
-    if (member) return member
+    const { data: device } = await this.get('devices', id)
+    const landed = device || requests.some((row) => row.id === id)
+    if (this.length > 0 && !landed) {
+      await this._refused()
+      const read = await this.bee.system.get(this.writerKey)
+      if (!read || read.length < this.length) return null
+    }
     const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
     const first = requests.find(mine)
+    // a member's device keeps what she was promised once: its row is the promise kept
+    if (member) return { role: member.role, promised: !!first && !device }
     return first ? { role: first.role, promised: true } : null
   }
 
-  // a claim kept: this device's seat, or the member row at a role with none
+  // a claim kept: this device's seat, or its row at a role with none
   /** @private */
   async _kept(role) {
     await this._refused()
-    return can(role, WRITE) ? this.writable : (await this.get('members', this.identity.id)).data
+    if (can(role, WRITE)) return this.writable
+    return (await this.get('devices', hid.encode(this.writerKey))).data
   }
 
   // a writer has a refusal only where it has no request: its join turned away, or what it was
