@@ -86,6 +86,37 @@ test(
   }
 )
 
+test("a peer's name and text print without their control bytes", { timeout: 120000 }, async (t) => {
+  const net = await createTestnet(NODES)
+  t.teardown(() => net.destroy(), { order: 100 })
+  const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+  const host = launch(t, ['--name', 'ho\x1b[2Jst', '--storage', tmp(), '--bootstrap', bootstrap])
+  const inv = await waitFor(host, (line) => /^[a-z0-9]{60,}$/.test(line))
+  const guest = launch(t, ['--join', inv, '--storage', tmp(), '--bootstrap', bootstrap])
+  await waitFor(guest, (line) => line.startsWith('# room:'))
+
+  host.stdin.write('\x1b]0;owned\x07hello\n')
+  const line = await waitFor(guest, (line) => line.includes('hello'))
+  t.absent(/\p{Cc}/u.test(line), 'no control bytes reach the terminal')
+})
+
+test('the phrase is read from stdin, not from the command line', { timeout: 120000 }, async (t) => {
+  const net = await createTestnet(NODES)
+  t.teardown(() => net.destroy(), { order: 100 })
+  const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+  const host = launch(t, ['--name', 'host', '--storage', tmp(), '--bootstrap', bootstrap])
+  const you = await waitFor(host, (line) => line.startsWith('# you:'))
+  const shown = await waitFor(host, (line) => line.startsWith('# phrase'))
+  const phrase = shown.slice(shown.indexOf(': ') + 2)
+
+  const device = launch(t, ['--phrase', '--storage', tmp(), '--bootstrap', bootstrap])
+  device.stdin.write(phrase + '\n')
+  const recovered = await waitFor(device, (line) => line.startsWith('# you:'))
+  t.is(recovered.slice(recovered.indexOf('(')), you.slice(you.indexOf('(')), 'the same identity')
+})
+
 function tmp() {
   return mkdtempSync(join(tmpdir(), 'chat-terminal-test-'))
 }

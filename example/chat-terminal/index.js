@@ -12,13 +12,13 @@ const HELP = `chat-terminal — a tiny p2p chat over cero
 Usage:
   chat-terminal [--storage <dir>] [--name <name>]                   create a room (host)
   chat-terminal --join <invite> [--storage <dir>] [--name <name>]   join a room
-  chat-terminal --phrase "<words>" --storage <dir>                    recover your identity on this machine
+  chat-terminal --phrase --storage <dir>                              recover your identity on this machine
   chat-terminal --link <invite> --storage <dir>                       link this machine as a device of yours
   chat-terminal --help
 
 Options:
   --join <invite>     join an existing room (default: create a new one)
-  --phrase <words>    the phrase printed on your first run; makes this machine your device too
+  --phrase            read the phrase printed on your first run from stdin; makes this machine your device too
   --link <invite>     a device invite from /link on a machine of yours; same, with no phrase here
   --name <name>       display name (default: hostname)
   --storage <dir>     storage directory (default: a tmp dir)
@@ -41,6 +41,17 @@ async function main() {
   const name = opts.name || os.hostname()
   const storage = opts.storage || mkdtempSync(join(os.tmpdir(), 'chat-terminal-'))
   const bootstrap = parseBootstrap(opts.bootstrap || process.env.CERO_BOOTSTRAP)
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+  })
+  const lines = rl[Symbol.asyncIterator]()
+  if (opts.phrase) {
+    console.log('# phrase:')
+    opts.phrase = (await lines.next()).value?.trim()
+  }
 
   const fresh = !opts.phrase && !opts.link && !(await isInitialized(storage))
   const me = await cero(storage, spec, {
@@ -97,46 +108,9 @@ async function main() {
       seen.add(m.id)
       const who =
         names.get(m.memberId) || (m.memberId === me.id ? name : m.memberId?.slice(0, 8)) || 'peer'
-      console.log(`<${who}> ${m.text}`)
+      console.log(`<${printable(who)}> ${printable(m.text)}`)
     }
   })
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: false
-  })
-  rl.on('line', async (line) => {
-    const text = line.trim()
-    if (!text) return
-    if (text === '/quit') return shutdown()
-    if (text === '/invite') {
-      console.log(await cero.invite(room))
-      return
-    }
-    if (text === '/link') {
-      console.log(`# device invite (use it with --link on your other machine):`)
-      console.log(await cero.invite(me))
-      return
-    }
-    const [command, id] = text.split(/\s+/)
-    if (command === '/approve' || command === '/deny') {
-      const { data } = await cero.get(me.requests, { admitted: false })
-      const request = data.find((r) => r.id === id)
-      if (!request) return console.error(`! no pending device request ${id}`)
-      if (command === '/approve') await cero.accept(me, request)
-      else await cero.deny(me, request, 'denied')
-      console.log(`# device request ${id} ${command === '/approve' ? 'approved' : 'denied'}`)
-      return
-    }
-    try {
-      await cero.put(room.messages, { text })
-    } catch (err) {
-      console.error(`! ${err?.code || err?.message || err}`)
-    }
-  })
-  rl.on('close', shutdown)
-  process.on('SIGINT', shutdown)
 
   let closing = false
   async function shutdown() {
@@ -150,6 +124,41 @@ async function main() {
     } catch {}
     process.exit(0)
   }
+
+  process.on('SIGINT', shutdown)
+  for await (const line of lines) {
+    const text = line.trim()
+    if (!text) continue
+    if (text === '/quit') break
+    if (text === '/invite') {
+      console.log(await cero.invite(room))
+      continue
+    }
+    if (text === '/link') {
+      console.log(`# device invite (use it with --link on your other machine):`)
+      console.log(await cero.invite(me))
+      continue
+    }
+    const [command, id] = text.split(/\s+/)
+    if (command === '/approve' || command === '/deny') {
+      const { data } = await cero.get(me.requests, { admitted: false })
+      const request = data.find((r) => r.id === id)
+      if (!request) {
+        console.error(`! no pending device request ${id}`)
+        continue
+      }
+      if (command === '/approve') await cero.accept(me, request)
+      else await cero.deny(me, request, 'denied')
+      console.log(`# device request ${id} ${command === '/approve' ? 'approved' : 'denied'}`)
+      continue
+    }
+    try {
+      await cero.put(room.messages, { text })
+    } catch (err) {
+      console.error(`! ${err?.code || err?.message || err}`)
+    }
+  }
+  await shutdown()
 }
 
 // a recovered identity already has rooms: reopen the first, otherwise create one
@@ -157,6 +166,11 @@ async function ownRoom(me, name) {
   const { data: rooms } = await cero.get(me.room)
   if (rooms.length) return cero.open(me.room, { id: rooms[0].id })
   return cero.open(me.room, { name: `${name}'s room` })
+}
+
+// a peer's string could carry terminal escapes
+function printable(text) {
+  return String(text).replace(/\p{Cc}/gu, '')
 }
 
 function parseBootstrap(raw) {
@@ -174,7 +188,7 @@ function parseArgs(argv) {
     if (a === '--help' || a === '-h') out.help = true
     else if (a === '--create') out.create = true
     else if (a === '--join') out.join = argv[++i]
-    else if (a === '--phrase') out.phrase = argv[++i]
+    else if (a === '--phrase') out.phrase = true
     else if (a === '--link') out.link = argv[++i]
     else if (a === '--name') out.name = argv[++i]
     else if (a === '--storage') out.storage = argv[++i]
