@@ -503,7 +503,7 @@ async function write(core, spec, stamp, invite, identity, writer) {
 
 // the database key is no secret, every mirror holds it: the encryption key must own the invite's address
 function owns({ encryptionKey }, invite) {
-  return b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
+  return !!encryptionKey && b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
 }
 
 function expired({ expires }) {
