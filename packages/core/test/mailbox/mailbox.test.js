@@ -2052,3 +2052,40 @@ test('Inbox: a key announced while its row waits to be read is read from that an
   await waitFor(() => got.length > 0, { timeout: 10000 }).catch(() => {})
   t.alike(got, ['late'], 'read from the peer that announced it')
 })
+
+test('Inbox: a key announced at another address than its row leaves that row as it was', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const b = await peer(t, testnet)
+  const [one, two] = [crypto.randomBytes(32), crypto.randomBytes(32)]
+  const address = Mailbox.getAddress(one)
+  const box = kept()
+
+  // two messages for the first address, one handled and one still to hand over
+  const rows = []
+  for (const handled of [Date.now(), undefined]) {
+    const core = a.store.get({ name: `for one ${rows.length}` })
+    await core.ready()
+    await core.append(crypto.encrypt(b4a.from('for one'), address))
+    t.teardown(() => core.close())
+    const row = { id: b4a.toHex(core.key), address, message: b4a.alloc(0), handled }
+    rows.push(row)
+    await box.put({ ...row })
+  }
+
+  const inbox = new Inbox(b, two, { box, onmessage: () => {}, onerror: () => {} })
+  t.teardown(() => inbox.close())
+  let reads = 0
+  const read = inbox._read
+  inbox._read = (...args) => read.apply(inbox, args).finally(() => reads++)
+  await inbox.ready()
+  announce(
+    t,
+    a,
+    Mailbox.getAddress(two),
+    rows.map((row) => b4a.from(row.id, 'hex'))
+  )
+  await waitFor(() => reads === 2, { timeout: 30000 })
+  t.alike(box.mail.get(rows[0].id), rows[0], 'the handled one')
+  t.alike(box.mail.get(rows[1].id), rows[1], 'the one still to hand over')
+})
