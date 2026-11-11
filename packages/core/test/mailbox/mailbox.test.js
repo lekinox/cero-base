@@ -1378,6 +1378,41 @@ test('Inbox: one opened at an address while another closes there finds the row t
   t.is(box.pending(), 0, 'nothing left to hand over again')
 })
 
+test('Inbox: one opened at an address just before another closes there is handed the message that one read', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const box = kept()
+  // a row takes a while to write, as on a slow disk
+  const put = box.put
+  box.put = async (m) => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    return put(m)
+  }
+  const b = await mailbox(t, testnet, { inbox: box })
+  const secret = crypto.randomBytes(32)
+  const calls = { first: 0, second: 0 }
+  const first = b.receive(secret, () => calls.first++)
+  // once the block of the first landed and its sender offers it no more, a second opens at the address and the
+  // first closes at once: the second waits for no close, and has only the box to find the message in
+  const unseal = first._unseal.bind(first)
+  let second = null
+  first._unseal = async (...args) => {
+    const read = await unseal(...args)
+    if (read.message) {
+      await waitFor(async () => (await a.outbox.list()).length === 0, { timeout: 30000 })
+      second = b.receive(secret, () => calls.second++)
+      first.close()
+    }
+    return read
+  }
+  await a.send(Mailbox.getAddress(secret), b4a.from('once'))
+  await waitFor(() => second && first.closed, { timeout: 30000 })
+  await waitFor(() => calls.second > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(calls, { first: 0, second: 1 }, 'handed over by the one still open')
+  await waitFor(() => box.pending() === 0, { timeout: 5000 }).catch(() => {})
+  t.is(box.pending(), 0, 'nothing left to hand over again')
+})
+
 test('Inbox: one closed before it opened hands nothing over, and the next at its address gets the message', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await mailbox(t, testnet)
