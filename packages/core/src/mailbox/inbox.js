@@ -93,12 +93,12 @@ export class Inbox extends ReadyResource {
   /**
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} secret
-   * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number, after?: Promise<void>[] }} opts  `after`: closes to wait for before it opens.
+   * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number, after?: Promise<void>[], siblings?: () => Inbox[] }} opts  `after`: closes to wait for before it opens. `siblings`: the other inboxes on its box at its address, as of the call.
    */
   constructor(
     network,
     secret,
-    { box, onmessage, onerror, keep = true, timeout = 30000, after = [] }
+    { box, onmessage, onerror, keep = true, timeout = 30000, after = [], siblings = () => [] }
   ) {
     super()
     this.network = network
@@ -126,11 +126,13 @@ export class Inbox extends ReadyResource {
     /** @private */
     this._erasing = new Set()
     /** @private */
-    this._landing = new Set() // reads, up to their row in the box
+    this._landing = new Map() // read → its id, up to its row in the box
     /** @private */
     this._waiting = new Set() // cores open for a block still to come
     /** @private */
     this._after = after
+    /** @private */
+    this._siblings = siblings
     /** @private */
     this._session = null
     /** @private */
@@ -158,8 +160,7 @@ export class Inbox extends ReadyResource {
         handled.push(mail)
         continue
       }
-      this._mail.set(mail.id, { key: b4a.from(mail.id, 'hex'), queued: 0, busy: true })
-      this._kept.push(mail)
+      this._keep(mail)
     }
     this._next()
     handled.sort((a, b) => a.handled - b.handled)
@@ -181,7 +182,28 @@ export class Inbox extends ReadyResource {
     this._discovery?.destroy().catch(safetyCatch)
     // nothing more is fetched: its sender counts a message delivered once its block is stored
     for (const core of this._waiting) core.close().catch(safetyCatch)
-    await Promise.allSettled([...this._landing, ...this._erasing])
+    await Promise.allSettled([...this._landing.keys(), ...this._erasing])
+  }
+
+  /**
+   * Take over the reads an inbox that closed at this address left unsettled: each waits for its
+   * block as it did there, so one that lands after that close is still handed over.
+   *
+   * @returns {Promise<void>}
+   */
+  async inherit() {
+    for (const mail of await this.box.list()) {
+      if (!mail.handled && b4a.equals(mail.address, this.address)) this._keep(mail, true)
+    }
+    this._next()
+  }
+
+  // a row to read, unless this inbox has it, or one still open at this address is reading it: it is that inbox's until its read settles or it closes
+  /** @private */
+  _keep({ id, fetched }, wait = false) {
+    if (this._mail.has(id) || this._siblings().some((inbox) => reads(inbox, id))) return
+    this._mail.set(id, { key: b4a.from(id, 'hex'), queued: 0, busy: true })
+    this._kept.push({ id, fetched, wait })
   }
 
   // a key stays queued by every peer that announced it, so a read that failed is tried through the
@@ -221,7 +243,8 @@ export class Inbox extends ReadyResource {
   _next() {
     while (this._kept.length && this._reading < READS && !this.closing) {
       this._reading++
-      this._read(this._resume(this._kept.shift()))
+      const mail = this._kept.shift()
+      this._read(mail.id, this._resume(mail))
         .catch((err) => this.onerror(err))
         .finally(() => {
           this._reading--
@@ -245,7 +268,7 @@ export class Inbox extends ReadyResource {
       mail.busy = true
       this._reading++
       this._load.set(from, load + 1)
-      this._read(this._land(id, mail.key))
+      this._read(id, this._land(id, mail.key))
         .catch((err) => this.onerror(err))
         .finally(() => {
           this._reading--
@@ -268,8 +291,8 @@ export class Inbox extends ReadyResource {
   }
 
   /** @private */
-  async _read(landing) {
-    this._landing.add(landing)
+  async _read(id, landing) {
+    this._landing.set(landing, id)
     const mail = await landing.finally(() => this._landing.delete(landing))
     if (!mail) return
     // past it the slot is free, and the message stays in the box until its handler resolves
@@ -305,10 +328,11 @@ export class Inbox extends ReadyResource {
     return { id, message, fetched }
   }
 
-  // kept from before a restart: its message is read from its core as this device holds it, never from a peer
+  // kept from before a restart: its message is read from its core as this device holds it, never from a peer, unless `wait`
   /** @private */
-  async _resume({ id, fetched }) {
-    const { held, message } = await this._unseal(b4a.from(id, 'hex'), { wait: false })
+  async _resume({ id, fetched, wait }) {
+    const opts = wait ? { timeout: this.timeout } : { wait: false }
+    const { held, message } = await this._unseal(b4a.from(id, 'hex'), opts)
     if (message) return { id, message, fetched }
     // a read its own close cut short says nothing of the row: it waits for the next inbox at its address
     if (this.closing) return this._settle(id)
@@ -416,6 +440,11 @@ function noop() {}
 
 function isTime(handled) {
   return handled > EPOCH && handled <= Date.now()
+}
+
+function reads(inbox, id) {
+  for (const read of inbox._landing.values()) if (read === id) return true
+  return false
 }
 
 function idle(ids, mail) {
