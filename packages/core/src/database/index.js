@@ -691,6 +691,41 @@ export class Database extends ReadyResource {
   }
 
   /**
+   * The rows of a collection that changed since `settle` was last called under `mark`, a name of the
+   * caller's, so what follows a collection row by row goes on after a restart where it stopped. With no
+   * point to start from, `reset` is true and `changes` holds every row. A caller that takes changes and
+   * does not settle starts over at its next call. The point is kept on this device only.
+   *
+   * @param {string} name
+   * @param {string} mark
+   * @returns {Promise<{ changes: Array<{ prev: Row | null, next: Row | null }>, reset: boolean, settle: () => Promise<void> }>}
+   */
+  async since(name, mark) {
+    this.guard()
+    while (this._rebuilding) await this._rebuilding
+    const col = this.col(this.ref(name))
+    const at = `cero/since/${mark}`
+    const local = this.bee.local
+    // taken before any await: a view being applied again would be read half way
+    const snap = this.view.snapshot()
+    const head = this.view.engine.head()
+    try {
+      const from = decodePoint(await local.getUserData(at))
+      const told = from ? await rows(snap, col, from) : null
+      const changes = told ?? (await rows(snap, col, null))
+      // what the caller writes from here on is ahead of the point: unsettled, it starts over
+      if (changes.length) await local.setUserData(at, null)
+      const settle = async () => {
+        // another core since, after a view applied again or a writer changed: the next call starts over
+        if (this.bee?.local === local) await local.setUserData(at, c.encode(point, head))
+      }
+      return { changes, reset: told === null, settle }
+    } finally {
+      await snap.close().catch(safetyCatch)
+    }
+  }
+
+  /**
    * Provision this device. Its writer core was minted when the database opened and this
    * device is its only author, ever.
    *
@@ -1271,13 +1306,16 @@ export class Database extends ReadyResource {
     try {
       for (const [op, payload] of ops) {
         stamp = await this._stamp(tx)
+        // closed while it was stamped: Bare ends the process on a hash of no key, where Node throws
+        const key = this.writerKey
+        if (!key) throw CeroError.CLOSED('Database')
         const value = this.dispatcher.encode(`@${this.ns}/${op}`, payload, stamp)
         await this.dispatcher.dispatch(value, {
           host,
           view: tx,
-          key: this.writerKey,
+          key,
           dbKey: this.key,
-          seed: crypto.hash([this.writerKey, value]),
+          seed: crypto.hash([key, value]),
           stamp
         })
         wrapped.push(wrap(stamp, value))
@@ -1424,6 +1462,45 @@ function bounded(promise, ms = 2000) {
     timer.unref()
   })
   return Promise.race([promise.then((v) => ({ v })), bound]).finally(() => clearTimeout(timer))
+}
+
+// a point of a view: its core and how long it was
+const point = {
+  preencode(state, p) {
+    c.fixed32.preencode(state, p.key)
+    c.uint.preencode(state, p.length)
+  },
+  encode(state, p) {
+    c.fixed32.encode(state, p.key)
+    c.uint.encode(state, p.length)
+  },
+  decode(state) {
+    return { key: c.fixed32.decode(state), length: c.uint.decode(state) }
+  }
+}
+
+// a kept point, null when there is none or it does not read
+function decodePoint(buf) {
+  try {
+    return buf ? c.decode(point, buf) : null
+  } catch {
+    return null
+  }
+}
+
+// the rows of a collection that differ from a point of its view, all of them with none; null when
+// the point's blocks do not come, as for one in a view this device never applied
+async function rows(snap, col, from) {
+  const stream = snap.diff(col, from ? { from } : {})
+  const read = async () => {
+    const changes = []
+    for await (const { left, right } of stream) changes.push({ prev: left, next: right })
+    return changes
+  }
+  if (!from) return read()
+  const done = await bounded(read())
+  if (!done) stream.destroy()
+  return done ? done.v : null
 }
 
 const NO_HOOKS = []

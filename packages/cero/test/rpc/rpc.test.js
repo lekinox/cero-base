@@ -542,7 +542,7 @@ test('rpc: a reloaded UI re-attaches, init answers again and the old watches end
 const openOn = (server, id) => [...server.me.children].some((c) => c.id === id && !c.closing)
 
 test('rpc: a reloaded UI lets go of every room the old page held, however many times it opened them', async (t) => {
-  const { server, client } = await openPair(t, { linger: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   await open(client.team, { id: made.id })
   await client.rpc.init({})
@@ -551,7 +551,7 @@ test('rpc: a reloaded UI lets go of every room the old page held, however many t
 })
 
 test('rpc: a room the worker holds itself stays open through a page reload', async (t) => {
-  const { server, client } = await openPair(t, { linger: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   const mine = await open(server.me.team, { id: made.id })
   t.teardown(() => mine.close())
@@ -562,7 +562,7 @@ test('rpc: a room the worker holds itself stays open through a page reload', asy
 })
 
 test('rpc: a room the old page already closed is not closed again on reload', async (t) => {
-  const { server, client } = await openPair(t, { linger: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   await made.close()
   const mine = await open(server.me.team, { id: made.id })
@@ -572,13 +572,115 @@ test('rpc: a room the old page already closed is not closed again on reload', as
 })
 
 test('rpc: the new page’s opens after a reload count from zero', async (t) => {
-  const { server, client } = await openPair(t, { linger: 0 })
+  const { server, client } = await openPair(t, { keepOpen: 0 })
   const made = await open(client.team, { name: 'clinic' })
   await client.rpc.init({})
   const again = await open(client.team, { id: made.id })
   await put(again.messages, { text: 'after reload' })
   await again.close()
   t.absent(openOn(server, made.id), 'one open, one close: closed')
+})
+
+// the room the worker serves under `id`, whoever holds it
+const servedOn = (server, id) => [...server.me.children].find((c) => c.id === id)
+
+// a worker that keeps `keepOpen` rooms nobody holds, and `count` rooms its page made and still holds
+async function pageRooms(t, keepOpen, count) {
+  const { server, client } = await openPair(t, { keepOpen })
+  const made = []
+  for (let i = 0; i < count; i++) made.push(await open(client.team, { name: `room ${i}` }))
+  return { server, client, made }
+}
+
+test('rpc: past keepOpen, the worker closes the room the page let go longest ago', async (t) => {
+  const { server, made } = await pageRooms(t, 2, 3)
+  const [first, second, third] = made
+  await first.close()
+  await second.close()
+  t.ok(openOn(server, first.id), 'two rooms nobody holds stay open on the worker')
+  await third.close()
+  await waitUntil(() => !openOn(server, first.id))
+  t.pass('the third one closed the least recently used')
+  t.ok(openOn(server, second.id), 'the second stays open')
+  t.ok(openOn(server, third.id), 'and the third')
+})
+
+test('rpc: an idle room the page opens again is the same room on the worker, and the most recently used', async (t) => {
+  const { server, client, made } = await pageRooms(t, 2, 3)
+  const [first, second, third] = made
+  const served = servedOn(server, first.id)
+  await first.close()
+  await second.close()
+  const again = await open(client.team, { id: first.id })
+  t.is(servedOn(server, first.id), served, 'a reopen gets the same room, never rebuilt')
+  await put(again.messages, { text: 'still served' })
+  await again.close()
+  await third.close()
+  await waitUntil(() => !openOn(server, second.id))
+  t.pass('the one let go before it closed')
+  t.ok(openOn(server, first.id), 'the reopened one stays open')
+  t.ok(openOn(server, third.id))
+})
+
+test('rpc: a room the page holds is never closed by the count', async (t) => {
+  const { server, client, made } = await pageRooms(t, 1, 3)
+  const [held, second, third] = made
+  const also = await open(client.team, { id: held.id })
+  await also.close()
+  await second.close()
+  await third.close()
+  await waitUntil(() => !openOn(server, second.id))
+  t.pass('the idle one made room')
+  t.ok(openOn(server, held.id), 'the held one stays, however long ago it was opened')
+  await put(held.messages, { text: 'still here' })
+  t.is((await get(held.messages)).data.length, 1)
+})
+
+test('rpc: the close that pushes a room out is answered before it closes, and its failure reaches the page', async (t) => {
+  const errors = []
+  const { server, client } = await openPair(
+    t,
+    { keepOpen: 1 },
+    { onerror: (err) => errors.push(err) }
+  )
+  await waitUntil(() => server._errors.size === 1)
+  const oldest = await open(client.team, { name: 'oldest' })
+  const next = await open(client.team, { name: 'next' })
+  const { store } = servedOn(server, oldest.id)
+  const close = store.close.bind(store)
+  let release
+  const held = new Promise((resolve) => (release = resolve))
+  store.close = async () => {
+    await held
+    await close()
+    throw new Error('disk full')
+  }
+  await oldest.close()
+  await next.close()
+  t.absent(openOn(server, oldest.id), 'answered while the room it pushed out still closes')
+  release()
+  await waitUntil(() => errors.length)
+  t.alike(
+    errors.map((err) => err.message),
+    ['disk full'],
+    'the failure of that close reached the page'
+  )
+  t.ok(openOn(server, next.id), 'and the room that pushed it out stays open')
+})
+
+test('rpc: closing the worker closes its idle rooms with it', async (t) => {
+  const { server, made } = await pageRooms(t, 2, 3)
+  const [held, first, second] = made
+  const all = made.map((room) => servedOn(server, room.id))
+  await first.close()
+  await second.close()
+  t.ok(openOn(server, first.id) && openOn(server, second.id), 'idle')
+  t.ok(openOn(server, held.id), 'held')
+  await server.close()
+  t.ok(
+    all.every((room) => room.closed),
+    'the idle rooms and the held one closed with the worker'
+  )
 })
 
 // a restore or link that fails over the wire leaves the worker serving the identity it had
@@ -598,6 +700,44 @@ test('rpc: a mistyped link keeps the worker serving this identity', async (t) =>
   await put(client.messages, { text: 'mine' })
   await t.exception(link(client, 'nothing like a code'), /INVALID_INVITE/)
   t.is((await get(client.messages)).data[0]?.text, 'mine', 'still reads')
+})
+
+test('rpc: the root closing while a link waits ends it CLOSED on the client', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+  let request = null
+  const linking = link(client, await cero.invite(other), { onrequest: (r) => (request = r) })
+  linking.catch(() => {})
+  await waitUntil(() => request)
+  await me.close()
+  await t.exception(linking, /CLOSED/)
+})
+
+test('rpc: the root closing while a restore looks for a device ends it CLOSED on the client', async (t) => {
+  const { me, client } = await openPair(t, { recoveryTimeout: 0 })
+  const restoring = restore(client, Identity.toPhrase(Identity.randomBytes(32)))
+  restoring.catch(() => {})
+  await waitUntil(() => existsSync(`${me._dir}/main.next/main`))
+  await me.close()
+  await t.exception(restoring, /CLOSED/)
+})
+
+test('rpc: the server closing as a link takes the root’s place closes the linked root too', async (t) => {
+  const { me, server, client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 4 })
+  let closing = null
+  // the root closing under the swap: the commit is under way
+  me.own({ destroy: () => (closing = server.close()) })
+  link(client, await cero.invite(other)).catch(() => {})
+  await accept(other, await nextRequest(other))
+  await waitUntil(() => closing !== null)
+  await closing
+  // an open root would still hold the directory
+  const again = await cero(me._dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(again.id, other.id, 'the linked identity, its store let go')
 })
 
 test("rpc: the worker's background errors reach the client's onerror", async (t) => {
@@ -792,7 +932,8 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
   const served = [...me.children][0]
   const random = () => b4a.alloc(32, Math.floor(Math.random() * 255))
   const link = { key: random(), length: 1 }
-  const stray = Invite.create({ key: random(), address: random(), link }).toString()
+  // a room nobody here has, at an address that can be sealed to: a random one cannot always
+  const stray = Invite.create({ key: random(), address: served.store.address, link }).toString()
   const cases = {
     'phrase on the root': (root) => cero.phrase(root),
     'phrase on a room': (root, room) => cero.phrase(room),

@@ -201,6 +201,10 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _owned;
     /** @private */
+    _kept;
+    /** @private */
+    _arriving;
+    /** @private */
     _refs;
     /** @private */
     _idle;
@@ -216,7 +220,7 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _ac;
     _queued: {
-        all: boolean;
+        root: boolean;
         children: Set<any>;
     };
     _indexing: any;
@@ -265,9 +269,9 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _close;
     /**
-     * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-     * handle's lifecycle — it's destroyed automatically on close, so callers don't track
-     * cleanup.
+     * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this handle, so callers
+     * don't track cleanup. Tied by a holder, it is destroyed once the last holder closes the handle; tied by
+     * a `handle` listener as it runs, an extension's watch, it follows the handle for as long as it is open.
      *
      * @template {{ destroy?: Function, once?: Function }} T
      * @param {T} resource
@@ -277,6 +281,8 @@ export declare class Handle extends ReadyResource {
         destroy?: Function;
         once?: Function;
     }>(resource: T): T;
+    /** @private */
+    private _disown;
     /** @private */
     private _link;
     /** @private */
@@ -294,15 +300,17 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _leave;
     /**
-     * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-     * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+     * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
+     * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
+     * closes the least recently used, on its own. The root closes at once, after any `cero.link` or `cero.restore` on
+     * it: one still waiting stops, one taking its place finishes first.
      * @returns {Promise<void>}
      */
     close(): Promise<void>;
-    /** @private one more holder: a lingering handle is kept */
+    /** @private one more holder: an idle handle is kept */
     private _hold;
     /**
-     * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+     * Closed for every holder at once: pushed out past `keepOpen`, the parent closing, or the handle left for good.
      * @private
      */
     private _end;
@@ -333,13 +341,23 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _onLocal;
     /** @private */
+    private _onTopics;
+    /** @private */
     private _topics;
     /** @private */
     private _index;
     /** @private */
     private _seal;
     /** @private */
-    private _reindex;
+    private _follow;
+    /** @private */
+    private _put;
+    /** @private */
+    private _drop;
+    /** @private */
+    private _topic;
+    /** @private */
+    private _row;
     /** @private */
     private _receive;
     /** @private */

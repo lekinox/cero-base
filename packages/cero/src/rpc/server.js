@@ -107,6 +107,8 @@ export class Server extends RPCServer {
     this._held = new Map()
     /** @private */
     this._booting = null
+    /** @private */
+    this._adopting = null
     this._wireInit()
   }
 
@@ -156,7 +158,27 @@ export class Server extends RPCServer {
         await this.me.close()
       } catch {}
     }
+    // a link or a restore past its commit resolves with an open root, closed before this ends
+    await this._adopting
     await super._close()
+  }
+
+  /**
+   * The root a restore or a link resolves with is the one served from here on; with the server closing it closes.
+   * @private
+   */
+  _adopt(swapping) {
+    const adopted = swapping.then(async (me) => {
+      if (this.closing) {
+        await me.close()
+        throw CeroError.CLOSED('Server')
+      }
+      this.me = me
+      this.handles = new Map([[me.id, me]])
+      this._held.clear()
+    })
+    this._adopting = adopted.catch(() => {})
+    return adopted
   }
 
   /**
@@ -210,9 +232,7 @@ export class Server extends RPCServer {
   _wireRestore() {
     this._on('onRestore', async ({ phrase }) => {
       if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      this.me = await restore(this.me, phrase)
-      this.handles = new Map([[this.me.id, this.me]])
-      this._held.clear()
+      await this._adopt(restore(this.me, phrase))
       return this._identity()
     })
   }
@@ -227,11 +247,10 @@ export class Server extends RPCServer {
       stream.on('error', safetyCatch)
       const run = async () => {
         if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-        this.me = await link(this.me, stream.data.invite, {
+        const linking = link(this.me, stream.data.invite, {
           onrequest: (id) => stream.write({ request: id })
         })
-        this.handles = new Map([[this.me.id, this.me]])
-        this._held.clear()
+        await this._adopt(linking)
         stream.write({ request: '', ...this._identity() })
         stream.end()
       }
@@ -405,7 +424,7 @@ export class Server extends RPCServer {
     if (n > 0) this._held.set(id, n)
     else this._held.delete(id)
     await h.close()
-    // another holder on this device keeps it, with its watches; a reopen while it lingers registers it again
+    // another holder on this device keeps it, with its watches; a reopen while it is idle registers it again
     if (h._refs > 0) return
     this._endWatches(id)
     this.handles.delete(id)

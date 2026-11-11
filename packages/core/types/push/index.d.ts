@@ -20,6 +20,14 @@ export type Hit = Handle & {
  * @typedef {Handle & { length: number, newer: boolean, ref: string | null, block: Block | null }} Hit  The handle a push is about, the length it proves, whether this device is behind it, the ref the write was on, and the block when it rode along.
  */
 /**
+ * The topic a push names: its handle's discovery key in hex, the string a device subscribes to.
+ * Null when the payload does not decode.
+ *
+ * @param {Uint8Array} payload
+ * @returns {string | null}
+ */
+export declare function topic(payload: Uint8Array): string | null;
+/**
  * Verify a push payload against this device's storage: the one the gateway sent, decoded from the
  * platform's message. Null when it is about no handle given, is forged, comes from a core that is
  * not among the handle's writers, or does not decode.

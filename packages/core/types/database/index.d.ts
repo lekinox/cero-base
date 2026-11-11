@@ -494,6 +494,24 @@ export declare class Database extends ReadyResource {
      */
     changes(name: string, query?: Query): import('streamx').Readable;
     /**
+     * The rows of a collection that changed since `settle` was last called under `mark`, a name of the
+     * caller's, so what follows a collection row by row goes on after a restart where it stopped. With no
+     * point to start from, `reset` is true and `changes` holds every row. A caller that takes changes and
+     * does not settle starts over at its next call. The point is kept on this device only.
+     *
+     * @param {string} name
+     * @param {string} mark
+     * @returns {Promise<{ changes: Array<{ prev: Row | null, next: Row | null }>, reset: boolean, settle: () => Promise<void> }>}
+     */
+    since(name: string, mark: string): Promise<{
+        changes: Array<{
+            prev: Row | null;
+            next: Row | null;
+        }>;
+        reset: boolean;
+        settle: () => Promise<void>;
+    }>;
+    /**
      * Provision this device. Its writer core was minted when the database opened and this
      * device is its only author, ever.
      *

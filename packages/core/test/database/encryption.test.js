@@ -630,8 +630,9 @@ test('rotate: an envelope failing its commitment is rejected, not adopted', asyn
   await a.db.bee.update()
 
   await waitFor(async () => b.errors.some((e) => /commitment/.test(e.message)))
-  t.is(a.db.keyring.seq, 0, 'rotator side never adopts the epoch')
-  t.is(b.db.keyring.seq, 0, 'member refuses an envelope that fails the commitment')
+  // the rotation that heals the room may have landed by now: what is never held is the bad one's secret
+  t.absent(a.db.keyring.entropy(12345), 'rotator side never adopts the epoch')
+  t.absent(b.db.keyring.entropy(12345), 'member refuses an envelope that fails the commitment')
 })
 
 test('rotate: an admin sealing the owner out is healed', async (t) => {

@@ -146,6 +146,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                                                                                                                                                                                |
 | `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                                                                                                                                                                      |
 | `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                                                                                                                                                                                |
+| `since(name, mark)`                                  | `{ changes, reset, settle }`: rows changed since `settle()` last ran under `mark`, restarts included; all rows on `reset`. One caller.                                                                                                                                                          |
 | `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                                                                                                                                                                             |
 | `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs.                                                                                                                                                      |
 | `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.                                                                                                                                                           |
@@ -203,13 +204,13 @@ await mailbox.send(address, b4a.from('hi'))
 await inbox.close() // stop receiving
 ```
 
-- **Kept until stored.** The outbox keeps a message until a device or a mirror stored it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, put, del }`, keep that across a restart. A message may arrive twice, never not at all; once handled, it is not handed over again, though a mirror still holds it. The inbox remembers what it handled at an address for 30 days: one a mirror still announces after that comes again.
+- **Kept until stored.** The outbox keeps a message until a device or a mirror stored it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, get, put, del }`, keep that across a restart. A message may arrive twice, never not at all; once handled, it is not handed over again, though a mirror still holds it. The inbox remembers what it handled at an address for 30 days: one a mirror still announces after that comes again.
 - **No message in the boxes.** The outbox keeps a message sealed to its address; the inbox keeps which core it came in, and reads it from there.
 - **A throwing `onmessage`** keeps the message and reports to `onerror`, the constructor option.
 - **A slow `onmessage`.** Sixteen messages are read and handled at a time; one still being handled after 30 seconds stays in the inbox and makes room for the next. `receive(secret, onmessage, { timeout })` sets those 30 seconds, and how long an announced message has to arrive.
 - **An `onmessage` that resolves `false`** turns the message away: nothing of it stays on this device, as for one that does not open.
 - **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default. A mirror storing it counts as delivered, and a mirror hands over only the newest 32 messages waiting for one address: with more waiting while the owner is offline, the older ones are not delivered.
-- **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once a device or a mirror stored it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A mirror keeps its copy either way.
+- **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once a device or a mirror stored it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A message that was being read when the app was killed or its inbox closed is handed over at the next start and stays on the device, whatever `keep` says or `onmessage` resolves. A mirror keeps its copy either way.
 - **Anonymous.** A message carries no sender. One that needs a sender signs itself.
 
 ## Pairing
@@ -310,19 +311,21 @@ storage, so it holds only for a writer the device already stores, and only for o
 `writers`, the writer keys that may write to the database now.
 
 ```js
-import { verify, decrypt } from '@cero-base/core/push'
+import { topic, verify, decrypt } from '@cero-base/core/push'
 
+const id = topic(payload) // the topic the push names, the database's discovery key in hex, or null
 // storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key, writers }]
 const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref, block } or null
 const op = await decrypt(storage, hit, { encryptionKey, epochs }) // the op's bytes, or null
 ```
 
-`newer` is whether the device is behind the proved length, `ref` the ref the write was on, as the
-sender's meta names it, `block` the written block when it fit the push. `decrypt` opens that block
-as the writer's core would, with the database's encryption key and the rotation epochs it has
-learned (`keyring.all()`), and strips the envelope: the op bytes, for the spec's dispatch to
-decode. Null without a block, for an epoch not among `epochs`, or another key. A database opened with `push: true` sends one through its network's mirrors
-after a local write to a ref whose meta entry declares `push`.
+`topic` reads which database a push is about before anything is verified. `newer` is whether the
+device is behind the proved length, `ref` the ref the write was on, as the sender's meta names it,
+`block` the written block when it fit the push. `decrypt` opens that block as the writer's core
+would, with the database's encryption key and the rotation epochs it has learned (`keyring.all()`),
+and strips the envelope: the op bytes, for the spec's dispatch to decode. Null without a block, for
+an epoch not among `epochs`, or another key. A database opened with `push: true` sends one through
+its network's mirrors after a local write to a ref whose meta entry declares `push`.
 
 ## Storage
 

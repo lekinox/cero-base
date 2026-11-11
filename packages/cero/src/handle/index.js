@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { LINGER, NS, TIMEOUT } from '../lib/constants.js'
+import { KEEP_OPEN, NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { Join, wait } from './join.js'
@@ -127,7 +127,7 @@ export class Handle extends ReadyResource {
     // children still opening, not adopted yet: a close must close them too
     /** @private */
     this._pending = parent ? null : new Set()
-    // children closing on their own, their linger over: a close waits for them, they still read its stores
+    // children closing on their own: a close waits for them, they still read its stores
     /** @private */
     this._ending = parent ? null : new Set()
     /** @private */
@@ -149,14 +149,21 @@ export class Handle extends ReadyResource {
     this._sus = parent
       ? null
       : new Suspendify({ suspend: () => this._sleep(), resume: () => this._wake() })
+    // what its holders tied to it, a watch: gone with the last of them
     /** @private */
     this._owned = new Set()
+    // what follows it for as long as it is open, an extension's watch
+    /** @private */
+    this._kept = new Set()
+    /** @private */
+    this._arriving = false
     // a child's holders: open hands every caller on this device the same handle, so each close lets one go and the
-    // last one lets it linger
+    // last one leaves it idle
     /** @private */
     this._refs = 0
+    // the children nobody holds, the least recently used first
     /** @private */
-    this._idle = null
+    this._idle = parent ? null : new Set()
 
     this.store = new Database({
       store: store,
@@ -190,7 +197,7 @@ export class Handle extends ReadyResource {
       ...(!this.parent && {
         joins: { get: (q) => this._joins(q), watch: (fn) => this._onLocal(fn) },
         nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) },
-        topics: { get: (q) => this._topics(q), watch: (fn) => this._onLocal(fn) }
+        topics: { get: (q) => this._topics(q), watch: (fn) => this._onTopics(fn) }
       })
     }
   }
@@ -314,8 +321,9 @@ export class Handle extends ReadyResource {
       if (b.key) this.root._coreKeys.delete(b4a.toHex(b.key))
     }
     for (const hex of this._blobKeys || []) this.root._coreKeys.delete(hex)
-    for (const r of [...this._owned]) r.destroy?.()
-    this._owned.clear()
+    this._disown()
+    for (const r of [...this._kept]) r.destroy?.()
+    this._kept.clear()
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
     const root = !this.parent
@@ -364,9 +372,9 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-   * handle's lifecycle — it's destroyed automatically on close, so callers don't track
-   * cleanup.
+   * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this handle, so callers
+   * don't track cleanup. Tied by a holder, it is destroyed once the last holder closes the handle; tied by
+   * a `handle` listener as it runs, an extension's watch, it follows the handle for as long as it is open.
    *
    * @template {{ destroy?: Function, once?: Function }} T
    * @param {T} resource
@@ -377,9 +385,16 @@ export class Handle extends ReadyResource {
       resource.destroy?.()
       return resource
     }
-    this._owned.add(resource)
-    resource.once?.('close', () => this._owned.delete(resource))
+    const tied = this._arriving ? this._kept : this._owned
+    tied.add(resource)
+    resource.once?.('close', () => tied.delete(resource))
     return resource
+  }
+
+  /** @private */
+  _disown() {
+    for (const r of [...this._owned]) r.destroy?.()
+    this._owned.clear()
   }
 
   // a file's url on this device's file server, for the rows that name it
@@ -456,39 +471,47 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+   * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
+   * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
+   * closes the least recently used, on its own. The root closes at once, after any `cero.link` or `cero.restore` on
+   * it: one still waiting stops, one taking its place finishes first.
    * @returns {Promise<void>}
    */
-  close() {
-    if (!this.parent) return this._end()
+  async close() {
+    if (!this.parent) {
+      // one swap may wait behind another: the root ends once none is left
+      const swap = this._swap
+      if (swap) return (swap.committing ? swap.done : swap.abort()).then(() => this.close())
+      return this._end()
+    }
     if (this._refs > 1) {
       this._refs--
-      return Promise.resolve()
+      return
     }
-    if (this._idle) return Promise.resolve()
-    const linger = this.root._opts.linger ?? LINGER
-    if (!linger || this._refs === 0) return this._end()
+    const idle = this.root._idle
+    if (idle.has(this)) return
+    const max = this.root._opts.keepOpen ?? KEEP_OPEN
+    if (!max || this._refs === 0) return this._end()
     this._refs = 0
-    this._idle = setTimeout(() => this._end().catch(this._onerror), linger)
-    this._idle.unref?.()
-    return Promise.resolve()
+    this._disown()
+    idle.add(this)
+    if (idle.size <= max) return
+    const [oldest] = idle
+    oldest._end().catch(this._onerror)
   }
 
-  /** @private one more holder: a lingering handle is kept */
+  /** @private one more holder: an idle handle is kept */
   _hold() {
-    clearTimeout(this._idle)
-    this._idle = null
+    this.root._idle.delete(this)
     this._refs++
   }
 
   /**
-   * Closed for every holder at once: its linger over, the parent closing, or the handle left for good.
+   * Closed for every holder at once: pushed out past `keepOpen`, the parent closing, or the handle left for good.
    * @private
    */
   _end() {
-    clearTimeout(this._idle)
-    this._idle = null
+    this.root._idle.delete(this)
     this._refs = 0
     return super.close()
   }
@@ -617,28 +640,41 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
+  _onTopics(fn) {
+    this.on('topics', fn)
+    return () => this.off('topics', fn)
+  }
+
+  /** @private */
   async _topics(query) {
+    if (typeof query === 'string') {
+      const { data } = await this.local.store.get('topics', query)
+      return { data: data && listing(data) }
+    }
     const rows = (await this.local.store.get('topics')).data
-    return listed(
-      rows.map(({ id, handle, type, name }) => ({ id, handle, type, name })),
-      query
-    )
+    return listed(rows.map(listing), query)
   }
 
   // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
-  // pass waits to start joins it; `child` is the handle whose writers changed, none reads every open one
+  // pass waits to start joins it; `child` is the handle whose writers changed, none follows the root's rows
   /** @private */
   _index(child = null) {
     if (this._queued) {
       if (child) this._queued.children.add(child)
-      else this._queued.all = true
+      else this._queued.root = true
       // a failed pass reaches onerror once, through the call that queued it: joined calls only wait for it
       return this._indexing.catch(() => {})
     }
-    const queued = (this._queued = { all: !child, children: new Set(child ? [child] : []) })
-    const run = () => {
+    const queued = (this._queued = { root: !child, children: new Set(child ? [child] : []) })
+    const run = async () => {
       this._queued = null
-      return this._reindex(null, queued.all ? null : queued.children)
+      if (this.closing || this.closed) return
+      try {
+        if (queued.root) await this._follow()
+      } finally {
+        // their writers are read whether or not the root's rows were, each on its own
+        for (const child of queued.children) await this._topic(child).catch(this._onerror)
+      }
     }
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
@@ -648,47 +684,85 @@ export class Handle extends ReadyResource {
   // landed just before is kept; the root's local store closes after its handles
   /** @private */
   _seal(child) {
-    const run = () => this._reindex(child)
+    const run = () => this._topic(child, true)
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }
 
+  // the topics rows follow the root's handles row by row: those that changed since the last pass that finished, so
+  // a launch reads none of the others. A pass with no point to go on from reads them all and drops the rows of
+  // handles that are gone
   /** @private */
-  async _reindex(last = null, only = null) {
-    if (this.closed || (this.closing && !last)) return
-    const { data: handles } = await this.store.get('handles')
-    const { data: rows } = await this.local.store.get('topics')
-    const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
-    const have = new Map(rows.map((row) => [row.id, row]))
-    // an opened handle not adopted yet has its writers already: its row is written once
-    const reads = last ? [last] : (only ?? [...this.children, ...this._pending])
-    const open = new Map(
-      [...reads]
-        // a handle on its way out is its seal's to read: any other pass finds its store closed
-        .filter((child) => child.opened && (child === last || !child.closing))
-        .map((child) => [b4a.toHex(child.store.discoveryKey), child])
-    )
-    for (const row of rows) {
-      if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
-    }
-    for (const [id, h] of wanted) {
-      const child = open.get(id)
-      const row = {
-        id,
-        handle: h.id,
-        type: h.type,
-        key: h.key,
-        name: h.name ?? null,
-        encryptionKey: h.encryptionKey ?? null,
-        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
-        // a handle not read in this pass keeps the writers it had when it last was
-        writers: child
-          ? await writersOf(child.store).catch(unread)
-          : (have.get(id)?.writers ?? null)
+  async _follow() {
+    const { changes, reset, settle } = await this.store.since('handles', 'topics')
+    let rows = null
+    if (reset) {
+      const wanted = new Set(changes.map(({ next }) => topicOf(next)))
+      rows = new Map((await this.local.store.get('topics')).data.map((row) => [row.id, row]))
+      for (const id of rows.keys()) {
+        if (!wanted.has(id)) await this._drop(id)
       }
-      if (same(have.get(id), row)) continue
-      await this.local.store.put('topics', row)
     }
+    for (const { prev, next } of changes) {
+      if (!next) await this._drop(topicOf(prev))
+      else await this._row(next, rows ? (rows.get(topicOf(next)) ?? null) : undefined)
+    }
+    await settle()
+  }
+
+  // a topics row written or dropped wakes what watches them
+  /** @private */
+  async _put(row) {
+    await this.local.store.put('topics', row)
+    this.emit('topics')
+  }
+
+  /** @private */
+  async _drop(id) {
+    await this.local.store.del('topics', id)
+    this.emit('topics')
+  }
+
+  // who may write to an open handle, on the row the root's pass wrote for it; a handle on its way out is its
+  // seal's to read
+  /** @private */
+  async _topic(child, sealing = false) {
+    if (!child.opened || (child.closing && !sealing)) return
+    const id = b4a.toHex(child.store.discoveryKey)
+    let { data: have } = await this.local.store.get('topics', id)
+    if (!have) {
+      // the root's pass has not written its row, or failed to: it does now, so the handle's writers are kept
+      await this._follow()
+      have = (await this.local.store.get('topics', id)).data
+      if (!have) return
+    }
+    const writers = await writersOf(child.store).catch(unread)
+    if (sameBytes(have.writers, writers)) return
+    // me.topics shows no writers: this one wakes no watch
+    await this.local.store.put('topics', { ...have, writers })
+  }
+
+  // one handle's topics row, written when it differs from `have`, the row there is, read when not given. Who may
+  // write is read off the handle while it is open here, and kept as it was otherwise
+  /** @private */
+  async _row(h, have) {
+    const id = topicOf(h)
+    // a handle on its way out is its seal's to read
+    const child = [...this.children, ...this._pending].find(
+      (c) => c.opened && !c.closing && c.id === h.id
+    )
+    if (have === undefined) have = (await this.local.store.get('topics', id)).data
+    const row = {
+      id,
+      handle: h.id,
+      type: h.type,
+      key: h.key,
+      name: h.name ?? null,
+      encryptionKey: h.encryptionKey ?? null,
+      epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
+      writers: child ? await writersOf(child.store).catch(unread) : (have?.writers ?? null)
+    }
+    if (!same(have, row)) await this._put(row)
   }
 
   // a push about one of this device's handles, verified against its own cores
@@ -696,8 +770,7 @@ export class Handle extends ReadyResource {
   async _receive(payload) {
     // a suspended storage answers no read: the cold entry serves a push while the app sleeps
     if (this._sus.suspended) throw CeroError.INVALID('receive: the app is suspended')
-    const { data: rows } = await this.local.store.get('topics')
-    return read(this.store.store.storage, this.spec, payload, rows)
+    return read(this.store.store.storage, this.spec, payload, this.local.store)
   }
 
   /** @private */
@@ -929,7 +1002,7 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _join(invite, type, { timeout = TIMEOUT } = {}) {
-    const known = await this._joined(type, Invite.parse(invite).discoveryKey)
+    const known = await this._joined(type, Invite.parse(invite).key)
     if (known) return known
 
     const join = this._start(invite, type)
@@ -969,10 +1042,9 @@ export class Handle extends ReadyResource {
   // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
   // so that one pairs again with a fresh keypair
   /** @private */
-  async _joined(type, target) {
-    const { data: joined } = await this.store.get('handles')
-    const existing = joined.find((h) => h.type === type && b4a.equals(discoveryKey(h.key), target))
-    if (!existing) return null
+  async _joined(type, key) {
+    const { data: existing } = await this.store.get('handles', hid.encode(key))
+    if (existing?.type !== type) return null
     const known = await this._load(type, existing.id)
     const { data: me } = await known.store.get('members', this.identity.id)
     const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
@@ -1052,7 +1124,7 @@ export class Handle extends ReadyResource {
     for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
       // the root's own device link row has no handle type: the launch resumes that one
       if (!this.spec.handles?.[type]) continue
-      if (await this._joined(type, Invite.parse(invite).discoveryKey)) {
+      if (await this._joined(type, Invite.parse(invite).key)) {
         await this.local.store.del('joins', id)
         continue
       }
@@ -1175,7 +1247,13 @@ export class Handle extends ReadyResource {
     this._carry(child)
     this._prune(child).catch(this._onerror)
     this._seats(child)
-    this.emit('handle', child, info)
+    // what a listener ties to the handle as it runs is no holder's: it stays through their last close
+    child._arriving = true
+    try {
+      this.emit('handle', child, info)
+    } finally {
+      child._arriving = false
+    }
   }
 
   // a handle's topics row follows who may write to it while it is open, so a push is checked
@@ -1384,6 +1462,12 @@ function pickHandle(spec, type) {
 function randomNs() {
   return z32.encode(Identity.randomBytes(8))
 }
+
+// the push topic of a handles row, which keys its topics row
+const topicOf = ({ key }) => b4a.toHex(discoveryKey(key))
+
+// what me.topics shows of a topics row: none of the keys it keeps
+const listing = ({ id, handle, type, name }) => ({ id, handle, type, name })
 
 // a topics row still describes its handle
 function same(row, next) {

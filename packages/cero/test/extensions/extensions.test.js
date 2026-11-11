@@ -347,7 +347,7 @@ test('before(ref): an operator called inside a hook throws INVALID', async (t) =
 // ─── me.on('handle') ────────────────────────────────────────────────────────
 
 test('me.on("handle"): fires on create and on re-open', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'handle-evt'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'handle-evt'), { keepOpen: 0 })
   const seen = []
   me.on('handle', (room) => seen.push(room))
 
@@ -380,7 +380,7 @@ test('me.on("handle"): re-loading an already-open handle is idempotent — no re
 })
 
 test('me.on("handle"): concurrent open() of the same id loads once', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'concurrent-open'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'concurrent-open'), { keepOpen: 0 })
   const room = await open(me.room)
   const { id } = room
   await room.close() // drop it from me.children so the reopen goes through _load
@@ -449,7 +449,7 @@ test('hooks: a hook on a type ref covers rooms already open, and off() lifts it'
 })
 
 test('hooks: a type hook registered while a handle opens runs on its ops', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'type-hook-pending'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending'), { keepOpen: 0 })
   const first = await open(me.room, { name: 'clinic' })
   const { id } = first
   await first.close()
@@ -468,7 +468,7 @@ test('hooks: a type hook registered while a handle opens runs on its ops', async
 })
 
 test('hooks: a type hook lifted while a handle opens never runs on it', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'type-hook-pending-off'), { linger: 0 })
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending-off'), { keepOpen: 0 })
   const first = await open(me.room, { name: 'clinic' })
   const { id } = first
   await first.close()
@@ -1024,6 +1024,29 @@ test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
   await set(room.profile, { name: 'general', avatar: 'b.png' })
   const row = await avatarOf('b.png')
   t.is(row.avatar, 'b.png', 'edit re-synced to the handles row')
+})
+
+test('handleSync: a handle closed and opened again still syncs onto the handles row', async (t) => {
+  const exts = [handleSync()]
+  const me = await openCero(t, await buildSpec(t, 'his-reopen', handleSchema, exts))
+
+  const room = await open(me.room)
+  const avatarOf = (want) =>
+    waitUntil(async () => {
+      const { data } = await get(me.room)
+      const r = data.find((h) => h.id === room.id)
+      return r?.avatar === want ? r : null
+    })
+
+  await set(room.profile, { name: 'general', avatar: 'a.png' })
+  await avatarOf('a.png')
+
+  await room.close()
+  const again = await open(me.room, { id: room.id })
+  t.is(again, room, 'kept open meanwhile')
+  await set(again.profile, { name: 'general', avatar: 'b.png' })
+  const row = await avatarOf('b.png')
+  t.is(row.avatar, 'b.png', 'an edit after the reopen synced to the handles row')
 })
 
 test('handleSync: a t.file room avatar lands in the handles list and resolves there', async (t) => {
