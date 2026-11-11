@@ -43,6 +43,12 @@ test('Mailbox.getAddress: one secret, one address', (t) => {
   t.absent(b4a.equals(Mailbox.getAddress(crypto.randomBytes(32)), Mailbox.getAddress(secret)))
 })
 
+test('Mailbox.getAddress: what is no secret is INVALID', (t) => {
+  for (const secret of [null, undefined, 'secret', {}]) {
+    t.exception(() => Mailbox.getAddress(secret), /INVALID: secret must be a buffer/)
+  }
+})
+
 test('Mailbox.keyPair opens what was encrypted to the address', (t) => {
   const secret = crypto.randomBytes(32)
   const pair = Mailbox.keyPair(secret)
