@@ -46,8 +46,8 @@ export class Rotation {
 
   /**
    * A removal by a device that may remove carries its rotation: the removal, then the key sealed
-   * to the devices that stay, with nothing else of this device in between. The key is a block of
-   * its own, so it lands even when a reorder refuses the removal.
+   * to the devices that stay and to those still promised a seat, with nothing else of this device
+   * in between. The key is a block of its own, so it lands even when a reorder refuses the removal.
    *
    * @param {Array<[string, unknown]>} ops  A batch that takes a member or a device out.
    * @returns {Promise<number | undefined>}  What the removal's write resolves.
@@ -157,7 +157,8 @@ export class Rotation {
       const stamp = await db._write(ops, true)
       if (!devices || stamp === undefined) return stamp
       try {
-        await this._rotate(false, devices)
+        // the promised are read now: the removal took those that stood on what it removed
+        await this._rotate(false, [...devices, ...(await this._promised())])
       } catch (err) {
         // the removal is in: the key check rotates. Behind, it says nothing, as that check does
         if (!db.closing && !db.closed && db.behind === null) db._onerror(err)
@@ -226,10 +227,15 @@ export class Rotation {
     const { data: devices } = await this.db.get('devices')
     const keyed = devices.filter((d) => d.key)
     if (keyed.length === 0) throw CeroError.INVALID('cannot rotate a database with no devices')
+    return [...keyed, ...(await this._promised())]
+  }
+
+  /** @private */
+  async _promised() {
     const { data: requests } = await this.db.get('requests')
     const promised = []
     for (const row of requests) if (await this._stands(row)) promised.push(row)
-    return [...keyed, ...promised]
+    return promised
   }
 
   // a promise stands while its invite lasts and no device key it stands on is one removed

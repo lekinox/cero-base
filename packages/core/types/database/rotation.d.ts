@@ -31,8 +31,8 @@ export declare class Rotation {
     }>;
     /**
      * A removal by a device that may remove carries its rotation: the removal, then the key sealed
-     * to the devices that stay, with nothing else of this device in between. The key is a block of
-     * its own, so it lands even when a reorder refuses the removal.
+     * to the devices that stay and to those still promised a seat, with nothing else of this device
+     * in between. The key is a block of its own, so it lands even when a reorder refuses the removal.
      *
      * @param {Array<[string, unknown]>} ops  A batch that takes a member or a device out.
      * @returns {Promise<number | undefined>}  What the removal's write resolves.
@@ -83,6 +83,8 @@ export declare class Rotation {
     private _rotate;
     /** @private */
     private _devices;
+    /** @private */
+    private _promised;
     /** @private */
     private _stands;
     /** @private */

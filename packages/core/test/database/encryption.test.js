@@ -1320,8 +1320,8 @@ test('rotate: a device that claimed its seat and is removed before its promise w
   t.ok((await host.db.get('requests', id)).data?.promised, 'seated, its promise not settled')
 
   await host.db.call('del-device', { id })
-  await host.db.rotate()
-  t.absent((await named(host.db)).includes(id), 'the rotation does not name it')
+  t.is(host.db.keyring.seq, 1, 'its removal carried the rotation')
+  t.absent((await named(host.db)).includes(id), 'which does not name it')
   await host.db.put('messages', { text: 'after the removal' })
   await waitFor(async () => (await db.rotation._epochs()).length > 0)
   t.is(db.keyring.seq, 0, 'it reads the announcement and opens no envelope')
@@ -1367,8 +1367,8 @@ test('rotate: a device linked through a device that is then removed is not seale
     (await host.db.get('requests', id)).data,
     'its promise goes with the device that linked it'
   )
-  await host.db.rotate()
-  t.absent((await named(host.db)).includes(id), 'and the next rotation does not name it')
+  t.is(host.db.keyring.seq, 2, 'the removal carried a rotation')
+  t.absent((await named(host.db)).includes(id), 'which does not name it')
   const { rotation } = host.db
   t.absent(await rotation._stands(row), 'a promise whose chain passes a removed key stands no more')
   const own = { ...row, proof: null, key: device.publicKey }
@@ -1578,6 +1578,33 @@ test('rotate: a device taken out by its writer key carries the rotation too', as
   await a.db.removeWriter(b.db.keyPair.publicKey)
   t.is(a.db.keyring.seq, 1)
   t.alike(await sealedTo(a.db), seats(a))
+})
+
+test('rotate: a removal carries its rotation to a device promised a seat, which reads on once it claims', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, join, open } = await promised(t, testnet)
+  const { key, encryptionKey } = host.db
+  const removed = await makePeer(t, testnet, { topic: host.topic, key, encryptionKey })
+  await admit(host.db, removed.db)
+  const keys = await join()
+  const { id } = (await host.db.get('requests')).data.find((row) => row.promised)
+
+  await host.db.del('members', removed.identity.id)
+  t.is(host.db.keyring.seq, 1, 'the key is in place as the removal resolves')
+  t.alike(
+    await sealedTo(host.db),
+    [...seats(host), id].sort(),
+    'sealed to the device that stays and to the one promised a seat'
+  )
+  await host.db.put('messages', { text: 'after the removal' })
+
+  const db = await open(keys)
+  await db.claim()
+  await waitFor(async () => (await texts(db)).includes('after the removal'))
+  t.is(db.keyring.seq, 1, 'she opened her envelope from the log')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  await host.db.rotation._audit()
+  t.is(host.db.keyring.seq, 1, 'and her seat is no reason to rotate again: she was named')
 })
 
 test('rotate: a removal of nobody, or one a rule refuses, appends no rotation', async (t) => {
