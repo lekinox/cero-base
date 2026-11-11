@@ -5,7 +5,7 @@ export declare const leftId: (memberId: any) => string;
  * spec-defined collection/action ops, returning the router plus an apply loop.
  *
  * @param {object} opts
- * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }> } }} opts.spec  Generated hyperdispatch spec.
+ * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown, opts?: { version?: number }) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }>, encoding?: Record<string, number> } }} opts.spec  Generated hyperdispatch spec.
  * @param {string} opts.ns  Namespace prefix for collection and op names.
  * @param {number} opts.start  The version of a database that holds no version row.
  * @param {() => number} opts.contract  This build's contract: an op whose effective stamp is past it is skipped.
@@ -17,13 +17,15 @@ export declare const leftId: (memberId: any) => string;
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export declare function makeDispatcher({ spec, ns, start, contract, onskip, onerror, key, onepoch, room, hooks, touch, read }: {
     spec: {
         dispatch: {
             Router: Function;
-            encode: (name: string, value: unknown) => Uint8Array;
+            encode: (name: string, value: unknown, opts?: {
+                version?: number;
+            }) => Uint8Array;
         };
         meta?: {
             refs?: Record<string, {
@@ -34,6 +36,7 @@ export declare function makeDispatcher({ spec, ns, start, contract, onskip, oner
                 fields?: string[];
                 required?: Record<string, string>;
             }>;
+            encoding?: Record<string, number>;
         };
     };
     ns: string;
@@ -56,6 +59,7 @@ export declare function makeDispatcher({ spec, ns, start, contract, onskip, oner
     touch: (name: string) => void;
     read: (view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>;
 }): {
+    encode: (route: string, value: unknown, stamp: number) => Uint8Array;
     dispatch: (value: Buffer, ctx: object) => Promise<void>;
     role: (view: object, writer: Uint8Array) => Promise<string | null>;
     version: (view: object) => Promise<number>;

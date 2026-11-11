@@ -369,3 +369,13 @@ export async function admit(a, b, role = 'member') {
   await b.bee.append(wrap(b.version, op), { optimistic: true })
   await waitFor(async () => (await a.get('members', b.identity.id)).data)
 }
+
+// a modified peer: what it writes skips the dry run and reaches the log as it is
+export function unchecked(db) {
+  db._dryRun = async (ops) => ({
+    changed: true,
+    wrapped: ops.map(([op, payload]) =>
+      wrap(db.version, db.spec.dispatch.encode(`@${db.ns}/${op}`, payload))
+    )
+  })
+}

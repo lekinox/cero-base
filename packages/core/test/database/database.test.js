@@ -12,7 +12,8 @@ import Hypercore from 'hypercore'
 import Autobee from 'autobee'
 import { genId } from '../../src/lib/ids.js'
 import { admission } from '../../src/lib/utils.js'
-import { wrap } from '../../src/database/envelope.js'
+import { wrap, unwrap } from '../../src/database/envelope.js'
+import { encodeId } from '../../src/blobs/codec.js'
 import {
   makeTestnet,
   makeStore,
@@ -29,6 +30,7 @@ import {
   withRole
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
+import { spec as next } from '../fixtures/spec/next/index.js'
 
 test.configure({ timeout: 60000 })
 
@@ -3009,7 +3011,6 @@ test('apply: set-device timestamps replicate identically', async (t) => {
 // ─── op-version wire-gate ─────────────────────────────────────────────────
 
 test('envelope: wrap/unwrap round-trips, bytes with no envelope are no op', async (t) => {
-  const { wrap, unwrap } = await import('../../src/database/envelope.js')
   const body = b4a.from([0x01, 0x02, 0x03])
 
   const wrapped = wrap(7, body)
@@ -3745,7 +3746,7 @@ test('version: a write on a route newer than the version is refused before it re
   const { db } = await bootstrapped(t, { spec: s })
   const length = db.bee.local.length
   const err = await db.put('tasks', { title: 'x' }).catch((e) => e)
-  t.is(err?.rule, 'route', 'refused')
+  t.is(err?.code, 'UNSUPPORTED', 'refused')
   t.is(db.bee.local.length, length, 'nothing appended')
 })
 
@@ -3788,6 +3789,249 @@ test('version: a store written under contracts 1 and 2, opened under 3, keeps ev
   t.is(three.behind, null, 'not behind')
   const { data: row } = await three.put('messages', { text: 'three' })
   t.ok((await three.get('messages', row.id)).data, 'and it writes')
+})
+
+// what a database appends, each op with the stamp it carries
+function appended(db) {
+  const nodes = []
+  const append = db.bee.append.bind(db.bee)
+  db.bee.append = (value, opts) => {
+    for (const node of [].concat(value)) nodes.push(unwrap(node))
+    return append(value, opts)
+  }
+  return nodes
+}
+
+const fileId = () =>
+  encodeId(
+    Identity.randomBytes(32),
+    { blockOffset: 0, blockLength: 1, byteOffset: 0, byteLength: 2 },
+    'image/png'
+  )
+
+// a row as the build before reads it: the fields it has
+const known = (row, older) => Object.fromEntries(Object.keys(older).map((k) => [k, row[k]]))
+
+test('version: a device on the next build writes as the version, bytes the build before decodes exactly', async (t) => {
+  const { db, identity } = await makeDb(t, { spec: next })
+  const nodes = appended(db)
+  await db.bootstrap({ name: 'first' })
+  t.is(db.version, 2, 'a newer build')
+  t.is(await versionRow(db), null, 'which holds its database at the start')
+
+  const photo = fileId()
+  const { data: row } = await db.put('messages', { text: 'hi', photo })
+  await db.set('messages', { id: row.id, text: 'again' })
+  await db.set('profile', { name: 'me', photo })
+  await db.set('members', { id: identity.id, name: 'renamed' })
+  await db.set('devices', { id: hid.encode(db.writerKey), name: 'phone' })
+  await db.call('add-invite', { id: b4a.toHex(Identity.randomBytes(32)), role: 'member' })
+  await db.del('messages', row.id)
+
+  const names = []
+  for (const { version, body } of nodes) {
+    const { name, value } = spec.dispatch.decode(body)
+    names.push(name)
+    t.is(version, 1, `${name} is stamped with the version`)
+    t.alike(spec.dispatch.encode(name, value), body, `${name} is what the build before writes`)
+  }
+  t.alike(
+    names,
+    [
+      '@cero/upgrade',
+      '@cero/add-writer',
+      '@cero/add-member',
+      '@cero/set-device',
+      '@cero/add-messages',
+      '@cero/add-messages',
+      '@cero/set-profile',
+      '@cero/set-member',
+      '@cero/set-device',
+      '@cero/add-invite',
+      '@cero/del-messages'
+    ],
+    "a collection, a single, a builtin extended and Cero's own ops"
+  )
+})
+
+test('version: a second device on the next build claims its seat as the version', async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.create()
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { identity, topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    spec: next,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  const nodes = appended(b.db)
+  await b.db.claim()
+  t.ok(b.db.writable, 'seated')
+  const [{ version, body }] = nodes
+  t.is(spec.dispatch.decode(body).name, '@cero/add-writer', 'by its add-writer')
+  t.is(version, 1, 'stamped with the version')
+})
+
+test('version: a write naming what the version does not have yet is refused with UNSUPPORTED, and nothing is appended', async (t) => {
+  const { db, identity } = await bootstrapped(t, { spec: next })
+  db.after('ping', () => {})
+  const { data: row } = await db.put('messages', { text: 'kept', tag: null })
+  const length = db.bee.local.length
+
+  const refused = async (write, thing) => {
+    const err = await write.catch((e) => e)
+    t.is(err?.code, 'UNSUPPORTED', thing)
+    t.ok(String(err?.message).includes(thing), 'named')
+  }
+  await refused(db.put('messages', { text: 'x', tag: 'held' }), "'tag' in 'messages'")
+  await refused(db.put('messages', { text: 'x', cover: fileId() }), "'cover' in 'messages'")
+  await refused(db.set('messages', { id: row.id, tag: 'held' }), "'tag' in 'messages'")
+  await refused(db.set('profile', { bio: 'held' }), "'bio' in 'profile'")
+  await refused(db.set('members', { id: identity.id, alias: 'held' }), "'alias' in 'members'")
+  await refused(db.put('visits', { date: 'today' }), "'visits'")
+  await refused(db.del('visits', 'v1'), "'visits'")
+  await refused(db.set('prefs', { theme: 'dark' }), "'prefs'")
+  await refused(db.call('ping', { x: 'now' }), "'ping'")
+  const batch = db.tx(async (tx) => {
+    await tx.put('messages', { text: 'beside it' })
+    await tx.put('visits', { date: 'today' })
+  })
+  await refused(batch, "'visits'")
+  t.is(db.bee.local.length, length, 'nothing appended')
+  t.is((await db.get('messages')).data.length, 1, 'nor applied')
+})
+
+test("version: after the owner's raise the same writes land with what they name", async (t) => {
+  const { db, identity } = await bootstrapped(t, { spec: next })
+  db.after('ping', (ctx) => ctx.put('messages', { text: ctx.row.x }))
+  await raise(db, 2)
+  t.is(db.behind, null, 'the build has the version')
+  const nodes = appended(db)
+
+  const cover = fileId()
+  const { data: row } = await db.put('messages', { text: 'x', tag: 'now', cover })
+  await db.set('profile', { bio: 'now' })
+  await db.set('members', { id: identity.id, alias: 'now' })
+  const { data: visit } = await db.put('visits', { date: 'today' })
+  await db.set('prefs', { theme: 'dark' })
+  await db.call('ping', { x: 'pinged' })
+
+  const message = (await db.get('messages', row.id)).data
+  t.alike(
+    [message.tag, message.cover],
+    ['now', cover],
+    'a field of a collection, a file among them'
+  )
+  t.is((await db.get('profile')).data.bio, 'now', 'of a single')
+  t.is((await db.get('members', identity.id)).data.alias, 'now', 'of a builtin')
+  t.ok((await db.get('visits', visit.id)).data, 'a collection')
+  t.is((await db.get('prefs')).data.theme, 'dark', 'a single')
+  const texts = (await db.get('messages')).data.map((m) => m.text)
+  t.ok(texts.includes('pinged'), 'an action')
+  t.ok(
+    nodes.every((n) => n.version === 2),
+    'each stamped with the version'
+  )
+})
+
+test('version: what a hook writes is cut to the stamp of the op it runs in', async (t) => {
+  const { db } = await bootstrapped(t, { spec: next })
+  db.after('put', async (ctx) => {
+    if (ctx.name !== 'messages') return
+    await ctx.set('profile', { name: ctx.row.text, bio: `bio of ${ctx.row.text}` })
+  })
+  await db.put('messages', { text: 'one' })
+  let profile = (await db.get('profile')).data
+  t.is(profile.name, 'one', 'the hook wrote')
+  t.is(profile.bio, null, 'without what the version does not have')
+
+  await raise(db, 2)
+  await db.put('messages', { text: 'two' })
+  profile = (await db.get('profile')).data
+  t.is(profile.bio, 'bio of two', 'once raised, with it')
+
+  // an op written before the raise syncs late: its hook writes as of its stamp, not the version
+  await stamped(db, 1, 'add-messages', { id: genId(), text: 'late' })
+  profile = (await db.get('profile')).data
+  t.is(profile.name, 'late', 'the late op wrote')
+  t.is(profile.bio, 'bio of two', 'and left what its stamp has no field for as stored')
+})
+
+test('version: a hook naming a route the version does not have refuses its op, in the dry run and at apply', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { spec: next, onerror: (err) => errors.push(err) })
+  db.after('put', (ctx) => ctx.name === 'records' && ctx.put('visits', { date: 'today' }))
+  const length = db.bee.local.length
+  const err = await db.put('records', { text: 'x' }).catch((e) => e)
+  t.is(err?.code, 'REFUSED', 'refused before the log')
+  t.is(db.bee.local.length, length, 'nothing appended')
+
+  const id = genId()
+  await stamped(db, 1, 'add-records', { id, text: 'appended anyway' })
+  t.absent((await db.get('records', id)).data, 'and refused at apply')
+  t.ok(
+    errors.some((e) => e.code === 'REFUSED'),
+    'as a refusal'
+  )
+})
+
+test('version: devices on two builds read the same rows before and after the raise', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  // b on the release that turns on what the next one held back, c on the next one
+  const b = await makePeer(t, testnet, {
+    ...room,
+    spec: { ...next, meta: { ...next.meta, target: 2 } }
+  })
+  const c = await makePeer(t, testnet, { ...room, spec: next })
+  await waitForConnection(a.network)
+  await admit(a.db, b.db)
+  await admit(a.db, c.db)
+  await waitFor(() => b.db.writable && c.db.writable)
+
+  const { data: row } = await b.db.put('messages', { text: 'from b' })
+  await c.db.set('profile', { name: 'from c' })
+  const everywhere = async (fn) => {
+    for (const peer of [a, b, c]) await waitFor(() => fn(peer.db))
+  }
+  await everywhere(async (db) => (await db.get('messages', row.id)).data)
+  await everywhere(async (db) => (await db.get('profile')).data)
+  const before = (await a.db.get('messages', row.id)).data
+  for (const peer of [b, c]) {
+    const on = (await peer.db.get('messages', row.id)).data
+    t.alike(known(on, before), before, 'the same row on the build before and the next')
+    t.is(on.tag, null, 'with nothing the version does not have')
+    t.alike(
+      known((await peer.db.get('profile')).data, (await a.db.get('profile')).data),
+      (await a.db.get('profile')).data,
+      'the same single'
+    )
+  }
+  t.is(await versionRow(a.db), null, 'nobody raised it')
+
+  await a.db.set('members', { id: b.identity.id, role: 'owner' })
+  await everywhere(async (db) => (await versionRow(db)) === 2)
+  t.pass("the new owner's device raised it")
+  await waitFor(() => a.db.behind === 2)
+  t.is(c.db.behind, null, 'the next build has it')
+
+  await b.db.set('messages', { id: row.id, tag: 'from b' })
+  await waitFor(async () => (await c.db.get('messages', row.id)).data?.tag === 'from b')
+  await c.db.set('profile', { bio: 'from c' })
+  await waitFor(async () => (await b.db.get('profile')).data?.bio === 'from c')
+  t.alike(
+    (await b.db.get('messages', row.id)).data,
+    (await c.db.get('messages', row.id)).data,
+    'the two builds read the same row after the raise'
+  )
+  t.alike((await b.db.get('profile')).data, (await c.db.get('profile')).data, 'and single')
+  t.alike((await a.db.get('messages', row.id)).data, before, 'the build before keeps what it read')
 })
 
 // ─── diff watchers: Database.changes ──────────────────────────────────────

@@ -270,6 +270,7 @@ export declare class Database extends ReadyResource {
     _room;
     bee: EpochAutobee;
     dispatcher: {
+        encode: (route: string, value: unknown, stamp: number) => Uint8Array;
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
         version: (view: object) => Promise<number>;
@@ -591,6 +592,8 @@ export declare class Database extends ReadyResource {
     private _track;
     /** @private */
     private _raise;
+    /** @private */
+    private _stamp;
     /** @private */
     private _dryRun;
     /** @private */

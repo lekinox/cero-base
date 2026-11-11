@@ -471,16 +471,13 @@ export class Database extends ReadyResource {
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
     await this.bee.updated()
-    const encoded = ops.map(([op, payload]) =>
-      this.spec.dispatch.encode(`@${this.ns}/${op}`, payload)
-    )
     // the dry run refuses what apply would; a no-op never reaches the log, an action always does
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
-      if (!(await this._dryRun(encoded)) && !action) return
+      const { wrapped, changed } = await this._dryRun(ops)
+      if (!changed && !action) return
       // a newer op may have applied while this write awaited
       if (frozen()) throw CeroError.BEHIND(this.behind)
-      const wrapped = encoded.map((value) => wrap(this.version, value))
       await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
     } catch (err) {
       if (this.closing || this.closed) throw CeroError.CLOSED('Database')
@@ -687,9 +684,14 @@ export class Database extends ReadyResource {
     if (this.bee.writable) return
     const { role } = await this._member(timeout)
     if (!can(role, WRITE)) return
-    const op = this.spec.dispatch.encode(`@${this.ns}/add-writer`, this._admission(this.writerKey))
+    const stamp = await this._stamp(this.view)
+    const op = this.dispatcher.encode(
+      `@${this.ns}/add-writer`,
+      this._admission(this.writerKey),
+      stamp
+    )
     // from a core not yet admitted: apply verifies the identity's signature and seats it
-    await this.bee.append(wrap(this.version, op), { optimistic: true })
+    await this.bee.append(wrap(stamp, op), { optimistic: true })
     await this.bee.update()
     await this.whenWritable({ timeout })
   }
@@ -1118,19 +1120,28 @@ export class Database extends ReadyResource {
     await this.write([['upgrade', { version: this.target }]])
   }
 
-  // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the write
+  // a device writes as the version, its own contract while it is behind
   /** @private */
-  async _dryRun(encoded) {
+  async _stamp(view) {
+    return Math.min(this.version, await this.dispatcher.version(view))
+  }
+
+  // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the
+  // write. Each is encoded and stamped as of the version it meets, an upgrade earlier in the batch
+  // included, as apply will run it
+  /** @private */
+  async _dryRun(ops) {
     const tx = this.view.transaction()
     const host = {
       addWriter: async () => {},
       removeWriter: async () => {},
       genesis: this.bee.system.isGenesis()
     }
+    const wrapped = []
     try {
-      for (const value of encoded) {
-        // at the version each op meets, as apply will run it
-        const stamp = Math.min(this.version, await this.dispatcher.version(tx))
+      for (const [op, payload] of ops) {
+        const stamp = await this._stamp(tx)
+        const value = this.dispatcher.encode(`@${this.ns}/${op}`, payload, stamp)
         await this.dispatcher.dispatch(value, {
           host,
           view: tx,
@@ -1139,8 +1150,9 @@ export class Database extends ReadyResource {
           seed: crypto.hash([this.writerKey, value]),
           stamp
         })
+        wrapped.push(wrap(stamp, value))
       }
-      return tx.updated()
+      return { wrapped, changed: tx.updated() }
     } finally {
       // a failing close must not mask the handler's own rejection
       try {

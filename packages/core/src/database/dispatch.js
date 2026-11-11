@@ -73,7 +73,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * spec-defined collection/action ops, returning the router plus an apply loop.
  *
  * @param {object} opts
- * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }> } }} opts.spec  Generated hyperdispatch spec.
+ * @param {{ dispatch: { Router: Function, encode: (name: string, value: unknown, opts?: { version?: number }) => Uint8Array }, meta?: { refs?: Record<string, { kind?: string, internal?: boolean, own?: boolean, verb?: string, fields?: string[], required?: Record<string, string> }>, encoding?: Record<string, number> } }} opts.spec  Generated hyperdispatch spec.
  * @param {string} opts.ns  Namespace prefix for collection and op names.
  * @param {number} opts.start  The version of a database that holds no version row.
  * @param {() => number} opts.contract  This build's contract: an op whose effective stamp is past it is skipped.
@@ -85,7 +85,7 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -223,6 +223,37 @@ export function makeDispatcher({
   const since = spec.meta?.since
   const upgrade = `@${ns}/upgrade`
 
+  // the ref or action each route writes, as a refusal names it
+  const things = new Map()
+  for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
+    if (info.kind === ACTION) {
+      things.set(`@${ns}/${name}`, name)
+      continue
+    }
+    for (const verb of ['add', 'set', 'del']) {
+      things.set(`@${ns}/${verb}-${info.verb || name}`, name)
+    }
+  }
+
+  // the bytes a build at `stamp` writes; the upgrade is named at every version, as decode reads it
+  function encode(route, value, stamp) {
+    if (route !== upgrade) supported(route, value, stamp)
+    return spec.dispatch.encode(route, value, { version: spec.meta?.encoding?.[stamp] })
+  }
+
+  // a write naming what its stamp does not have is refused on its device: left out, it would be
+  // lost without a word
+  function supported(route, value, stamp) {
+    const name = things.get(route) ?? route
+    if ((since?.routes[route] ?? 0) > stamp) throw CeroError.UNSUPPORTED(`'${name}'`)
+    const fields = since?.types[routes.get(route)?.type] ?? {}
+    for (const f of Object.keys(fields)) {
+      if (fields[f] > stamp && value?.[f] != null) {
+        throw CeroError.UNSUPPORTED(`'${f}' in '${name}'`)
+      }
+    }
+  }
+
   // what the op's author could not name, decided from its stamp and the schema before any hook
   // sees it: a route newer than the stamp, or one this build does not know, refuses its batch on
   // every build, and a newer field keeps what is stored
@@ -258,10 +289,11 @@ export function makeDispatcher({
       checkRequired(name, spec.meta?.refs?.[name], stored)
       return stored
     }
-    const write = (name, verb, row) => {
+    // as of the op it runs in: what that op's stamp has no field for keeps what is stored
+    const write = async (name, verb, row) => {
       ctx.touched?.push(name)
       const value = spec.dispatch.encode(`@${ns}/${verb}-${verbOf(name)}`, row)
-      return router.dispatch(value, { ...ctx, nested: true })
+      return router.dispatch(await decode(value, ctx.stamp, ctx.view), { ...ctx, nested: true })
     }
     return {
       get: (ref, query) => read(ctx.view, refName(ref), query),
@@ -894,6 +926,7 @@ export function makeDispatcher({
   }
 
   return {
+    encode,
     dispatch: async (value, ctx) => router.dispatch(await decode(value, ctx.stamp, ctx.view), ctx),
     role: getSignerRole,
     version: versionOf,
