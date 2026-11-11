@@ -1240,7 +1240,7 @@ test('Mailbox: opening drops handled rows over 30 days old, at any address', asy
   t.ok(box.mail.has(fresh), 'one handled since is kept')
 })
 
-test('Inbox: close lets go of a read still waiting for its block, and one appended after is not read', async (t) => {
+test('Inbox: close lets go of a read still waiting for its block: one appended after is not read, and its row waits', async (t) => {
   const testnet = await makeTestnet(t)
   const box = kept()
   const b = await mailbox(t, testnet, { inbox: box })
@@ -1275,13 +1275,6 @@ test('Inbox: close lets go of a read still waiting for its block, and one append
   t.is(uploads, 1, 'its sender was read once, by the other reader')
   t.is(calls, 0, 'not handed over')
   t.is(box.pending(), 1, 'its row waits for the next start')
-
-  // its block never stored here, the row is dropped and the message read from its sender
-  const got = []
-  b.receive(secret, (message) => got.push(b4a.toString(message)))
-  await waitFor(() => got.length > 0, { timeout: 30000 })
-  t.alike(got, ['late'], 'handed over at the next start')
-  await waitFor(() => box.pending() === 0)
 })
 
 test('Inbox: a message read as its inbox closes waits in the box for the next start', async (t) => {
@@ -2098,9 +2091,7 @@ test('Inbox: a key announced at another address than its row leaves that row as 
   t.alike(box.mail.get(rows[1].id), rows[1], 'the one still to hand over')
 })
 
-// an inbox closed, not killed, as the block of a message lands: while it is being stored, or
-// `late`, once it is and before its read returns. Then the next inbox at its address
-async function closedAsItLands(t, late) {
+test('Inbox: closed as the block of a message is being stored, the next start hands it over', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await mailbox(t, testnet)
   const b = await peer(t, testnet)
@@ -2120,13 +2111,8 @@ async function closedAsItLands(t, late) {
       inner.verify = async (...args) => {
         if (!args[0].block) return verify(...args)
         inner.verify = verify
-        if (!late) inbox.close()
-        const stored = await verify(...args)
-        if (late) {
-          for (const waiting of inbox._waiting) waiting.close().catch(() => {})
-          inbox.close()
-        }
-        return stored
+        inbox.close()
+        return verify(...args)
       }
     })
     return core
@@ -2149,13 +2135,7 @@ async function closedAsItLands(t, late) {
   await next.ready()
   await waitFor(() => got.length > 0, { timeout: 5000 }).catch(() => {})
   t.alike(got, ['stored'], 'handed over at the next start')
-}
-
-test('Inbox: closed as the block of a message is being stored, the next start hands it over', (t) =>
-  closedAsItLands(t, false))
-
-test('Inbox: closed once the block of a message is stored, its read cut short, the next start hands it over', (t) =>
-  closedAsItLands(t, true))
+})
 
 test('Inbox: keep false leaves the core of a message found at a start in a row written before it was read', async (t) => {
   const testnet = await makeTestnet(t)

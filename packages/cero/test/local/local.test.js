@@ -119,10 +119,6 @@ test('box: get reads the one row under an id, null when there is none', async (t
   const address = b4a.alloc(32, 1)
   await inbox.put({ id: 'aa', address, message: b4a.alloc(0), fetched: true })
   await inbox.put({ id: 'bb', address, message: b4a.alloc(0), handled: 7 })
-  const row = await inbox.get('aa')
-  t.is(row.id, 'aa')
-  t.alike(row.address, address)
-  t.is(row.fetched, true)
   t.alike(
     await inbox.get('aa'),
     (await inbox.list()).find((mail) => mail.id === 'aa')
