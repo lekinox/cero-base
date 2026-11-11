@@ -160,7 +160,7 @@ It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `ad
 
 | Event                    | Carries                                                                                                                       |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `update`                 | A `Set` of the ref names a batch touched, `'*'` for any.                                                                      |
+| `update`                 | A `Set` of the ref names a batch changed, `'*'` for any. A batch that changes no row emits none.                              |
 | `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated.                                                 |
 | `writable`, `unwritable` | This device gained or lost write. `writable` fires once the view holds its admission, so a read on it sees this device's row. |
 | `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.                                                           |

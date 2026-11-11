@@ -69,9 +69,9 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
  * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
- * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, so its watchers tick.
+ * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<Array<{ value: Buffer, key: Buffer }>> }}  `apply` resolves to the nodes that landed.
+ * @returns {{ dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer }>, changed: boolean }> }}  `apply` resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, touch, read }) {
   const router = new spec.dispatch.Router()
@@ -185,7 +185,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       return stored
     }
     const write = (name, verb, row) => {
-      touch(name)
+      ctx.touched?.push(name)
       const value = spec.dispatch.encode(`@${ns}/${verb}-${verbOf(name)}`, row)
       return router.dispatch(value, { ...ctx, nested: true })
     }
@@ -521,7 +521,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       commit: op.commit
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
-    touch(EPOCHS)
+    ctx.touched?.push(EPOCHS)
     // learned once its batch commits: a refused batch teaches no epoch, and a dry run commits nothing
     ctx.epochs?.push(row)
   })
@@ -823,7 +823,10 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
       deferred.addWriter = (...args) => void calls.push(['addWriter', args])
       deferred.removeWriter = (...args) => void calls.push(['removeWriter', args])
       const epochs = []
+      // refs hooks wrote, marked once their batch commits: a discarded batch, or a dry run, wakes nobody
+      const touched = []
       let refusal = null
+      let changed = false
       const landed = []
       for (const node of nodes) {
         try {
@@ -836,7 +839,8 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
             dbKey,
             seed,
             ts: node.timestamp,
-            epochs
+            epochs,
+            touched
           })
           landed.push(node)
         } catch (err) {
@@ -853,7 +857,9 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         await tx.close()
         onerror(refusal)
       } else {
+        changed = tx.updated()
         await tx.flush()
+        if (changed) for (const name of touched) touch(name)
         // before apply() returns: autobee clears host.applying right after, and addWriter reads it
         for (const [fn, args] of calls) await host[fn](...args)
         for (const row of epochs) {
@@ -865,7 +871,7 @@ export function makeDispatcher({ spec, ns, onerror, key, onepoch, room, hooks, t
         }
       }
       await view.flush()
-      return refusal ? [] : landed
+      return { landed: refusal ? [] : landed, changed }
     }
   }
 }

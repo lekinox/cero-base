@@ -72,9 +72,9 @@ export type DatabaseOpts = {
     /**
      * Called when a node is skipped or refused, or the bee errors.
      *
-     * Events: `update` (touched refs, a Set, after each applied batch), `apply` (one per applied
-     * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
-     * `behind` (an op from a newer app version was skipped).
+     * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
+     * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
+     * `unwritable`, `behind` (an op from a newer app version was skipped).
      */
     onerror?: (err: Error) => void;
 };
@@ -167,9 +167,9 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
- * Events: `update` (touched refs, a Set, after each applied batch), `apply` (one per applied
- * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
- * `behind` (an op from a newer app version was skipped).
+ * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
+ * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
+ * `unwritable`, `behind` (an op from a newer app version was skipped).
  *
  * @typedef {Record<string, unknown>} Row  A row, fields by name.
  * @typedef {{ data: Row | null }} SingleResult
@@ -241,6 +241,8 @@ export declare class Database extends ReadyResource {
     _skipped;
     /** @private */
     _applied;
+    /** @private */
+    _landed;
     namespace: string;
     _writable: boolean;
     encryptionKey: Uint8Array<ArrayBufferLike>;
@@ -265,10 +267,13 @@ export declare class Database extends ReadyResource {
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
-        }>, view: object, host: object) => Promise<Array<{
-            value: Buffer;
-            key: Buffer;
-        }>>;
+        }>, view: object, host: object) => Promise<{
+            landed: Array<{
+                value: Buffer;
+                key: Buffer;
+            }>;
+            changed: boolean;
+        }>;
     };
     /** @private */
     _presence;

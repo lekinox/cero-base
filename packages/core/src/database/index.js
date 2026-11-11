@@ -56,9 +56,9 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
- * Events: `update` (touched refs, a Set, after each applied batch), `apply` (one per applied
- * op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`, `unwritable`,
- * `behind` (an op from a newer app version was skipped).
+ * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
+ * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
+ * `unwritable`, `behind` (an op from a newer app version was skipped).
  *
  * @typedef {Record<string, unknown>} Row  A row, fields by name.
  * @typedef {{ data: Row | null }} SingleResult
@@ -119,6 +119,8 @@ export class Database extends ReadyResource {
     this._skipped = null
     /** @private */
     this._applied = false
+    /** @private */
+    this._landed = false
     this.namespace = opts.namespace || NAMESPACE
     this._writable = false
     this.encryptionKey = opts.encryptionKey
@@ -897,21 +899,25 @@ export class Database extends ReadyResource {
       ready.push({ ...node, value: op.body })
     }
     this._applied = true
-    this._notify(await this.dispatcher.apply(ready, view, host))
+    const { landed, changed } = await this.dispatcher.apply(ready, view, host)
+    if (landed.length > 0) this._landed = true
+    this._notify(landed, changed)
   }
 
   // 'update' carries the refs the batch touched; '*' means any, so a scoped watcher can skip. A batch
-  // that landed nothing wakes nobody: anyone holding the key appends nodes apply refuses
+  // that landed or changed nothing wakes nobody: anyone holding the key appends nodes apply refuses.
+  // One that landed ranks its database all the same, changed or not: its ops have to reach the others
   /** @private */
   async _update(db) {
     await db.update()
     const touched = this._touched
     const quiet = this._applied && touched.size === 0
+    const landed = this._landed
     this._touched = new Set()
     this._applied = false
-    if (quiet) return
-    this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
-    this._presence?.touch()
+    this._landed = false
+    if (!quiet) this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
+    if (!quiet || landed) this._presence?.touch()
   }
 
   // every bee a boot opens is attached, but the topic is joined once: close leaves it once
@@ -992,22 +998,22 @@ export class Database extends ReadyResource {
     return { op: verb.slice(0, dash), name: verb.slice(dash + 1), value }
   }
 
-  // marks the refs a batch touched and emits 'apply' per op, local and replicated alike
+  // emits 'apply' per op, local and replicated alike, and marks the refs of a batch that changed a row
   /** @private */
-  _notify(nodes) {
+  _notify(nodes, changed) {
     const listened = this.listenerCount('apply') > 0
     for (const node of nodes) {
       let op
       try {
         op = this._opOf(node)
       } catch (err) {
-        this._touched.add('*')
+        if (changed) this._touched.add('*')
         safetyCatch(err)
         continue
       }
       const ref = this._verbs.get(op.name)
       // an action's hooks write wherever they want, widen to all
-      this._touched.add(ref && this.refs[ref].kind !== ACTION ? ref : '*')
+      if (changed) this._touched.add(ref && this.refs[ref].kind !== ACTION ? ref : '*')
       if (!listened) continue
       this.emit('apply', {
         op: op.op,
