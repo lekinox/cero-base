@@ -49,6 +49,7 @@ export class Mailbox extends ReadyResource {
   ) {
     super()
     if (!network) throw CeroError.REQUIRED('network')
+    if (typeof inbox.get !== 'function') throw CeroError.INVALID('inbox box has no get(id)')
     this.network = network
     this.inbox = inbox
     this.outbox = outbox

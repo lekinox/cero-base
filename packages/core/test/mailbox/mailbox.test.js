@@ -2247,3 +2247,10 @@ test('Inbox: one that closes while it looks up the row of an announced key write
   t.is(puts, 0, 'no row written')
   t.is(box.mail.size, 0, 'none left for the next start')
 })
+
+test('Mailbox: an inbox box that cannot read a row by its id is refused', (t) => {
+  const box = kept()
+  const { list, put, del } = box
+  t.exception(() => new Mailbox({}, { inbox: { list, put, del } }), /INVALID: inbox box.*get/)
+  t.execution(() => new Mailbox({}, { inbox: box }))
+})
