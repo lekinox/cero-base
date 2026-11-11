@@ -1409,11 +1409,16 @@ export class Database extends ReadyResource {
     const { data: member } = await this.get('members', this.identity.id)
     const { data: requests } = await this.get('requests')
     // a core that wrote already, its join or an earlier claim, claims once the view holds what it
-    // wrote: appended on a view still catching up with it, a claim is lost. Turned away, it hears
+    // wrote: appended on a view still catching up with it, a claim is lost. Turned away, it hears.
+    // What the view read and kept no row of, a claim refused where it landed, is made again
     const id = hid.encode(this.writerKey)
     const { data: device } = await this.get('devices', id)
     const landed = device || requests.some((row) => row.id === id)
-    if (this.length > 0 && !landed) return this._refused()
+    if (this.length > 0 && !landed) {
+      await this._refused()
+      const read = await this.bee.system.get(this.writerKey)
+      if (!read || read.length < this.length) return null
+    }
     const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
     const first = requests.find(mine)
     // a member's device keeps what she was promised once: its row is the promise kept

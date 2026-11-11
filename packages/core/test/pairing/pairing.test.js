@@ -1834,6 +1834,10 @@ test("promised: a member's device that joined claims only once its view holds it
     if (!behind || (name !== 'requests' && name !== 'devices')) return get(name, query)
     return { data: typeof query === 'string' ? null : [] }
   }
+  const { system } = db.bee
+  const read = system.get.bind(system)
+  system.get = async (key, opts) =>
+    behind && b4a.equals(key, db.writerKey) ? null : read(key, opts)
   const claiming = db.claim()
   await waitFor(() => looked > 0)
   const early = await waitFor(() => db.length > 1, { timeout: 1500 }).catch(() => false)
