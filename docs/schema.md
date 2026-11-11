@@ -247,14 +247,48 @@ build, because every log holds writes to it. Reordering two fields of the same t
 swaps their data on every row. A build that fails leaves `spec/` as it was. Keep
 `spec/` in git and rebuild over it after every change: it records what shipped.
 
-The build keeps one contract version for the app in `spec/contract.json`, and every database stamps
-it on its writes, the root's and every handle's. It rises by one in a build that changes what is
-stored, a type, a collection or an action, at the root or in any handle type, and never goes down.
-A build that changes nothing stored keeps it, and so does an upgrade of Cero that changes only what
-a device computes on read, such as `status`, or how a UI talks to its worker. An upgrade of Cero
-that changes what a write means raises it on the next build, as a stored change does. A device on
-an older build skips writes from a newer one until it updates, and `status.behind` says so. An
-index added by a rebuild fills on the next open: the rows written before it are found through it.
+The build keeps one version for the app, its contract, in `spec/contract.json`. It rises by one in
+a build that changes what is stored, a type, a collection or an action, at the root or in any handle
+type, and never goes down. A build that changes nothing stored keeps it, and so does an upgrade of
+Cero that changes only what a device computes on read, such as `status`, or how a UI talks to its
+worker. An upgrade of Cero that changes what a write means raises it on the next build, as a stored
+change does. An index added by a rebuild fills on the next open: the rows written before it are
+found through it.
+
+### A handle's version
+
+The root and every handle each have a version of their own, `status.version`. A new one starts at the version its build asks for, and an owner's device on a newer build moves it there when
+it opens it. Until then every device writes as the handle's version: what a newer build added and the
+handle does not have yet is left alone, and a write naming it throws `UNSUPPORTED`. Once the handle
+has moved past a device's build, that device reads, `status.behind` says so, and its writes throw
+`BEHIND` until it updates. A device behind in its root is behind in every handle too.
+
+### Hold back what a release adds
+
+A release can ship a field, a collection, a single or an action before handles use it, so that the
+devices still on the previous release keep writing. Mark it with `t.later`:
+
+```js
+const v3 = cero.schema({
+  todos: t.collection({ text: t.string, done: t.bool, due: t.int, tag: t.later(t.string) }),
+  visits: t.later(t.collection({ date: t.string }))
+})
+```
+
+The build then asks handles for the version below the first thing held back, and an owner's device
+moves them no further. A later release removes the mark, and a handle turns it on once an owner's
+device has that release. In the app, check before showing it:
+
+```js
+if (await cero.supports(room.todos, 'tag')) showTags()
+if (await cero.supports(room.visits)) showVisits()
+```
+
+`t.later` takes a field of a collection, a single or an action, a field of a builtin through
+`t.extend`, or a whole collection, single or action, at the root or in a handle type. Things turn on
+in the order they shipped: a build that adds something after a thing it holds back fails unless that
+is held too, and a thing handles use already cannot be held. What one build adds turns on together,
+and a handle type, an index or a change in an extension cannot be held back on its own.
 
 ## Next
 

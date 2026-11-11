@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'url'
 
 import { encode, createNotification } from 'blind-push'
 
-import { cero, open, put, set, get, receive, schema, t } from '../../src/index.js'
+import { cero, open, put, set, get, invite, receive, schema, t } from '../../src/index.js'
 import { receive as cold } from '../../src/push/index.js'
 import { build } from '../../src/build/index.js'
 import { contract } from '../../src/build/schemas.js'
@@ -143,6 +143,21 @@ test('compat: this release and the previous one write to one room, then one upgr
   t.pass('and still syncs')
 })
 
+test('compat: an invite this release mints admits a device on the previous one', async (t) => {
+  const { old, before, now } = await previous()
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), now, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const them = await old.cero(await t.tmp(), before, { bootstrap: testnet.bootstrap })
+  t.teardown(() => them.close().catch(() => {}), { order: 5 })
+
+  const mine = await open(me.room, { name: 'shared' })
+  const theirs = await old.open(them.room, await invite(mine))
+  await put(mine.messages, { text: 'from now' })
+  await waitUntil(async () => (await old.get(theirs.messages)).data.length === 1)
+  t.pass('it joins and reads the room')
+})
+
 // a release that changes what a write means (leaving is no removal) raises a shipped app's contract on its next build:
 // devices still on the previous release skip its writes until they update, as the database gate does
 // the previous release's spec, contract.json and all, rebuilt by this one: an app that shipped and upgraded Cero
@@ -169,4 +184,20 @@ test('compat: a shipped app rebuilt on this release raises its contract when wha
   t.ok(
     rose ? shipped.meta.version > before.meta.version : shipped.meta.version >= before.meta.version
   )
+})
+
+test('compat: an invite to a room past the start is refused by the previous release at once', async (t) => {
+  const { old, before } = await previous()
+  const shipped = await shippedSpec()
+  const { version, start } = shipped.meta
+  if (version <= start) return t.pass('no raise between the two releases')
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), shipped, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const them = await old.cero(await t.tmp(), before, { bootstrap: testnet.bootstrap })
+  t.teardown(() => them.close().catch(() => {}), { order: 5 })
+
+  const mine = await open(me.room, { name: 'shared' })
+  const err = await old.open(them.room, await invite(mine)).catch((e) => e)
+  t.is(err?.code, 'INVALID_INVITE', 'it refuses the invite instead of waiting on a join')
 })

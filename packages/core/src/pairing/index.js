@@ -6,7 +6,7 @@ import crypto from 'hypercore-crypto'
 import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
-import { Invite } from './invite.js'
+import { Invite, STAMPED } from './invite.js'
 import { Response, STATUS_ACCEPTED, STATUS_DENIED } from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
@@ -39,7 +39,7 @@ const MAX_DELAY = 2 ** 31 - 1
  *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
- * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
+ * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number, start?: number, encoding?: Record<string, number> } }} spec  The database's spec: the join is one of its ops.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
@@ -125,14 +125,16 @@ export class Pairing extends ReadyResource {
     }
 
     const invite = Invite.create({ ttl, data, key: this.db.key, address: this.db.address })
-    await this.db.call('add-invite', {
+    const row = {
       id: b4a.toHex(invite.id),
       role,
       reuse,
       confirm,
       expires: invite.expires,
       createdAt: Date.now()
-    })
+    }
+    invite.stamp = await this.db.write([['add-invite', row]])
+    if (invite.stamp > this.db.start) invite.version = STAMPED
     invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()
@@ -220,7 +222,8 @@ export class Pairing extends ReadyResource {
       }
     }
     this._arm([...invites, ...requests, ...spent])
-    const inviter = can(role, INVITE)
+    // behind, this device's view of the room is stale: it answers no join until it updates
+    const inviter = can(role, INVITE) && this.db.behind === null
     const owed = inviter ? requests.filter((row) => row.admitted) : []
     const refused = inviter ? refusals : []
     await this._answer(owed, refused, role)
@@ -379,6 +382,10 @@ export class Pairing extends ReadyResource {
     }
     const parsed = Invite.parse(invite)
     if (parsed.expired) throw CeroError.EXPIRED()
+    // an invite with no stamp was minted before invites carried one: at the start
+    const { version = 1, start = 1 } = spec.meta || {}
+    const stamp = parsed.stamp || start
+    if (stamp > version) throw CeroError.BEHIND(stamp)
     if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
     if (!mailbox.opened) await mailbox.ready()
 
@@ -441,7 +448,7 @@ export class Pairing extends ReadyResource {
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
     const expiry =
       parsed.expires && left < MAX_DELAY ? setTimeout(() => stop(CeroError.EXPIRED()), left) : null
-    write(core, spec, parsed, identity, writer)
+    write(core, spec, stamp, parsed, identity, writer)
       .then(() => post.ready())
       .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))
     try {
@@ -480,14 +487,15 @@ export function sealJoin(invite, identity, writer, reply) {
 
 // one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
 // another. Plain, since the joiner has no key yet, and linked to the invite's node, so no member
-// applies it before the invite
-async function write(core, spec, invite, identity, writer) {
+// applies it before the invite. Written as of its invite's stamp
+async function write(core, spec, stamp, invite, identity, writer) {
   await core.ready()
   const last = await core.getUserData('cero/join')
   if (last && b4a.equals(last, invite.id)) return
-  const { ns = NAMESPACE, version = 1 } = spec.meta || {}
+  const { ns = NAMESPACE, encoding } = spec.meta || {}
   const payload = sealJoin(invite, identity, core.key, Mailbox.getAddress(writer.secretKey))
-  const op = wrap(version, spec.dispatch.encode(`@${ns}/join`, payload))
+  const body = spec.dispatch.encode(`@${ns}/join`, payload, { version: encoding?.[stamp] })
+  const op = wrap(stamp, body)
   const links = [invite.link]
   await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links }))
   await core.setUserData('cero/join', invite.id)

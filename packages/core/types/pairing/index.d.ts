@@ -62,6 +62,8 @@ export type JoinOpts = {
         meta?: {
             ns?: string;
             version?: number;
+            start?: number;
+            encoding?: Record<string, number>;
         };
     };
     /**
@@ -118,7 +120,7 @@ export type JoinResult = {
  *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
- * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
+ * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number, start?: number, encoding?: Record<string, number> } }} spec  The database's spec: the join is one of its ops.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.

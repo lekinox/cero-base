@@ -1,6 +1,7 @@
 export type Prim = {
     prim: string;
     required?: boolean;
+    later?: boolean;
 };
 export type TypeDef = {
     kind: 'single' | 'collection' | 'action';
@@ -8,6 +9,7 @@ export type TypeDef = {
     indexes?: Record<string, string[]>;
     own?: boolean;
     push?: boolean;
+    later?: boolean;
 };
 export type SchemaDefs = {
     [name: string]: TypeDef | Record<string, TypeDef>;
@@ -38,6 +40,15 @@ export declare const t: {
      * @returns {Prim}
      */
     required: (marker: Prim) => Prim;
+    /**
+     * Hold back a field, a collection, a single or an action: a database starts using it once a
+     * build without the mark reaches its owner's device. What databases use already cannot be held.
+     *
+     * @template {Prim | TypeDef} T
+     * @param {T} def
+     * @returns {T}
+     */
+    later: <T extends Prim | TypeDef>(def: T) => T;
     /**
      * Single-row table (one record, set/get by name).
      *

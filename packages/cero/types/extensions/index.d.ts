@@ -18,6 +18,7 @@ export declare const cero: {
         signal?: AbortSignal;
     }): () => void;
     get(ref: operators.Ref, q?: string | Record<string, unknown>): Promise<operators.SingleResult | operators.ListResult>;
+    supports(ref: operators.Ref, field?: string): Promise<boolean>;
     watch(ref: operators.Ref, query?: string | (Record<string, unknown> & {
         changes?: boolean;
     }), opts?: {
@@ -83,6 +84,7 @@ export declare const cero: {
         fixed64: import("@cero-base/core").Prim;
         file: import("@cero-base/core").Prim;
         required: (marker: import("@cero-base/core").Prim) => import("@cero-base/core").Prim;
+        later: <T extends import("@cero-base/core").Prim | import("@cero-base/core").TypeDef>(def: T) => T;
         single(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
             push?: boolean;
         }): import("@cero-base/core").TypeDef;

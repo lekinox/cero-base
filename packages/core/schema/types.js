@@ -13,7 +13,8 @@ export const types = [
       { name: 'length', type: 'uint', required: true }
     ]
   },
-  // Pairing invite, z32-encoded as the wire form: the room, its address and the seed that proves it.
+  // Pairing invite, z32-encoded as the wire form: the room, its address and the seed that proves it,
+  // and the stamp its record was written with, which its joins take.
   {
     name: 'invite',
     compact: false,
@@ -24,7 +25,8 @@ export const types = [
       { name: 'address', type: 'fixed32', required: true },
       { name: 'seed', type: 'fixed32', required: true },
       { name: 'link', type: '@cero/link', required: true },
-      { name: 'data', type: 'buffer', required: false }
+      { name: 'data', type: 'buffer', required: false },
+      { name: 'stamp', type: 'uint', required: false }
     ]
   },
   // Pairing join — sealed to the room's address, in the joiner's own writer core. `signature` is

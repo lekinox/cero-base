@@ -255,14 +255,16 @@ range.
 for await (const { data } of cero.watch(room.status)) if (data.behind) showUpdatePrompt()
 ```
 
-Every write carries your app's contract version, kept by `build` in `spec/contract.json`
-([Schema](schema.md#change-a-schema-that-shipped)). Peers on different versions keep
-working together: writes from a newer version are skipped, not errors, and `status.behind` holds the
-highest version seen. A device behind reads and syncs but does not write there: a write from a view
-missing the newer rows would overwrite them for everyone, so `put`, `set`, `del`, `call`, `tx`,
-`invite`, `accept`, `deny`, `revoke` and `rotate` throw `BEHIND` until the update, and only `leave`
-goes through. Once the app upgrades, the next open catches up on the skipped writes.
-`status.behind` is per context, so watch `room.status` for each open handle as well as `me.status`.
+Devices on different releases of the app keep working together. Each handle, and the root, is at a
+version of the app, `status.version`, and every device writes as that version: a device on a newer
+release leaves out what the handle has not turned on, and an owner's device moves the handle to the
+version its release asks for ([Schema](schema.md#a-handles-version)). A device on a release below
+that version is behind: it reads and syncs, `status.behind` holds the version, and `put`, `set`,
+`del`, `call`, `tx`, `invite`, `accept`, `deny`, `revoke` and `rotate` throw `BEHIND` until the
+update, since a write from a view missing the newer rows would overwrite them for everyone. Only
+`leave` goes through, unless the root is behind. Once the app upgrades, the next open applies what
+it skipped. A device behind in its root is behind in every handle, so watch `me.status` as well as
+`room.status` for each open handle.
 
 ## Next
 

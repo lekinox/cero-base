@@ -89,7 +89,10 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `INVALID`. `setup(me)` runs before the root opens and may write, so hooks registered there see
    every op; a hook on a type ref (`me.room.notes`) reaches every handle of the type.
 4. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
-   fields of the same type swaps their data.
+   fields of the same type swaps their data. To ship something before handles use it, mark it
+   `t.later(...)`: handles stay at the previous version, so older devices keep writing, until a
+   release drops the mark and an owner's device moves them. Ask `await cero.supports(room.notes,
+'due')` before showing it; writing it before then throws `UNSUPPORTED`.
 5. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
    pass an existing `id`. `set` merges your fields over the stored row on this device and writes it:
    of two devices setting one row at once, the one applied last wins. On a single, always `set`.
@@ -117,7 +120,7 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 ```js
 const { data, total } = await cero.get(me.notes, { title: 'first', reverse: true, limit: 20 })
 cero.watch(me.notes, {}).on('data', ({ data }) => console.log(data))
-const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, nearby }
+const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, version, nearby }
 ```
 
 - `get(ref)` lists, `get(ref, id)` fetches one, `get(ref, { field })` filters. Queries: equality on
@@ -128,7 +131,8 @@ const { data: status } = await cero.get(room.status) // { role, writable, epoch,
   that changed since the item before, and `reset` on the first.
 - `status` is this device's view of a context: `writable` and `role` turn `false` / `null` when you
   are removed, `suspended` follows `cero.suspend(me)` / `cero.resume(me)` (the app's background and
-  foreground), `behind` asks for an app update. `cero.activate(room)` ranks the handle on screen first
+  foreground), `behind` asks for an app update (a device behind in its root is behind in every
+  handle), `version` is the app version the handle is at. `cero.activate(room)` ranks the handle on screen first
   on the swarm.
 - Bluetooth is only a transport, always there with the radio off: `cero.nearby(me, true)` turns it on
   from the app's own setting at every start, `cero.nearby(me, true, { topic })` narrows it to a

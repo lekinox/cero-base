@@ -34,6 +34,7 @@ import {
   Local
 } from '../../src/index.js'
 import { spec } from '../fixtures/spec/index.js'
+import { spec as next } from '../fixtures/spec/next/index.js'
 import {
   makeTestnet,
   makeMirror,
@@ -1830,6 +1831,7 @@ test('status: a room reports its role, writability, epoch and suspension, live',
     epoch: 0,
     suspended: false,
     behind: 0,
+    version: spec.meta.target,
     nearby: 'off',
     topic: b4a.toHex(room.store.discoveryKey)
   }
@@ -2210,37 +2212,113 @@ test('link: a denied launch opens as a new identity the next time, nothing left 
   t.not(fresh.id, a.me.id, 'as an identity of its own')
 })
 
+test('status: a new room starts at the version its build asks for', async (t) => {
+  const testnet = await makeTestnet(t)
+  const team = spec.handles.team
+  const meta = { ...team.meta, version: team.meta.version + 1, target: team.meta.version + 1 }
+  const newer = { ...spec, handles: { ...spec.handles, team: { ...team, meta } } }
+  const me = await cero(await t.tmp(), newer, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const room = await open(me.team, { name: 'clinic' })
+  const row = await room.store.view.get('@cero/counters', { name: '_version' })
+  t.is(row?.value, meta.target, 'its genesis wrote it')
+})
+
 test('status: a context behind a newer app reads but does not write until the update', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })
   const { data: mine } = await put(room.messages, { text: 'mine' })
-  const { wrap } = await import('../../../core/src/database/envelope.js')
-  const { genId } = await import('../../../core/src/lib/ids.js')
-  const op = spec.handles.team.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await room.store.bee.append(wrap(room.store.version + 1, op))
+  // its owner moves it to a newer app's version
+  await room.store.write([['upgrade', { version: room.store.version + 1 }]])
   await waitUntil(async () => (await get(room.status)).data.behind === room.store.version + 1)
   const err = await put(room.messages, { text: 'stale' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', 'the write waits for the update')
   t.is((await get(room.messages, mine.id)).data?.text, 'mine', 'reads go on')
 })
 
-test('status: behind is per context: the root, a room and the local store go on apart', async (t) => {
+test('status: a device behind in its root is behind in every room, and the local store goes on', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })
-  const { wrap } = await import('../../../core/src/database/envelope.js')
-  const { genId } = await import('../../../core/src/lib/ids.js')
-  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await me.store.bee.append(wrap(me.store.version + 1, op))
-  await waitUntil(async () => (await get(me.status)).data.behind === me.store.version + 1)
+  const seen = []
+  cero.watch(room.status).on('data', ({ data }) => seen.push(data.behind))
+  const behind = me.store.version + 1
+  await me.store.write([['upgrade', { version: behind }]])
+  await waitUntil(() => seen.at(-1) === behind || null)
+  t.pass('the room reports it as the root goes behind')
 
-  const err = await put(me.messages, { text: 'stale' }).catch((e) => e)
-  t.is(err?.code, 'BEHIND', 'the root does not write')
+  const err = await put(room.messages, { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'the room does not write')
+  t.is((await put(me.messages, { text: 'stale' }).catch((e) => e))?.code, 'BEHIND', 'nor the root')
   t.ok(
     (await put(me.local.drafts, { text: 'draft' })).data.id,
     'the local store does: this device alone'
   )
-  t.ok((await put(room.messages, { text: 'room' })).data.id, 'a room that is current does')
-  t.is((await get(room.status)).data.behind, 0, 'behind is the root alone')
+  t.is((await get(room.status)).data.version, spec.meta.target, "the room's version is its own")
+})
+
+test('status: a room whose root is behind prunes no device from it', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const { data: rows } = await get(room.devices)
+  await me.store.write([['upgrade', { version: me.store.version + 1 }]])
+  await waitUntil(() => room.store.behind !== null || null)
+  // the root, past this build, reads this device as removed
+  me.store.removed = async () => 'removed'
+  await t.exception(me._prune(room), /BEHIND/, 'the room does not write')
+  t.alike((await get(room.devices)).data, rows, 'a removal it cannot follow is not taken')
+})
+
+test('status: a device behind in its root leaves no room: nothing is half done', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  await me.store.write([['upgrade', { version: me.store.version + 1 }]])
+  await waitUntil(() => room.store.behind !== null || null)
+  const err = await cero.leave(room).catch((e) => e)
+  t.is(err?.code, 'BEHIND', err?.message)
+  t.ok((await get(room.members, me.id)).data, 'still a member')
+  t.is((await get(me.team)).data.length, 1, 'still in the list')
+  t.absent(room.closed, 'and open')
+})
+
+test("status: version is the room's, and supports answers from it and the spec, before and after a raise", async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), next, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const version = async () => (await get(me.status)).data.version
+  t.is(await version(), next.meta.target, 'a new root is at the target its build asks for')
+  t.ok(await cero.supports(me.messages), 'a collection it had')
+  t.ok(await cero.supports(me.messages, 'text'), 'and its field')
+  t.absent(await cero.supports(me.messages, 'tag'), 'a field held back')
+  t.absent(await cero.supports(me.visits), 'a collection held back')
+
+  // as its owner's device on the release that lets them go does
+  await me.store.write([['upgrade', { version: next.meta.version }]])
+  await waitUntil(async () => (await version()) === next.meta.version || null)
+  t.ok(await cero.supports(me.messages, 'tag'), 'the field is on')
+  t.ok(await cero.supports(me.visits), 'and the collection')
+  t.is((await get(me.status)).data.behind, 0, 'its build has the version')
+  t.ok((await put(me.messages, { text: 'a', tag: 'b' })).data.id, 'and writes it')
+})
+
+test('supports: a write of what the version holds back is refused with UNSUPPORTED', async (t) => {
+  const testnet = await makeTestnet(t)
+  const me = await cero(await t.tmp(), next, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const field = await put(me.messages, { text: 'a', tag: 'b' }).catch((e) => e)
+  t.is(field?.code, 'UNSUPPORTED', field?.message)
+  const collection = await put(me.visits, { date: 'today' }).catch((e) => e)
+  t.is(collection?.code, 'UNSUPPORTED', collection?.message)
+  t.is((await get(me.messages)).data.length, 0, 'nothing was written')
+  t.ok((await put(me.messages, { text: 'a' })).data.id, 'without it the write goes in')
+})
+
+test('supports: takes the ref of an open handle and a field it has', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  t.ok(await cero.supports(room.messages, 'text'), 'a room answers for its own')
+  await t.exception(cero.supports(me.team.messages), /INVALID/, 'every room of a type has its own')
+  await t.exception(cero.supports(me.local.drafts), /INVALID/, 'the local store has none')
+  await t.exception(cero.supports(me.messages, 'nope'), /UNKNOWN/, 'a field it lacks')
 })
 
 test('status: behind, invite, rotate and tx wait for the update, and a member can still leave', async (t) => {
@@ -2251,11 +2329,9 @@ test('status: behind, invite, rotate and tx wait for the update, and a member ca
   const joined = await open(joiner.me.team, await cero.invite(room))
   await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
 
-  const { wrap } = await import('../../../core/src/database/envelope.js')
-  const { genId } = await import('../../../core/src/lib/ids.js')
-  const op = spec.handles.team.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await joined.store.bee.append(wrap(joined.store.version + 1, op))
+  await room.store.write([['upgrade', { version: room.store.version + 1 }]])
   await waitUntil(async () => (await get(room.status)).data.behind === room.store.version + 1)
+  await waitUntil(async () => (await get(joined.status)).data.behind === room.store.version + 1)
 
   const attempts = {
     invite: () => cero.invite(room),

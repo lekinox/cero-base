@@ -172,6 +172,8 @@ export class Handle extends ReadyResource {
       pinned: !parent,
       // the root has no topic to push to
       push: !!parent,
+      // the root says which of this identity's devices are removed: behind there, behind here
+      parent: parent?.root.store,
       onerror: this._onerror
     })
     /** @private */
@@ -446,6 +448,8 @@ export class Handle extends ReadyResource {
   /** @private */
   async _leave() {
     if (!this.parent) throw CeroError.INVALID('the root cannot be left')
+    // leaving drops it from the root list too: behind there, nothing is done
+    if (this.parent.store.behind !== null) throw CeroError.BEHIND(this.parent.store.behind)
     await this.store.del('members', this.identity.id)
     await this.parent.store.call('del-handle', { id: hid.encode(this.store.key) })
     await this._end()
@@ -528,6 +532,7 @@ export class Handle extends ReadyResource {
       epoch: (current && seqs.get(current)) || 0,
       suspended: this.root._sus.suspended,
       behind: this.store.behind || 0,
+      version: await this.store.dispatcher.version(this.store.view),
       nearby: this.root._bluetooth?.state ?? null
     }
     if (this.parent) data.topic = b4a.toHex(this.store.discoveryKey)
@@ -543,7 +548,7 @@ export class Handle extends ReadyResource {
       [this.store, 'unwritable'],
       [this.store, 'behind']
     ]
-    if (this.parent) sources.push([this.root, 'status'])
+    if (this.parent) sources.push([this.root, 'status'], [this.root.store, 'behind'])
     for (const [emitter, event] of sources) emitter.on(event, fn)
     const off = this._onRadio(fn)
     return () => {
@@ -869,8 +874,10 @@ export class Handle extends ReadyResource {
 
       const ts = Date.now()
       const writerKey = child.store.writerKey
-      // one batch, so a handle's first two ops land together
+      // one batch, so a handle's first ops land together
       await child.store.tx(async (tx) => {
+        // first, so the rest is written at the version
+        await tx.call('upgrade', { version: child.store.target })
         await tx.call('add-writer', {
           master: this.identity.publicKey,
           writer: writerKey,

@@ -112,14 +112,16 @@ export class Rotation {
     this.db.keyring.seq = top ? top.epoch : 0
   }
 
-  /** Debounced audit, run at open and after every update. */
+  /** Debounced key check, with the owner's raise beside it, run at open and after every update. */
   heal() {
     const db = this.db
     if (this._timer || db.closing || db.closed) return
     this._timer = setTimeout(() => {
       this._timer = null
       // one its database closed under says nothing: it runs again at the next open
-      this._audit().catch((err) => db.closing || db.closed || db._onerror(err))
+      const fail = (err) => db.closing || db.closed || db._onerror(err)
+      this._audit().catch(fail)
+      db._raise().catch(fail)
     }, 500)
   }
 

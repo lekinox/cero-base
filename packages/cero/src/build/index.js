@@ -46,6 +46,7 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
   const fold = (entries, target, fromExt) => {
     for (const [k, v] of Object.entries(entries)) {
       if (v && v.kind === 'extend') {
+        if (v.later) throw CeroError.INVALID(`'${k}' extends a builtin: ${holds}`)
         const type = internal.defs.main[k]?.type
         if (!type) throw CeroError.INVALID(`'${k}' is not an extendable builtin`)
         if ('memberId' in v.fields) throw CeroError.INVALID(written('memberId', k))
@@ -81,22 +82,30 @@ export async function build(specDir, schema, { ns = NS, extensions } = {}) {
     }
 
     const dirs = ['main', ...Object.keys(handles).map((n) => join('handles', n))]
-    const version = await contract(next, dirs, [main, ...Object.values(handles)])
+    const compiled = [main, ...Object.values(handles)]
+    const { version, start, target, dated } = await contract(next, specDir, dirs, compiled, extend)
     // what a write means to Cero: a view applied under older rules applies its log again
     const rules = internal.contract.version
+    const app = { version, rules, start, target }
     const meta = {
       ...main.meta,
-      version,
-      rules,
+      ...app,
+      ...dated[0],
       local: local.meta,
       handles: Object.fromEntries(
-        Object.entries(handles).map(([n, h]) => [n, { ...h.meta, type: n, version, rules }])
+        Object.entries(handles).map(([n, h], i) => [
+          n,
+          { ...h.meta, type: n, ...app, ...dated[i + 1] }
+        ])
       )
     }
 
     // the type marker tells the runtime which handle type to open
     for (const [name] of Object.entries(handles)) {
-      if (meta.refs[name]) meta.refs[name] = { kind: 'handle', type: name, schema: `@${ns}/handle` }
+      const ref = meta.refs[name]
+      if (ref) {
+        meta.refs[name] = { kind: 'handle', type: name, schema: `@${ns}/handle`, since: ref.since }
+      }
     }
 
     await fs.writeFile(
@@ -141,8 +150,9 @@ function splitMain(defs) {
 function splitHandles(defs) {
   const out = {}
   for (const [k, v] of Object.entries(defs)) {
-    if (k === 'local') continue
-    if (isPlainHandle(v)) out[k] = v
+    if (k === 'local' || !isPlainHandle(v)) continue
+    if (v.later) throw CeroError.INVALID(`'${k}' is a handle type: ${holds}`)
+    out[k] = v
   }
   return out
 }
@@ -157,6 +167,7 @@ function compile(root, ns, scope = 'main', top = false) {
     collections: [],
     dispatches: [],
     indexes: [],
+    things: [],
     meta: { ns, refs: {} },
     ns,
     scope,
@@ -190,6 +201,7 @@ function compile(root, ns, scope = 'main', top = false) {
     collections: ctx.collections,
     dispatches: ctx.dispatches,
     indexes: ctx.indexes,
+    things: ctx.things,
     meta: ctx.meta
   }
 }
@@ -201,6 +213,8 @@ function extendBuiltins(refs, extend) {
   }
 }
 
+const holds = 't.later holds back a field, a collection, a single or an action'
+
 const written = (field, name) => `'${field}' in '${name}' is a field Cero writes, rename it`
 
 function register(name, node, ctx) {
@@ -209,6 +223,13 @@ function register(name, node, ctx) {
   const route = routes.find((r) => ctx.taken.routes.has(r))
   if (route) throw CeroError.INVALID(`'${name}' makes Cero's route '${route}', rename it`)
   if (ctx.taken.types.has(name)) throw CeroError.INVALID(`'${name}' is a builtin type, rename it`)
+  const fields = Object.keys(node.fields)
+  const marked = fields.filter((f) => node.fields[f].later)
+  const held = node.later ? `'${name}'` : marked.length > 0 && `'${marked[0]}' in '${name}'`
+  if (ctx.scope === 'local' && held) {
+    throw CeroError.INVALID(`${held} is local: t.later holds back what a database shares`)
+  }
+  ctx.things.push({ name, type: fqn, fields, later: node.later === true, marked })
   if (node.kind === 'action') {
     ctx.types.push({ name, compact: false, fields: internal.fields(node.fields) })
     ctx.dispatches.push({ name, requestType: fqn })
@@ -264,8 +285,9 @@ function register(name, node, ctx) {
 
 // one contract for the app, kept in contract.json: it rises once per build that changes what is
 // stored, at the root or in any handle type, or what a write means to Cero, never for RPC alone.
-// A spec without one starts from its builders' versions, so a shipped app's number never goes down
-async function contract(specDir, dirs, compiled) {
+// A spec without one starts from its builders' versions, so a shipped app's number never goes down.
+// Its history keeps what each builder was at for every contract, which dates each field, ref and route
+async function contract(specDir, prior, dirs, compiled, extend) {
   const file = join(specDir, 'contract.json')
   const kept = await fs.readFile(file, 'utf-8').then(JSON.parse, () => null)
   // apply reads own from the reader's spec, so a collection keeps the one it shipped with
@@ -283,13 +305,133 @@ async function contract(specDir, dirs, compiled) {
     own[dir] = { ...was, ...now }
   })
   const shapes = await Promise.all(dirs.map((dir) => shapeOf(join(specDir, dir))))
-  const json = JSON.stringify([internal.contract.version, ...shapes.map((s) => s.stored)])
-  const shape = b4a.toString(crypto.hash(b4a.from(json)), 'hex')
+  const shape = hash(shapes)
   const version = kept
     ? kept.version + (kept.shape === shape ? 0 : 1)
     : Math.max(...shapes.flatMap((s) => s.versions))
-  await fs.writeFile(file, JSON.stringify({ version, shape, own }, null, 2) + '\n')
-  return version
+
+  const rules = internal.contract.version
+  const start = kept?.history ? kept.start : (kept?.version ?? version)
+  const { floor, history } = await past(kept, prior, dirs, version, start)
+  history[version] = Object.fromEntries(dirs.map((dir, i) => [dir, shapes[i].builders]))
+
+  const contracts = Object.keys(history).map(Number)
+  const since = (c) => (c === start ? 0 : c)
+  const dated = dirs.map((dir, i) => {
+    const first = (at, v) => since(contracts.find((c) => history[c][dir]?.[at] >= v))
+    const [types, , routes] = shapes[i].stored
+    const out = {
+      since: {
+        routes: Object.fromEntries(routes.schema.map((r) => [r.name, first(1, r.version)])),
+        types: Object.fromEntries(
+          types.schema.map((type) => [
+            `@${type.namespace}/${type.name}`,
+            Object.fromEntries(type.fields.map((f) => [f.name, first(0, f.version)]))
+          ])
+        )
+      },
+      encoding: Object.fromEntries(
+        contracts.filter((c) => history[c][dir]).map((c) => [c, history[c][dir][0]])
+      )
+    }
+    const { ns, refs } = compiled[i].meta
+    for (const ref of Object.values(refs)) {
+      if (ref.live) ref.since = 0
+      else if (ref.kind === 'handle') {
+        ref.since = since(contracts.find((c) => history[c][join('handles', ref.type)]))
+      } else ref.since = out.since.routes[routeOf(ref, ns)]
+    }
+    return out
+  })
+
+  const target = aim(
+    dirs.flatMap((dir, i) => declared(compiled[i], extend, dated[i].since.types)),
+    Math.max(kept?.target ?? start, floor),
+    version
+  )
+  await fs.writeFile(
+    file,
+    JSON.stringify({ version, shape, own, rules, start, floor, target, history }, null, 2) + '\n'
+  )
+  return { version, start, target, dated }
+}
+
+function hash(shapes) {
+  const json = JSON.stringify([internal.contract.version, ...shapes.map((s) => s.stored)])
+  return b4a.toString(crypto.hash(b4a.from(json)), 'hex')
+}
+
+// a spec with no history starts one at its contract, from the builders its own spec was at. It
+// kept no rules: hashed under today's, its spec gives the shape it kept only when Cero's rules did
+// not change since
+async function past(kept, prior, dirs, version, start) {
+  if (kept?.history) {
+    const floor = kept.rules === internal.contract.version ? kept.floor : version
+    return { floor, history: { ...kept.history } }
+  }
+  const had = dirs.filter((dir) => existsSync(join(prior, dir)))
+  const shapes = await Promise.all(had.map((dir) => shapeOf(join(prior, dir))))
+  const floor = !kept || hash(shapes) === kept.shape ? start : version
+  return {
+    floor,
+    history: { [start]: Object.fromEntries(had.map((d, i) => [d, shapes[i].builders])) }
+  }
+}
+
+function routeOf({ kind, path, verb }, ns) {
+  if (kind === 'action') return `@${ns}/${path[0]}`
+  if (kind === 'single') return `@${ns}/set-${path[0]}`
+  return `@${ns}/add-${verb || path[0]}`
+}
+
+// every thing the app declares in a directory, with its since and whether t.later holds it back
+function declared({ things, meta }, extend, types) {
+  const out = []
+  for (const { name, type, fields, later, marked } of things) {
+    out.push({ label: `'${name}'`, since: meta.refs[name].since, mark: later, held: later })
+    for (const f of fields) {
+      const mark = marked.includes(f)
+      out.push({ label: `'${f}' in '${name}'`, since: types[type][f], mark, held: later || mark })
+    }
+  }
+  // a handle type cannot be held: what it brings turns on with it
+  for (const [name, ref] of Object.entries(meta.refs)) {
+    if (ref.kind === 'handle') out.push({ label: `'${name}'`, since: ref.since, mark: false })
+  }
+  for (const [type, fields] of Object.entries(extend)) {
+    const ref = Object.keys(internal.defs.main).find((k) => internal.defs.main[k].type === type)
+    for (const [f, m] of Object.entries(fields)) {
+      const mark = m.later === true
+      out.push({
+        label: `'${f}' in '${ref}'`,
+        since: types[`@${meta.ns}/${type}`][f],
+        mark,
+        held: mark
+      })
+    }
+  }
+  return out
+}
+
+// one below the oldest thing held back: things turn on in the order they shipped, and stay on
+function aim(things, used, version) {
+  const marks = things.filter((x) => x.mark)
+  const gone = marks.find((x) => x.since <= used)
+  if (gone) {
+    throw CeroError.INVALID(
+      `${gone.label} is in use already: a database may have it, so t.later cannot hold it back`
+    )
+  }
+  if (marks.length === 0) return version
+  const oldest = marks.reduce((a, b) => (b.since < a.since ? b : a))
+  const target = oldest.since - 1
+  const early = things.find((x) => !x.held && x.since > target)
+  if (early) {
+    throw CeroError.INVALID(
+      `${early.label} shipped with or after ${oldest.label}, which t.later holds back: things turn on in the order they shipped, so mark it too, or release ${oldest.label}`
+    )
+  }
+  return target
 }
 
 function owned(refs) {
@@ -311,7 +453,11 @@ async function shapeOf(dir) {
     ...routes.schema.map((x) => x.requestType)
   ])
   schema.schema = schema.schema.filter((type) => named.has(`@${type.namespace}/${type.name}`))
-  return { stored: [schema, collections, routes], versions: [types || 1, db || 1, dispatch || 1] }
+  return {
+    stored: [schema, collections, routes],
+    versions: [types || 1, db || 1, dispatch || 1],
+    builders: [types || 1, dispatch || 1]
+  }
 }
 
 function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { rpc, extend = {} }) {
@@ -323,7 +469,8 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
   const stored = [...internal.collections(ns, 'main'), ...collections].map((x) => x.schema)
-  const sent = [...internal.dispatches(ns), ...dispatches].map((x) => x.requestType)
+  const routes = [...internal.dispatches(ns), ...dispatches, ...internal.appended(ns)]
+  const sent = routes.map((x) => x.requestType)
   const keep = slots(schemaDir, ns, new Set([...stored, ...sent]))
   for (const desc of internal.types('main', extend)) sns.register(keep(desc))
   for (const desc of types) sns.register(keep(desc))
@@ -339,7 +486,6 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)
   const xns = d.namespace(ns)
-  const routes = [...internal.dispatches(ns), ...dispatches]
   const numbered = routeIds(dispatchDir, ns, routes)
   for (const desc of routes) xns.register(numbered(desc))
   Hyperdispatch.toDisk(d, dispatchDir, { esm: true })

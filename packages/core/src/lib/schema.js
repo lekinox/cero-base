@@ -2,8 +2,8 @@ import { CeroError } from './errors.js'
 import { SINGLE, COLLECTION, ACTION } from './constants.js'
 
 /**
- * @typedef {{ prim: string, required?: boolean }} Prim
- * @typedef {{ kind: 'single' | 'collection' | 'action', fields: Record<string, Prim>, indexes?: Record<string, string[]>, own?: boolean, push?: boolean }} TypeDef
+ * @typedef {{ prim: string, required?: boolean, later?: boolean }} Prim
+ * @typedef {{ kind: 'single' | 'collection' | 'action', fields: Record<string, Prim>, indexes?: Record<string, string[]>, own?: boolean, push?: boolean, later?: boolean }} TypeDef
  * @typedef {{ [name: string]: TypeDef | Record<string, TypeDef> } & { local?: Record<string, TypeDef> }} SchemaDefs
  * @typedef {{ defs: SchemaDefs }} Schema
  */
@@ -34,6 +34,16 @@ export const t = {
    * @returns {Prim}
    */
   required: (marker) => ({ ...marker, required: true }),
+
+  /**
+   * Hold back a field, a collection, a single or an action: a database starts using it once a
+   * build without the mark reaches its owner's device. What databases use already cannot be held.
+   *
+   * @template {Prim | TypeDef} T
+   * @param {T} def
+   * @returns {T}
+   */
+  later: (def) => ({ ...def, later: true }),
 
   /**
    * Single-row table (one record, set/get by name).

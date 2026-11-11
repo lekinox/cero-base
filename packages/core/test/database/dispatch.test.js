@@ -16,7 +16,8 @@ import {
   makePeer,
   waitFor,
   withRole,
-  admit
+  admit,
+  unchecked
 } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
 import { genId } from '../../src/lib/ids.js'
@@ -827,7 +828,7 @@ test('apply: one refused op discards its whole batch, on every peer', async (t) 
   // A modified peer skips its own dry-run, so the batch reaches apply. The
   // ALLOWED op goes first: it has already written into the transaction by the
   // time the refusal lands, which is the only way to observe the discard.
-  b.db._dryRun = async () => true
+  unchecked(b.db)
   await b.db.write([
     ['add-records', { id: 'sibling', text: 'legit', createdAt: 1, updatedAt: 1 }],
     ['set-records', { id: owned.id, text: 'tampered' }]
@@ -874,7 +875,7 @@ test('apply: a discarded batch admits no writer — host effects roll back with 
   // if it is not rolled back with the rows, the joiner is a writer with no
   // device row, which the WRITE gate reads as "not yet enrolled" and admits.
   const joiner = Identity.randomKeyPair()
-  b.db._dryRun = async () => true
+  unchecked(b.db)
   await b.db.write([
     [
       'add-writer',

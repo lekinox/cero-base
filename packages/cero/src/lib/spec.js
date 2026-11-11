@@ -16,12 +16,17 @@ export { t, schema } from '@cero-base/core/schema'
  * @property {string[]} [files]   The fields holding file ids.
  * @property {string} [verb]
  * @property {boolean} [push]    Whether a write to this ref pushes a notification.
+ * @property {number} [since]     The contract that brought it, 0 for one the spec had when its history began.
  *
  * @typedef {object} SpecMeta
  * @property {string} [ns]
  * @property {string} [type]     The handle type, on a handle's spec.
  * @property {number} [version]
  * @property {number} [rules]    What a write means to Cero, raised by a release that changes it.
+ * @property {number} [start]    The contract the spec's history begins at.
+ * @property {number} [target]   The contract this build asks databases to use.
+ * @property {{ routes: Record<string, number>, types: Record<string, Record<string, number>> }} [since]  The contract that brought each route, and each field of each stored type, by full name.
+ * @property {Record<string, number>} [encoding]  The schema version to encode with as of each contract.
  * @property {Record<string, RefInfo>} refs
  * @property {{ refs: Record<string, RefInfo> }} [local]
  * @property {Record<string, SpecMeta>} [handles]

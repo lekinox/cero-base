@@ -244,13 +244,14 @@ try {
 }
 ```
 
-| Code           | When                                                                    | Do                                                                                   |
-| -------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the handle read-only; `room.status` has `writable`.                             |
-| `BEHIND`       | A peer writes with a newer version of the app than this one.            | Ask for the update; `room.status` has `behind`. Reads go on.                         |
-| `REFUSED`      | Your role, `own`, or a `before` hook said no.                           | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
-| `INVALID`      | An unknown field, a missing required one, or a bad value.               | Fix the call.                                                                        |
-| `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                   | Read the list again.                                                                 |
+| Code           | When                                                                                  | Do                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader.               | Show the handle read-only; `room.status` has `writable`.                             |
+| `BEHIND`       | The handle is at a newer version of the app than this one.                            | Ask for the update; `room.status` has `behind`. Reads go on.                         |
+| `UNSUPPORTED`  | The write names something held back with `t.later` that the handle has not turned on. | Leave it out; `cero.supports` says when it is on.                                    |
+| `REFUSED`      | Your role, `own`, or a `before` hook said no.                                         | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
+| `INVALID`      | An unknown field, a missing required one, or a bad value.                             | Fix the call.                                                                        |
+| `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                                 | Read the list again.                                                                 |
 
 [Errors](errors.md) lists every code.
 

@@ -32,6 +32,8 @@ export type DatabaseOpts = {
             ns?: string;
             version?: number;
             rules?: number;
+            start?: number;
+            target?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -70,11 +72,15 @@ export type DatabaseOpts = {
      */
     keyPair?: import('../identity/index.js').KeyPair;
     /**
+     * A database whose members this one follows: behind there, it is behind here too.
+     */
+    parent?: Database | null;
+    /**
      * Called when a node is skipped or refused, or the bee errors.
      *
      * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
      * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
-     * `unwritable`, `behind` (an op from a newer app version was skipped).
+     * `unwritable`, `behind` (the database's version passed this build's contract).
      */
     onerror?: (err: Error) => void;
 };
@@ -157,7 +163,7 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {import('corestore')} store                              Corestore (or compatible) used to materialize the autobee.
  * @property {import('../identity/index.js').Identity} identity       Long-lived member identity used to sign writer changes.
  * @property {import('../network/index.js').Network} [network]        Optional swarm; required for multi-writer replication; `store` is its store or a session of it.
- * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
+ * @property {{ database: object, dispatch: { Router: new () => object, encode: (name: string, value: unknown) => Uint8Array, decode: (buf: Uint8Array) => { name: string, value: unknown } }, meta?: { ns?: string, version?: number, rules?: number, start?: number, target?: number, refs?: Record<string, { kind?: string, verb?: string }> } }} spec  Generated hyperdb + hyperdispatch spec.
  * @property {string} [namespace]                                     Corestore namespace; defaults to `cero`.
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
@@ -165,11 +171,12 @@ export type HookFn = (ctx: HookContext) => unknown;
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
  * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
+ * @property {Database | null} [parent]                               A database whose members this one follows: behind there, it is behind here too.
  * @property {(err: Error) => void} [onerror]                         Called when a node is skipped or refused, or the bee errors.
  *
  * Events: `update` (touched refs, a Set, after each applied batch that changed a row), `apply`
  * (one per applied op: `{ op, name, row, writerKey, seq }`, local and replicated), `writable`,
- * `unwritable`, `behind` (an op from a newer app version was skipped).
+ * `unwritable`, `behind` (the database's version passed this build's contract).
  *
  * @typedef {Record<string, unknown>} Row  A row, fields by name.
  * @typedef {{ data: Row | null }} SingleResult
@@ -213,6 +220,8 @@ export declare class Database extends ReadyResource {
             ns?: string;
             version?: number;
             rules?: number;
+            start?: number;
+            target?: number;
             refs?: Record<string, {
                 kind?: string;
                 verb?: string;
@@ -223,6 +232,8 @@ export declare class Database extends ReadyResource {
         ns?: string;
         version?: number;
         rules?: number;
+        start?: number;
+        target?: number;
         refs?: Record<string, {
             kind?: string;
             verb?: string;
@@ -235,14 +246,22 @@ export declare class Database extends ReadyResource {
     }>;
     version: number;
     rules: number;
-    /** @type {number | null} */
-    behind: number | null;
+    start: number;
+    target: number;
+    /** @type {Database | null} */
+    parent: Database | null;
+    /** @private */
+    _behind;
     /** @private */
     _skipped;
     /** @private */
     _applied;
     /** @private */
     _landed;
+    /** @private */
+    _rebuilding;
+    /** @private */
+    _writes;
     namespace: string;
     _writable: boolean;
     encryptionKey: Uint8Array<ArrayBufferLike>;
@@ -262,15 +281,21 @@ export declare class Database extends ReadyResource {
     _room;
     bee: EpochAutobee;
     dispatcher: {
+        encode: (route: string, value: unknown, stamp: number) => Uint8Array;
+        cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>;
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
+        version: (view: object) => Promise<number>;
+        built: (view: object) => Promise<Array<number | null> | null>;
         apply: (nodes: Array<{
             value: Buffer;
             key: Buffer;
+            version: number;
         }>, view: object, host: object) => Promise<{
             landed: Array<{
                 value: Buffer;
                 key: Buffer;
+                version: number;
             }>;
             changed: boolean;
         }>;
@@ -313,6 +338,8 @@ export declare class Database extends ReadyResource {
     get address(): Uint8Array | null;
     /** @returns {Uint8Array | null} this device's local writer key */
     get writerKey(): Uint8Array | null;
+    /** @returns {number | null} the database's version, or its parent's, while it is past this build's contract */
+    get behind(): number | null;
     /** @returns {boolean} whether the bee accepts local writes */
     get writable(): boolean;
     /** @returns {number} number of ops in the local writer */
@@ -321,6 +348,8 @@ export declare class Database extends ReadyResource {
     get view(): object | null;
     /** @private */
     private _open;
+    /** @private */
+    private _wire;
     /** @private */
     private _close;
     /**
@@ -410,9 +439,11 @@ export declare class Database extends ReadyResource {
      * is open.
      *
      * @param {Array<[string, unknown]>} ops
-     * @returns {Promise<void>}
+     * @returns {Promise<number | undefined>}  The stamp the last op was appended with; nothing when queued or when nothing changed.
      */
-    write(ops: Array<[string, unknown]>): Promise<void>;
+    write(ops: Array<[string, unknown]>): Promise<number | undefined>;
+    /** @private */
+    private _commit;
     /** @returns {boolean} Whether a push notification is on its way to the mirrors. */
     get pushing(): boolean;
     /** @private */
@@ -577,9 +608,23 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _done;
     /** @private */
+    private _build;
+    /** @private */
+    private _foreign;
+    /** @private */
+    private _onmove;
+    /** @private */
+    private _rebuild;
+    /** @private */
+    private _wipe;
+    /** @private */
     private _skip;
     /** @private */
-    private _onfuture;
+    private _track;
+    /** @private */
+    private _raise;
+    /** @private */
+    private _stamp;
     /** @private */
     private _dryRun;
     /** @private */

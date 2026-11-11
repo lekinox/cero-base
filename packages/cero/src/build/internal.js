@@ -188,6 +188,16 @@ export function dispatches(ns) {
 }
 
 /**
+ * @param {string} ns
+ * @returns {Array<{ name: string, requestType: string }>}
+ */
+// routes cero added once apps shipped: numbered after the app's, so a new spec gives the app's
+// routes the ids an older release gave them
+export function appended(ns) {
+  return [{ name: 'upgrade', requestType: `@${ns}/upgrade` }]
+}
+
+/**
  * The names Cero takes in a scope, which an app ref would shadow: its refs and collections, its
  * types and its routes.
  *
@@ -204,7 +214,7 @@ export function reserved(ns, scope, root) {
       ...Object.keys(main ? live(ns, root) : {})
     ]),
     types: new Set(Object.keys({ ...schemas[scope], ...(main && schemas.rpc) })),
-    routes: new Set(main ? dispatches(ns).map((d) => d.name) : [])
+    routes: new Set(main ? [...dispatches(ns), ...appended(ns)].map((d) => d.name) : [])
   }
 }
 

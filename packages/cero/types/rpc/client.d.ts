@@ -11,6 +11,7 @@ declare const remote: {
     del(ref: verbs.Ref, id?: string): Promise<void>;
     call(ref: verbs.Ref, d?: verbs.Row): Promise<void>;
     get(ref: verbs.Ref, q?: string | Record<string, unknown>): Promise<verbs.SingleResult | verbs.ListResult>;
+    supports(ref: verbs.Ref, field?: string): Promise<boolean>;
     watch(ref: verbs.Ref, query?: string | (Record<string, unknown> & {
         changes?: boolean;
     }), opts?: {
@@ -65,7 +66,7 @@ declare const remote: {
         topic?: string;
     }): Promise<void>;
 };
-export declare const put: typeof verbs.put, set: typeof verbs.set, get: typeof verbs.get, del: typeof verbs.del, watch: typeof verbs.watch, call: typeof verbs.call, open: typeof verbs.open, invite: typeof verbs.invite, revoke: typeof verbs.revoke, rotate: typeof verbs.rotate, accept: typeof verbs.accept, deny: typeof verbs.deny, leave: typeof verbs.leave, removed: typeof verbs.removed, close: typeof verbs.close, cancel: typeof verbs.cancel, suspend: typeof verbs.suspend, resume: typeof verbs.resume, activate: typeof verbs.activate, deactivate: typeof verbs.deactivate, phrase: typeof verbs.phrase, nearby: typeof verbs.nearby;
+export declare const put: typeof verbs.put, set: typeof verbs.set, get: typeof verbs.get, del: typeof verbs.del, watch: typeof verbs.watch, call: typeof verbs.call, supports: typeof verbs.supports, open: typeof verbs.open, invite: typeof verbs.invite, revoke: typeof verbs.revoke, rotate: typeof verbs.rotate, accept: typeof verbs.accept, deny: typeof verbs.deny, leave: typeof verbs.leave, removed: typeof verbs.removed, close: typeof verbs.close, cancel: typeof verbs.cancel, suspend: typeof verbs.suspend, resume: typeof verbs.resume, activate: typeof verbs.activate, deactivate: typeof verbs.deactivate, phrase: typeof verbs.phrase, nearby: typeof verbs.nearby;
 export { t, schema };
 export type BaseRPCClient = import('@cero-base/core/rpc').RPCClient;
 export type RefInfo = import('../lib/spec.js').RefInfo;

@@ -45,6 +45,11 @@ export const QUERY_RESERVED = new Set([
 
 // monotonic index per collection
 export const COUNTERS = 'counters'
+// the database's version, a counters row under a name no collection can take
+export const VERSION = '_version'
+// the build that applied the view: its database, rules, contract and the lowest version it
+// skipped, counters rows under names no collection can take
+export const BUILT = ['_db', '_rules', '_contract', '_skipped']
 // rotation announcements
 export const EPOCHS = 'epochs'
 // removed members, with the last invite minted before their removal

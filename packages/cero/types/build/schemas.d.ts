@@ -102,6 +102,7 @@ export declare const main: {
         epoch: import("@cero-base/core").Prim;
         suspended: import("@cero-base/core").Prim;
         behind: import("@cero-base/core").Prim;
+        version: import("@cero-base/core").Prim;
         nearby: import("@cero-base/core").Prim;
     };
     joining: {
@@ -135,6 +136,9 @@ export declare const main: {
         handle: import("@cero-base/core").Prim;
         type: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
+    };
+    upgrade: {
+        version: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {
@@ -222,6 +226,7 @@ export declare const rpc: {
         fields: {
             prim: string;
             required?: boolean;
+            later?: boolean;
             array: boolean;
         };
     };

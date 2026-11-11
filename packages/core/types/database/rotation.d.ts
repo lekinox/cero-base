@@ -60,7 +60,7 @@ export declare class Rotation {
      * @param {object} [view]
      */
     pick(view?: object): Promise<void>;
-    /** Debounced audit, run at open and after every update. */
+    /** Debounced key check, with the owner's raise beside it, run at open and after every update. */
     heal(): void;
     /** @private */
     private _rotate;

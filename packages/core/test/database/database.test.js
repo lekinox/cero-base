@@ -12,6 +12,8 @@ import Hypercore from 'hypercore'
 import Autobee from 'autobee'
 import { genId } from '../../src/lib/ids.js'
 import { admission, searchHit } from '../../src/lib/utils.js'
+import { wrap, unwrap } from '../../src/database/envelope.js'
+import { encodeId } from '../../src/blobs/codec.js'
 import {
   makeTestnet,
   makeStore,
@@ -28,6 +30,7 @@ import {
   withRole
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
+import { spec as next } from '../fixtures/spec/next/index.js'
 
 test.configure({ timeout: 60000 })
 
@@ -3096,7 +3099,6 @@ test('apply: set-device timestamps replicate identically', async (t) => {
 // ─── op-version wire-gate ─────────────────────────────────────────────────
 
 test('envelope: wrap/unwrap round-trips, bytes with no envelope are no op', async (t) => {
-  const { wrap, unwrap } = await import('../../src/database/envelope.js')
   const body = b4a.from([0x01, 0x02, 0x03])
 
   const wrapped = wrap(7, body)
@@ -3111,31 +3113,54 @@ test('envelope: wrap/unwrap round-trips, bytes with no envelope are no op', asyn
   t.is(big.version, 300, 'multi-byte versions round-trip')
 })
 
-test('gate: ops from a future contract version are skipped, surfaced, and survive restart', async (t) => {
+// the database's version row, null while it holds none
+async function versionRow(db) {
+  return (await db.view.get(`@${db.ns}/counters`, { name: '_version' }))?.value ?? null
+}
+
+// an owner raises the version, as the device of a newer build does
+async function raise(db, version) {
+  await db.write([['upgrade', { version }]])
+  await db.bee.update()
+}
+
+// an op on this device's own core, stamped as a build at `version` writes it
+async function stamped(db, version, route, value) {
+  await db.bee.append(wrap(version, spec.dispatch.encode(`@cero/${route}`, value)))
+  await db.bee.update()
+}
+
+// the fixture spec as another build of the app
+function rebuilt(meta) {
+  return { ...spec, meta: { ...spec.meta, ...meta } }
+}
+
+// another build whose fields and routes named here came with a later contract
+function dated(meta, { types = {}, routes = {} }) {
+  const { since } = spec.meta
+  const dates = { ...since.types }
+  for (const [type, fields] of Object.entries(types)) dates[type] = { ...dates[type], ...fields }
+  return rebuilt({ ...meta, since: { routes: { ...since.routes, ...routes }, types: dates } })
+}
+
+test('gate: an owner raising the version past this build puts it behind: ops past its contract are skipped, and it does not write', async (t) => {
   const errors = []
   const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
-  const { wrap } = await import('../../src/database/envelope.js')
+  let behind = 0
+  db.on('behind', () => behind++)
 
-  let behindEvents = 0
-  db.on('behind', () => behindEvents++)
+  const next = db.version + 1
+  await raise(db, next)
+  t.is(db.behind, next, 'behind the version')
+  t.is(behind, 1, 'behind emitted')
 
-  const future = db.version + 1
-  const encoded = spec.dispatch.encode('@cero/add-messages', {
-    id: genId(),
-    text: 'from the future'
-  })
-  await db.bee.append(wrap(future, encoded))
-  await db.bee.update()
-
-  const { data: rows } = await db.get('messages')
-  t.is(rows.length, 0, 'future op not applied')
-  t.is(errors.length, 0, 'skipping the future is not an error')
-  t.is(db.behind, future, 'db.behind reports the future version')
-  t.is(behindEvents, 1, 'behind emitted once')
-
-  await db.bee.append(wrap(future, encoded))
-  await db.bee.update()
-  t.is(behindEvents, 1, 'not re-emitted per op')
+  const id = genId()
+  await stamped(db, next, 'add-messages', { id, text: 'from the next build' })
+  t.absent((await db.get('messages', id)).data, 'an op past this build is skipped')
+  await waitFor(async () => (await marker(db, 'cero/skipped')) === next)
+  t.pass('and recorded')
+  t.is(errors.length, 0, 'skipping is no error')
+  t.is(behind, 1, 'behind is not emitted again')
 
   const err = await db.put('messages', { text: 'present' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', 'and this device does not write until it updates')
@@ -3182,14 +3207,10 @@ test('gate: enveloped ops replicate and apply across peers', async (t) => {
   t.is(onB.text, 'wire', 'enveloped op applied on the peer')
 })
 
-test('gate: behind survives reopen', async (t) => {
+test('gate: behind is read from the view, so it survives reopen', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
-
   const future = db.version + 5
-  const encoded = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'x' })
-  await db.bee.append(wrap(future, encoded))
-  await db.bee.update()
+  await raise(db, future)
   t.is(db.behind, future)
 
   const { key, keyPair, encryptionKey } = db
@@ -3198,35 +3219,45 @@ test('gate: behind survives reopen', async (t) => {
   const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
-  t.is(again.behind, future, 'behind reloaded from the local core')
+  t.is(again.behind, future, 'behind as the view says')
   const err = await again.put('messages', { text: 'x' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', 'and so is the freeze')
 })
 
+test('gate: a behind marker kept on the core is dropped at open', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  await db.bee.local.setUserData('cero/behind', c.encode(c.uint, db.version + 1))
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(await marker(again, 'cero/behind'), null, 'the marker is gone')
+  t.is(again.behind, null, 'not behind')
+  const { data: row } = await again.put('messages', { text: 'x' })
+  t.ok((await again.get('messages', row.id)).data, 'and it writes')
+})
+
 test('gate: upgrading past skipped ops rebuilds the view and applies them', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
-
   const { data: present } = await db.put('messages', { text: 'present' })
-  const futureId = genId()
   const future = db.version + 1
-  await db.bee.append(
-    wrap(future, spec.dispatch.encode('@cero/add-messages', { id: futureId, text: 'future' }))
-  )
-  await db.bee.update()
-  t.is(db.behind, future, 'future op skipped')
-  t.absent((await db.get('messages', futureId)).data, 'not applied pre-upgrade')
+  await raise(db, future)
+  const futureId = genId()
+  await stamped(db, future, 'add-messages', { id: futureId, text: 'future' })
+  t.absent((await db.get('messages', futureId)).data, 'not applied before the update')
 
   const { key, keyPair, encryptionKey } = db
   await db.close()
 
-  const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
+  const upgraded = rebuilt({ version: future })
   const again = new Database({ store, identity, spec: upgraded, key, keyPair, encryptionKey })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
 
-  t.is(again.behind, null, 'marker cleared')
-  t.ok((await again.get('messages', futureId)).data, 'skipped op applied after upgrade')
+  t.is(again.behind, null, 'current')
+  t.ok((await again.get('messages', futureId)).data, 'skipped op applied after the update')
   t.ok(
     (await again.get('messages', present.id)).data,
     'previously-applied rows survived the rebuild'
@@ -3253,57 +3284,31 @@ function afterFirstBoot(db, fn) {
   }
 }
 
-test('gate: an update applies what it skipped, though a newer op is applied as the database opens', async (t) => {
+test('gate: an update applies what it skipped, though an op past it is skipped as the database opens', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
   const next = db.version + 1
+  await raise(db, next + 1)
   const id = genId()
-  await db.bee.append(wrap(next, spec.dispatch.encode('@cero/add-messages', { id, text: 'next' })))
-  await db.bee.update()
-  t.is(db.behind, next, 'skipped on this build')
+  await stamped(db, next, 'add-messages', { id, text: 'next' })
+  t.absent((await db.get('messages', id)).data, 'skipped on this build')
   const { key, keyPair, encryptionKey } = db
   await db.close()
 
-  const updated = { ...spec, meta: { ...spec.meta, version: next } }
+  const updated = rebuilt({ version: next })
   const again = new Database({ store, identity, spec: updated, key, keyPair, encryptionKey })
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
-  // a writer's op one version further is applied during the boot, and its markers are stored
+  // an op one version further is skipped during the boot, and its marker is stored
   afterFirstBoot(again, async () => {
     again._skip(next + 1)
-    again._onfuture(next + 1)
     await waitFor(
       async () => again._skipped === next || (await marker(again, 'cero/skipped')) === next + 1
     )
-    await waitFor(async () => (await marker(again, 'cero/behind')) === next + 1)
   })
   await again.ready()
   t.ok((await again.get('messages', id)).data, 'the write this build can apply is applied')
 })
 
-test('gate: an older newer-version op applied as the database opens does not lower behind', async (t) => {
-  const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
-  const far = db.version + 4
-  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'far' })
-  await db.bee.append(wrap(far, op))
-  await db.bee.update()
-  t.is(db.behind, far)
-  const { key, keyPair, encryptionKey } = db
-  await db.close()
-
-  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
-  t.teardown(() => again.close().catch(() => {}), { order: 4 })
-  afterFirstBoot(again, async () => {
-    again._onfuture(again.version + 1)
-    await waitFor(
-      async () => again.behind === far || (await marker(again, 'cero/behind')) === again.version + 1
-    )
-  })
-  await again.ready()
-  t.is(again.behind, far, 'still behind the newest version it skipped')
-})
-
-test('gate: a newer write applied as the database opens, its marker not stored yet, holds it back all the same', async (t) => {
+test('gate: an upgrade applied as the database opens holds it back all the same', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
   const { key, keyPair, encryptionKey } = db
   const future = db.version + 1
@@ -3311,7 +3316,7 @@ test('gate: a newer write applied as the database opens, its marker not stored y
 
   const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
-  afterFirstBoot(again, () => again._onfuture(future))
+  afterFirstBoot(again, () => stamped(again, again.version, 'upgrade', { version: future }))
   await again.ready()
   t.is(again.behind, future, 'behind from this open on')
   const err = await again.put('messages', { text: 'stale' }).catch((e) => e)
@@ -3320,32 +3325,27 @@ test('gate: a newer write applied as the database opens, its marker not stored y
 
 test('gate: a marker still on its way to the store when a rebuild begins costs nothing: the rebuild runs, and nothing is reported', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
   const next = db.version + 1
+  await raise(db, next)
   const id = genId()
-  await db.bee.append(wrap(next, spec.dispatch.encode('@cero/add-messages', { id, text: 'next' })))
-  await db.bee.update()
+  await stamped(db, next, 'add-messages', { id, text: 'next' })
   const { key, keyPair, encryptionKey } = db
   await db.close()
 
   const errors = []
-  const updated = { ...spec, meta: { ...spec.meta, version: next } }
   const again = new Database({
     store,
     identity,
-    spec: updated,
+    spec: rebuilt({ version: next }),
     key,
     keyPair,
     encryptionKey,
     onerror: (err) => errors.push(err)
   })
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
-  // a writer's op one version further is applied during the boot: its markers are not stored yet
-  // when the open decides to rebuild
-  afterFirstBoot(again, () => {
-    again._skip(next + 1)
-    again._onfuture(next + 1)
-  })
+  // an op one version further is skipped during the boot: its marker is not stored yet when the
+  // open decides to rebuild
+  afterFirstBoot(again, () => again._skip(next + 1))
   await again.ready()
   t.alike(
     errors.map((e) => e.message),
@@ -3372,25 +3372,21 @@ function onWipe(t, fn) {
 // an op from a peer, landing in a database whose bee is still open
 async function lands(db, version) {
   if (db.bee.closing || db.bee.closed) return false
-  const { wrap } = await import('../../src/database/envelope.js')
-  const op = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'late' })
-  await db.bee.append(wrap(version, op))
-  await db.bee.update()
+  await stamped(db, version, 'add-messages', { id: genId(), text: 'late' })
   return true
 }
 
 test('gate: an op that lands as an update rebuilds the view does not cancel the rebuild', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
   const next = db.version + 1
+  await raise(db, next)
   const id = genId()
-  await db.bee.append(wrap(next, spec.dispatch.encode('@cero/add-messages', { id, text: 'next' })))
-  await db.bee.update()
-  t.is(db.behind, next, 'skipped on this build')
+  await stamped(db, next, 'add-messages', { id, text: 'next' })
+  t.absent((await db.get('messages', id)).data, 'skipped on this build')
   const { key, keyPair, encryptionKey } = db
   await db.close()
 
-  const updated = { ...spec, meta: { ...spec.meta, version: next } }
+  const updated = rebuilt({ version: next })
   const again = new Database({ store, identity, spec: updated, key, keyPair, encryptionKey })
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
   let landed = null
@@ -3494,36 +3490,300 @@ test('gate: a view applied under older rules applies its log again, once', async
   t.alike(await open(rules), [], 'the same rules apply nothing again')
   t.alike(await open(rules + 1), [row.id], 'newer rules apply the old write again')
   t.alike(await open(rules + 1), [], 'and only the first time')
+})
 
-  // a view built before the marker held its rules
-  const old = new Database({ store, identity, spec, key, keyPair, encryptionKey })
-  await old.ready()
-  await old.bee.local.setUserData('cero/view', c.encode(c.uint, spec.database.versions.db))
-  await old.close()
-  t.alike(await open(rules), [row.id], 'a marker with no rules counts as the oldest')
+test('gate: a device whose contract rose applies its log again, once', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'old' })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  // the ids of the messages a hook saw while the database opened on a build at this contract
+  const open = async (version) => {
+    const seen = []
+    const again = new Database({
+      store,
+      identity,
+      spec: rebuilt({ version }),
+      key,
+      keyPair,
+      encryptionKey
+    })
+    again.after('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.id)))
+    await again.ready()
+    await again.close()
+    return seen
+  }
+  const version = spec.meta.version
+  t.alike(await open(version), [], 'the same contract applies nothing again')
+  t.alike(await open(version + 1), [row.id], 'a raised one applies the old write again')
+  t.alike(await open(version + 1), [], 'and only the first time')
+})
+
+// the build that applied a database's view, as the view holds it
+async function built(db) {
+  const names = ['_db', '_rules', '_contract', '_skipped']
+  const rows = await Promise.all(names.map((name) => db.view.get(`@${db.ns}/counters`, { name })))
+  return rows.map((row) => row?.value ?? null)
+}
+
+test('gate: the view carries the build that applied it, and what it skipped', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { db: definition } = spec.database.versions
+  t.alike(
+    await built(db),
+    [definition, db.rules, db.version, 0],
+    'its database, rules and contract'
+  )
+
+  const next = db.version + 1
+  await raise(db, next)
+  await stamped(db, next, 'add-messages', { id: genId(), text: 'from the next build' })
+  t.alike(
+    await built(db),
+    [definition, db.rules, db.version, next],
+    'and the lowest version it skipped'
+  )
+})
+
+// a device on one build away while an admin's device on another writes, through a hook that
+// build has and this one does not: the owner gone, it is about to land on that admin's view
+async function away(t, { mine = rebuilt({ version: spec.meta.version + 1 }), theirs = spec } = {}) {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic, spec: mine })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, spec: mine, identity: await Identity.create() })
+  await admit(a.db, b.db)
+  const after = {
+    put: (ctx) => ctx.name === 'messages' && ctx.put('records', { text: 'hooked' })
+  }
+  const c = await makePeer(t, testnet, {
+    ...room,
+    spec: theirs,
+    after,
+    identity: await Identity.create()
+  })
+  await admit(a.db, c.db, 'admin')
+  await waitFor(() => b.db.writable && c.db.writable)
+  await b.network.suspend()
+
+  for (let i = 0; i < 100; i++) {
+    await c.db.tx(async (tx) => {
+      for (let j = 0; j < 3; j++) await tx.put('messages', { text: `${i}.${j}` })
+    })
+  }
+  await waitFor(async () => (await messages(a.db)) === 300, { timeout: 30000 })
+  const applied = await rows(a.db)
+  t.is((await c.db.get('records')).data.length, 300, "the other build's hook wrote its rows")
+  await offline(a)
+  return { b, c, mine, applied }
+}
+
+async function landing(t, { checked = (built) => built, ...builds } = {}) {
+  const { b, c, mine, applied } = await away(t, builds)
+  const bee = b.db.bee
+  b.db.dispatcher.built = checked(b.db.dispatcher.built, bee, mine)
+  await b.network.resume()
+  await waitFor(() => bee.stats.fastForwards > 0, { timeout: 30000 })
+  t.pass("it landed on the other build's view")
+  // the view it landed on holds every message already: the rows count once a bee of its own applied them
+  await waitFor(() => b.db.bee !== bee && !b.db._rebuilding, { timeout: 30000 })
+  await waitFor(async () => (await messages(b.db)) === 300, { timeout: 30000 })
+  t.alike(await rows(b.db), applied, 'and holds the rows of the device that applied the log')
+  return { b, c }
+}
+
+const messages = async (db) => (await db.get('messages')).data.length
+
+// what a database holds, by ref and id
+async function rows(db) {
+  const ids = []
+  for (const name of ['messages', 'records']) {
+    for (const row of (await db.get(name)).data) ids.push(`${name}/${row.id}`)
+  }
+  return ids.sort()
+}
+
+test('gate: a device that fast-forwards onto a view another build applied applies the log again, and ends with the rows of one that applied it', async (t) => {
+  const { b, c } = await landing(t)
+  // away again while the admin writes past the gap a fast-forward takes
+  const again = b.db.bee
+  await b.network.suspend()
+  for (let i = 0; i < 30; i++) await c.db.put('messages', { text: `after.${i}` })
+  await b.network.resume()
+  await waitFor(async () => (await messages(b.db)) === 330, { timeout: 30000 })
+  t.is(again.stats.fastForwards, 0, 'and lands on no view until it closes')
+  t.is(b.db.bee, again, 'so it applies them itself')
+})
+
+test('gate: a batch applied between a landing and its check leaves the row of the build that applied the view', async (t) => {
+  await landing(t, {
+    checked: (built, bee, spec) => async (view) => {
+      await bee.append(wrap(1, spec.dispatch.encode('@cero/del-messages', { id: genId() })))
+      await bee.update()
+      return built(view)
+    }
+  })
+})
+
+test('gate: ops skipped while nothing else had applied are applied once this build reaches them', async (t) => {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const first = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
+  await first.ready()
+  const { key, keyPair, encryptionKey, version } = first
+  // every op this device saw was too new: its view is empty and says nothing of the build that applied it
+  await first.bee.local.setUserData('cero/skipped', c.encode(c.uint, version))
+  await first.close()
+
+  const again = new Database({ store, identity, spec, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}))
+  t.is(again._skipped, null, 'the log is applied again')
+  t.is(await marker(again, 'cero/skipped'), null, 'and nothing is left marked')
+})
+
+test('gate: a read while a landed view is applied again waits for it, and never sees a row missing', async (t) => {
+  const { store } = await makeStore(t, { columnFamilies: ['cero/local'] })
+  const identity = await Identity.create()
+  const db = new Database({ store, identity, spec, encryptionKey: Identity.randomBytes(32) })
+  await db.ready()
+  t.teardown(() => db.close().catch(() => {}))
+  await db.bootstrap({ name: 'a' })
+  await db.set('profile', { name: 'kept' })
+  // a landing on a view another build applied: the log is applied again from an empty view
+  db.version += 1
+  db._onmove()
+  let rebuilt = false
+  db._rebuilding.then(() => (rebuilt = true))
+  const seen = new Set()
+  while (!rebuilt) {
+    seen.add((await db.get('profile')).data?.name ?? null)
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  t.alike([...seen], ['kept'], 'every read in between found the row')
+})
+
+test('gate: a landing on a view of the same contract under other rules is applied again', async (t) => {
+  await landing(t, { mine: spec, theirs: rebuilt({ rules: (spec.meta.rules || 1) + 1 }) })
+})
+
+test('gate: a device that stops between a landing and its check applies its log again at the next open', async (t) => {
+  const { b, mine, applied } = await away(t)
+  // the process ends once the landing is stored, before its check runs
+  b.db._onmove = async () => {}
+  const bee = b.db.bee
+  await b.network.resume()
+  await waitFor(() => bee.stats.fastForwards > 0, { timeout: 30000 })
+  // a batch it applies on that view meanwhile leaves the row of the build that applied it
+  await bee.append(wrap(1, mine.dispatch.encode('@cero/del-messages', { id: genId() })))
+  await bee.update()
+  t.is((await b.db.get('records')).data.length, 300, "it holds the other build's rows")
+  const { key, keyPair, encryptionKey } = b.db
+  await b.db.close()
+
+  const again = new Database({
+    store: b.store,
+    identity: b.identity,
+    network: b.network,
+    spec: mine,
+    key,
+    keyPair,
+    encryptionKey
+  })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await waitFor(async () => (await rows(again)).length === applied.length, { timeout: 30000 })
+  t.alike(
+    await rows(again),
+    applied,
+    'and the rows of the device that applied the log once it opens'
+  )
+})
+
+test('gate: writes in flight as a landing is checked are all saved', async (t) => {
+  const { db } = await bootstrapped(t)
+  const writes = []
+  for (let i = 0; i < 20; i++) {
+    for (let j = 0; j < 5; j++) writes.push(db.put('messages', { text: `${i}.${j}` }))
+    // a view another build applied, as one a fast-forward lands on
+    db.version += 1
+    db._onmove()
+    await db._rebuilding
+  }
+  const failed = (await Promise.allSettled(writes)).filter((r) => r.status === 'rejected')
+  t.alike(
+    failed.map((r) => r.reason.message),
+    [],
+    'none fails'
+  )
+  t.is(await messages(db), 100, 'and every one is kept')
+})
+
+test('gate: two landings checked back to back apply the log again once', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const bee = db.bee
+  let boots = 0
+  const boot = db._boot
+  db._boot = (...args) => (boots++, boot.apply(db, args))
+  db.version += 1
+  db._onmove()
+  db._onmove()
+  await waitFor(() => db.bee !== bee && !db._rebuilding)
+  t.alike(errors, [], 'nothing reported')
+  t.is(boots, 1, 'one rebuild')
+  t.ok(db.bee.opened && !db.bee.closing, 'and its bee open')
+})
+
+test('gate: a write made as the log is applied again waits for it', async (t) => {
+  const { db } = await bootstrapped(t)
+  const { data: row } = await db.put('messages', { text: 'gone' })
+  // made once the bee that held the view closed, before the next one opens
+  const deleting = new Promise((resolve) =>
+    db.bee.once('close', () => resolve(db.del('messages', row.id)))
+  )
+  // a view another build applied, as one a fast-forward lands on
+  db.version += 1
+  await db._onmove()
+  await deleting
+  t.absent((await db.get('messages', row.id)).data, 'it lands on the view applied again')
+})
+
+test('gate: a database closed as it applies its log again leaves no bee open, and reports nothing', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  // closed once the bee that held the view closed, before the next one opens
+  const closing = new Promise((resolve) => db.bee.once('close', () => resolve(db.close())))
+  db.version += 1
+  await db._onmove()
+  const rebuilding = db._rebuilding
+  await closing
+  await rebuilding
+  t.is(db.bee, null, 'no bee open')
+  t.alike(errors, [], 'nothing reported')
 })
 
 test('gate: a database rebuilt past skipped ops still leaves its topic on close', async (t) => {
   const testnet = await makeTestnet(t)
   const { db, store, identity, network } = await makePeer(t, testnet)
   await db.bootstrap({ name: 'a' })
-  const { wrap } = await import('../../src/database/envelope.js')
 
   const future = db.version + 1
-  const encoded = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'future' })
-  await db.bee.append(wrap(future, encoded))
-  await db.bee.update()
-  t.is(db.behind, future, 'future op skipped')
+  await raise(db, future)
+  await stamped(db, future, 'add-messages', { id: genId(), text: 'future' })
+  t.is(db.behind, future, 'behind')
 
   const { key, keyPair, encryptionKey, discoveryKey } = db
   await db.close()
 
-  const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
   const again = new Database({
     store,
     identity,
     network,
-    spec: upgraded,
+    spec: rebuilt({ version: future }),
     key,
     keyPair,
     encryptionKey
@@ -3535,6 +3795,639 @@ test('gate: a database rebuilt past skipped ops still leaves its topic on close'
 
   await again.close()
   t.is(network.presence.mode(discoveryKey), null, 'off its topic once closed')
+})
+
+// two peers on one database: a its owner, b a member who writes
+async function members(t) {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+  return { a, b }
+}
+
+test("version: a member's far-future stamp is an ordinary op, and nobody is behind", async (t) => {
+  const { a, b } = await members(t)
+  const id = genId()
+  await stamped(b.db, 2 ** 40, 'add-messages', { id, text: 'far' })
+  const row = await waitFor(async () => (await a.db.get('messages', id)).data)
+  t.is(row.text, 'far', 'applied at the version')
+  t.is(a.db.behind, null, 'the owner is not behind')
+  t.is(b.db.behind, null, 'nor is the member')
+  const { data: put } = await a.db.put('messages', { text: 'after' })
+  t.ok(put, 'and the owner writes')
+})
+
+test("version: only an owner's upgrade raises it, a member's is refused", async (t) => {
+  const { a, b } = await members(t)
+  t.is(await versionRow(a.db), null, 'a database at its start holds no row')
+
+  const err = await b.db.write([['upgrade', { version: 5 }]]).catch((e) => e)
+  t.is(err?.rule, 'upgrade', "a member's upgrade is refused before it reaches the log")
+  // as a modified app would append it, past the dry run
+  await stamped(b.db, b.db.version, 'upgrade', { version: 5 })
+  await waitFor(() => a.errors.some((e) => e.rule === 'upgrade'))
+  t.is(await versionRow(a.db), null, 'and at apply')
+  t.is(a.db.behind, null, 'nobody is behind')
+
+  const next = a.db.version + 1
+  await raise(a.db, next)
+  await waitFor(async () => (await versionRow(b.db)) === next)
+  t.is(a.db.behind, next, "the owner's raise moves it")
+  await waitFor(() => b.db.behind === next)
+  t.pass('on every device')
+})
+
+test('version: two owners end at the higher of their raises', async (t) => {
+  const { a, b } = await members(t)
+  await a.db.set('members', { id: b.identity.id, role: 'owner' })
+  await waitFor(async () => (await b.db.get('members', b.identity.id)).data?.role === 'owner')
+
+  await Promise.all([
+    stamped(a.db, a.db.version, 'upgrade', { version: 3 }),
+    stamped(b.db, b.db.version, 'upgrade', { version: 2 })
+  ])
+  const both = async (v) => (await versionRow(a.db)) === v && (await versionRow(b.db)) === v
+  await waitFor(() => both(3))
+  await stamped(b.db, b.db.version, 'upgrade', { version: 2 })
+  // an op after it says a applied it
+  const id = genId()
+  await stamped(b.db, b.db.version, 'add-messages', { id, text: 'after' })
+  await waitFor(async () => (await a.db.get('messages', id)).data)
+  t.ok(await both(3), 'a lower raise after it changes nothing')
+  t.absent(
+    [...a.errors, ...b.errors].find((e) => e.rule === 'upgrade'),
+    'and is no error'
+  )
+})
+
+test("version: only an owner's writable device raises it", async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const next = a.db.version + 1
+  const room = {
+    topic,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey,
+    spec: rebuilt({ version: next, target: next })
+  }
+  // a member on the newer build, and a device of the owner on it not seated yet
+  const b = await makePeer(t, testnet, room)
+  const c = await makePeer(t, testnet, { ...room, identity: a.identity })
+  await waitForConnection(a.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+  await waitFor(async () => (await c.db.get('members', a.identity.id)).data)
+
+  const checked = (db) => {
+    const state = { runs: 0 }
+    const raise = db._raise.bind(db)
+    db._raise = () => raise().finally(() => state.runs++)
+    return state
+  }
+  const onB = checked(b.db)
+  const onC = checked(c.db)
+  const { data: row } = await a.db.put('messages', { text: 'an update everywhere' })
+  await waitFor(async () => (await c.db.get('messages', row.id)).data)
+  await waitFor(() => onB.runs > 0 && onC.runs > 0)
+  t.is(await versionRow(a.db), null, 'nothing raised it')
+  t.absent(
+    [...b.errors, ...c.errors].find((e) => e.rule === 'upgrade' || e.code === 'NOT_WRITABLE'),
+    'and neither tried'
+  )
+})
+
+test('version: a raise that did not hold, as one a reorder voids, is written again after the next apply', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const next = db.version + 1
+  const again = new Database({
+    store,
+    identity,
+    spec: rebuilt({ version: next, target: next }),
+    key,
+    keyPair,
+    encryptionKey
+  })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  const write = again.write.bind(again)
+  let raises = 0
+  again.write = async (ops) => {
+    if (ops[0][0] !== 'upgrade') return write(ops)
+    // the first is lost, as a raise a reorder voids is
+    if (raises++ > 0) return write(ops)
+  }
+  await again.ready()
+  await waitFor(() => raises === 1)
+  t.is(await versionRow(again), null, 'the first raise did not hold')
+
+  await again.put('messages', { text: 'the next apply' })
+  await waitFor(async () => (await versionRow(again)) === next)
+  t.is(raises, 2, 'the owner raised again')
+})
+
+test('version: a late op stamped below the version leaves newer fields as stored, for a put, a set, a single and a row that does not exist', async (t) => {
+  const s = dated(
+    { version: 2, target: 2 },
+    { types: { '@cero/messages': { attachment: 2 }, '@cero/profile': { avatar: 2 } } }
+  )
+  const { db } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), 2, 'genesis wrote the version its build asks for')
+  const kept = b4a.from('kept')
+  const lost = b4a.from('lost')
+  const { data: row } = await db.put('messages', { text: 'now', attachment: kept })
+  await db.set('profile', { name: 'now', avatar: kept })
+  const seen = []
+  db.before('put', (ctx) => void (ctx.name === 'messages' && seen.push(ctx.row.attachment)))
+
+  // a device on the build before, its ops stamped 1, syncs late
+  await stamped(db, 1, 'add-messages', { ...row, text: 'late put', attachment: lost })
+  let now = (await db.get('messages', row.id)).data
+  t.is(now.text, 'late put', 'a put lands')
+  t.alike(now.attachment, kept, 'and leaves the newer field as stored')
+  t.alike(seen, [kept], 'which the hooks saw too')
+
+  await stamped(db, 1, 'set-messages', { id: row.id, text: 'late set', attachment: lost })
+  now = (await db.get('messages', row.id)).data
+  t.is(now.text, 'late set', 'a set lands')
+  t.alike(now.attachment, kept, 'and leaves it as stored')
+
+  await stamped(db, 1, 'set-profile', { name: 'late', avatar: lost })
+  const profile = (await db.get('profile')).data
+  t.is(profile.name, 'late', 'a single lands')
+  t.alike(profile.avatar, kept, 'and leaves it as stored')
+
+  const id = genId()
+  await stamped(db, 1, 'add-messages', { id, text: 'new', attachment: lost })
+  const fresh = (await db.get('messages', id)).data
+  t.is(fresh.text, 'new', 'a row that did not exist lands')
+  t.is(fresh.attachment, null, 'without the field its op could not name')
+})
+
+test('version: an op on a route newer than its stamp refuses its batch, on a newer build and on one that does not know the route', async (t) => {
+  const errors = []
+  const s = dated({ version: 2, target: 2 }, { routes: { '@cero/add-tasks': 2 } })
+  const { db } = await bootstrapped(t, { spec: s, onerror: (err) => errors.push(err) })
+  const refused = () => errors.filter((e) => e.rule === 'route').length
+
+  const beside = genId()
+  await db.bee.append([
+    wrap(1, spec.dispatch.encode('@cero/add-messages', { id: beside, text: 'beside it' })),
+    wrap(1, spec.dispatch.encode('@cero/add-tasks', { id: genId(), title: 'too new' }))
+  ])
+  await db.bee.update()
+  t.absent((await db.get('messages', beside)).data, 'the batch is refused whole')
+  t.is(refused(), 1, 'as a refusal')
+
+  // a route id past every one this build has, as an older build sees a newer route
+  const unknown = b4a.concat([c.encode(c.uint, 1000), c.encode(c.uint, 0)])
+  const other = genId()
+  await db.bee.append([
+    wrap(1, spec.dispatch.encode('@cero/add-messages', { id: other, text: 'beside it' })),
+    wrap(1, unknown)
+  ])
+  await db.bee.update()
+  t.absent((await db.get('messages', other)).data, 'refused whole there too')
+  t.is(refused(), 2, 'as a refusal')
+  const { data: row } = await db.put('messages', { text: 'after' })
+  t.ok((await db.get('messages', row.id)).data, 'and the next batch applies')
+})
+
+// an app that shipped before its spec kept a history, rebuilt here: the upgrade op is dated past its start
+test('version: the upgrade op is named at every version, so a rebuilt app that shipped raises its databases', async (t) => {
+  const s = dated(
+    { version: 2, start: 1, target: 2 },
+    { routes: { '@cero/upgrade': 2 }, types: { '@cero/upgrade': { version: 2 } } }
+  )
+  const { db } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), 2, 'a new database starts at the target')
+
+  const shipped = await bootstrapped(t)
+  const { key, keyPair, encryptionKey } = shipped.db
+  await shipped.db.close()
+  const again = new Database({
+    store: shipped.store,
+    identity: shipped.identity,
+    spec: s,
+    key,
+    keyPair,
+    encryptionKey
+  })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  await waitFor(async () => (await versionRow(again)) === 2)
+  t.pass('and one at its start is raised to it')
+})
+
+test('version: a database with no row is at its start', async (t) => {
+  const s = dated(
+    { version: 3, start: 2, target: 2 },
+    { types: { '@cero/messages': { attachment: 3 } } }
+  )
+  const { db } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), null, 'genesis at the start writes no row')
+  t.is(db.behind, null, 'not behind')
+  const id = genId()
+  await stamped(db, 3, 'add-messages', { id, text: 'at 3', attachment: b4a.from('x') })
+  const row = (await db.get('messages', id)).data
+  t.is(row.text, 'at 3', 'an op stamped past the start lands')
+  t.is(row.attachment, null, 'at the start, which does not name the field')
+})
+
+test('version: genesis is written at the target, so the creator keeps fields and routes newer than the start', async (t) => {
+  const s = dated(
+    { version: 2, start: 1, target: 2 },
+    {
+      routes: { '@cero/set-device': 2 },
+      types: { '@cero/member': { name: 2 }, '@cero/device': { name: 2 } }
+    }
+  )
+  const { db, identity } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), 2, 'genesis raised it to the target')
+  t.is((await db.get('members', identity.id)).data?.name, 'first', 'the member row keeps it')
+  const [device] = (await db.get('devices')).data
+  t.is(device?.name, 'first', 'and the device row')
+})
+
+test('version: an op after a raise in the same apply runs at the raised version', async (t) => {
+  const s = dated(
+    { version: 2, start: 1, target: 1 },
+    { types: { '@cero/messages': { attachment: 2 } } }
+  )
+  const { db } = await bootstrapped(t, { spec: s })
+  t.is(await versionRow(db), null, 'at the start')
+  const id = genId()
+  await db.bee.append([
+    wrap(2, spec.dispatch.encode('@cero/upgrade', { version: 2 })),
+    wrap(
+      2,
+      spec.dispatch.encode('@cero/add-messages', { id, text: 'x', attachment: b4a.from('a') })
+    )
+  ])
+  await db.bee.update()
+  t.is(await versionRow(db), 2, 'raised')
+  t.alike(
+    (await db.get('messages', id)).data?.attachment,
+    b4a.from('a'),
+    'the op after it names the field'
+  )
+})
+
+test('version: a device below a raise skips the ops after it in the same apply', async (t) => {
+  const { db } = await bootstrapped(t)
+  const id = genId()
+  await db.bee.append([
+    wrap(2, spec.dispatch.encode('@cero/upgrade', { version: 2 })),
+    wrap(2, spec.dispatch.encode('@cero/add-messages', { id, text: 'after the raise' }))
+  ])
+  await db.bee.update()
+  t.is(db.behind, 2, 'behind')
+  t.absent((await db.get('messages', id)).data, 'the op after the raise is past this build')
+  await waitFor(async () => (await marker(db, 'cero/skipped')) === 2)
+  t.pass('and recorded')
+})
+
+test('version: a write on a route newer than the version is refused before it reaches the log', async (t) => {
+  const s = dated({ version: 2, start: 1, target: 1 }, { routes: { '@cero/add-tasks': 2 } })
+  const { db } = await bootstrapped(t, { spec: s })
+  const length = db.bee.local.length
+  const err = await db.put('tasks', { title: 'x' }).catch((e) => e)
+  t.is(err?.code, 'UNSUPPORTED', 'refused')
+  t.is(db.bee.local.length, length, 'nothing appended')
+})
+
+test('version: a store written under contracts 1 and 2, opened under 3, keeps every row', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const { data: one } = await db.put('messages', { text: 'one', attachment: b4a.from('1') })
+  await db.set('profile', { name: 'one', avatar: b4a.from('1') })
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+
+  const open = async (meta) => {
+    const again = new Database({
+      store,
+      identity,
+      spec: rebuilt(meta),
+      key,
+      keyPair,
+      encryptionKey
+    })
+    await again.ready()
+    t.teardown(() => again.close().catch(() => {}), { order: 4 })
+    return again
+  }
+  // each a build that kept no history: it starts at its own contract, and all it has is since 0
+  const two = await open({ version: 2, start: 2, target: 2 })
+  const { data: task } = await two.put('tasks', { title: 'two', done: true })
+  await two.set('messages', { id: one.id, text: 'two' })
+  await two.close()
+
+  // newer rules apply the whole log again, every op stamped below this start
+  const three = await open({ version: 3, start: 3, target: 3, rules: spec.meta.rules + 1 })
+  const message = (await three.get('messages', one.id)).data
+  t.is(message.text, 'two', 'a row both wrote')
+  t.alike(message.attachment, b4a.from('1'), 'with the field the first wrote')
+  const profile = (await three.get('profile')).data
+  t.is(profile.name, 'one', 'a single')
+  t.alike(profile.avatar, b4a.from('1'), 'whole')
+  t.is((await three.get('tasks', task.id)).data?.done, true, 'a row the second wrote')
+  t.is((await three.get('members', identity.id)).data?.role, 'owner', 'the owner')
+  t.is(three.behind, null, 'not behind')
+  const { data: row } = await three.put('messages', { text: 'three' })
+  t.ok((await three.get('messages', row.id)).data, 'and it writes')
+})
+
+// what a database appends, each op with the stamp it carries
+function appended(db) {
+  const nodes = []
+  const append = db.bee.append.bind(db.bee)
+  db.bee.append = (value, opts) => {
+    for (const node of [].concat(value)) nodes.push(unwrap(node))
+    return append(value, opts)
+  }
+  return nodes
+}
+
+const fileId = () =>
+  encodeId(
+    Identity.randomBytes(32),
+    { blockOffset: 0, blockLength: 1, byteOffset: 0, byteLength: 2 },
+    'image/png'
+  )
+
+// a row as the build before reads it: the fields it has
+const known = (row, older) => Object.fromEntries(Object.keys(older).map((k) => [k, row[k]]))
+
+test('version: a device on the next build writes as the version, bytes the build before decodes exactly', async (t) => {
+  const { db, identity } = await makeDb(t, { spec: next })
+  const nodes = appended(db)
+  await db.bootstrap({ name: 'first' })
+  t.is(db.version, 2, 'a newer build')
+  t.is(await versionRow(db), null, 'which holds its database at the start')
+
+  const photo = fileId()
+  const { data: row } = await db.put('messages', { text: 'hi', photo })
+  await db.set('messages', { id: row.id, text: 'again' })
+  await db.set('profile', { name: 'me', photo })
+  await db.set('members', { id: identity.id, name: 'renamed' })
+  await db.set('devices', { id: hid.encode(db.writerKey), name: 'phone' })
+  await db.call('add-invite', { id: b4a.toHex(Identity.randomBytes(32)), role: 'member' })
+  await db.del('messages', row.id)
+
+  const names = []
+  for (const { version, body } of nodes) {
+    const { name, value } = spec.dispatch.decode(body)
+    names.push(name)
+    t.is(version, 1, `${name} is stamped with the version`)
+    t.alike(spec.dispatch.encode(name, value), body, `${name} is what the build before writes`)
+  }
+  t.alike(
+    names,
+    [
+      '@cero/upgrade',
+      '@cero/add-writer',
+      '@cero/add-member',
+      '@cero/set-device',
+      '@cero/add-messages',
+      '@cero/add-messages',
+      '@cero/set-profile',
+      '@cero/set-member',
+      '@cero/set-device',
+      '@cero/add-invite',
+      '@cero/del-messages'
+    ],
+    "a collection, a single, a builtin extended and Cero's own ops"
+  )
+})
+
+test('version: a second device on the next build claims its seat as the version', async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.create()
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { identity, topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    spec: next,
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  const nodes = appended(b.db)
+  await b.db.claim()
+  t.ok(b.db.writable, 'seated')
+  const [{ version, body }] = nodes
+  t.is(spec.dispatch.decode(body).name, '@cero/add-writer', 'by its add-writer')
+  t.is(version, 1, 'stamped with the version')
+})
+
+// a release whose Cero rules date the device's name past the version a room written before it holds
+const named = () =>
+  dated({ version: 2, start: 1, target: 2 }, { types: { '@cero/device': { name: 2 } } })
+
+test("version: an owner's device recovering on a newer release raises the version before it writes its device row", async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.create()
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { identity, topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, {
+    identity,
+    topic,
+    spec: named(),
+    key: a.db.key,
+    encryptionKey: a.db.encryptionKey
+  })
+  await b.db.bootstrap({ recovering: true, name: 'phone' })
+  t.is(await versionRow(b.db), 2, 'raised to its target')
+  const { data: device } = await b.db.get('devices', hid.encode(b.db.writerKey))
+  t.is(device?.name, 'phone', 'and its row keeps the name')
+})
+
+test("version: a member's device linking on a newer release writes its device row without what the version does not have", async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, room)
+  await waitForConnection(a.network)
+  await admit(a.db, b.db)
+  const phone = await makePeer(t, testnet, { ...room, identity: b.identity, spec: named() })
+  await phone.db.bootstrap({ recovering: true, name: 'phone' })
+  t.ok(phone.db.writable, 'seated')
+  const { data: device } = await phone.db.get('devices', hid.encode(phone.db.writerKey))
+  t.ok(device, 'its row is written')
+  t.is(device.name, null, 'without the name its version has no field for')
+  t.is(await versionRow(phone.db), null, 'a member does not raise')
+})
+
+test('version: a write naming what the version does not have yet is refused with UNSUPPORTED, and nothing is appended', async (t) => {
+  const { db, identity } = await bootstrapped(t, { spec: next })
+  db.after('ping', () => {})
+  const { data: row } = await db.put('messages', { text: 'kept', tag: null })
+  const length = db.bee.local.length
+
+  const refused = async (write, thing) => {
+    const err = await write.catch((e) => e)
+    t.is(err?.code, 'UNSUPPORTED', thing)
+    t.ok(String(err?.message).includes(thing), 'named')
+  }
+  await refused(db.put('messages', { text: 'x', tag: 'held' }), "'tag' in 'messages'")
+  await refused(db.put('messages', { text: 'x', cover: fileId() }), "'cover' in 'messages'")
+  await refused(db.set('messages', { id: row.id, tag: 'held' }), "'tag' in 'messages'")
+  await refused(db.set('profile', { bio: 'held' }), "'bio' in 'profile'")
+  await refused(db.set('members', { id: identity.id, alias: 'held' }), "'alias' in 'members'")
+  await refused(db.put('visits', { date: 'today' }), "'visits'")
+  await refused(db.del('visits', 'v1'), "'visits'")
+  await refused(db.set('prefs', { theme: 'dark' }), "'prefs'")
+  await refused(db.call('ping', { x: 'now' }), "'ping'")
+  const batch = db.tx(async (tx) => {
+    await tx.put('messages', { text: 'beside it' })
+    await tx.put('visits', { date: 'today' })
+  })
+  await refused(batch, "'visits'")
+  t.is(db.bee.local.length, length, 'nothing appended')
+  t.is((await db.get('messages')).data.length, 1, 'nor applied')
+})
+
+test("version: after the owner's raise the same writes land with what they name", async (t) => {
+  const { db, identity } = await bootstrapped(t, { spec: next })
+  db.after('ping', (ctx) => ctx.put('messages', { text: ctx.row.x }))
+  await raise(db, 2)
+  t.is(db.behind, null, 'the build has the version')
+  const nodes = appended(db)
+
+  const cover = fileId()
+  const { data: row } = await db.put('messages', { text: 'x', tag: 'now', cover })
+  await db.set('profile', { bio: 'now' })
+  await db.set('members', { id: identity.id, alias: 'now' })
+  const { data: visit } = await db.put('visits', { date: 'today' })
+  await db.set('prefs', { theme: 'dark' })
+  await db.call('ping', { x: 'pinged' })
+
+  const message = (await db.get('messages', row.id)).data
+  t.alike(
+    [message.tag, message.cover],
+    ['now', cover],
+    'a field of a collection, a file among them'
+  )
+  t.is((await db.get('profile')).data.bio, 'now', 'of a single')
+  t.is((await db.get('members', identity.id)).data.alias, 'now', 'of a builtin')
+  t.ok((await db.get('visits', visit.id)).data, 'a collection')
+  t.is((await db.get('prefs')).data.theme, 'dark', 'a single')
+  const texts = (await db.get('messages')).data.map((m) => m.text)
+  t.ok(texts.includes('pinged'), 'an action')
+  t.ok(
+    nodes.every((n) => n.version === 2),
+    'each stamped with the version'
+  )
+})
+
+test('version: what a hook writes is cut to the stamp of the op it runs in', async (t) => {
+  const { db } = await bootstrapped(t, { spec: next })
+  db.after('put', async (ctx) => {
+    if (ctx.name !== 'messages') return
+    await ctx.set('profile', { name: ctx.row.text, bio: `bio of ${ctx.row.text}` })
+  })
+  await db.put('messages', { text: 'one' })
+  let profile = (await db.get('profile')).data
+  t.is(profile.name, 'one', 'the hook wrote')
+  t.is(profile.bio, null, 'without what the version does not have')
+
+  await raise(db, 2)
+  await db.put('messages', { text: 'two' })
+  profile = (await db.get('profile')).data
+  t.is(profile.bio, 'bio of two', 'once raised, with it')
+
+  // an op written before the raise syncs late: its hook writes as of its stamp, not the version
+  await stamped(db, 1, 'add-messages', { id: genId(), text: 'late' })
+  profile = (await db.get('profile')).data
+  t.is(profile.name, 'late', 'the late op wrote')
+  t.is(profile.bio, 'bio of two', 'and left what its stamp has no field for as stored')
+})
+
+test('version: a hook naming a route the version does not have refuses its op, in the dry run and at apply', async (t) => {
+  const errors = []
+  const { db } = await bootstrapped(t, { spec: next, onerror: (err) => errors.push(err) })
+  db.after('put', (ctx) => ctx.name === 'records' && ctx.put('visits', { date: 'today' }))
+  const length = db.bee.local.length
+  const err = await db.put('records', { text: 'x' }).catch((e) => e)
+  t.is(err?.code, 'REFUSED', 'refused before the log')
+  t.is(db.bee.local.length, length, 'nothing appended')
+
+  const id = genId()
+  await stamped(db, 1, 'add-records', { id, text: 'appended anyway' })
+  t.absent((await db.get('records', id)).data, 'and refused at apply')
+  t.ok(
+    errors.some((e) => e.code === 'REFUSED'),
+    'as a refusal'
+  )
+})
+
+test('version: devices on two builds read the same rows before and after the raise', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  // b on the release that turns on what the next one held back, c on the next one
+  const b = await makePeer(t, testnet, {
+    ...room,
+    spec: { ...next, meta: { ...next.meta, target: 2 } }
+  })
+  const c = await makePeer(t, testnet, { ...room, spec: next })
+  await waitForConnection(a.network)
+  await admit(a.db, b.db)
+  await admit(a.db, c.db)
+  await waitFor(() => b.db.writable && c.db.writable)
+
+  const { data: row } = await b.db.put('messages', { text: 'from b' })
+  await c.db.set('profile', { name: 'from c' })
+  const everywhere = async (fn) => {
+    for (const peer of [a, b, c]) await waitFor(() => fn(peer.db))
+  }
+  await everywhere(async (db) => (await db.get('messages', row.id)).data)
+  await everywhere(async (db) => (await db.get('profile')).data)
+  const before = (await a.db.get('messages', row.id)).data
+  for (const peer of [b, c]) {
+    const on = (await peer.db.get('messages', row.id)).data
+    t.alike(known(on, before), before, 'the same row on the build before and the next')
+    t.is(on.tag, null, 'with nothing the version does not have')
+    t.alike(
+      known((await peer.db.get('profile')).data, (await a.db.get('profile')).data),
+      (await a.db.get('profile')).data,
+      'the same single'
+    )
+  }
+  t.is(await versionRow(a.db), null, 'nobody raised it')
+
+  await a.db.set('members', { id: b.identity.id, role: 'owner' })
+  await everywhere(async (db) => (await versionRow(db)) === 2)
+  t.pass("the new owner's device raised it")
+  await waitFor(() => a.db.behind === 2)
+  t.is(c.db.behind, null, 'the next build has it')
+
+  await b.db.set('messages', { id: row.id, tag: 'from b' })
+  await waitFor(async () => (await c.db.get('messages', row.id)).data?.tag === 'from b')
+  await c.db.set('profile', { bio: 'from c' })
+  await waitFor(async () => (await b.db.get('profile')).data?.bio === 'from c')
+  t.alike(
+    (await b.db.get('messages', row.id)).data,
+    (await c.db.get('messages', row.id)).data,
+    'the two builds read the same row after the raise'
+  )
+  t.alike((await b.db.get('profile')).data, (await c.db.get('profile')).data, 'and single')
+  t.alike((await a.db.get('messages', row.id)).data, before, 'the build before keeps what it read')
 })
 
 // ─── diff watchers: Database.changes ──────────────────────────────────────
@@ -3691,19 +4584,16 @@ test('changes: singles emit prev/next of the one row', async (t) => {
 
 test('changes: an upgrade rebuild mid-stream re-emits a reset batch', async (t) => {
   const { db, store, identity } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
 
   const { data: kept } = await db.put('messages', { text: 'kept' })
   const futureId = genId()
   const future = db.version + 1
-  await db.bee.append(
-    wrap(future, spec.dispatch.encode('@cero/add-messages', { id: futureId, text: 'future' }))
-  )
-  await db.bee.update()
+  await raise(db, future)
+  await stamped(db, future, 'add-messages', { id: futureId, text: 'future' })
   const { key, keyPair, encryptionKey } = db
   await db.close()
 
-  const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
+  const upgraded = rebuilt({ version: future })
   const again = new Database({ store, identity, spec: upgraded, key, keyPair, encryptionKey })
   await again.ready()
   t.teardown(() => again.close().catch(() => {}), { order: 4 })
@@ -3746,16 +4636,11 @@ test('write: sets racing close reject cleanly instead of crashing', async (t) =>
 // a device behind merges a set from a view that lacks the newer writes and appends the whole row:
 // every device would then take its stale copy. So a device behind reads, syncs and leaves, but
 // does not write
-test('gate: a device behind a newer version reads but does not write', async (t) => {
+test('gate: a device behind the version reads but does not write', async (t) => {
   const { db } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
   const { data: row } = await db.put('messages', { text: 'mine' })
-
-  const future = db.version + 1
-  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await db.bee.append(wrap(future, newer))
-  await db.bee.update()
-  t.is(db.behind, future, 'behind')
+  await raise(db, db.version + 1)
+  t.is(db.behind, db.version + 1, 'behind')
 
   const writes = {
     put: () => db.put('messages', { text: 'x' }),
@@ -3770,43 +4655,26 @@ test('gate: a device behind a newer version reads but does not write', async (t)
 })
 
 test('gate: a stale set from a device behind never lands on the newer row', async (t) => {
-  const testnet = await makeTestnet(t)
-  const identity = await Identity.create()
-  const topic = randomTopic()
-  const a = await makePeer(t, testnet, { identity, topic })
-  await a.db.bootstrap({ name: 'a' })
-  const b = await makePeer(t, testnet, {
-    identity: await Identity.create(),
-    topic,
-    key: a.db.key,
-    encryptionKey: a.db.encryptionKey
-  })
-  await waitForConnection(a.network)
-  await waitForConnection(b.network)
-  await admit(a.db, b.db)
-  await waitFor(() => b.db.writable)
-
+  const { a, b } = await members(t)
   const { data: row } = await a.db.put('messages', { text: 'first' })
   await waitFor(async () => (await b.db.get('messages', row.id)).data)
 
-  // b updates its app: its writes now carry the next contract
-  b.db.version = spec.meta.version + 1
-  await b.db.set('messages', { id: row.id, text: 'newer' })
-  await waitFor(() => a.db.behind === b.db.version)
+  // the owner updates its app, and its device moves the database to it
+  a.db.version = spec.meta.version + 1
+  await raise(a.db, a.db.version)
+  await waitFor(() => b.db.behind === a.db.version)
+  await a.db.set('messages', { id: row.id, text: 'newer' })
 
-  const err = await a.db.set('messages', { id: row.id, text: 'stale' }).catch((e) => e)
+  const err = await b.db.set('messages', { id: row.id, text: 'stale' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', 'the stale write is refused')
   await a.db.bee.update()
-  t.is((await b.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
+  t.is((await a.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
 })
 
 test('gate: behind, a batch, an invite and a rotation wait too, and nothing reaches the log', async (t) => {
   const { db } = await bootstrapped(t)
-  const { wrap } = await import('../../src/database/envelope.js')
   const { data: row } = await db.put('messages', { text: 'mine' })
-  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await db.bee.append(wrap(db.version + 1, newer))
-  await db.bee.update()
+  await raise(db, db.version + 1)
   const length = db.bee.local.length
 
   const attempts = {
@@ -3827,23 +4695,8 @@ test('gate: behind, a batch, an invite and a rotation wait too, and nothing reac
 })
 
 test('gate: a member behind can still leave, and the others apply it', async (t) => {
-  const testnet = await makeTestnet(t)
-  const topic = randomTopic()
-  const a = await makePeer(t, testnet, { topic })
-  await a.db.bootstrap({ name: 'a' })
-  const b = await makePeer(t, testnet, {
-    topic,
-    key: a.db.key,
-    encryptionKey: a.db.encryptionKey
-  })
-  await waitForConnection(a.network)
-  await waitForConnection(b.network)
-  await admit(a.db, b.db)
-  await waitFor(() => b.db.writable)
-
-  const { wrap } = await import('../../src/database/envelope.js')
-  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await b.db.bee.append(wrap(b.db.version + 1, newer))
+  const { a, b } = await members(t)
+  await raise(a.db, a.db.version + 1)
   await waitFor(() => b.db.behind !== null && a.db.behind !== null)
 
   await b.db.del('members', b.identity.id)
@@ -3852,28 +4705,12 @@ test('gate: a member behind can still leave, and the others apply it', async (t)
 })
 
 test('gate: a removal applied while behind starts no rotation on this device, nor an error', async (t) => {
-  const testnet = await makeTestnet(t)
-  const topic = randomTopic()
-  const a = await makePeer(t, testnet, { topic })
-  await a.db.bootstrap({ name: 'a' })
-  const b = await makePeer(t, testnet, {
-    topic,
-    key: a.db.key,
-    encryptionKey: a.db.encryptionKey
-  })
-  await waitForConnection(a.network)
-  await waitForConnection(b.network)
-  await admit(a.db, b.db)
-  await waitFor(() => b.db.writable)
-
+  const { a, b } = await members(t)
   let audits = 0
   const audit = a.db.rotation._audit.bind(a.db.rotation)
   a.db.rotation._audit = () => audit().finally(() => audits++)
-  const { wrap } = await import('../../src/database/envelope.js')
   await a.db.removeWriter(b.db.keyPair.publicKey)
-  const newer = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'newer' })
-  await a.db.bee.append(wrap(a.db.version + 1, newer))
-  await a.db.bee.update()
+  await raise(a.db, a.db.version + 1)
   t.is(a.db.behind, a.db.version + 1, 'behind before the audit ran')
 
   await waitFor(() => audits >= 1)
@@ -3884,11 +4721,11 @@ test('gate: a removal applied while behind starts no rotation on this device, no
   t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no rotation')
 })
 
-// anyone holding the database key appends an optimistic node: only a seated writer's newer version freezes writes
+// anyone holding the database key appends an optimistic node: whatever its stamp, it is refused
+// for want of a member and moves nothing
 test('gate: a node from a core no member owns raises nothing', async (t) => {
   const errors = []
   const { db, store } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
-  const { wrap } = await import('../../src/database/envelope.js')
   const kp = Identity.randomKeyPair()
   const core = store.get({
     keyPair: kp,
@@ -3921,7 +4758,6 @@ test("gate: a reader's far-future node raises nothing", async (t) => {
   await admit(a.db, b.db, 'reader')
   t.absent(b.db.writable, 'a reader has no writer seat')
 
-  const { wrap } = await import('../../src/database/envelope.js')
   const future = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'future' })
   await b.db.bee.append(wrap(2 ** 40, future), { optimistic: true })
   const present = spec.dispatch.encode('@cero/add-messages', { id: genId(), text: 'present' })
@@ -3934,7 +4770,7 @@ test("gate: a reader's far-future node raises nothing", async (t) => {
   t.ok(put.data, 'the owner writes')
 })
 
-// a joiner is no writer yet, so its newer join freezes nothing: it must still apply after the upgrade
+// a join stamped past this build, where the version already is, waits for the update
 test('gate: a join from a newer release, skipped as too new, applies once this device catches up', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
@@ -3944,15 +4780,15 @@ test('gate: a join from a newer release, skipped as too new, applies once this d
   await waitForConnection(a.network)
   await waitForConnection(b.network)
 
-  const { wrap } = await import('../../src/database/envelope.js')
   const { Invite } = await import('../../src/pairing/invite.js')
   const { sealJoin } = await import('../../src/pairing/index.js')
   const invite = Invite.create({ key: a.db.key, address: a.db.address })
   const id = b4a.toHex(invite.id)
   await a.db.call('add-invite', { id, role: 'member', createdAt: Date.now() })
   await waitFor(async () => (await b.db.get('invites', id)).data)
-
   const future = a.db.version + 1
+  await raise(a.db, future)
+
   const join = sealJoin(invite, b.identity, b.db.writerKey, Identity.randomBytes(32))
   const op = spec.dispatch.encode('@cero/join', join)
   await b.db.bee.append(wrap(future, op), { optimistic: true })
@@ -3971,17 +4807,15 @@ test('gate: a join from a newer release, skipped as too new, applies once this d
   // a node after the join, refused for want of a member, says the joiner's core was applied
   await b.db.bee.append(wrap(a.db.version, present), { optimistic: true })
   await waitFor(() => a.errors.some((e) => e.code === 'REFUSED'))
-  t.is(a.db.behind, null, 'a joiner freezes nothing')
-  t.absent((await a.db.get('members', b.identity.id)).data, 'not let in before the upgrade')
+  t.absent((await a.db.get('members', b.identity.id)).data, 'not let in before the update')
 
   const { key, keyPair, encryptionKey } = a.db
   await a.db.close()
-  const upgraded = { ...spec, meta: { ...spec.meta, version: future } }
   const again = new Database({
     store: a.store,
     identity: a.identity,
     network: a.network,
-    spec: upgraded,
+    spec: rebuilt({ version: future }),
     key,
     keyPair,
     encryptionKey
@@ -3995,39 +4829,46 @@ test('gate: a join from a newer release, skipped as too new, applies once this d
   t.is(again.behind, null, 'and nothing freezes')
 })
 
-test('gate: a newer op applied during a write stops it', async (t) => {
-  const testnet = await makeTestnet(t)
-  const topic = randomTopic()
-  const a = await makePeer(t, testnet, { topic })
-  await a.db.bootstrap({ name: 'a' })
-  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
-  await waitForConnection(a.network)
-  await waitForConnection(b.network)
-  await admit(a.db, b.db)
-  await waitFor(() => b.db.writable)
+test('gate: a database whose parent is behind is behind too: it does not write nor raise', async (t) => {
+  const { db: root } = await bootstrapped(t)
+  const { db } = await bootstrapped(t, { parent: root })
+  const behind = root.version + 1
+  await raise(root, behind)
+  t.is(db.behind, behind, 'behind as its parent is')
+  const err = await db.put('messages', { text: 'stale' }).catch((e) => e)
+  t.is(err?.code, 'BEHIND', 'it does not write')
 
+  // its own build asks for a version it has not reached
+  const row = await versionRow(db)
+  db.version += 1
+  db.target = db.version
+  await db._raise()
+  t.is(await versionRow(db), row, 'and raises nothing')
+})
+
+test('gate: a raise applied during a write stops it', async (t) => {
+  const { a, b } = await members(t)
   const { data: row } = await a.db.put('messages', { text: 'first' })
   await waitFor(async () => (await b.db.get('messages', row.id)).data)
 
-  // a's set is past the entry check when b's newer write lands in the drain it awaits
-  const updated = a.db.bee.updated.bind(a.db.bee)
+  // b's set is past the entry check when the owner's raise lands in the drain it awaits
+  const updated = b.db.bee.updated.bind(b.db.bee)
   let first = true
-  a.db.bee.updated = async () => {
+  b.db.bee.updated = async () => {
     if (first) {
       first = false
-      t.is(a.db.behind, null, 'not behind when the set starts')
-      b.db.version = spec.meta.version + 1
-      await b.db.set('messages', { id: row.id, text: 'newer' })
-      await waitFor(() => a.db.behind === b.db.version)
+      t.is(b.db.behind, null, 'not behind when the set starts')
+      await raise(a.db, a.db.version + 1)
+      await waitFor(() => b.db.behind === a.db.version + 1)
     }
     return updated()
   }
 
-  const length = a.db.bee.local.length
-  const err = await a.db.set('messages', { id: row.id, text: 'stale' }).catch((e) => e)
+  const length = b.db.bee.local.length
+  const err = await b.db.set('messages', { id: row.id, text: 'stale' }).catch((e) => e)
   t.is(err?.code, 'BEHIND', 'the write is refused once behind')
-  t.is(a.db.bee.local.length, length, 'nothing reached the log')
-  t.is((await b.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
+  t.is(b.db.bee.local.length, length, 'nothing reached the log')
+  t.is((await a.db.get('messages', row.id)).data?.text, 'first', 'the row stands')
 })
 
 // a joiner writes its join before it holds the key, and nothing else: a seat is no key
