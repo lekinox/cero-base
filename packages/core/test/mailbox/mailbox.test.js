@@ -246,7 +246,7 @@ test('Mailbox: a message onmessage throws on is kept and reported', async (t) =>
 
 test('Mailbox: the inbox hands over only the kept mail for its own address', async (t) => {
   const testnet = await makeTestnet(t)
-  const inbox = kept()
+  const inbox = watched()
   const [one, two] = [crypto.randomBytes(32), crypto.randomBytes(32)]
   const sender = await mailbox(t, testnet)
   const net = await peer(t, testnet)
@@ -258,7 +258,7 @@ test('Mailbox: the inbox hands over only the kept mail for its own address', asy
   before.receive(two, never)
   await sender.send(Mailbox.getAddress(one), b4a.from('for one'))
   await sender.send(Mailbox.getAddress(two), b4a.from('for two'))
-  await waitFor(() => inbox.pending() === 2, { timeout: 30000 })
+  await waitFor(() => inbox.keys.length === 2, { timeout: 30000 })
   await before.close()
 
   const owner = new Mailbox(net, { inbox })
@@ -439,13 +439,13 @@ async function readable(net, key) {
   }
 }
 
-// a kept box that also lists the cores its mail arrived in
+// a kept box that also lists the cores its mail arrived in, each once its block was read
 function watched() {
   const box = kept()
   box.keys = []
   const put = box.put
   box.put = async (m) => {
-    if (!m.handled) box.keys.push(b4a.from(m.id, 'hex'))
+    if (!m.handled && 'fetched' in m) box.keys.push(b4a.from(m.id, 'hex'))
     return put(m)
   }
   return box
@@ -1700,6 +1700,7 @@ test('Inbox: keep false reports a message it could not erase', async (t) => {
   const held = []
   const put = box.put
   box.put = async (m) => {
+    if (!('fetched' in m)) return put(m)
     const core = b.network.store.get({ key: b4a.from(m.id, 'hex') })
     await core.ready()
     held.push(core)
@@ -1862,4 +1863,156 @@ test('Inbox: keep false erases only what the inbox fetched', async (t) => {
   t.alike(got, ['looks like mail'])
   await waitFor(async () => (await b.inbox.list()).every((m) => m.handled))
   t.ok(await holds(b.network, key), 'handled, not erased')
+})
+
+// an inbox whose app is killed the moment a block it asked for is on its disk: nothing reaches its
+// box from then on. Resolves with the key of that block's core, once the inbox closed
+function killed(t, net, secret, box) {
+  let dead = false
+  const alive = (write) => async (arg) => {
+    if (dead) throw new Error('killed')
+    return write(arg)
+  }
+  const inbox = new Inbox(net, secret, {
+    box: { list: box.list, put: alive(box.put), del: alive(box.del) },
+    onmessage: () => {},
+    onerror: () => {}
+  })
+  t.teardown(() => inbox.close())
+  const unseal = inbox._unseal.bind(inbox)
+  return new Promise((resolve) => {
+    inbox._unseal = async (key, opts) => {
+      const read = await unseal(key, opts)
+      dead = true
+      inbox.close().then(() => resolve(key))
+      return read
+    }
+    inbox.ready()
+  })
+}
+
+test('Inbox: killed once a message is on its disk, before its row says so, the next start hands it over', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+
+  const dying = killed(t, b, secret, box)
+  await a.send(Mailbox.getAddress(secret), b4a.from('stored'))
+  await dying
+  await waitFor(async () => (await a.outbox.list()).length === 0)
+  t.pass('its sender counts it delivered, and offers it no more')
+
+  const got = []
+  const next = new Inbox(b, secret, {
+    box,
+    onmessage: (message) => got.push(b4a.toString(message)),
+    onerror: () => {}
+  })
+  t.teardown(() => next.close())
+  await next.ready()
+  await waitFor(() => got.length > 0, { timeout: 5000 }).catch(() => {})
+  t.alike(got, ['stored'], 'handed over at the next start')
+  await waitFor(() => box.pending() === 0)
+  t.pass('and handled')
+})
+
+test('Inbox: killed once a block that does not open is on its disk, the next start drops its row and erases nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await peer(t, testnet)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+
+  // announced at our address, sealed to someone else's
+  const forged = a.store.get({ name: 'forged' })
+  await forged.ready()
+  await forged.append(
+    crypto.encrypt(b4a.from('not yours'), Mailbox.getAddress(crypto.randomBytes(32)))
+  )
+  const dying = killed(t, b, secret, box)
+  const post = new Post(a, Mailbox.getAddress(secret), null, { core: forged })
+  t.teardown(() => post.close())
+  await post.ready()
+  const key = await dying
+  await post.close()
+  t.is(box.pending(), 1, 'its row waits for the next start')
+
+  const after = new Mailbox(b, { inbox: box })
+  t.teardown(() => after.close())
+  const got = []
+  const next = after.receive(secret, (message) => got.push(message), { keep: false })
+  await next.ready()
+  await waitFor(() => !next._mail.has(b4a.toHex(key)))
+  t.is(box.mail.size, 0, 'dropped')
+  t.is(got.length, 0, 'nothing handed over')
+  t.ok(await holds(b, key), 'the core it names is not erased')
+})
+
+// rows a box was left with at an address, the message of each in a core `net` holds
+async function left(net, box, address, n) {
+  for (let i = 0; i < n; i++) {
+    const core = net.store.get({ name: `left ${i}` })
+    await core.ready()
+    await core.append(crypto.encrypt(b4a.from('left'), address))
+    await box.put({ id: b4a.toHex(core.key), address, message: b4a.alloc(0) })
+    await core.close()
+  }
+}
+
+test('Inbox: rows found at a start are read sixteen at once, as announced mail is', async (t) => {
+  const testnet = await makeTestnet(t)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+  await left(b, box, Mailbox.getAddress(secret), 20)
+
+  let calls = 0
+  const held = []
+  const inbox = new Inbox(b, secret, {
+    box,
+    onmessage: () => {
+      calls++
+      return new Promise((resolve) => held.push(resolve))
+    },
+    onerror: () => {}
+  })
+  t.teardown(() => inbox.close())
+  await inbox.ready()
+  await waitFor(() => calls >= 16)
+  t.is(calls, 16, 'sixteen in the app at most')
+  t.is(inbox._reading, 16)
+  for (const release of held) release()
+  await waitFor(() => calls === 20)
+  t.pass('the rest once their slots are free')
+})
+
+test('Inbox: one that closed reads no more of the rows it found', async (t) => {
+  const testnet = await makeTestnet(t)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+  await left(b, box, Mailbox.getAddress(secret), 20)
+
+  const held = []
+  const inbox = new Inbox(b, secret, {
+    box,
+    onmessage: () => new Promise((resolve) => held.push(resolve)),
+    onerror: () => {}
+  })
+  t.teardown(() => inbox.close())
+  let reads = 0
+  const unseal = inbox._unseal.bind(inbox)
+  inbox._unseal = (...args) => {
+    reads++
+    return unseal(...args)
+  }
+  await inbox.ready()
+  await waitFor(() => held.length === 16)
+  await inbox.close()
+  for (const release of held) release()
+  await waitFor(() => inbox._reading === 0)
+  t.is(reads, 16, 'the rest wait for the next start')
+  t.is(box.pending(), 4)
 })

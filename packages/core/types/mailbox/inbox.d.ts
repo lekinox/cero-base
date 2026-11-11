@@ -28,10 +28,10 @@ export declare function aged({ handled }: import('./index.js').Mail): boolean;
  */
 export declare function erase(store: import('corestore'), key: Uint8Array, live?: () => boolean): Promise<boolean>;
 /**
- * Receives at the address a secret owns, direct from the sender or from a mirror. A message
- * that does not open in time, or that `onmessage` resolves `false` on, is dropped; one that opens
- * is kept in `box` until `onmessage` resolves, as a row naming its core, never the message, and
- * its id stays there for HANDLED_FOR once handled.
+ * Receives at the address a secret owns, direct from the sender or from a mirror. A message is
+ * kept in `box` from before its block is read until `onmessage` resolves, as a row naming its
+ * core, never the message, and its id stays there for HANDLED_FOR once handled; one that does not
+ * open in time, or that `onmessage` resolves `false` on, is dropped.
  * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
  * device held already is left alone.
  */
@@ -57,6 +57,8 @@ export declare class Inbox extends ReadyResource {
     _behind;
     /** @private */
     _reading;
+    /** @private */
+    _kept;
     /** @private */
     _handled;
     /** @private */
