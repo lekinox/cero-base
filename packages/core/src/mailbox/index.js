@@ -117,15 +117,24 @@ export class Mailbox extends ReadyResource {
     const after = [...this._resources]
       .filter((r) => r instanceof Inbox && r.closing && b4a.equals(r.address, address))
       .map((r) => r.closing)
+    const siblings = () =>
+      [...this._resources].filter(
+        (r) => r instanceof Inbox && r !== inbox && b4a.equals(r.address, address)
+      )
     const inbox = new Inbox(this.network, secret, {
       box: this.inbox,
       onmessage,
       onerror: this.onerror,
       keep,
       timeout,
-      after
+      after,
+      siblings
     })
     this._track(inbox)
+    // a read it leaves unsettled as it closes goes to the inboxes still open at its address
+    inbox.once('close', () => {
+      for (const left of siblings()) left.inherit().catch(this.onerror)
+    })
     inbox.ready().catch(this.onerror)
     return inbox
   }

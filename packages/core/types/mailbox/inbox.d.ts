@@ -72,26 +72,38 @@ export declare class Inbox extends ReadyResource {
     /** @private */
     _after;
     /** @private */
+    _siblings;
+    /** @private */
     _session;
     /** @private */
     _discovery;
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} secret
-     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number, after?: Promise<void>[] }} opts  `after`: closes to wait for before it opens.
+     * @param {{ box: import('./index.js').Box, onmessage: (message: Uint8Array) => unknown, onerror: (err: Error) => void, keep?: boolean, timeout?: number, after?: Promise<void>[], siblings?: () => Inbox[] }} opts  `after`: closes to wait for before it opens. `siblings`: the other inboxes on its box at its address, as of the call.
      */
-    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep, timeout, after }: {
+    constructor(network: import('../network/index.js').Network, secret: Uint8Array, { box, onmessage, onerror, keep, timeout, after, siblings }: {
         box: import('./index.js').Box;
         onmessage: (message: Uint8Array) => unknown;
         onerror: (err: Error) => void;
         keep?: boolean;
         timeout?: number;
         after?: Promise<void>[];
+        siblings?: () => Inbox[];
     });
     /** @private */
     private _open;
     /** @private */
     private _close;
+    /**
+     * Take over the reads an inbox that closed at this address left unsettled: each waits for its
+     * block as it did there, so one that lands after that close is still handed over.
+     *
+     * @returns {Promise<void>}
+     */
+    inherit(): Promise<void>;
+    /** @private */
+    private _keep;
     /** @private */
     private _onannounce;
     /** @private */
