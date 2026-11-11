@@ -240,7 +240,7 @@ test('topics: a row that failed to write is written at the next launch', async (
 test('topics: with no point to go on from, a launch reads every handle once and drops the rows of those gone', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
-  const opts = { bootstrap: testnet.bootstrap, linger: 0 }
+  const opts = { bootstrap: testnet.bootstrap, keepOpen: 0 }
   const first = await cero(dir, spec, opts)
   const room = await open(first.team, { name: 'clinic' })
   const other = await open(first.team, { name: 'other' })
@@ -298,7 +298,7 @@ test('topics: a pass still waiting when the root closes does nothing and reports
 
 test('topics: a row written by a pass that kept no point goes with its handle', async (t) => {
   const errors = []
-  const { me } = await ceroOpen(t, { linger: 0, onerror: (err) => errors.push(err) })
+  const { me } = await ceroOpen(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
   await me._indexing
   // the pass writes the row and fails to keep its point: as a kill between the two
   const local = me.store.bee.local
@@ -376,7 +376,7 @@ test('topics: a handle whose row the pass over the root failed to write has its 
 })
 
 test('topics: the pass over the root leaves the writers of a handle that is closing as they were sealed', async (t) => {
-  const { me } = await ceroOpen(t, { linger: 0 })
+  const { me } = await ceroOpen(t, { keepOpen: 0 })
   const room = await open(me.team, { name: 'clinic' })
   const id = topicOf(room)
   const handle = room.id
