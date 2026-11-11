@@ -84,13 +84,14 @@ export class Rotation {
     }
   }
 
-  /** Debounced audit, run after every update. */
+  /** Debounced audit, run at open and after every update. */
   heal() {
     const db = this.db
     if (this._timer || db.closing || db.closed) return
     this._timer = setTimeout(() => {
       this._timer = null
-      this._audit().catch(db._onerror)
+      // one its database closed under says nothing: it runs again at the next open
+      this._audit().catch((err) => db.closing || db.closed || db._onerror(err))
     }, 500)
   }
 
