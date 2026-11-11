@@ -2045,10 +2045,9 @@ test('rotate: a removal that carries its rotation leaves nothing owed, and the k
   t.is(await owed(b.db), 0, 'and the same on a device that stayed')
 })
 
-test('rotate: a join and a new device owe nothing and cause no rotation', async (t) => {
+test('rotate: a join and a new device owe nothing, and cause no rotation on the creation key or once the newest key names them', async (t) => {
   const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
-  await a.db.rotate()
-  const opts = { topic, encryptionKey, key: a.db.key, epochs: a.db.keyring.all() }
+  const opts = { topic, encryptionKey, key: a.db.key }
   const m = await makePeer(t, testnet, opts)
   await admit(a.db, m.db, 'member')
   const device = Identity.randomKeyPair()
@@ -2058,10 +2057,38 @@ test('rotate: a join and a new device owe nothing and cause no rotation', async 
   await waitFor(async () => (await d.db.get('members', a.identity.id)).data)
   await d.db.claim()
   await waitFor(async () => (await a.db.get('devices')).data.length === 3)
+  await a.db.rotation._audit()
+  t.is(a.db.keyring.seq, 0, 'the creation key names nobody, and they rotate nothing')
+  t.is(await owed(a.db), null, 'and nothing is owed')
+
+  await a.db.rotate()
+  t.alike(await sealedTo(a.db), seats(a, m, d), 'a rotation names all three')
   await a.db.put('messages', { text: 'hello' })
   await waitFor(async () => (await texts(m.db)).includes('hello'))
   await waitFor(async () => (await texts(d.db)).includes('hello'))
   await a.db.rotation._audit()
-  t.is(a.db.keyring.seq, 1, 'the key they were handed is still the newest')
+  await d.db.rotation._audit()
+  t.is(a.db.keyring.seq, 1, 'the key that names them is still the newest')
+  t.is((await a.db.rotation._epochs()).length, 1, 'whichever device that may remove checks')
   t.is(await owed(a.db), 0, 'and nothing is owed')
+})
+
+test('rotate: a seated device of a plain member that the newest key does not name is sealed the next key by a device that may remove, with nobody removed, and reads what is written after', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  await a.db.rotate()
+  t.alike(await sealedTo(a.db), seats(a), 'the newest key names the one device there is')
+  // handed that key at her join, which it could not name
+  const opts = { topic, encryptionKey, key: a.db.key, epochs: a.db.keyring.all() }
+  const m = await makePeer(t, testnet, opts)
+  await admit(a.db, m.db, 'member')
+
+  await waitFor(() => m.db.keyring.seq === 2, { timeout: 30000 })
+  t.alike(await sealedTo(a.db), seats(a, m), 'the next key does')
+  t.is((await a.db.view.find('@cero/removals', {}).toArray()).length, 0, 'nobody was removed')
+  t.is(await owed(a.db), 0, 'and nothing was owed')
+  await a.db.put('messages', { text: 'after' })
+  await waitFor(async () => (await texts(m.db)).includes('after'))
+  t.pass('she reads what is written under it')
+  await a.db.rotation._audit()
+  t.is((await a.db.rotation._epochs()).length, 2, 'one rotation named her, and no more follow')
 })

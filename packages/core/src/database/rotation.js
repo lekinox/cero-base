@@ -311,8 +311,9 @@ export class Rotation {
   }
 
   // a rotation seals for the rotator's view of the members; REMOVE-capable devices rotate
-  // when the log owes one, someone taken out since the newest key may hold it, or when its
-  // envelope for them does not open: a rotator must not seal anyone who could heal it out
+  // when the log owes one, someone taken out since the newest key may hold it, when the newest
+  // key does not name a seated device, or when its envelope for them does not open: a rotator
+  // must not seal anyone who could heal it out
   /** @private */
   async _audit() {
     if (!(await this._due())) return
@@ -346,12 +347,23 @@ export class Rotation {
     const top = rows.length ? rows.reduce((a, b) => (b.epoch > a.epoch ? b : a)) : null
     const sealedOut = top !== null && !db.keyring.entropy(top.stamp)
     const owed = await db.view.get(`@${db.ns}/${COUNTERS}`, { name: OWED })
-    if (!sealedOut && !owed?.value) {
+    if (!sealedOut && !owed?.value && !(top && (await this._unnamed(top)))) {
       this._healedFor = null
       return null
     }
     const ids = (await this._devices()).map((d) => d.id)
     return `${top?.stamp ?? 0}:${ids.sort().join(',')}`
+  }
+
+  // a seated device of a member who stands that the newest key does not name: its join crossed
+  // a rotation, or a removal that sealed it out was refused
+  /** @private */
+  async _unnamed(top) {
+    const named = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
+    const { data: members } = await this.db.get('members')
+    const standing = new Set(members.map((m) => m.id))
+    const { data: devices } = await this.db.get('devices')
+    return devices.some((d) => d.key && standing.has(d.memberId) && !named.has(d.id))
   }
 }
 
