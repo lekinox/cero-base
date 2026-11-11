@@ -675,6 +675,43 @@ export class Database extends ReadyResource {
   }
 
   /**
+   * The rows of a collection that changed since `settle` was last called under `mark`, a name of the
+   * caller's, so what follows a collection row by row goes on after a restart where it stopped. `reset`
+   * is true with no point to start from, or one of another view: `changes` is then empty and the caller
+   * reads the collection. The point is kept on this device only.
+   *
+   * @param {string} name
+   * @param {string} mark
+   * @returns {Promise<{ changes: Array<{ prev: Row | null, next: Row | null }>, reset: boolean, settle: () => Promise<void> }>}
+   */
+  async since(name, mark) {
+    this.guard()
+    while (this._rebuilding) await this._rebuilding
+    const col = this.col(this.ref(name))
+    const at = `cero/since/${mark}`
+    const local = this.bee.local
+    const kept = await local.getUserData(at)
+    const from = kept ? c.decode(point, kept) : null
+    const snap = this.view.snapshot()
+    const head = this.view.engine.head()
+    const reset = !from || !head || !b4a.equals(from.key, head.key) || from.length > head.length
+    const changes = []
+    try {
+      if (!reset) {
+        for await (const { left, right } of snap.diff(col, { from })) {
+          changes.push({ prev: left, next: right })
+        }
+      }
+    } finally {
+      await snap.close().catch(safetyCatch)
+    }
+    const settle = async () => {
+      if (head) await local.setUserData(at, c.encode(point, head))
+    }
+    return { changes, reset, settle }
+  }
+
+  /**
    * Provision this device. Its writer core was minted when the database opened and this
    * device is its only author, ever.
    *
@@ -1366,6 +1403,21 @@ function bounded(promise, ms = 2000) {
     timer.unref()
   })
   return Promise.race([promise.then((v) => ({ v })), bound]).finally(() => clearTimeout(timer))
+}
+
+// a point of a view: its core and how long it was
+const point = {
+  preencode(state, p) {
+    c.fixed32.preencode(state, p.key)
+    c.uint.preencode(state, p.length)
+  },
+  encode(state, p) {
+    c.fixed32.encode(state, p.key)
+    c.uint.encode(state, p.length)
+  },
+  decode(state) {
+    return { key: c.fixed32.decode(state), length: c.uint.decode(state) }
+  }
 }
 
 const NO_HOOKS = []

@@ -12,6 +12,8 @@ import { connect } from '../../src/rpc/client.js'
 import { Handle } from '../../src/handle/index.js'
 import { receive as cold, push as entry } from '../../src/push/index.js'
 import { spec } from '../fixtures/spec/index.js'
+import { Database } from '@cero-base/core/database'
+import { Storage } from '@cero-base/core/storage'
 import { ceroOpen, makeTestnet, makeGateway, makeMirror, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
@@ -174,6 +176,94 @@ test('topics: the root lists a topic per handle, kept with the handles rows', as
   t.pass('gone with the handle')
 })
 
+test('topics: a launch and a new handle read no list of every handle', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap }
+  const first = await cero(dir, spec, opts)
+  await open(first.team, { name: 'clinic' })
+  await open(first.team, { name: 'other' })
+  await waitUntil(async () => (await get(first.topics)).data.length === 2)
+  await first._indexing
+  await first.close()
+
+  // every read of all the handles, or of all their topics rows, from here on
+  const lists = []
+  const local = Storage.prototype.get
+  const main = Database.prototype.get
+  Storage.prototype.get = function (name, query) {
+    if (name === 'topics' && query === undefined) lists.push(name)
+    return local.call(this, name, query)
+  }
+  Database.prototype.get = function (name, query) {
+    if (name === 'handles' && query === undefined) lists.push(name)
+    return main.call(this, name, query)
+  }
+  t.teardown(() => {
+    Storage.prototype.get = local
+    Database.prototype.get = main
+  })
+
+  const me = await cero(dir, spec, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await me._indexing
+  t.alike(lists, [], 'the launch read none')
+  const third = await open(me.team, { name: 'third' })
+  await waitUntil(async () => (await me.local.store.get('topics', topicOf(third))).data)
+  await me._indexing
+  t.alike(lists, [], 'nor did a new handle')
+  t.is((await get(me.topics)).data.length, 3, 'and every handle has its row')
+})
+
+test('topics: a row that failed to write is written at the next launch', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const errors = []
+  const opts = { bootstrap: testnet.bootstrap, onerror: (err) => errors.push(err) }
+  const first = await cero(dir, spec, opts)
+  const store = first.local.store
+  const put = store.put.bind(store)
+  store.put = (name, value) => {
+    if (name !== 'topics') return put(name, value)
+    return Promise.reject(new Error('disk full'))
+  }
+  const id = topicOf(await open(first.team, { name: 'clinic' }))
+  await waitUntil(() => errors.length > 0)
+  await first.close()
+
+  const me = await cero(dir, spec, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await waitUntil(async () => (await me.local.store.get('topics', id)).data)
+  t.pass('no handle changed since: the launch goes on from the last pass that finished')
+})
+
+test('topics: with no point to go on from, a launch reads every handle once and drops the rows of those gone', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap, linger: 0 }
+  const first = await cero(dir, spec, opts)
+  const room = await open(first.team, { name: 'clinic' })
+  const id = topicOf(room)
+  await waitUntil(async () => (await first.local.store.get('topics', id)).data)
+  await cero.close(room)
+  await first._indexing
+  // as a store an earlier release wrote: no point kept, a handle with no row and a row with no handle
+  const { data: row } = await first.local.store.get('topics', id)
+  await first.local.store.del('topics', id)
+  await first.local.store.put('topics', { ...row, id: 'f'.repeat(64), handle: 'gone' })
+  await first.store.bee.local.setUserData('cero/since/topics', null)
+  await first.close()
+
+  const me = await cero(dir, spec, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await me._indexing
+  t.alike(
+    (await get(me.topics)).data.map((r) => r.id),
+    [id],
+    'the handle has its row again and the other is gone'
+  )
+})
+
 test('topics: after one failed reindex the next handles change still indexes', async (t) => {
   const errors = []
   const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
@@ -219,14 +309,16 @@ test('topics: a pass that fails leaves the next one to run, and an unreadable ha
   const own = await pushOf(first, first)
   await waitUntil(async () => await receive(me, own))
 
-  const read = first.store.get
-  first.store.get = async () => {
-    throw new Error('unreadable')
+  // its members and devices no longer list: a change in the handle writes its row again
+  const read = first.store.get.bind(first.store)
+  first.store.get = async (name, query) => {
+    if (query === undefined) throw new Error('unreadable')
+    return read(name, query)
   }
-  await open(me.team, { name: 'third' })
-  await waitUntil(async () => (await get(me.topics)).data.length === 3)
+  await set(first.members, { id: me.identity.id, name: 'renamed' })
+  await waitUntil(async () => (await receive(me, own)) === null)
   first.store.get = read
-  t.is(await receive(me, own), null, 'the handle it could not read accepts nobody')
+  t.pass('the handle it could not read accepts nobody')
   t.ok(await receive(me, await pushOf(second, second)), 'the others are written as ever')
 })
 
@@ -237,15 +329,15 @@ test('topics: a failed pass that several updates joined reaches onerror once', a
   await me._indexing
 
   // the pass under way is slow, and the one queued behind it fails
-  const reindex = me._reindex.bind(me)
+  const topic = me._topic.bind(me)
   let release
   const held = new Promise((resolve) => (release = resolve))
   let passes = 0
-  me._reindex = async (...args) => {
+  me._topic = async (...args) => {
     passes++
     if (passes === 1) await held
     if (passes === 2) throw new Error('disk full')
-    return reindex(...args)
+    return topic(...args)
   }
   for (let i = 0; i < 6; i++) await set(room.members, { id: me.identity.id, name: `a${i}` })
   release()
@@ -274,10 +366,10 @@ test('topics: a burst of updates on one handle is a few passes that read only th
 
   // a pass that reads a handle's writers takes a while, as in a big room
   const counts = { passes: 0, updates: 0, other: 0 }
-  const reindex = a.me._reindex.bind(a.me)
-  a.me._reindex = (...args) => {
+  const topic = a.me._topic.bind(a.me)
+  a.me._topic = (...args) => {
     counts.passes++
-    return reindex(...args)
+    return topic(...args)
   }
   room.store.on('update', (touched) => touched.has('members') && counts.updates++)
   const slow = room.store.get.bind(room.store)

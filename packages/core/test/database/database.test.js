@@ -4479,6 +4479,54 @@ test('changes: empty collection → empty initial batch, then deltas', async (t)
   t.is(batches[3].changes[0].next, null, 'and no next')
 })
 
+test('since: the rows that changed since the last settle, after a restart too, and again without one', async (t) => {
+  const { db, store, identity } = await bootstrapped(t)
+  const pairs = ({ changes }) =>
+    changes.map(({ prev, next }) => [prev?.text ?? null, next?.text ?? null])
+
+  const first = await db.since('messages', 'index')
+  t.is(first.reset, true, 'nothing settled yet: the caller reads the collection')
+  t.alike(first.changes, [])
+  await first.settle()
+
+  await db.put('messages', { text: 'a' })
+  const second = await db.since('messages', 'index')
+  t.is(second.reset, false)
+  t.alike(pairs(second), [[null, 'a']])
+  t.alike(pairs(await db.since('messages', 'index')), [[null, 'a']], 'not settled: it comes again')
+  await second.settle()
+  t.alike(pairs(await db.since('messages', 'index')), [], 'settled: nothing since')
+
+  const [a] = (await db.get('messages')).data
+  await db.set('messages', { id: a.id, text: 'edited' })
+  const { data: b } = await db.put('messages', { text: 'b' })
+  await db.del('messages', b.id)
+  const { key, encryptionKey, keyPair } = db
+  await db.close()
+
+  const again = new Database({ store, identity, spec, key, encryptionKey, keyPair })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  const third = await again.since('messages', 'index')
+  t.is(third.reset, false, 'the point outlives a restart')
+  t.alike(pairs(third), [['a', 'edited']], 'a row written and deleted in between is no change')
+  t.is((await again.since('messages', 'other')).reset, true, 'another mark has its own point')
+})
+
+test('since: a view applied again loses no change, and a call made meanwhile waits for it', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { text: 'a' })
+  await (await db.since('messages', 'index')).settle()
+  await db.put('messages', { text: 'b' })
+  // a view another build applied, as one a fast-forward lands on: the log is applied again
+  db.version += 1
+  db._onmove()
+  const { changes, reset } = await db.since('messages', 'index')
+  const texts = changes.map(({ next }) => next?.text)
+  t.ok(reset || texts.includes('b'), 'the row written since is told, or the caller reads them all')
+  t.is((await db.get('messages')).data.length, 2, 'read once the view was whole again')
+})
+
 test('changes: bursts fold losslessly — replay always equals get', async (t) => {
   const { db } = await bootstrapped(t)
   const stream = db.changes('messages')

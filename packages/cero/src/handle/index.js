@@ -626,19 +626,21 @@ export class Handle extends ReadyResource {
   }
 
   // one pass at a time, failed or not: two overlapping could put back a row the later one deleted. A call while a
-  // pass waits to start joins it; `child` is the handle whose writers changed, none reads every open one
+  // pass waits to start joins it; `child` is the handle whose writers changed, none follows the root's rows
   /** @private */
   _index(child = null) {
     if (this._queued) {
       if (child) this._queued.children.add(child)
-      else this._queued.all = true
+      else this._queued.root = true
       // a failed pass reaches onerror once, through the call that queued it: joined calls only wait for it
       return this._indexing.catch(() => {})
     }
-    const queued = (this._queued = { all: !child, children: new Set(child ? [child] : []) })
-    const run = () => {
+    const queued = (this._queued = { root: !child, children: new Set(child ? [child] : []) })
+    const run = async () => {
       this._queued = null
-      return this._reindex(null, queued.all ? null : queued.children)
+      if (this.closing || this.closed) return
+      if (queued.root) await this._follow()
+      for (const child of queued.children) await this._topic(child)
     }
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
@@ -648,47 +650,59 @@ export class Handle extends ReadyResource {
   // landed just before is kept; the root's local store closes after its handles
   /** @private */
   _seal(child) {
-    const run = () => this._reindex(child)
+    const run = () => (this.closed ? null : this._topic(child, true))
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }
 
+  // the topics rows follow the root's handles row by row: those that changed since the last pass that finished, so
+  // a launch reads none of the others. With no telling which changed, every row once
   /** @private */
-  async _reindex(last = null, only = null) {
-    if (this.closed || (this.closing && !last)) return
-    const { data: handles } = await this.store.get('handles')
-    const { data: rows } = await this.local.store.get('topics')
-    const wanted = new Map(handles.map((h) => [b4a.toHex(discoveryKey(h.key)), h]))
-    const have = new Map(rows.map((row) => [row.id, row]))
-    // an opened handle not adopted yet has its writers already: its row is written once
-    const reads = last ? [last] : (only ?? [...this.children, ...this._pending])
-    const open = new Map(
-      [...reads]
-        // a handle on its way out is its seal's to read: any other pass finds its store closed
-        .filter((child) => child.opened && (child === last || !child.closing))
-        .map((child) => [b4a.toHex(child.store.discoveryKey), child])
-    )
-    for (const row of rows) {
-      if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
-    }
-    for (const [id, h] of wanted) {
-      const child = open.get(id)
-      const row = {
-        id,
-        handle: h.id,
-        type: h.type,
-        key: h.key,
-        name: h.name ?? null,
-        encryptionKey: h.encryptionKey ?? null,
-        epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
-        // a handle not read in this pass keeps the writers it had when it last was
-        writers: child
-          ? await writersOf(child.store).catch(unread)
-          : (have.get(id)?.writers ?? null)
+  async _follow() {
+    const { changes, reset, settle } = await this.store.since('handles', 'topics')
+    if (reset) {
+      const { data: handles } = await this.store.get('handles')
+      const wanted = new Set(handles.map(topicOf))
+      for (const row of (await this.local.store.get('topics')).data) {
+        if (!wanted.has(row.id)) await this.local.store.del('topics', row.id)
       }
-      if (same(have.get(id), row)) continue
-      await this.local.store.put('topics', row)
+      for (const h of handles) await this._row(h)
     }
+    for (const { prev, next } of changes) {
+      if (next) await this._row(next)
+      else await this.local.store.del('topics', topicOf(prev))
+    }
+    await settle()
+  }
+
+  // an open handle's own row, as its writers stand; a handle on its way out is its seal's to read
+  /** @private */
+  async _topic(child, sealing = false) {
+    if (!child.opened || (child.closing && !sealing)) return
+    const { data: h } = await this.store.get('handles', child.id)
+    if (h) await this._row(h, child)
+  }
+
+  // one handle's topics row, written when it differs. Who may write is read off the handle while it is open here,
+  // and kept as it was otherwise
+  /** @private */
+  async _row(h, child = null) {
+    const id = topicOf(h)
+    child ??= [...this.children, ...this._pending].find(
+      (c) => c.opened && !c.closing && c.id === h.id
+    )
+    const { data: have } = await this.local.store.get('topics', id)
+    const row = {
+      id,
+      handle: h.id,
+      type: h.type,
+      key: h.key,
+      name: h.name ?? null,
+      encryptionKey: h.encryptionKey ?? null,
+      epochs: h.epochs && c.decode(epochEntries, h.epochs).length ? h.epochs : null,
+      writers: child ? await writersOf(child.store).catch(unread) : (have?.writers ?? null)
+    }
+    if (!same(have, row)) await this.local.store.put('topics', row)
   }
 
   // a push about one of this device's handles, verified against its own cores
@@ -1382,6 +1396,9 @@ function pickHandle(spec, type) {
 function randomNs() {
   return z32.encode(Identity.randomBytes(8))
 }
+
+// the push topic of a handles row, which keys its topics row
+const topicOf = ({ key }) => b4a.toHex(discoveryKey(key))
 
 // a topics row still describes its handle
 function same(row, next) {

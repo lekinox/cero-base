@@ -253,10 +253,10 @@ test("close: a room's failure in the background reaches the app's onerror", asyn
   const room = await cero.open(me.team, { name: 'clinic' })
   await me._indexing
   // its last writers row fails to write
-  const reindex = me._reindex.bind(me)
-  me._reindex = async (last, only) => {
-    if (last) throw new Error('disk full')
-    return reindex(last, only)
+  const topic = me._topic.bind(me)
+  me._topic = async (child, sealing) => {
+    if (sealing) throw new Error('disk full')
+    return topic(child, sealing)
   }
   await cero.close(room)
   t.alike(
