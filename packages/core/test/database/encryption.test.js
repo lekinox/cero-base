@@ -1574,4 +1574,135 @@ test('rotate: a write waiting for a removal and its key is CLOSED when its datab
 
   await a.db.del('members', b.identity.id)
   t.is((await waiting).code, 'CLOSED')
+  t.alike(a.errors, [], 'and the rotation it closed under reports nothing')
+})
+
+test('rotate: a removal whose database closes while it reads the devices is CLOSED', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const staying = a.db.rotation._staying.bind(a.db.rotation)
+  a.db.rotation._staying = async (ops) => {
+    const devices = await staying(ops)
+    await a.db.close()
+    return devices
+  }
+
+  const err = await a.db.del('members', b.identity.id).catch((e) => e)
+  t.is(err.code, 'CLOSED')
+})
+
+// a key check whose reads straddle a member's removal: the epochs before it, the rest after
+function straddling(db, id) {
+  const r = db.rotation
+  const epochs = r._epochs.bind(r)
+  let read = null
+  const reading = new Promise((resolve) => (read = resolve))
+  r._epochs = async () => {
+    r._epochs = epochs
+    const rows = await epochs()
+    read()
+    await waitFor(async () => !(await db.get('members', id)).data)
+    return rows
+  }
+  return { check: r._audit(), reading }
+}
+
+test('rotate: a key check that starts while a removal is on its way adds no rotation', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+  const staying = a.db.rotation._staying.bind(a.db.rotation)
+  let check = null
+  a.db.rotation._staying = async (ops) => {
+    const devices = await staying(ops)
+    const started = straddling(a.db, b.identity.id)
+    check = started.check
+    await started.reading
+    return devices
+  }
+
+  await a.db.del('members', b.identity.id)
+  t.is(a.db.keyring.seq, 1, 'carried')
+  await check
+  t.is((await a.db.view.find('@cero/epochs', {}).toArray()).length, 1, 'one rotation, one removal')
+})
+
+test('rotate: a key check that began before a removal and decides after it adds no rotation', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+
+  const { check, reading } = straddling(a.db, b.identity.id)
+  await reading
+  await a.db.del('members', b.identity.id)
+  t.is(a.db.keyring.seq, 1, 'carried')
+  await check
+  t.is((await a.db.view.find('@cero/epochs', {}).toArray()).length, 1, 'one rotation, one removal')
+})
+
+test('rotate: a removal a reorder refuses after its key was sealed leaves the member in, and the next rotation is sealed to her again', async (t) => {
+  const {
+    a,
+    members: [b, kept],
+    testnet,
+    topic,
+    encryptionKey
+  } = await makeRoom(t, ['admin', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  await waitFor(async () => (await kept.db.get('devices')).data.length === 3)
+
+  const { keyPair } = b.db
+  await b.db.close()
+  await b.network.close().catch(() => {})
+
+  // promoted while the admin is away: an admin does not outrank an admin
+  await a.db.set('members', { id: kept.identity.id, role: 'admin' })
+  const opts = {
+    store: b.store,
+    identity: b.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey,
+    onerror() {}
+  }
+  const off = new Database(opts)
+  await off.ready()
+  await off.del('members', kept.identity.id)
+  t.is(off.keyring.seq, 1, 'the removal carried its key')
+  t.alike(await sealedTo(off), seats(a, { db: off }), 'sealed to the devices it saw staying')
+  await off.close()
+
+  const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
+  await net.ready()
+  const disc = net.join(topic)
+  await disc.flush()
+  const back = new Database({ ...opts, network: net })
+  await back.ready()
+  t.teardown(
+    async () => {
+      await back.close().catch(() => {})
+      await disc.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 4 }
+  )
+
+  const everyone = seats(a, { db: back }, kept).join()
+  const sealedIn = async ({ db }) =>
+    (await sealedTo(db)).join() === everyone && !!db.keyring.entropy(db.keyring.current)
+  await waitFor(async () => (await sealedIn(a)) && (await sealedIn(kept)), { timeout: 30000 })
+  t.pass('the newest key is sealed to all three, and she holds it')
+  t.is(
+    (await a.db.get('members', kept.identity.id)).data?.role,
+    'admin',
+    'the promotion sorts first: the removal is refused'
+  )
 })

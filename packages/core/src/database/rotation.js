@@ -158,8 +158,8 @@ export class Rotation {
       try {
         await this._rotate(false, devices)
       } catch (err) {
-        // the removal is in: the key check rotates
-        if (!db.closing && !db.closed) db._onerror(err)
+        // the removal is in: the key check rotates. Behind, it says nothing, as that check does
+        if (!db.closing && !db.closed && db.behind === null) db._onerror(err)
         this.heal()
       }
       return stamp
@@ -177,7 +177,7 @@ export class Rotation {
     const { data: devices } = await db.get('devices')
     const gone = new Set(ops.flatMap(([op, data]) => SEATS.get(op)?.(data, devices) ?? []))
     const me = devices.find((d) => d.id === hid.encode(db.writerKey))
-    if (!me?.key || gone.has(me.id)) return null
+    if (!me || gone.has(me.id)) return null
     const { data: member } = await db.get('members', me.memberId)
     if (!can(member?.role, REMOVE)) return null
     return devices.filter((d) => d.key && !gone.has(d.id))
@@ -294,18 +294,37 @@ export class Rotation {
   // for them does not open: a rotator must not seal anyone who could heal it out
   /** @private */
   async _audit() {
+    if (!(await this._due())) return
+    // decided again once it holds the queue: a removal carried meanwhile brought its key
+    await this._queued(async () => {
+      const state = await this._due()
+      if (!state) return
+      this._healedFor = state
+      await this._rotate(false)
+    })
+  }
+
+  // the (epoch, membership) state a rotation is due for, one attempt each: a failing rotate must
+  // not loop
+  /** @private */
+  async _due() {
+    const state = await this._drift()
+    return state === this._healedFor ? null : state
+  }
+
+  /** @private */
+  async _drift() {
     const db = this.db
     // behind, the membership this device sees is stale: the devices that read everything rotate
-    if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return
+    if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return null
     const { data: device } = await db.get('devices', hid.encode(db.writerKey))
     const me = device?.memberId ? (await db.get('members', device.memberId)).data : null
-    if (!can(me?.role, REMOVE)) return
+    if (!can(me?.role, REMOVE)) return null
 
     const rows = await this._epochs()
     // a database still on its creation key rotates at its first removal
     if (!rows.length) {
-      if (await db.view.findOne(`@${db.ns}/removals`, {})) await this._heal('first removal')
-      return
+      return (await db.view.findOne(`@${db.ns}/removals`, {})) ? 'first removal' : null
     }
     const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
     const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
@@ -313,17 +332,9 @@ export class Rotation {
     const sealedOut = !db.keyring.entropy(top.stamp)
     if (!sealedOut && recipients.size === ids.size && [...recipients].every((id) => ids.has(id))) {
       this._healedFor = null
-      return
+      return null
     }
-    await this._heal(`${top.stamp}:${[...ids].sort().join(',')}`)
-  }
-
-  // one attempt per (epoch, membership) state, a failing rotate must not loop
-  /** @private */
-  async _heal(state) {
-    if (this._healedFor === state) return
-    this._healedFor = state
-    await this.rotate()
+    return `${top.stamp}:${[...ids].sort().join(',')}`
   }
 }
 

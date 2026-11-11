@@ -98,7 +98,9 @@ export declare class Rotation {
     /** @private */
     private _audit;
     /** @private */
-    private _heal;
+    private _due;
+    /** @private */
+    private _drift;
 }
 /**
  * @param {Array<[string, unknown]>} ops

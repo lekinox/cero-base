@@ -4726,6 +4726,22 @@ test('gate: a removal applied while behind starts no rotation on this device, no
   t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no rotation')
 })
 
+test('gate: a device behind before the key its removal carries reports nothing, and rotates nothing', async (t) => {
+  const { a, b } = await members(t)
+  const rotate = a.db.rotation._rotate.bind(a.db.rotation)
+  a.db.rotation._rotate = async (...args) => {
+    // past the write queue, which waits for the removal and its key
+    await stamped(a.db, a.db.version, 'upgrade', { version: a.db.version + 1 })
+    return rotate(...args)
+  }
+
+  await a.db.del('members', b.identity.id)
+  t.is(a.db.behind, a.db.version + 1, 'behind before its rotation')
+  t.absent((await a.db.get('members', b.identity.id)).data, 'the removal landed')
+  t.alike(a.errors, [], 'nothing is reported')
+  t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no rotation')
+})
+
 // anyone holding the database key appends an optimistic node: whatever its stamp, it is refused
 // for want of a member and moves nothing
 test('gate: a node from a core no member owns raises nothing', async (t) => {

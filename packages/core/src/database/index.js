@@ -508,8 +508,8 @@ export class Database extends ReadyResource {
       const busy = this._rebuilding || (!queued && this.rotation.carrying)
       if (!busy) break
       await busy
-      this.guard()
     }
+    this.guard()
     const writing = this._commit(ops)
     this._writes.add(writing)
     try {
