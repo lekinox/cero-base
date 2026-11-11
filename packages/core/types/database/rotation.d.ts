@@ -105,6 +105,8 @@ export declare class Rotation {
     private _due;
     /** @private */
     private _drift;
+    /** @private */
+    private _unnamed;
 }
 /**
  * @param {Array<[string, unknown]>} ops
