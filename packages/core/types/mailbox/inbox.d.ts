@@ -105,6 +105,8 @@ export declare class Inbox extends ReadyResource {
     /** @private */
     private _unseal;
     /** @private */
+    private _get;
+    /** @private */
     private _erase;
     /** @private */
     private _drop;

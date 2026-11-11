@@ -270,7 +270,7 @@ export class Inbox extends ReadyResource {
     })
   }
 
-  // in the box before anything else: its sender has it as delivered from the moment it was read
+  // in the box before anything else: its sender has it as delivered from the moment it was stored
   /** @private */
   async _land(id, key) {
     const { held, message } = await this._unseal(key, { timeout: this.timeout })

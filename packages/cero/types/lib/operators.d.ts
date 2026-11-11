@@ -258,7 +258,7 @@ export declare function receive(me: Context, payload: Uint8Array): Promise<{
 /**
  * Send a value to an address, signed by this identity. Resolves once the outbox keeps it; it is
  * delivered in the background, from a mirror too when the owner is offline. `keep: false` erases
- * this device's copy once someone read it.
+ * this device's copy once a device or a mirror stored it.
  *
  * @param {Context} me
  * @param {string} address  As `cero.address(secret)` gives it.

@@ -206,7 +206,7 @@ await inbox.close() // stop receiving
 - **A slow `onmessage`.** Sixteen messages are read and handled at a time; one still being handled after 30 seconds stays in the inbox and makes room for the next. `receive(secret, onmessage, { timeout })` sets those 30 seconds, and how long an announced message has to arrive.
 - **An `onmessage` that resolves `false`** turns the message away: nothing of it stays on this device, as for one that does not open.
 - **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default. A mirror storing it counts as delivered, and a mirror hands over only the newest 32 messages waiting for one address: with more waiting while the owner is offline, the older ones are not delivered.
-- **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once someone read it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A mirror keeps its copy either way.
+- **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once a device or a mirror stored it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A mirror keeps its copy either way.
 - **Anonymous.** A message carries no sender. One that needs a sender signs itself.
 
 ## Pairing
