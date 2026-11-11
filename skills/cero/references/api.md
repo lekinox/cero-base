@@ -176,7 +176,7 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 
 - After 30 s it rejects with `TIMEOUT` and the join goes on: it is listed in `me.joins`, resumes after a restart, and the handle joins `me.room` when you are let in. `open` again with the same invite waits on the same join; `cero.cancel(me, invite)` ends it.
 - It rejects with `DENIED`, their reason in `err.reason`, when a member turned you away, `EXPIRED` when the invite is past its `ttl`, `INVALID_INVITE` when the string is not an invite, and `NETWORK_ERROR` when the join could not be sent: `open` again.
-- The handle turns a join away by itself, `DENIED` once a member who can invite is online, with `err.reason` `'revoked'`, `'spent'` (a single-use invite already used) or `'removed'` (an invite minted before your removal). Either way the join ends and leaves `me.joins`.
+- The handle turns a join away by itself, `DENIED` once a member who can invite is online, with `err.reason` `'revoked'`, `'spent'` (a single-use invite already used) or `'removed'` (an invite minted before your removal, or spent by one). Either way the join ends and leaves `me.joins`.
 
 ### Invite options
 

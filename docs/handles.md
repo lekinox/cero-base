@@ -99,7 +99,7 @@ await cero.cancel(me, invite) // give up for good: true when it cancelled one
 
 A join the handle turns away rejects `DENIED` once a member who can invite is online, with
 `err.reason` saying why: `'revoked'`, `'spent'` for a single-use invite someone already used, or
-`'removed'` for an invite minted before your removal. An invite to a handle you already have returns
+`'removed'` for an invite minted before your removal or spent by one. An invite to a handle you already have returns
 that handle; a newer invite to the same handle takes over. Once nobody waits on a join, a denial or
 expiry reaches `onerror`.
 
@@ -177,7 +177,11 @@ Removing needs the remove permission and a higher rank: removing an equal or hig
 `REFUSED`. Anyone may remove themselves, a reader too, except the last owner of a handle others are
 in: `INVALID`. The removed member's `room.status` shows `role: null`, and
 they come back only through an invite minted after the removal: an older one rejects `DENIED` with
-`err.reason` `'removed'`.
+`err.reason` `'removed'`. A removal by an admin or the owner, of a member, of a device, or of someone
+who already left, also spends the invites that let people in without `confirm`, since the one
+removed may hold one: a join with one rejects `DENIED` with `err.reason` `'removed'`, and a join one
+had let in that has not taken its seat yet ends the same. Invites with `confirm` stay. Mint a new
+invite for anyone still expected.
 
 ### Removed
 

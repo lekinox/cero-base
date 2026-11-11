@@ -1991,6 +1991,29 @@ test("withdrawn: past its invite, a promise nobody kept is denied 'expired' by a
   t.absent(await memberOf(host.db, joiner.identity), 'and nobody became a member')
 })
 
+test('withdrawn: a promise under an invite a removal spent ends its claim DENIED, and a join with the invite after hears the same', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet, { spec: built })
+  const member = await seated(t, testnet, host, 'member')
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  const invite = await host.pairing.invite({ reuse: true })
+  const reply = await joiner.join(invite)
+  t.is((await promises(host.db)).length, 1, 'promised, and not claimed yet')
+
+  await host.db.del('members', member.db.identity.id)
+  t.is((await promises(host.db)).length, 0, 'the removal withdraws it with its invite')
+  const db = await opened(t, joiner, reply)
+  const err = await db.claim({ timeout: 8000 }).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'no seat to wait for')
+  t.is(err?.reason, 'removed')
+  t.is(db.length, 1, 'and nothing claimed')
+
+  const other = await makeJoiner(t, testnet)
+  const late = await other.join(invite, { timeout: 8000 }).catch((e) => e)
+  t.is(late.code, 'DENIED', 'the invite lets nobody else in')
+  t.is(late.reason, 'removed')
+})
+
 // ─── errors ────────────────────────────────────────────────────────────────
 
 test('CeroError pairing factories have stable codes and inherit from Error', (t) => {

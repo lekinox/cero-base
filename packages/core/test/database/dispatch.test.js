@@ -26,6 +26,7 @@ import { genId } from '../../src/lib/ids.js'
 import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
 import { Invite } from '../../src/pairing/invite.js'
+import { sealJoin } from '../../src/pairing/index.js'
 import { Mailbox } from '../../src/mailbox/index.js'
 import { encodeId } from '../../src/blobs/codec.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -1460,9 +1461,157 @@ test('promise: a revoked invite withdraws the promises made under it, and a remo
   t.absent((await db.get('members', b.id)).data)
 })
 
+// ─── a removal spends the invites that let in on their own ───────────────
+
+const live = async (db, invite) => (await db.get('invites', b4a.toHex(invite.id))).data
+
+test('removal: one by a member who may remove spends the invites that let in on their own, and a join under one is turned away', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const open = await addressed(db, { reuse: true })
+  const once = await addressed(db)
+  const asked = await addressed(db, { reuse: true, confirm: true })
+  const plain = await minted(db, { reuse: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, open, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  t.is(await apply(db, db.writerKey, 'del-member', { id: identity.id }), null)
+  t.ok(await live(db, plain), 'one with no address of its own is left as it was')
+  t.absent(await live(db, open), 'the reusable one she holds')
+  t.absent(await live(db, once), 'and one nobody used yet')
+  const kept = await spent(db, b4a.toHex(open.id))
+  t.is(kept?.reason, 'removed')
+  t.ok(kept?.secret, 'its secret stays, so a join under it is still opened')
+  t.ok(await live(db, asked), 'one that waits for an accept stays')
+
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, again, 'join', named(db, open, { identity, writer: again }))
+  t.absent(await promise(db, again), 'her join with it lets nobody in')
+  t.is((await refusal(db, hid.encode(again)))?.reason, 'removed', 'and hears why')
+  t.is((await claimed(db, identity, again))?.code, 'REFUSED')
+
+  const other = await Identity.create()
+  const next = Identity.randomKeyPair().publicKey
+  await apply(db, next, 'join', named(db, asked, { identity: other, writer: next }))
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(next) }), null)
+  t.ok((await promise(db, next))?.promised, 'the one that waits still lets in whoever is accepted')
+})
+
+test('removal: a leave spends nothing, and removed after she left her invite is spent all the same', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db, { reuse: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  t.is(await apply(db, writer, 'del-member', { id: identity.id }), null)
+  t.ok(await live(db, invite), 'her leaving spends nothing')
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id: identity.id }), null)
+  t.absent(await live(db, invite), 'taken out after, the invite she holds is spent')
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, again, 'join', named(db, invite, { identity, writer: again }))
+  t.absent((await db.get('requests', hid.encode(again))).data, 'so she waits for no accept')
+  t.is((await refusal(db, hid.encode(again)))?.reason, 'removed', 'and is turned away')
+})
+
+test('removal: a device taken out by one who may remove spends them too, and a member removing her own device, or one who left, spends nothing', async (t) => {
+  const gone = await second('member')
+  const { db, owner, member, writer, as } = await withMember(t, 'member', [gone.row])
+  const invite = await addressed(db, { reuse: true })
+  await seat(db, gone)
+  t.is(await apply(db, gone.writer.publicKey, 'del-member', { id: gone.id }), null)
+  await seat(db, { identity: member, writer })
+  const mine = linked(member)
+  await seat(db, mine)
+  t.is(await as('del-writer', delWriterOp(mine.writer.publicKey)), null)
+  t.ok(await live(db, invite), 'her own device, without the right to remove')
+  t.is(await as('del-member', { id: gone.id }), null)
+  t.ok(await live(db, invite), 'nor one who left, taken out by her')
+  const nobody = await Identity.create()
+  t.is(await apply(db, db.writerKey, 'del-member', { id: nobody.id }), null)
+  t.ok(await live(db, invite), 'nor a removal of nobody')
+
+  const phone = linked(owner)
+  await seat(db, phone)
+  t.is(await apply(db, db.writerKey, 'del-writer', delWriterOp(phone.writer.publicKey)), null)
+  t.absent(await live(db, invite), 'a device, by one who may remove')
+  t.is((await spent(db, b4a.toHex(invite.id)))?.reason, 'removed')
+})
+
+test('removal: a promise under an invite it spends is withdrawn like a deny, unless its device claimed', async (t) => {
+  const { db, id } = await withMember(t, 'member')
+  const invite = await addressed(db, { reuse: true })
+  const late = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity: late, writer }))
+  const here = await Identity.create()
+  const sat = Identity.randomKeyPair().publicKey
+  await apply(db, sat, 'join', named(db, invite, { identity: here, writer: sat }))
+  t.is(await claimed(db, here, sat), null)
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.absent(await promise(db, writer), 'the promise nobody claimed is withdrawn')
+  t.is((await refusal(db, hid.encode(writer)))?.reason, 'removed', 'and answered')
+  t.is((await claimed(db, late, writer))?.code, 'REFUSED', 'a claim made after finds nothing')
+  t.absent((await db.get('members', late.id)).data, 'no member')
+  t.ok(await promise(db, sat), 'one its device claimed stays for a member to settle')
+  t.absent(await refusal(db, hid.encode(sat)))
+  t.ok((await db.get('members', here.id)).data, 'and she stays a member')
+})
+
+test('removal: the invite it spends is spent on every device, a join under it turned away on each, and the same log gives the same rows', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db, 'admin')
+  await waitFor(() => b.db.writable)
+
+  const secret = crypto.randomBytes(32)
+  const invite = Invite.create({ key: a.db.key, address: Mailbox.getAddress(secret), own: true })
+  const id = b4a.toHex(invite.id)
+  const stamp = await a.db.write([['add-invite', inviteRow(id, { secret, reuse: true })]])
+  // a device of the joiner appends its join to its own core, as Pairing.join does
+  const join = async ({ db }) => {
+    const payload = sealJoin(invite, db.identity, db.writerKey, crypto.randomBytes(32))
+    const op = db.spec.dispatch.encode(`@${db.ns}/join`, payload)
+    await waitFor(async () => (await db.get('invites', id)).data || spent(db, id))
+    await db.bee.append(wrap(stamp, op), { optimistic: true })
+    return hid.encode(db.writerKey)
+  }
+  const c = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await join(c)
+  await c.db.claim()
+  await waitFor(async () => (await b.db.get('members', c.identity.id)).data)
+
+  await b.db.del('members', c.identity.id)
+  const again = await makePeer(t, testnet, { ...room, identity: c.identity })
+  const writer = await join(again)
+  for (const { db } of [a, b]) {
+    await waitFor(async () => (await refusal(db, writer))?.reason === 'removed')
+    t.is((await spent(db, id))?.reason, 'removed', 'spent by her removal')
+    t.absent((await db.get('invites', id)).data)
+    t.absent((await db.get('members', c.identity.id)).data, 'and she is not let in again')
+  }
+  const rows = async ({ view, ns }) => {
+    const all = (name) => view.find(`@${ns}/${name}`, {}).toArray()
+    return Promise.all(['invites', 'spent', 'requests', 'refusals', 'removals', 'members'].map(all))
+  }
+  const seen = await rows(a.db)
+  t.alike(await rows(b.db), seen, 'every device holds the same rows')
+  await a.db._rebuild()
+  await waitFor(async () => refusal(a.db, writer))
+  t.alike(await rows(a.db), seen, 'and so does the view applied again')
+})
+
 test("promise: a device removed takes its writer's request with it, and what its device key was promised", async (t) => {
   const { db } = await withRole(t, 'owner')
   const invite = await addressed(db, { reuse: true })
+  // one that waits for an accept, which a removal leaves: a member's device is let in at once
+  const asked = await addressed(db, { reuse: true, confirm: true })
   const identity = await Identity.create()
   const writer = Identity.randomKeyPair().publicKey
   const again = Identity.randomKeyPair().publicKey
@@ -1470,10 +1619,10 @@ test("promise: a device removed takes its writer's request with it, and what its
   t.is(await claimed(db, identity, writer), null)
   // the same device let in once more on another writer, and another device of the member, which
   // her phrase made: its chain does not pass through the first
-  await apply(db, again, 'join', named(db, invite, { identity, writer: again }))
+  await apply(db, again, 'join', named(db, asked, { identity, writer: again }))
   const tablet = await Identity.create({ seed: identity.seed })
   const other = Identity.randomKeyPair().publicKey
-  await apply(db, other, 'join', named(db, invite, { identity: tablet, writer: other }))
+  await apply(db, other, 'join', named(db, asked, { identity: tablet, writer: other }))
   t.ok(await promise(db, writer), 'seated, its promise not settled yet')
 
   t.is(await apply(db, db.writerKey, 'del-device', { id: hid.encode(writer) }), null)

@@ -521,6 +521,7 @@ export function makeDispatcher({
         throw CeroError.REFUSED('remove')
       }
     }
+    const may = can(await getSignerRole(ctx.view, ctx.key), REMOVE)
     await ctx.host.removeWriter(hid.decode(id))
     await revoke(ctx, device, by)
     await drop(ctx, 'devices', id)
@@ -528,12 +529,19 @@ export function makeDispatcher({
     // with the seat go the keys its writer was still owed, and what its device key was promised:
     // a rotation is sealed to the promised
     await forget(ctx, await ctx.view.get(requests, { id }))
-    if (!device?.key) return
     const stood = (row) => chainOf(row).some((key) => b4a.equals(key, device.key))
-    for (const row of await ctx.view.find(requests, {}).toArray()) {
+    for (const row of device?.key ? await ctx.view.find(requests, {}).toArray() : []) {
       // waiting or promised: one admitted at its join has a seat of its own to lose
       if (row.admitted && !row.promised) continue
       if (stood(row)) await forget(ctx, row)
+    }
+    if (device && may) await shut(ctx)
+  }
+  // a removal by someone who may remove spends the invites that let in on their own: one the
+  // removed held, or saw, brings nobody in after it. Those that wait for an accept stay
+  async function shut(ctx) {
+    for (const invite of await ctx.view.find(invites, {}).toArray()) {
+      if (invite.secret && !invite.confirm) await spend(ctx, invite, 'removed')
     }
   }
   // a request goes: a promise among them was handed the keys, so a rotation is owed
@@ -622,7 +630,12 @@ export function makeDispatcher({
 
   add('del-member', async (op, ctx) => {
     const existing = await getMember(ctx.view, op.id)
-    if (!existing) return
+    if (!existing) {
+      // taken out after she left: leaving first dodges nothing
+      const left = await ctx.view.get(removals, { id: leftId(op.id) })
+      if (left && can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
+      return
+    }
     // leaving is hers: only someone else taking her out turns her older codes away
     const by = await getSignerMember(ctx.view, ctx.key)
     const leaving = op.id === by
@@ -664,6 +677,7 @@ export function makeDispatcher({
     // leaving it waits for a member to accept her again, so leaving first never dodges a removal
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
     await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted, by })
+    if (!leaving) await shut(ctx)
   })
 
   add('rotate-key', async (op, ctx) => {
@@ -790,9 +804,14 @@ export function makeDispatcher({
     const expires = invite.expires || 0
     await drop(ctx, 'invites', invite.id)
     await ctx.view.insert(spent, { id: invite.id, reason, expires, secret: invite.secret })
-    const kept = (request) => request.admitted && (!request.promised || reason === 'spent')
+    const kept = async (request) => {
+      if (!request.admitted) return false
+      if (!request.promised || reason === 'spent') return true
+      // a removal withdraws what no device claimed: a promise kept waits for a member to settle it
+      return reason === 'removed' && sat(ctx.view, request)
+    }
     for (const request of await ctx.view.find(requests, {}).toArray()) {
-      if (request.invite !== invite.id || kept(request)) continue
+      if (request.invite !== invite.id || (await kept(request))) continue
       await forget(ctx, request)
       await refuse(ctx, request, reason)
     }
