@@ -3941,3 +3941,35 @@ test('gate: a newer op applied during a write stops it', async (t) => {
   t.is(a.db.bee.local.length, length, 'nothing reached the log')
   t.is((await b.db.get('messages', row.id)).data?.text, 'newer', 'the newer row stands')
 })
+
+// a joiner writes its join before it holds the key, and nothing else: a seat is no key
+test('apply: a block written without the room key lands a join and nothing else', async (t) => {
+  const errors = []
+  const { db, store } = await bootstrapped(t, { onerror: (err) => errors.push(err) })
+  const { wrap } = await import('../../src/database/envelope.js')
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const invite = Invite.create({ key: db.key, address: db.address })
+  await db.call('add-invite', { id: b4a.toHex(invite.id), role: 'member', createdAt: 1 })
+
+  const identity = await Identity.create()
+  const kp = Identity.randomKeyPair()
+  const core = store.get({
+    keyPair: kp,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const op = (verb, value) => wrap(db.version, spec.dispatch.encode(`@cero/${verb}`, value))
+  const join = op('join', sealJoin(invite, identity, core.key, Identity.randomBytes(32)))
+  await core.append(Autobee.encodeValue(join, { optimistic: true, encrypted: true, links: [] }))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await db.get('members', identity.id)).data)
+  t.pass('the join lands')
+
+  const add = op('add-messages', { id: 'plain', text: 'no key', createdAt: 1, updatedAt: 1 })
+  await core.append(b4a.concat([b4a.alloc(8), Autobee.encodeValue(add, {})]))
+  await db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => errors.length > 0 || (await db.get('messages', 'plain')).data)
+  t.absent((await db.get('messages', 'plain')).data, 'a write from the seat it took does not')
+})

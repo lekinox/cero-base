@@ -7,6 +7,12 @@ import Autobee from 'autobee';
  */
 export declare function blobEpochKey(entropy: Uint8Array): Uint8Array;
 /**
+ * @param {Uint8Array} key  The writer core's key.
+ * @param {number} index
+ * @returns {string}
+ */
+export declare function plainId(key: Uint8Array, index: number): string;
+/**
  * Prime a keyring from a local core's persisted epoch stash.
  *
  * @param {Keyring} keyring
@@ -100,6 +106,8 @@ export declare class Keyring {
 export declare class EpochAutobee extends Autobee {
     /** @type {Keyring | null} */
     keyring: Keyring | null;
+    /** @type {Set<string>} the writer blocks read in plain, by `plainId` */
+    plain: Set<string>;
     /** @private */
     _epochStalled;
     /** @private */
