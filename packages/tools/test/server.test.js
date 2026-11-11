@@ -2,8 +2,9 @@ import test from 'brittle'
 import b4a from 'b4a'
 import { Duplex } from 'streamx'
 
-import { put } from '@cero-base/cero'
+import { put, set } from '@cero-base/cero'
 import { serve } from '../src/server.js'
+import { redact } from '../src/redact.js'
 import { connect } from '../src/connect.js'
 import { Framed } from '../src/protocol.js'
 import { buildSpec, openCero } from './helpers/index.js'
@@ -109,6 +110,37 @@ test('tap server: secret/local refs are refused', async (t) => {
 
   await t.exception(session.get('master'), /unknown ref/)
   await t.exception(session.get('keypair'), /unknown ref/)
+})
+
+test('tap server: a single, a watch by id and its changes are redacted', async (t) => {
+  const { spec } = await buildSpec(t, 'watch-redact')
+  const me = await openCero(t, spec)
+  await set(me.profile, { name: 'jb', avatar: 'a' })
+  const { data: row } = await put(me.messages, { text: 'hidden' })
+
+  const [a, b] = pair()
+  const server = serve(a, me, { redact: redact({ fields: ['name', 'text'] }) })
+  const session = await connect(b)
+  t.teardown(() => {
+    server.close()
+    session.close()
+  })
+
+  const first = async (s) => {
+    const frame = await once(s, 'data')
+    s.destroy()
+    return frame
+  }
+  const masked = '‹redacted:string›'
+
+  t.is((await first(session.watch('profile'))).data.name, masked, 'a single row')
+  t.is((await first(session.watch('messages', row.id))).data.text, masked, 'a row by id')
+
+  const changes = (await first(session.watch('messages', { changes: true }))).changes
+  t.is(changes[0].next.text, masked, 'a change')
+
+  const single = (await first(session.watch('profile', { changes: true }))).changes
+  t.is(single[0].next.name, masked, 'a single row change')
 })
 
 test('tap server: events stream delivers buffered + live', async (t) => {

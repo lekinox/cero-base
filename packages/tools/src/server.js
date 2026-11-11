@@ -98,11 +98,7 @@ export class TapServer {
    */
   async get(req) {
     const ref = this._resolveRef(req)
-    const r = await get(ref, req.query)
-    const data = Array.isArray(r.data)
-      ? r.data.map((row) => this.redact(req.ref, row))
-      : r.data && this.redact(req.ref, r.data)
-    this._send({ id: req.id, ok: true, data: { ...r, data } })
+    this._send({ id: req.id, ok: true, data: this._mask(req.ref, await get(ref, req.query)) })
   }
 
   /**
@@ -114,10 +110,7 @@ export class TapServer {
     const ref = this._resolveRef(req)
     const s = watch(ref, req.query)
     this._track(req.id, () => s.destroy())
-    s.on('data', (d) => {
-      const data = Array.isArray(d.data) ? d.data.map((row) => this.redact(req.ref, row)) : d.data
-      this._send({ id: req.id, frame: { ...d, data } })
-    })
+    s.on('data', (d) => this._send({ id: req.id, frame: this._mask(req.ref, d) }))
     s.on('end', () => this._send({ id: req.id, end: true }))
     // a watch-stream error must not crash the host — end the client stream cleanly
     s.on('error', () => {
@@ -172,6 +165,15 @@ export class TapServer {
     const info = handle?.spec?.meta?.refs?.[req.ref]
     if (!handle || !info) throw new CodeError('UNKNOWN', `unknown ref '${req.ref}'`)
     return handle[req.ref]
+  }
+
+  /** @private */
+  _mask(ref, r) {
+    const row = (v) => v && this.redact(ref, v)
+    const data = Array.isArray(r.data) ? r.data.map(row) : row(r.data)
+    if (!r.changes) return { ...r, data }
+    const changes = r.changes.map((c) => ({ ...c, prev: row(c.prev), next: row(c.next) }))
+    return { ...r, data, changes }
   }
 
   /** @private */
