@@ -650,7 +650,7 @@ export class Handle extends ReadyResource {
   // landed just before is kept; the root's local store closes after its handles
   /** @private */
   _seal(child) {
-    const run = () => (this.closed ? null : this._topic(child, true))
+    const run = () => this._topic(child, true)
     this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
     return this._indexing
   }

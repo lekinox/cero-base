@@ -4527,6 +4527,38 @@ test('since: a view applied again loses no change, and a call made meanwhile wai
   t.is((await db.get('messages')).data.length, 2, 'read once the view was whole again')
 })
 
+test('since: asked while a view is applied again, it never tells a row gone', async (t) => {
+  const { db } = await bootstrapped(t)
+  for (const text of ['a', 'b', 'c']) await db.put('messages', { text })
+  await (await db.since('messages', 'index')).settle()
+  db.version += 1
+  db._onmove()
+  let rebuilt = false
+  db._rebuilding.then(() => (rebuilt = true))
+  let gone = false
+  while (!rebuilt) {
+    const { changes, reset } = await db
+      .since('messages', 'index')
+      .catch(() => ({ changes: [], reset: true }))
+    if (reset || changes.some(({ next }) => !next)) gone = true
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  t.absent(gone, 'every call in between waited for the view')
+})
+
+test('since: a point of another view, or past this one, starts over', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { text: 'a' })
+  const { key, length } = db.view.engine.head()
+  const point = (key, length) => b4a.concat([key, c.encode(c.uint, length)])
+  await db.bee.local.setUserData('cero/since/index', point(Identity.randomBytes(32), 1))
+  t.is((await db.since('messages', 'index')).reset, true, 'another view')
+  await db.bee.local.setUserData('cero/since/index', point(key, length + 5))
+  t.is((await db.since('messages', 'index')).reset, true, 'a point this view has not reached')
+  await db.bee.local.setUserData('cero/since/index', point(key, length))
+  t.is((await db.since('messages', 'index')).reset, false, 'its own point goes on')
+})
+
 test('changes: bursts fold losslessly — replay always equals get', async (t) => {
   const { db } = await bootstrapped(t)
   const stream = db.changes('messages')

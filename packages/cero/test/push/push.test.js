@@ -264,6 +264,20 @@ test('topics: with no point to go on from, a launch reads every handle once and 
   )
 })
 
+test('topics: a pass still waiting when the root closes does nothing and reports nothing', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  await me._indexing
+  let release
+  me._indexing = new Promise((resolve) => (release = resolve))
+  const queued = me._index().catch((err) => errors.push(err))
+  const closing = me.close()
+  release()
+  await closing
+  await queued
+  t.alike(errors, [])
+})
+
 test('topics: after one failed reindex the next handles change still indexes', async (t) => {
   const errors = []
   const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
