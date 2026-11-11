@@ -1165,7 +1165,7 @@ export class Database extends ReadyResource {
       if (range.limit !== undefined) {
         return { path: `${col}-index`, range, rest, sorted: true, count: col }
       }
-      return { path: col, range: {}, rest: { reverse: range.reverse }, sorted: false }
+      return { path: col, range: {}, rest: { ...rest, reverse: range.reverse }, sorted: false }
     }
     return { path: col, range: {}, rest, sorted: false }
   }

@@ -584,6 +584,15 @@ test('get: an unlimited read returns the order index rows, in its order', async 
   }
 })
 
+test('get: a fields that is not a list is refused on a full list as on a page', async (t) => {
+  const { db } = await bootstrapped(t)
+  await db.put('messages', { text: 'a' })
+  for (const query of [{ fields: 'text' }, { fields: 'text', limit: 3 }]) {
+    const err = await db.get('messages', query).catch((e) => e)
+    t.is(err.code, 'INVALID', JSON.stringify(query))
+  }
+})
+
 // ─── field validation ───────────────────────────────────────────────────────
 
 test('put: rejects an undeclared field instead of silently dropping it', async (t) => {
