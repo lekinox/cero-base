@@ -1022,6 +1022,22 @@ test('rpc: a stored type a header cannot carry is left out of the url, and the f
   t.is(res.status, 200, 'the bytes are served')
 })
 
+test('rpc: a file with an empty type that another member wrote serves through the client', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const room = await open(owner.team, { name: 'files' })
+  const data = b4a.from('no type')
+  const { data: file } = await put(room.files, { data, type: '' })
+  const mine = await open(client.team, await cero.invite(room))
+  const row = await waitUntil(async () => (await get(mine.files, file.id)).data)
+  const body = await waitUntil(async () => {
+    const res = await fetch(row.url)
+    return res.ok ? b4a.from(await res.arrayBuffer()) : null
+  })
+  t.alike(b4a.toBuffer(body), b4a.toBuffer(data), 'the bytes the owner wrote')
+})
+
 test('rpc: a file field reads back as a file whose url serves the bytes', async (t) => {
   const { client } = await openPair(t)
   const data = b4a.from('an-avatar')

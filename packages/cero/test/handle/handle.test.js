@@ -2,6 +2,7 @@ import test from 'brittle'
 import b4a from 'b4a'
 
 import { Identity } from '@cero-base/core/identity'
+import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero } from '../../src/index.js'
@@ -1083,6 +1084,32 @@ test('files: a file resolves in its own handle whatever a room on the device doe
   t.is(await read(file.id), 'root file', 'while a room holds files too')
   await room.close()
   t.is(await read(file.id), 'root file', 'and once the room closed')
+})
+
+test("files: a row naming another member's blob with the wrong epoch leaves that member's file readable", async (t) => {
+  const { room, join } = await hosted(t, 'files')
+  const { room: mallory } = await join(await cero.invite(room))
+  const { room: olive } = await join(await cero.invite(room))
+  await rotate(room)
+  await waitUntil(() => olive.store.keyring.seq === 1 && mallory.store.keyring.seq === 1)
+  const want = 'the host file after the rotation'
+  const { data: real } = await put(room.files, { data: b4a.from(want), type: 'text/plain' })
+
+  // the same core and blob under another type, stamped with the base epoch
+  await waitUntil(async () => (await get(mallory.files, real.id)).data)
+  const { coreKey, blobId } = decodeId(real.id)
+  const forged = encodeId(coreKey, blobId, 'text/html')
+  await mallory.store.call('add-file', { id: forged, name: 'hi', stamp: 0, from: null })
+
+  // olive reads the forged row first
+  await waitUntil(async () => (await get(olive.files, forged)).data)
+  await waitUntil(async () => (await get(olive.files, real.id)).data)
+  const { data: row } = await get(olive.files, real.id)
+  const read = await waitUntil(async () => {
+    const res = await fetch(row.url)
+    return res.ok ? b4a.toString(b4a.from(new Uint8Array(await res.arrayBuffer()))) : null
+  })
+  t.is(read, want, 'the host file decrypts on olive')
 })
 
 test('watch: changes carry file fields resolved on both sides', async (t) => {
