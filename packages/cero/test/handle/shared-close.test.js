@@ -100,6 +100,25 @@ test('a watch on a room ends with its last holder, and the room stays open for t
   t.alike(data, [], 'and a watch after the reopen reads')
 })
 
+test("a watch a 'handle' listener starts as it runs follows the room through its holders' last close", async (t) => {
+  const { me } = await rooms(t, 2, 0)
+  let kept = null
+  me.on('handle', (room) => (kept = watch(room.messages)))
+  const room = await open(me.team, { name: 'clinic' })
+  const held = watch(room.messages)
+  await room.close()
+  await waitUntil(() => held.destroyed)
+  t.absent(kept.destroying, "the listener's watch is no holder's")
+  const again = await open(me.team, { id: room.id })
+  t.is(again, room, 'the same room, opened from idle: no second event')
+  const seen = new Promise((resolve) => kept.on('data', ({ data }) => data.length && resolve(data)))
+  await put(room.messages, { text: 'after' })
+  t.is((await seen)[0].text, 'after', 'and it still reads')
+  await room._end()
+  await waitUntil(() => kept.destroyed)
+  t.pass('it ends with the room')
+})
+
 test('the close that pushes a room out does not wait for it, and its failure reaches onerror', async (t) => {
   const errors = []
   const { made } = await rooms(t, 1, 2, (err) => errors.push(err))

@@ -203,6 +203,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _kept;
     /** @private */
+    _arriving;
+    /** @private */
     _refs;
     /** @private */
     _idle;
@@ -267,9 +269,9 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _close;
     /**
-     * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-     * handle's holders — it's destroyed automatically once the last of them closes it, so
-     * callers don't track cleanup.
+     * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this handle, so callers
+     * don't track cleanup. Tied by a holder, it is destroyed once the last holder closes the handle; tied by
+     * a `handle` listener as it runs, an extension's watch, it follows the handle for as long as it is open.
      *
      * @template {{ destroy?: Function, once?: Function }} T
      * @param {T} resource
@@ -279,8 +281,6 @@ export declare class Handle extends ReadyResource {
         destroy?: Function;
         once?: Function;
     }>(resource: T): T;
-    /** @private an owned resource no holder made: it stays through the last close and ends with the handle */
-    private _keep;
     /** @private */
     private _disown;
     /** @private */

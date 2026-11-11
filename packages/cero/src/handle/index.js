@@ -155,6 +155,8 @@ export class Handle extends ReadyResource {
     // what follows it for as long as it is open, an extension's watch
     /** @private */
     this._kept = new Set()
+    /** @private */
+    this._arriving = false
     // a child's holders: open hands every caller on this device the same handle, so each close lets one go and the
     // last one leaves it idle
     /** @private */
@@ -370,9 +372,9 @@ export class Handle extends ReadyResource {
   }
 
   /**
-   * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-   * handle's holders — it's destroyed automatically once the last of them closes it, so
-   * callers don't track cleanup.
+   * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this handle, so callers
+   * don't track cleanup. Tied by a holder, it is destroyed once the last holder closes the handle; tied by
+   * a `handle` listener as it runs, an extension's watch, it follows the handle for as long as it is open.
    *
    * @template {{ destroy?: Function, once?: Function }} T
    * @param {T} resource
@@ -383,16 +385,9 @@ export class Handle extends ReadyResource {
       resource.destroy?.()
       return resource
     }
-    this._owned.add(resource)
-    resource.once?.('close', () => this._owned.delete(resource))
-    return resource
-  }
-
-  /** @private an owned resource no holder made: it stays through the last close and ends with the handle */
-  _keep(resource) {
-    if (!this._owned.delete(resource)) return resource
-    this._kept.add(resource)
-    resource.once?.('close', () => this._kept.delete(resource))
+    const tied = this._arriving ? this._kept : this._owned
+    tied.add(resource)
+    resource.once?.('close', () => tied.delete(resource))
     return resource
   }
 
@@ -1195,7 +1190,13 @@ export class Handle extends ReadyResource {
     this._carry(child)
     this._prune(child).catch(this._onerror)
     this._seats(child)
-    this.emit('handle', child, info)
+    // what a listener ties to the handle as it runs is no holder's: it stays through their last close
+    child._arriving = true
+    try {
+      this.emit('handle', child, info)
+    } finally {
+      child._arriving = false
+    }
   }
 
   // a handle's topics row follows who may write to it while it is open, so a push is checked

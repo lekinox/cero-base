@@ -218,9 +218,10 @@ handle still rotates its key, sealing you out. Removed by someone else, only a c
 `cero.close(room)` lets go of a handle on this device and keeps it in your list, to reopen by id.
 A device opens a handle once and counts who holds it: every `open`
 (by id, name or code) holds it once and every `cero.close` lets go once. The last close ends every
-`watch` on it, and it stays open, so a reopen gets it as it is. A device keeps `keepOpen` of them,
-16 by default; one more closes the least recently used. Leaving, a removal and `cero.close(me)`
-close it at once. Over RPC, the page's holds end when it reloads.
+`watch` its holders started, and it stays open, so a reopen gets it as it is. A watch a `'handle'`
+listener starts as it runs, as an extension's does, follows the handle for as long as it is open. A
+device keeps `keepOpen` of them, 16 by default; one more closes the least recently used. Leaving, a
+removal and `cero.close(me)` close it at once. Over RPC, the page's holds end when it reloads.
 
 ## List your handles
 
