@@ -457,11 +457,17 @@ export class Handle extends ReadyResource {
 
   /**
    * One holder done with it: a child stays open for the others. With its last it lingers `linger` ms (20s by
-   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once.
+   * default) and closes unless opened again meanwhile, so a quick reopen finds it still open. The root closes at once,
+   * after any `cero.link` or `cero.restore` on it: one still waiting stops, one taking its place finishes first.
    * @returns {Promise<void>}
    */
   close() {
-    if (!this.parent) return this._end()
+    if (!this.parent) {
+      // one swap may wait behind another: the root ends once none is left
+      const swap = this._swap
+      if (swap) return (swap.committing ? swap.done : swap.abort()).then(() => this.close())
+      return this._end()
+    }
     if (this._refs > 1) {
       this._refs--
       return Promise.resolve()
@@ -977,7 +983,7 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _join(invite, type, { timeout = TIMEOUT } = {}) {
-    const known = await this._joined(type, Invite.parse(invite).discoveryKey)
+    const known = await this._joined(type, Invite.parse(invite).key)
     if (known) return known
 
     const join = this._start(invite, type)
@@ -1017,10 +1023,9 @@ export class Handle extends ReadyResource {
   // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
   // so that one pairs again with a fresh keypair
   /** @private */
-  async _joined(type, target) {
-    const { data: joined } = await this.store.get('handles')
-    const existing = joined.find((h) => h.type === type && b4a.equals(discoveryKey(h.key), target))
-    if (!existing) return null
+  async _joined(type, key) {
+    const { data: existing } = await this.store.get('handles', hid.encode(key))
+    if (existing?.type !== type) return null
     const known = await this._load(type, existing.id)
     const { data: me } = await known.store.get('members', this.identity.id)
     const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
@@ -1098,7 +1103,7 @@ export class Handle extends ReadyResource {
     for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
       // the root's own device link row has no handle type: the launch resumes that one
       if (!this.spec.handles?.[type]) continue
-      if (await this._joined(type, Invite.parse(invite).discoveryKey)) {
+      if (await this._joined(type, Invite.parse(invite).key)) {
         await this.local.store.del('joins', id)
         continue
       }

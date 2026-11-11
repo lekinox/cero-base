@@ -21,6 +21,7 @@ import { CeroError } from '../lib/errors.js'
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
+ * @property {(id: string) => Promise<Mail | null>} get   The one row under an id, null when there is none.
  * @property {(mail: Mail) => Promise<unknown>} put
  * @property {(id: string) => Promise<unknown>} del
  *
@@ -48,6 +49,7 @@ export class Mailbox extends ReadyResource {
   ) {
     super()
     if (!network) throw CeroError.REQUIRED('network')
+    if (typeof inbox.get !== 'function') throw CeroError.INVALID('inbox box has no get(id)')
     this.network = network
     this.inbox = inbox
     this.outbox = outbox
@@ -100,7 +102,9 @@ export class Mailbox extends ReadyResource {
    * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
    * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
    * over again the next time this address is received. One it resolves `false` on was not for
-   * this address: it is erased as one that does not open.
+   * this address: it is erased as one that does not open. A message that was being read when the
+   * app was killed or its inbox closed is handed over at the next start and stays on the device,
+   * whatever `keep` says or `onmessage` resolves.
    *
    * @param {Uint8Array} secret
    * @param {(message: Uint8Array) => unknown} onmessage
@@ -208,6 +212,7 @@ function memory() {
   const kept = new Map()
   return {
     list: async () => [...kept.values()],
+    get: async (id) => kept.get(id) ?? null,
     put: async (mail) => kept.set(mail.id, mail),
     del: async (id) => kept.delete(id)
   }

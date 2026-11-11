@@ -79,6 +79,10 @@ export class Local extends ReadyResource {
 export function box(store, name) {
   return {
     list: async () => (await store.get(name)).data.map(unpack),
+    get: async (id) => {
+      const { data } = await store.get(name, id)
+      return data && unpack(data)
+    },
     put: (mail) => store.put(name, pack(mail)),
     del: (id) => store.del(name, id)
   }

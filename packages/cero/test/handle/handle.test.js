@@ -1302,3 +1302,25 @@ test('Handle: open by id while its create is still in flight shares the child', 
   const { data: mine } = await get(created.members, me.id)
   t.is(mine.role, 'owner', 'creator member row intact')
 })
+
+test('Handle: an invite to a room this device is in opens it from its one row, no list read', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'known' })
+  await open(me.team, { name: 'other' })
+  const invite = await cero.invite(room)
+
+  const reads = []
+  const read = me.store.get.bind(me.store)
+  me.store.get = (name, query) => {
+    if (name === 'handles') reads.push(query)
+    return read(name, query)
+  }
+  const again = await open(me.team, invite)
+  t.is(again.id, room.id, 'the room it is in')
+  t.ok(reads.includes(room.id), 'its row read by id')
+  t.alike(
+    reads.filter((query) => typeof query !== 'string'),
+    [],
+    'and no list of the handles'
+  )
+})

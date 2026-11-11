@@ -167,7 +167,8 @@ async function start(dir, spec, opts = {}) {
     await pointer.ready()
     network.attach(pointer)
 
-    // a swap replaced while it waits stops reading
+    // a swap replaced or closed while it waits stops reading
+    if (opts.signal?.aborted) throw CeroError.CLOSED('Swap')
     opts.signal?.addEventListener('abort', () => pointer.close().catch(safetyCatch))
     const key = recovering ? await readPointer(pointer, timeout) : linked?.key
 
@@ -193,6 +194,10 @@ async function start(dir, spec, opts = {}) {
             recovering: recovering || linking,
             timeout
           }
+    })
+    // stopped before it has its seat, it stops waiting: the device that seats it may be gone. Seated, it opens whole
+    opts.signal?.addEventListener('abort', () => {
+      if (!me.store.writable) me.store.close().catch(safetyCatch)
     })
     // an extension's hooks see every op the root applies; what else it calls waits for the open
     const setups = Promise.all(me.extensions.map(async (ext) => ext.setup?.(me)))
@@ -271,9 +276,11 @@ export async function link(me, invite, { onrequest } = {}) {
 }
 
 // Another identity comes in beside this one: `me` stays open and untouched until the new one has opened, so a
-// failed, denied or replaced restore or link leaves the device as it was. A newer swap replaces one still waiting
+// failed, denied or replaced restore or link leaves the device as it was. A newer swap replaces one still waiting,
+// and a close of `me` stops it until it commits
 async function swap(me, opts) {
-  await me._swap?.abort()
+  // several may wait on the same one: each stops whichever runs by its turn, so one runs at a time
+  while (me._swap) await me._swap.abort()
   if (me.closing || me.closed) throw CeroError.CLOSED('Handle')
   // everything carries over except the identity, the channel above all
   const { _dir: dir, spec, _opts: was } = me
@@ -281,7 +288,7 @@ async function swap(me, opts) {
   const ac = new AbortController()
   let finished = () => {}
   const done = new Promise((resolve) => (finished = resolve))
-  const running = { abort: () => (ac.abort(), done) }
+  const running = { done, committing: false, abort: () => (ac.abort(), done) }
   me._swap = running
   try {
     // one radio: the incoming identity takes it while it opens, and gives it back if it does not
@@ -290,15 +297,17 @@ async function swap(me, opts) {
       let opened = null
       try {
         opened = await start(nextOf(dir), spec, { ...carried, ...opts, signal: ac.signal })
-        if (ac.signal.aborted) throw CeroError.CLOSED('Swap')
         await opened.close()
+        // checked and marked in one step: a close of `me` stopped it by now, or waits for it from here
+        if (ac.signal.aborted) throw CeroError.CLOSED('Swap')
+        running.committing = true
       } catch (err) {
         await opened?.close().catch(safetyCatch)
         await me._bluetooth?.resume().catch(safetyCatch)
         throw ac.signal.aborted ? CeroError.CLOSED('Swap') : err
       }
       // past here the new identity is whole on disk: a failed rename leaves main.old for the next launch to settle
-      await me.close()
+      await me._end()
       await commit(dir)
     })
     return await start(dir, spec, carried)

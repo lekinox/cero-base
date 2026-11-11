@@ -80,12 +80,14 @@ export function erase(store, key, live = () => true) {
 }
 
 /**
- * Receives at the address a secret owns, direct from the sender or from a mirror. A message
- * that does not open in time, or that `onmessage` resolves `false` on, is dropped; one that opens
- * is kept in `box` until `onmessage` resolves, as a row naming its core, never the message, and
- * its id stays there for HANDLED_FOR once handled.
+ * Receives at the address a secret owns, direct from the sender or from a mirror. A message is
+ * kept in `box` from before its block is read until `onmessage` resolves, as a row naming its
+ * core, never the message, and its id stays there for HANDLED_FOR once handled; one that does not
+ * open in time, or that `onmessage` resolves `false` on, is dropped.
  * A core the inbox fetched is erased once dropped, or once handled with `keep` false; one this
- * device held already is left alone.
+ * device held already is left alone, and so is one whose message is found at a start in a row
+ * written before its block was read: that row does not say the inbox fetched it, so nothing is
+ * erased for it, whatever `keep` says or `onmessage` resolves.
  */
 export class Inbox extends ReadyResource {
   /**
@@ -117,6 +119,8 @@ export class Inbox extends ReadyResource {
     this._behind = new Set() // peers that announced more than QUEUED
     /** @private */
     this._reading = 0
+    /** @private */
+    this._kept = [] // rows found at open, still to read
     /** @private */
     this._handled = new Map() // id → when it was handled, oldest first
     /** @private */
@@ -155,8 +159,9 @@ export class Inbox extends ReadyResource {
         continue
       }
       this._mail.set(mail.id, { key: b4a.from(mail.id, 'hex'), queued: 0, busy: true })
-      this._resume(mail).catch((err) => this.onerror(err))
+      this._kept.push(mail)
     }
+    this._next()
     handled.sort((a, b) => a.handled - b.handled)
     for (const mail of handled) this._handled.set(mail.id, mail.handled)
     await this._prune()
@@ -214,6 +219,15 @@ export class Inbox extends ReadyResource {
 
   /** @private */
   _next() {
+    while (this._kept.length && this._reading < READS && !this.closing) {
+      this._reading++
+      this._read(this._resume(this._kept.shift()))
+        .catch((err) => this.onerror(err))
+        .finally(() => {
+          this._reading--
+          this._next()
+        })
+    }
     for (const [peer, ids] of this._turns) {
       if (this._reading >= READS || this.closing) return
       const from = b4a.toHex(peer.stream.remotePublicKey)
@@ -231,7 +245,7 @@ export class Inbox extends ReadyResource {
       mail.busy = true
       this._reading++
       this._load.set(from, load + 1)
-      this._read(id, mail.key)
+      this._read(this._land(id, mail.key))
         .catch((err) => this.onerror(err))
         .finally(() => {
           this._reading--
@@ -254,8 +268,7 @@ export class Inbox extends ReadyResource {
   }
 
   /** @private */
-  async _read(id, key) {
-    const landing = this._land(id, key)
+  async _read(landing) {
     this._landing.add(landing)
     const mail = await landing.finally(() => this._landing.delete(landing))
     if (!mail) return
@@ -270,13 +283,21 @@ export class Inbox extends ReadyResource {
     })
   }
 
-  // in the box before anything else: its sender has it as delivered from the moment it was stored
+  // in the box before its block is asked for, with no `fetched` until it was read: killed in between, the next start hands it over and erases nothing
   /** @private */
   async _land(id, key) {
+    // one box for every address: a row another address keeps under this id stays as it is
+    const row = await this.box.get(id)
+    if (row && !b4a.equals(row.address, this.address)) return this._settle(id)
+    // closed while its row was looked up: nothing is written for a key it never asked for
+    if (this.closing) return this._settle(id)
+    await this.box.put({ id, address: this.address, message: EMPTY })
     const { held, message } = await this._unseal(key, { timeout: this.timeout })
     // a core this device already held is not the inbox's to erase, whatever is announced here
     const fetched = !held
     if (!message) {
+      if (this.closing) return this._settle(id)
+      await this.box.del(id)
       await this._drop(id, fetched, true)
       return null
     }
@@ -284,15 +305,16 @@ export class Inbox extends ReadyResource {
     return { id, message, fetched }
   }
 
-  // kept from before a restart: the message is in its core, held here since it was read
+  // kept from before a restart: its message is read from its core as this device holds it, never from a peer
   /** @private */
   async _resume({ id, fetched }) {
     const { held, message } = await this._unseal(b4a.from(id, 'hex'), { wait: false })
-    if (message) return this._handle({ id, message, fetched })
+    if (message) return { id, message, fetched }
     // a read its own close cut short says nothing of the row: it waits for the next inbox at its address
     if (this.closing) return this._settle(id)
     await this.box.del(id)
-    await this._drop(id, fetched && held, false)
+    // a peer that announced it while its row waited still has it queued: it is read from there
+    await this._drop(id, fetched && held, true)
   }
 
   // the message in a core, and whether this device held the core before
