@@ -1552,6 +1552,30 @@ test('tx: a rolled-back transaction does not swallow unrelated concurrent writes
   )
 })
 
+test('tx: a write through the handle after its fn returned is refused', async (t) => {
+  const { db } = await bootstrapped(t)
+  let committed, failed
+  await db.tx(async (tx) => {
+    committed = tx
+    await tx.put('messages', { text: 'in' })
+  })
+  await t.exception(
+    db.tx(async (tx) => {
+      failed = tx
+      throw new Error('oops')
+    }),
+    /oops/
+  )
+  await t.exception(committed.put('messages', { text: 'late' }), /after its fn returned/)
+  await t.exception(failed.put('messages', { text: 'late' }), /after its fn returned/)
+  const { data } = await db.get('messages', {})
+  t.alike(
+    data.map((m) => m.text),
+    ['in'],
+    'only the batch landed'
+  )
+})
+
 test('tx: nested tx joins outer', async (t) => {
   const { db } = await bootstrapped(t)
   let updates = 0

@@ -2,8 +2,9 @@ import test from 'brittle'
 import b4a from 'b4a'
 import { Duplex } from 'streamx'
 
-import { put } from '@cero-base/cero'
+import { put, set } from '@cero-base/cero'
 import { serve } from '../src/server.js'
+import { redact } from '../src/redact.js'
 import { connect } from '../src/connect.js'
 import { Framed } from '../src/protocol.js'
 import { buildSpec, openCero } from './helpers/index.js'
@@ -111,6 +112,37 @@ test('tap server: secret/local refs are refused', async (t) => {
   await t.exception(session.get('keypair'), /unknown ref/)
 })
 
+test('tap server: a single, a watch by id and its changes are redacted', async (t) => {
+  const { spec } = await buildSpec(t, 'watch-redact')
+  const me = await openCero(t, spec)
+  await set(me.profile, { name: 'jb', avatar: 'a' })
+  const { data: row } = await put(me.messages, { text: 'hidden' })
+
+  const [a, b] = pair()
+  const server = serve(a, me, { redact: redact({ fields: ['name', 'text'] }) })
+  const session = await connect(b)
+  t.teardown(() => {
+    server.close()
+    session.close()
+  })
+
+  const first = async (s) => {
+    const frame = await once(s, 'data')
+    s.destroy()
+    return frame
+  }
+  const masked = '‹redacted:string›'
+
+  t.is((await first(session.watch('profile'))).data.name, masked, 'a single row')
+  t.is((await first(session.watch('messages', row.id))).data.text, masked, 'a row by id')
+
+  const changes = (await first(session.watch('messages', { changes: true }))).changes
+  t.is(changes[0].next.text, masked, 'a change')
+
+  const single = (await first(session.watch('profile', { changes: true }))).changes
+  t.is(single[0].next.name, masked, 'a single row change')
+})
+
 test('tap server: events stream delivers buffered + live', async (t) => {
   const { spec } = await buildSpec(t, 'events')
   const me = await openCero(t, spec)
@@ -172,4 +204,55 @@ test('tap server: correct token authenticates the session', async (t) => {
   const handles = await session.handles()
   t.is(handles[0].id, 'root', 'authed request served')
   session.close()
+})
+
+test('tap server: a frame before the token larger than a request drops the connection', async (t) => {
+  const [a] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  t.teardown(() => server.close())
+
+  const head = b4a.alloc(4)
+  new DataView(head.buffer, head.byteOffset, 4).setUint32(0, 1024 * 1024, true)
+  const closed = once(a, 'close')
+  a.push(head)
+  await closed
+  t.pass('connection dropped before buffering the frame')
+})
+
+test('tap server: an authed session sends frames larger than a request', async (t) => {
+  const [a, b] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  const session = await connect(b, { token: 'sekrit' })
+  t.teardown(() => {
+    session.close()
+    server.close()
+  })
+
+  await session.handles()
+  await t.exception(session.get('nope', { search: 'x'.repeat(1024 * 1024) }), /unknown ref/)
+})
+
+test('tap server: a first request larger than a frame before the token is served', async (t) => {
+  const [a, b] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  const session = await connect(b, { token: 'sekrit' })
+  t.teardown(() => {
+    session.close()
+    server.close()
+  })
+  a.once('close', () => b.destroy())
+
+  await t.exception(session.get('nope', { search: 'x'.repeat(70 * 1024) }), /unknown ref/)
+})
+
+test('tap server: the token frame gets no reply', async (t) => {
+  const [a, b] = pair()
+  const server = serve(a, { id: 'root', children: [] }, { token: 'sekrit' })
+  t.teardown(() => server.close())
+
+  let wire
+  const reply = new Promise((resolve) => (wire = new Framed(b, resolve)))
+  wire.send({ token: 'sekrit' })
+  wire.send({ id: 1, method: 'handles' })
+  t.is((await reply).id, 1, 'the first reply answers the first request')
 })

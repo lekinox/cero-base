@@ -51,3 +51,4 @@ npm run android
 
 - Uses cero's built-in HRPC via `@cero-base/cero/client` + `@cero-base/cero/server`.
 - Plain `StyleSheet` (no tailwind) with a dark theme.
+- The store holds your keys, so Android backup is off (`allowBackup: false` in `app.json`); the phrase is how you recover. On iOS the store sits in Documents, which device backups include.

@@ -218,7 +218,7 @@ Four npm workspaces under `example/` share one chat schema. Run `npm install` at
 cd example/chat-terminal
 node index.js --name alice                        # prints an invite
 node index.js --join <invite> --name bob          # in a second terminal
-node index.js --phrase "<words>" --storage ./me   # another machine, the first still running
+node index.js --phrase --storage ./me            # another machine, the first still running; type the phrase
 ```
 
 Without `--storage` every run is a fresh identity in a temporary directory. `/invite` prints a fresh invite, `/quit` exits.

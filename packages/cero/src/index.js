@@ -24,7 +24,7 @@ import { peek } from './lib/peek.js'
 import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
 import { TIMEOUT } from './lib/constants.js'
-import { commit, nextOf, settle, staging } from './lib/swap.js'
+import { commit, nextOf, settle, staging, sweep } from './lib/swap.js'
 
 export { Handle, Ref, Local }
 export * from './lib/operators.js'
@@ -89,6 +89,7 @@ async function start(dir, spec, opts = {}) {
   // any failure during open must close what opened, or the storage lock leaks
   try {
     await storage.ready()
+    await sweep(dir)
     await fs.promises.chmod(`${dir}/main`, 0o700)
     store = new Corestore(storage, { manifestVersion: 2 })
     await store.ready()

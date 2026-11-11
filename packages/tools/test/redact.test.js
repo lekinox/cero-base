@@ -43,3 +43,10 @@ test('redact: leaves non-objects and arrays of primitives untouched', async (t) 
   t.is(mask('x', 'plain'), 'plain')
   t.alike(mask('x', [1, 2, 3]), [1, 2, 3])
 })
+
+test('redact: masks a handle row epochs by default', async (t) => {
+  const mask = redact()
+  const out = mask('handles', { name: 'r', epochs: b4a.alloc(39) })
+  t.is(out.name, 'r')
+  t.is(out.epochs, '‹redacted:bytes(39)›', 'epochs masked')
+})

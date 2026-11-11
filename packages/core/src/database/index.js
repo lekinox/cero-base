@@ -423,7 +423,12 @@ export class Database extends ReadyResource {
     const batch = Object.create(this)
     batch.txQueue = []
     try {
-      const result = await fn(batch)
+      let result
+      try {
+        result = await fn(batch)
+      } finally {
+        batch.spent = true
+      }
       if (batch.txQueue.length) await this._chain(() => this.write(batch.txQueue))
       return result
     } catch (err) {
@@ -453,6 +458,7 @@ export class Database extends ReadyResource {
     const frozen = () => this.behind !== null && !leaving(ops, this.identity.id)
     if (frozen()) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
+      if (this.spent) throw CeroError.INVALID('a write through tx after its fn returned')
       for (const op of ops) this.txQueue.push(op)
       return
     }

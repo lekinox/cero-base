@@ -15,12 +15,18 @@ export declare const nextOf: (dir: string) => string;
 export declare function current(dir: string): Promise<string>;
 /**
  * A swap killed part way, finished or undone before anything opens `dir`: past its first rename the incoming
- * identity had opened, so it takes main's place; without it the old one comes back. What a killed swap left
- * in `main.next` goes, unless a swap is running there.
+ * identity had opened, so it takes main's place; without it the old one comes back.
  *
  * @param {string} dir
  */
 export declare function settle(dir: string): Promise<void>;
+/**
+ * What a killed swap left in `main.next` goes, unless a swap is running there. Only once `main` is open: a swap in
+ * another process holds its lock while the incoming identity opens, and lets it go to rename, a window this misses.
+ *
+ * @param {string} dir
+ */
+export declare function sweep(dir: string): Promise<void>;
 /**
  * Run `fn` with `dir/main.next` set aside for it, emptied before and after.
  *
