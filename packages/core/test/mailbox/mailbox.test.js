@@ -2155,3 +2155,28 @@ test('Inbox: closed as the block of a message is being stored, the next start ha
 
 test('Inbox: closed once the block of a message is stored, its read cut short, the next start hands it over', (t) =>
   closedAsItLands(t, true))
+
+test('Inbox: keep false leaves the core of a message found at a start in a row written before it was read', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await mailbox(t, testnet)
+  const b = await peer(t, testnet)
+  const secret = crypto.randomBytes(32)
+  const box = kept()
+
+  const dying = killed(t, b, secret, box)
+  await a.send(Mailbox.getAddress(secret), b4a.from('stored'))
+  const key = await dying
+
+  const got = []
+  const next = new Inbox(b, secret, {
+    box,
+    onmessage: (message) => got.push(b4a.toString(message)),
+    onerror: () => {},
+    keep: false
+  })
+  t.teardown(() => next.close())
+  await next.ready()
+  await waitFor(() => got.length > 0 && !next._mail.has(b4a.toHex(key)))
+  t.alike(got, ['stored'])
+  t.ok(await readable(b, key), 'handled, its core still on the disk')
+})
