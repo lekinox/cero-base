@@ -41,7 +41,6 @@ export const base = [
 // computed on the device, never stored: `get` and `watch` read them like any other ref
 const LIVE = {
   status: { type: 'status', kind: 'single' },
-  joins: { type: 'joining', root: true },
   nearby: { type: 'peer', root: true },
   topics: { type: 'topic', root: true }
 }

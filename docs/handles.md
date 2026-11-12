@@ -93,7 +93,7 @@ member answers, the handle appears in `me.room`, so watch that list. An expired 
 `EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
 
 ```js
-const { data: joins } = await cero.get(me.joins) // [{ id, type, invite }], still waiting
+const { data: waiting } = await cero.get(me.room, { state: 'asking' }) // still waiting for an answer
 await cero.cancel(me, invite) // give up for good: true when it cancelled one
 const { data: row } = await cero.get(me.room, id) // state: 'asking', 'joining', 'in', or how it ended
 ```

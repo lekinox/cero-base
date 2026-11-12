@@ -2,6 +2,8 @@ import test from 'brittle'
 import b4a from 'b4a'
 import c from 'compact-encoding'
 import z32 from 'z32'
+import hid from 'hypercore-id-encoding'
+import { encode, createNotification } from 'blind-push'
 
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
@@ -9,7 +11,19 @@ import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero } from '../../src/index.js'
-import { put, set, get, del, open, rotate, accept, watch, after } from '../../src/lib/operators.js'
+import {
+  put,
+  set,
+  get,
+  del,
+  open,
+  rotate,
+  accept,
+  deny,
+  receive,
+  watch,
+  after
+} from '../../src/lib/operators.js'
 import { Response, STATUS_ACCEPTED } from '../../../core/src/pairing/response.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
@@ -20,7 +34,8 @@ import {
   nextRequest,
   fetch,
   openHandle,
-  ceroOpen
+  ceroOpen,
+  refusedAtClaim
 } from '../helpers/index.js'
 
 // ─── Phase 4: root getter, fileServer, blobs, files ops ─────────────────────
@@ -93,16 +108,15 @@ test('invite: made-up keys a reader sends a confirm join are not kept, the accep
   await waitUntil(
     async () => read.size && !(await rows()).some((m) => read.has(m.id) && !m.handled)
   )
-  const { data: joins } = await peer.me.local.store.get('joins')
-  t.absent(
-    joins.find((row) => row.key),
-    'the made-up keys are not kept'
-  )
+  const { data: asking } = await get(peer.me.team, hid.encode(Invite.parse(invite).key))
+  t.is(asking.state, 'asking', 'the join still asks')
+  t.absent(asking.encryptionKey, 'the made-up keys are not kept')
 
   await accept(room, await nextRequest(room))
   const joined = await joining
   t.teardown(() => joined.close().catch(() => {}))
-  t.ok((await get(room.members, peer.identity.id)).data)
+  // its device seats itself: the host has the member once that claim reached it
+  t.ok(await waitUntil(async () => (await get(room.members, peer.identity.id)).data))
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {
@@ -1142,7 +1156,7 @@ test('files: get(handle.files, id) resolves a single file row', async (t) => {
 
 // ─── Phase 4: WRITE gate ──────────────────────────────────────────────────────
 
-test('Handle: me.topics and me.joins read one row by id, as a collection does', async (t) => {
+test('Handle: me.topics reads one row by id, as a collection does', async (t) => {
   const { me } = await ceroOpen(t)
   await open(me.team, { name: 'clinic' })
   await waitUntil(async () => (await get(me.topics)).data.length === 1)
@@ -1150,7 +1164,6 @@ test('Handle: me.topics and me.joins read one row by id, as a collection does', 
   t.alike((await get(me.topics, row.id)).data, row, 'a topic by its id')
   t.alike((await get(me.topics, { name: 'clinic' })).data, [row], 'a filter still lists')
   t.is((await get(me.topics, 'unknown')).data, null, 'an unknown topic reads null')
-  t.is((await get(me.joins, 'unknown')).data, null, 'an unknown join reads null')
 })
 
 test('files: a reader cannot add a file', async (t) => {
@@ -1581,4 +1594,45 @@ test('handles: a row is deleted while in, never while asking, joining or leaving
     await me.store.del('handles', id)
     t.absent((await get(me.handles, id)).data, 'gone')
   }
+})
+
+test('handles: a join denied after its keys arrived keeps no key on its row and no topics row, and a push about it is not verified', async (t) => {
+  const { me: owner, testnet } = await ceroOpen(t)
+  const room = await open(owner.team, { name: 'clinic' })
+  await put(room.messages, { text: 'hi' })
+  const { me } = await ceroOpen(t, { testnet })
+  const topic = b4a.toHex(room.store.discoveryKey)
+  const invite = await cero.invite(room)
+  const withdraw = async () => {
+    await waitUntil(async () => (await me.local.store.get('topics', topic)).data)
+    const promised = await waitUntil(
+      async () => (await get(room.requests)).data.find((r) => r.promised) || null
+    )
+    await deny(room, promised, 'not you')
+  }
+  const err = await refusedAtClaim(t, me, me.team, invite, withdraw)
+  t.is(err.code, 'DENIED')
+  const { data: row } = await get(me.team, room.id)
+  t.is(row.state, 'denied')
+  t.absent(row.encryptionKey, 'no key on its row')
+  t.absent(row.epochs, 'nor its epochs')
+  await me._indexing
+  t.absent((await me.local.store.get('topics', topic)).data, 'no topics row')
+  const payload = encode(
+    await createNotification(room.store.bee.local, {
+      roomKey: room.store.key,
+      extra: b4a.from('messages')
+    })
+  )
+  t.is(await receive(me, payload), null, 'a push about it is not verified')
+})
+
+test('handles: a topics row is kept for a handle in or joining, and dropped once it leaves', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const topic = b4a.toHex(room.store.discoveryKey)
+  await waitUntil(async () => (await me.local.store.get('topics', topic)).data)
+  await me.store.set('handles', { id: room.id, state: 'leaving' })
+  await waitUntil(async () => !(await me.local.store.get('topics', topic)).data)
+  t.ok((await get(me.team, room.id)).data.encryptionKey, 'its row still has the key')
 })

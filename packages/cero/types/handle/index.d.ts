@@ -31,7 +31,7 @@ export type HandleOpts = {
      */
     spec?: Spec;
     /**
-     * Root only, and required there: the device store for handle keypairs, joins and mail.
+     * Root only, and required there: the device store for handle keypairs and mail.
      */
     local?: Local;
     /**
@@ -123,7 +123,7 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
  * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
  * @property {Spec} [spec]                     Built cero spec.
- * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs, joins and mail.
+ * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs and mail.
  * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
  * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).
@@ -337,10 +337,6 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _onRadio;
     /** @private */
-    private _joins;
-    /** @private */
-    private _onLocal;
-    /** @private */
     private _onTopics;
     /** @private */
     private _topics;
@@ -419,6 +415,8 @@ export declare class Handle extends ReadyResource {
     private _join;
     /** @private */
     private _start;
+    /** @private */
+    private _run;
     /** @private */
     private _cancel;
     /** @private */

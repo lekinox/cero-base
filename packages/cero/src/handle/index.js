@@ -25,7 +25,6 @@ import { FileServer } from '@cero-base/core/blobs/server'
 import { KEEP_OPEN, NS, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
-import { Join, wait } from './join.js'
 import { box } from '../local/index.js'
 import { extensionsOf } from '../extensions/index.js'
 
@@ -43,7 +42,7 @@ export { Ref } from '../lib/refs.js'
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
  * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
  * @property {Spec} [spec]                     Built cero spec.
- * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs, joins and mail.
+ * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs and mail.
  * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
  * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).
@@ -135,7 +134,7 @@ export class Handle extends ReadyResource {
     /** @private */
     this._loading = parent ? null : new Map()
     /** @private */
-    this._joining = parent ? null : new Map() // type/discovery key → Join
+    this._joining = parent ? null : new Map() // handle id → its join in flight
     /** @private */
     this._coreKeys = parent ? null : new Map()
     /** @private */
@@ -195,7 +194,6 @@ export class Handle extends ReadyResource {
     this._live = {
       status: { get: () => this._status(), watch: (fn) => this._onStatus(fn) },
       ...(!this.parent && {
-        joins: { get: (q) => this._joins(q), watch: (fn) => this._onLocal(fn) },
         nearby: { get: () => this._peers(), watch: (fn) => this._onRadio(fn) },
         topics: { get: (q) => this._topics(q), watch: (fn) => this._onTopics(fn) }
       })
@@ -328,7 +326,7 @@ export class Handle extends ReadyResource {
 
     const root = !this.parent
     const steps = [
-      ...[...(this._joining?.values() || [])].map((join) => () => join.close()),
+      ...[...(this._joining?.values() || [])].map((join) => () => join.running?.abort()),
       // mirroring stops before any database closes, once the mailbox is done with it: blind peering reads
       // storage for each database it mirrors
       ...(root ? [() => this.mailbox.close(), () => this.network.closePeering()] : []),
@@ -623,22 +621,6 @@ export class Handle extends ReadyResource {
     return () => bt.off('update', fn)
   }
 
-  // the joins this device waits on, without the keys the local store keeps for them
-  /** @private */
-  async _joins(query) {
-    const rows = (await this.local.store.get('joins')).data
-    return listed(
-      rows.map(({ id, type, invite }) => ({ id, type, invite })),
-      query
-    )
-  }
-
-  /** @private */
-  _onLocal(fn) {
-    this.local.store.db.watch(fn)
-    return () => this.local.store.db.unwatch(fn)
-  }
-
   /** @private */
   _onTopics(fn) {
     this.on('topics', fn)
@@ -698,7 +680,7 @@ export class Handle extends ReadyResource {
     let rows = null
     if (reset) {
       const wanted = new Set(
-        changes.filter(({ next }) => next.encryptionKey).map(({ next }) => topicOf(next))
+        changes.filter(({ next }) => topical(next)).map(({ next }) => topicOf(next))
       )
       rows = new Map((await this.local.store.get('topics')).data.map((row) => [row.id, row]))
       for (const id of rows.keys()) {
@@ -706,8 +688,7 @@ export class Handle extends ReadyResource {
       }
     }
     for (const { prev, next } of changes) {
-      // a join with no keys yet has no topic to hear a push on
-      if (!next?.encryptionKey) {
+      if (!topical(next)) {
         if (prev?.encryptionKey || !next) await this._drop(topicOf(prev))
         continue
       }
@@ -1019,30 +1000,72 @@ export class Handle extends ReadyResource {
     return child
   }
 
+  // one join a handle, whoever waits on it: it goes on until its row says how it ended, and a close only pauses it
   /** @private */
   _start(invite, type) {
-    const target = Invite.parse(invite).discoveryKey
-    const key = `${type}/${b4a.toHex(target)}`
-    let join = this._joining.get(key)
+    const id = hid.encode(Invite.parse(invite).key)
+    let join = this._joining.get(id)
     if (!join) {
-      join = new Join(this, {
-        type,
-        spec: pickHandle(this.spec, type),
-        discoveryKey: target,
-        onend: () => this._joining.delete(key)
+      join = { id, type, invite: null, waiting: 0, cancelled: false, claimed: false, running: null }
+      join.done = new Promise((resolve, reject) => {
+        join.resolve = resolve
+        join.reject = reject
       })
-      this._joining.set(key, join)
+      join.done.catch(safetyCatch)
+      this._joining.set(id, join)
     }
-    if (join.invite !== invite) join.start(invite)
+    if (join.invite !== invite) this._run(join, invite)
     return join
   }
 
+  // a newer invite takes over from an older attempt: the writer stays, so a reply to the older one still lands
+  /** @private */
+  async _run(join, invite) {
+    join.invite = invite
+    join.running?.abort()
+    const running = (join.running = new AbortController())
+    const settle = (end, value) => {
+      this._joining.delete(join.id)
+      end(value)
+    }
+    try {
+      const id = await this._ask(join.type, invite)
+      const writer = await this._loadKeyPair(id)
+      const { data: row } = await this.store.get('handles', id)
+      // the keys are on the row before the reply is let go: a restart opens the handle without joining again
+      const keep = async (answer) => {
+        if (!(answer instanceof Error)) await this._stand(id, 'joining', keys(answer))
+      }
+      const spec = pickHandle(this.spec, join.type)
+      const { identity, mailbox } = this
+      const opts = { identity, spec, writer, keep, timeout: 0, signal: running.signal }
+      const reply = row.encryptionKey
+        ? { ...row, epochs: row.epochs ? c.decode(epochEntries, row.epochs) : [], writer }
+        : await Pairing.join(mailbox, invite, opts)
+      await this._stand(id, 'joining', keys(reply))
+      const child = await this._enter(join.type, reply, invite)
+      // the hold the open took is a waiter's: with none it is let go, idle until the app opens it
+      if (!join.waiting) child.close().catch(this._onerror)
+      settle(join.resolve, child)
+    } catch (err) {
+      if (running !== join.running) return
+      const end = join.cancelled ? CeroError.CANCELLED() : err
+      // a close pauses the join, anything else ends it, and its row says how
+      if (end.code !== 'CLOSED') await this._over(invite, end).catch(this._onerror)
+      if (err.code !== 'CLOSED' && !join.waiting) this._onerror(err)
+      settle(join.reject, end)
+    }
+  }
+
+  // ends it for good: its row reads cancelled, so no restart resumes it
   /** @private */
   async _cancel(invite) {
-    const id = b4a.toHex(Invite.parse(invite).discoveryKey)
-    const join = [...this.root._joining.values()].find((join) => join.id === id)
-    await join?.cancel()
-    return !!join
+    const join = this.root._joining.get(hid.encode(Invite.parse(invite).key))
+    if (!join) return false
+    join.cancelled = true
+    join.running?.abort()
+    await join.done.catch(safetyCatch)
+    return true
   }
 
   // a join's row: `asking` with its invite and no keys. A room this identity was let go from reads `removed` first,
@@ -1053,12 +1076,18 @@ export class Handle extends ReadyResource {
     const id = hid.encode(key)
     const { data: row } = await this.store.get('handles', id)
     let state = row && (row.state || 'in')
-    if (state === 'joining' || (state === 'asking' && row.invite === invite)) return id
+    // the writer this device asks with: fixed before the join is written, so a resumed one hears the reply to it
+    const { data: kept } = await this.local.store.get('handle-keypairs', id)
+    const mine = !!kept?.invite && (state === 'asking' || state === 'joining')
+    if (mine && (state === 'joining' || row.invite === invite)) return id
     if (state === 'in') {
       await this.store.set('handles', { id, state: 'removed' })
       state = 'removed'
     }
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
+    await this._saveKeyPair(id, mine ? kept : Identity.randomKeyPair(), invite)
+    // a room another device of this identity already has the keys of is joined with them
+    if (state === 'joining') return id
     const ts = Date.now()
     await this.store.call('add-handle', {
       id,
@@ -1081,7 +1110,7 @@ export class Handle extends ReadyResource {
     await this.store.set('handles', { id, state, ...fields })
   }
 
-  // how a join ended, on its row
+  // how a join ended, on its row, which keeps none of the keys it was handed
   /** @private */
   async _over(invite, err) {
     const state = OVER[err.code]
@@ -1089,7 +1118,9 @@ export class Handle extends ReadyResource {
     const { data: row } = await this.store.get('handles', id)
     // a join on its way ends, one seated or over stays as it reads
     const ends = row?.state === 'asking' || (row?.state === 'joining' && state === 'denied')
-    if (state && ends) await this.store.set('handles', { id, state, reason: err.reason ?? null })
+    if (!state || !ends) return
+    const reason = err.reason ?? null
+    await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
   }
 
   // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
@@ -1145,7 +1176,7 @@ export class Handle extends ReadyResource {
         await child.store.whenWritable({ timeout: 0 })
       }
 
-      await this._saveKeyPair(id, child.store.keyPair)
+      await this._saveKeyPair(id, child.store.keyPair, invite)
 
       const ts = Date.now()
       await this.store.call('add-handle', {
@@ -1177,20 +1208,12 @@ export class Handle extends ReadyResource {
   /** @private */
   async _carryOn() {
     // the rows not settled, through their index: never every handle
-    const going = new Set()
     for (const state of ['asking', 'joining']) {
-      for (const row of (await this.store.get('handles', { state })).data) going.add(topicOf(row))
-    }
-    for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
-      // the root's own device link row has no handle type: the launch resumes that one
-      if (!this.spec.handles?.[type]) continue
-      // stopped before its row was written, it writes it now; one whose row is settled is over
-      const { key } = Invite.parse(invite)
-      if (going.has(id) || !(await this.store.get('handles', hid.encode(key))).data) {
-        this._start(invite, type)
-        continue
+      for (const { id, type, invite } of (await this.store.get('handles', { state })).data) {
+        // a join is its device's to carry: this one holds the writer it asked with
+        const { data: kept } = await this.local.store.get('handle-keypairs', id)
+        if (kept?.invite === invite) this._start(invite, type)
       }
-      await this.local.store.del('joins', id)
     }
   }
 
@@ -1441,12 +1464,13 @@ export class Handle extends ReadyResource {
    * @returns {Promise<void>}
    * @private
    */
-  async _saveKeyPair(id, keyPair) {
+  async _saveKeyPair(id, keyPair, invite) {
     if (!keyPair) return
     await this.local.store.put('handle-keypairs', {
       id,
       publicKey: keyPair.publicKey,
-      secretKey: keyPair.secretKey
+      secretKey: keyPair.secretKey,
+      invite
     })
   }
 
@@ -1473,6 +1497,47 @@ const ENDS = {
   cancelled: () => CeroError.CANCELLED(),
   // the invite it was let in with is one minted before its removal
   removed: () => CeroError.DENIED('removed')
+}
+
+// a push is heard only for a handle this identity is in or joining, with its keys
+const TOPICAL = new Set(['in', 'joining'])
+
+function topical(row) {
+  return !!row?.encryptionKey && TOPICAL.has(row.state || 'in')
+}
+
+// the keys a pairing reply delivered, as a join's row keeps them
+const keys = ({ encryptionKey, epochs }) => ({
+  encryptionKey,
+  epochs: c.encode(epochEntries, epochs)
+})
+
+/**
+ * Wait for a join as one of its waiters, but stop waiting after `ms`; the join itself goes on.
+ *
+ * @param {{ waiting: number, done: Promise<Handle> }} join
+ * @param {number} ms  `0` waits as long as the join takes.
+ * @returns {Promise<Handle>}
+ */
+async function wait(join, ms) {
+  join.waiting++
+  let counted = true
+  let timer = null
+  const timeout = new Promise((resolve, reject) => {
+    if (!ms) return
+    timer = setTimeout(() => {
+      // uncounted at once: a join landing in this same turn gives its open back itself
+      counted = false
+      join.waiting--
+      reject(CeroError.TIMEOUT('join'))
+    }, ms)
+  })
+  try {
+    return await Promise.race([join.done, timeout])
+  } finally {
+    clearTimeout(timer)
+    if (counted) join.waiting--
+  }
 }
 
 // the keys a pairing reply delivered, as a handle opens with them
