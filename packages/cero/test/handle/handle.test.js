@@ -2601,7 +2601,7 @@ test('handles: a room the identity is in is not deleted through its type', async
   t.ok((await get(me.team, room.id)).data, 'the row stays')
 })
 
-test('probe: a cancel made just before the app closes takes the request back after it launches again', async (t) => {
+test('join: a cancel made just before the app closes takes the request back after it launches again', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
   const room = await open(host.me.team, { name: 'clinic' })
@@ -2615,8 +2615,38 @@ test('probe: a cancel made just before the app closes takes the request back aft
   await me.close()
   const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
-  t.absent((await get(again.team, room.id)).data, 'its row went at launch')
+  const row = (await get(again.team, room.id)).data
+  t.is(row?.state, 'cancelled', 'its row stays while the room is owed the cancel')
   await cero.resume(host.me)
   await waitUntil(async () => (await get(room.requests)).data.length === 0, 10000).catch(() => {})
   t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
+  await waitUntil(async () => !(await again.local.store.get('handle-keypairs', room.id)).data)
+  t.pass('and its writer goes once the room holds it')
+})
+
+test('join: a cancel held after the app asked again under another invite leaves that join its writer', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const first = await cero.invite(room, { confirm: true })
+  const second = await cero.invite(room, { confirm: true })
+  const { me, dir } = await ceroOpen(t, { testnet })
+  const joining = open(me.team, first).catch((e) => e)
+  const request = await nextRequest(room)
+  await cero.suspend(host.me)
+  t.ok(await cero.cancel(me, first))
+  t.is((await joining).code, 'CANCELLED')
+  open(me.team, second).catch(() => {})
+  const asked = async () => (await me.local.store.get('handle-keypairs', room.id)).data
+  await waitUntil(async () => (await asked())?.invite === second)
+  await cero.resume(host.me)
+  const next = await nextRequest(room, request)
+  await waitUntil(async () => !(await get(room.requests)).data.some((r) => r.id === request.id))
+  t.is((await asked())?.invite, second, 'the writer of the join under the other invite stays')
+  await me.close()
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  await accept(room, next)
+  await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'in')
+  t.pass('and it lands after a launch')
 })
