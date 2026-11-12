@@ -14,6 +14,7 @@ import { Invite } from '@cero-base/core/invite'
 import { Database } from '@cero-base/core/database'
 import { Storage } from '@cero-base/core/storage'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
+import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero, schema, t as T } from '../../src/index.js'
@@ -1733,6 +1734,27 @@ test('devices: a room made while the root still owes the rotation of a removal r
   t.ok(errors.length > 0, 'the failed rotation reported')
 })
 
+test('devices: a room made while the root owes the rotation of a removal has the key it writes under in the root once the root rotates, and the removed device never reads it', async (t) => {
+  const a = await ceroOpen(t, { onerror: () => {} })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  a.me.store.rotation._rotate = () => Promise.reject(new Error('lost'))
+  await del(a.me.devices, phone.me.device.id)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const key = room.store.keyring.entropy(room.store.keyring.current)
+  const held = async (me) => {
+    const { data } = await me.store.get('handles', room.id)
+    if (!data?.epochs) return false
+    return c.decode(epochEntries, data.epochs).some((e) => b4a.equals(e.entropy, key))
+  }
+
+  delete a.me.store.rotation._rotate
+  await a.me.store.rotate()
+  const stands = await waitUntil(() => held(a.me), 10000).catch(() => false)
+  t.ok(stands, 'the devices that stand read it in the root')
+  t.absent(await held(phone.me), 'and the removed device does not')
+})
+
 test('devices: a room only the removed device and a closed one had opened is told by a device that never opened it', async (t) => {
   const laptop = await ceroOpen(t)
   const phone = await linkTo(t, laptop)
@@ -2787,6 +2809,41 @@ test('devices: rooms no peer serves hold no other room of the pass while they wa
     const { data } = await laptop.me.local.store.get('handle-keypairs', id)
     t.absent(data.told, 'and none is marked told')
   }
+})
+
+test('devices: rooms no peer serves wait for a peer a few at a time, and a room a peer serves is told meanwhile', async (t) => {
+  const laptop = await ceroOpen(t, { onerror: () => {} })
+  const phone = await linkTo(t, laptop)
+  const lab = await open(phone.me.team, { name: 'lab' })
+  await waitUntil(async () => (await laptop.me.store.get('handles', lab.id)).data?.encryptionKey)
+  const lost = await addHandles(laptop.me, 20)
+  for (const id of lost) await laptop.me._saveKeyPair(id, Identity.randomKeyPair())
+  const { claim } = Database.prototype
+  let release = () => {}
+  const gate = new Promise((resolve) => (release = resolve))
+  let waiting = 0
+  let peak = 0
+  Database.prototype.claim = async function (opts) {
+    if (!lost.includes(hid.encode(this.key))) return claim.call(this, opts)
+    peak = Math.max(peak, ++waiting)
+    try {
+      await gate
+      throw Object.assign(new Error('nobody serves it'), { code: 'TIMEOUT' })
+    } finally {
+      waiting--
+    }
+  }
+  t.teardown(() => {
+    release()
+    Database.prototype.claim = claim
+  })
+
+  await del(laptop.me.devices, phone.me.device.id)
+  await toldOf(lab, phone)
+  t.pass('the room a peer serves is told')
+  t.ok(peak <= 8, `at most a few rooms wait at once, not ${peak}`)
+  release()
+  await waitUntil(() => laptop.me._tellings.size === 0)
 })
 
 test('devices: a room whose telling throws is told at the next pass, and only it', async (t) => {
