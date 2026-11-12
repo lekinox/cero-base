@@ -47,6 +47,28 @@ function ChatInput({ onSend }) {
   )
 }
 
+function Rename({ name, onSave, onCancel }) {
+  const [value, setValue] = useState(name)
+  const save = () => value.trim() && onSave(value.trim())
+
+  return (
+    <div className='flex items-center gap-2'>
+      <Input
+        placeholder='New name'
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && save()}
+      />
+      <Button onClick={save} disabled={!value.trim()}>
+        Save
+      </Button>
+      <Button onClick={onCancel} variant='ghost'>
+        Cancel
+      </Button>
+    </div>
+  )
+}
+
 function groupMessages(messages, myId) {
   const groups = []
   for (const m of messages) {
@@ -70,6 +92,7 @@ export function Room({ onClose }) {
   const toast = useToast()
   const [invite, setInvite] = useState('')
   const [open, setOpen] = useState(false)
+  const [naming, setNaming] = useState(false)
   const ref = useRef(null)
 
   useEffect(() => {
@@ -81,6 +104,11 @@ export function Room({ onClose }) {
   const send = (text) => cero.put(room.messages, { text })
   const canRemove = status.role === 'owner' || status.role === 'admin'
   const remove = (id) => cero.del(room.members, id).catch((err) => toast.show(err.message))
+  const rename = (name) =>
+    cero.set(room.profile, { name }).then(
+      () => setNaming(false),
+      (err) => toast.show(err.message)
+    )
 
   return (
     <div className='h-screen flex flex-col'>
@@ -88,7 +116,16 @@ export function Room({ onClose }) {
         <Button onClick={onClose} variant='ghost'>
           ←
         </Button>
-        <span className='font-medium text-card-foreground'>{row?.name || 'Unnamed'}</span>
+        {naming ? (
+          <Rename name={row?.name || ''} onSave={rename} onCancel={() => setNaming(false)} />
+        ) : (
+          <span className='font-medium text-card-foreground'>{row?.name || 'Unnamed'}</span>
+        )}
+        {status.writable && !naming && (
+          <Button onClick={() => setNaming(true)} variant='ghost'>
+            Rename
+          </Button>
+        )}
         <Button onClick={() => setOpen(!open)} variant='ghost'>
           {members.length} members
         </Button>

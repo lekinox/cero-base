@@ -56,6 +56,8 @@ export function Settings() {
         <div className='flex-1 space-y-2'>
           <Input
             className='w-full'
+            placeholder='Your name'
+            key={profile?.name}
             defaultValue={profile?.name}
             onBlur={(e) => {
               const v = e.target.value.trim()
