@@ -1680,8 +1680,8 @@ test('devices: a close while the pass tells rooms resolves with every room it op
   )
   t.ok(first.rooms.length > 0, 'the pass had rooms open')
   t.ok(
-    first.rooms.every((room) => room.closed),
-    'every one closed when the close resolves'
+    first.rooms.every((room) => room.closed && room.store.closed),
+    'every one closed, its store too, when the close resolves'
   )
   t.alike(errors, [], 'nothing reported')
 
