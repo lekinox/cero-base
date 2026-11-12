@@ -3,6 +3,7 @@ import b4a from 'b4a'
 import { promises as fs } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
+import { Duplex } from 'streamx'
 
 import { encode, createNotification } from 'blind-push'
 import { Invite } from '@cero-base/core/invite'
@@ -11,6 +12,8 @@ import { cero, open, put, set, get, invite, receive, schema, t } from '../../src
 import { receive as cold } from '../../src/push/index.js'
 import { build } from '../../src/build/index.js'
 import { contract } from '../../src/build/schemas.js'
+import { serve } from '../../src/rpc/server.js'
+import { connect } from '../../src/rpc/client.js'
 import { makeMirror, makeTestnet, waitUntil } from '../helpers/index.js'
 
 test.configure({ timeout: 120000 })
@@ -349,4 +352,65 @@ test('compat: a reader on this release with a profile opens a room the previous 
     [],
     'the profile the bundled sync mirrors raises nothing'
   )
+})
+
+test('compat: a store the previous release wrote joins a room as soon as this release opens it', async (t) => {
+  const { old, before } = await previous()
+  const shipped = await shippedSpec()
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const host = await cero(await t.tmp(), shipped, opts)
+  t.teardown(() => host.close().catch(() => {}), { order: 5 })
+  const dir = await t.tmp()
+  const was = await old.cero(dir, before, opts)
+  await was.close()
+
+  const code = await invite(await open(host.room, { name: 'shared' }))
+  const me = await cero(dir, shipped, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const err = await open(me.room, code).then(
+    () => null,
+    (e) => e
+  )
+  t.is(err?.message ?? null, null, 'the join is asked under the version the root is at')
+})
+
+function pair() {
+  let a, b
+  a = new Duplex({
+    write(data, cb) {
+      b.push(data)
+      cb(null)
+    }
+  })
+  b = new Duplex({
+    write(data, cb) {
+      a.push(data)
+      cb(null)
+    }
+  })
+  return [a, b]
+}
+
+test('compat: a store the previous release wrote joins a room as soon as a worker on this release opens it, asked from its UI', async (t) => {
+  const { old, before } = await previous()
+  const shipped = await shippedSpec()
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const host = await cero(await t.tmp(), shipped, opts)
+  t.teardown(() => host.close().catch(() => {}), { order: 5 })
+  const storage = await t.tmp()
+  await (await old.cero(storage, before, opts)).close()
+
+  const code = await invite(await open(host.room, { name: 'shared' }))
+  const [worker, ui] = pair()
+  const server = await serve(worker, shipped, { storage, ...opts })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  const client = await connect(ui, shipped)
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  const err = await open(client.room, code).then(
+    () => null,
+    (e) => e
+  )
+  t.is(err?.message ?? null, null, 'the join is asked under the version the root is at')
 })

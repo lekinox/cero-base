@@ -535,10 +535,15 @@ export class Database extends ReadyResource {
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
     await this.bee.updated()
+    // an owner's device raises first, in the same batch, as at genesis: its write may name what
+    // only the version its build asks for has
+    const raise = !ops.some(([op]) => op === 'upgrade') && (await this._raises())
+    const batch = raise ? [['upgrade', { version: this.target }], ...ops] : ops
     // the dry run refuses what apply would; a no-op never reaches the log, an action always does
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
-      const { wrapped, changed, stamp } = await this._dryRun(ops)
+      if (raise && !action && !(await this._changes(ops))) return
+      const { wrapped, changed, stamp } = await this._dryRun(batch)
       if (!changed && !action) return
       // a newer op may have applied while this write awaited
       if (this._frozen(ops)) throw CeroError.BEHIND(this.behind)
@@ -1387,11 +1392,27 @@ export class Database extends ReadyResource {
   // an owner's device moves the database to the version its build asks for, a batch of its own
   /** @private */
   async _raise() {
-    if (this.closing || this.closed || !this.writable || this.behind !== null) return
-    if (this.target <= (await this.dispatcher.version(this.view))) return
-    const { data: me } = await this.get('members', this.identity.id)
-    if (me?.role !== OWNER) return
+    if (this.closing || this.closed || !(await this._raises())) return
     await this.write([['upgrade', { version: this.target }]])
+  }
+
+  // read off the view, not through get: a write in flight would wait on a rebuild that waits on it
+  /** @private */
+  async _raises() {
+    if (!this.writable || this.behind !== null) return false
+    if (this.target <= (await this.dispatcher.version(this.view))) return false
+    const me = await this.view.get(`@${this.ns}/members`, { id: this.identity.id })
+    return me?.role === OWNER
+  }
+
+  // a write that changes nothing appends no raise in front of it; one the view refuses may need the raise
+  /** @private */
+  async _changes(ops) {
+    try {
+      return (await this._dryRun(ops)).changed
+    } catch {
+      return true
+    }
   }
 
   // a device writes as the version, its own contract while it is behind
