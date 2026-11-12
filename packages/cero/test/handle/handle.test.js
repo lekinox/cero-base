@@ -1088,6 +1088,15 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
   await t.exception.all(join(inviteStr), /DENIED/)
 })
 
+test('Handle: revoke takes the id a room.invites row holds as well as the code', async (t) => {
+  const { room, join } = await hosted(t, 'revoked')
+  const code = await cero.invite(room, { role: 'member', ttl: 60_000 })
+  const { data: rows } = await get(room.invites)
+  t.is(await cero.revoke(room, rows[0].id), true, 'revoked by its id')
+  t.is(await cero.revoke(room, code), false, 'and the code finds nothing left')
+  await t.exception.all(join(code), /DENIED/)
+})
+
 // ─── Phase 4: root getter + coreKey→handle registry ──────────────────────────
 
 test('Handle: root getter — root returns self, child returns the root', async (t) => {

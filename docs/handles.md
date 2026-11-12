@@ -69,9 +69,9 @@ need not have the handle open.
 
 ```js
 await cero.revoke(room, code) // true the first time, false afterwards
+await cero.revoke(room, row.id) // or the id of its row in room.invites
 ```
 
-Keep the invite string: `cero.revoke` takes it, and the rows in `room.invites` keep only a hex id.
 Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and turns away the joins
 still waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired
 or spent.

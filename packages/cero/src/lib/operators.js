@@ -390,7 +390,7 @@ export function invite(ctx, opts) {
  * Kill an invite, for every member.
  *
  * @param {Context} ctx
- * @param {string} code
+ * @param {string} code  The code `invite` returned, or the id its `invites` row holds.
  * @returns {Promise<boolean>}  Whether it was live.
  */
 export function revoke(ctx, code) {
