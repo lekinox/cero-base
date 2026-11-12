@@ -673,6 +673,25 @@ test('revoke: a device of a member with no seat in the room tells it with a proo
   t.absent(await seated(db, laptop), 'the device that told takes none')
 })
 
+test('revoke: a device of the identity with no seat in the room cuts, with a proof, no sibling that stands before the room hears it is removed', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  const proof = (who) => {
+    const core = who.writer.publicKey
+    return who.identity.sign(admission(db.key, core, core))
+  }
+  // the phone the root removed tells first, from a core of its own, naming the laptop removed
+  const first = { removed: keys(laptop), standing: keys(phone), proof: proof(phone) }
+  await apply(db, phone.writer.publicKey, 'revoke', first)
+  const honest = { removed: keys(phone), standing: keys(laptop), proof: proof(laptop) }
+  t.is(
+    await apply(db, laptop.writer.publicKey, 'revoke', honest),
+    null,
+    'the device that stands still tells the room'
+  )
+  t.alike((await told(db, identity)).standing, keys(laptop), 'and the laptop stands there')
+})
+
 test('revoke: a removed device that never sat in the room claims no seat there, and a removal with nothing told takes every chain through its key', async (t) => {
   const { db, phone, tablet } = await lost(t)
   t.is(await tell(db, db.writerKey, [phone], [tablet]), null)
