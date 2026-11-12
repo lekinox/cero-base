@@ -1228,6 +1228,27 @@ test('rpc: a start at boot the worker closes under stays out of onerror', async 
   t.alike(errors, [], 'nothing reached onerror')
 })
 
+test('rpc: a start at boot that fails while an init waits on it reaches onerror once', async (t) => {
+  const testnet = await makeTestnet(t)
+  const storage = await t.tmp()
+  await (await cero(storage, spec, { bootstrap: testnet.bootstrap })).close()
+  const [serverStream, clientStream] = pair()
+  const errors = []
+  const onerror = (err) => errors.push(err.message)
+  const server = new Server(serverStream, spec, { storage, bootstrap: testnet.bootstrap, onerror })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  server._wireVerbs = function () {
+    delete this._wireVerbs
+    throw new Error('wiring failed')
+  }
+  const client = new Client(clientStream, spec)
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  const opening = client.ready()
+  server.ready()
+  await t.exception(opening, /wiring failed/)
+  t.alike(errors, ['wiring failed'], 'one failure, one report')
+})
+
 // a worker on a new store, and the client that says how it opens
 async function fresh(t, testnet, opts = {}) {
   const [serverStream, clientStream] = pair()
