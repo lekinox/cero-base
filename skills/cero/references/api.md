@@ -190,6 +190,8 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 | `confirm` | `false`           | `true` holds each join in `room.requests` until a member accepts or denies it.                                  |
 | `data`    | `null`            | A `Uint8Array` the joiner reads before joining, with `Invite.parse(invite).data` from `@cero-base/core/invite`. |
 
+Options that are not an object: `INVALID`.
+
 ### Roles
 
 | Role     | May                                      |

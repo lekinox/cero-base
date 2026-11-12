@@ -436,6 +436,7 @@ export class Handle extends ReadyResource {
   // device checks its chain against
   /** @private */
   async _invite(opts = {}) {
+    if (!opts || typeof opts !== 'object') throw CeroError.INVALID('invite options are an object')
     if (this.parent) {
       const invite = await this._pair.invite(opts)
       // a close right after the invite must not drop the row that reopens this handle at boot

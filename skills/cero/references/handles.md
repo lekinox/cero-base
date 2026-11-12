@@ -47,8 +47,8 @@ const invite = await cero.invite(room, { role: 'reader', ttl: '1d' })
 | `confirm` | `false`    | `true` makes each join wait for a member to accept it.              |
 | `data`    | `null`     | Bytes the joiner reads before joining. Unsigned: a hint, not proof. |
 
-A role that is not a rank, a `ttl` that is not a duration, or `reuse` above `member` throws
-`INVALID`; a role above your own throws `DENIED`. Only handles have invites: `cero.invite(me)` throws
+Options that are not an object, a role that is not a rank, a `ttl` that is not a duration, or `reuse`
+above `member` throw `INVALID`; a role above your own throws `DENIED`. Only handles have invites: `cero.invite(me)` throws
 `INVALID`.
 
 ```js

@@ -1046,7 +1046,10 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'deny an unknown request': (root, room) => cero.deny(room, { id: 'x' }, 'no'),
     'suspend a room': (root, room) => cero.suspend(room),
     'resume a room': (root, room) => cero.resume(room),
-    'invite with null for options': (root, room) => cero.invite(room, null)
+    'invite with null for options': (root, room) => cero.invite(room, null),
+    'invite with a string for options': (root, room) => cero.invite(room, '1d'),
+    'invite with a number for options': (root, room) => cero.invite(room, 5),
+    'device invite with null for options': (root) => cero.invite(root, null)
   }
   // a TypeError has no code, and none crosses as ''
   const outcome = (run) =>
@@ -1057,6 +1060,7 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
   for (const [name, run] of Object.entries(cases)) {
     const there = await outcome(() => run(me, served))
     t.alike(await outcome(() => run(client, room)), there, `${name}: ${JSON.stringify(there)}`)
+    if (name.includes('for options')) t.is(there.code, 'INVALID', `${name} is INVALID`)
   }
 })
 
