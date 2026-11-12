@@ -1606,7 +1606,8 @@ export class Handle extends ReadyResource {
     return pruning
   }
 
-  // covered once it holds what the root holds, or this device has no seat there to tell it from
+  // covered once it holds what the root holds, or this device has nothing to tell it by: a reader
+  // tells from her own core, a seatless write, in a room at the version that brings it
   /** @private */
   async _compare(child) {
     if (child.closing || child.closed) return false
@@ -1617,9 +1618,9 @@ export class Handle extends ReadyResource {
     const { store } = child
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
     if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
+      if (!store.writable) return true
       await this._unseat(child, removed)
     } else {
-      if (!store.writable) return true
       if (!has(standing, this.identity.device.publicKey)) return false
       // a root that lags has fewer removed than the handle was told: those add up, and stay
       const told = await store.told(this.identity.id)
@@ -1629,7 +1630,15 @@ export class Handle extends ReadyResource {
         standing.every((key) => has(told.standing, key))
       if (child.closing || child.closed) return false
       if (!same) {
-        await store.call('revoke', { removed: b4a.concat(removed), standing: b4a.concat(standing) })
+        const { data: seat } = await store.get('devices', hid.encode(store.writerKey))
+        const proof = seat
+          ? null
+          : this.identity.sign(admission(store.key, store.writerKey, store.writerKey))
+        await store.call('revoke', {
+          removed: b4a.concat(removed),
+          standing: b4a.concat(standing),
+          proof
+        })
       }
     }
     if (child.closing || child.closed) return false

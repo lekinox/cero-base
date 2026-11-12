@@ -675,16 +675,27 @@ export function makeDispatcher({
     return keys.slice(cut + 1).some((key) => has(standing, key))
   }
 
+  // the chain of the device that tells: its seat's, or for a member's device with none here, a
+  // reader's other one, the chain of the proof its identity signs over the core it tells from
+  async function teller(op, ctx) {
+    if (!ctx.key) return null
+    const device = await getDevice(ctx.view, hid.encode(ctx.key))
+    if (device) return device.memberId && device.key ? seatChain(device) : null
+    const chain = Identity.chain(op.proof)
+    if (!Identity.verify(op.proof, admission(ctx.dbKey, ctx.key, ctx.key), chain[0])) return null
+    return (await getMember(ctx.view, hid.encode(chain[0]))) ? chain : null
+  }
+
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats
   // of the identity whose chain no longer stands go, with the joins that wait or were promised
   // through one. Told by someone who may remove, a key no removal that spent the open invites
   // covers is a removal by her
   add('revoke', async (op, ctx) => {
-    const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
-    if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
-    if (!(await stands(ctx.view, seatChain(device)))) throw CeroError.REFUSED('removed')
-    const { memberId } = device
+    const chain = await teller(op, ctx)
+    if (!chain) throw CeroError.REFUSED('device')
+    if (!(await stands(ctx.view, chain))) throw CeroError.REFUSED('removed')
+    const memberId = hid.encode(chain[0])
     const id = toldId(memberId)
     const told = await ctx.view.get(removals, { id })
     const before = keysOf(told?.removed)

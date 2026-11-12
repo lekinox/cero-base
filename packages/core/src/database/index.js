@@ -1652,15 +1652,15 @@ function leaving(ops, id) {
   return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
 }
 
-// what a device without a writer seat may append: its leave, its own member row, its ask for keys
-// and the close of it
+// what a device without a writer seat may append: its leave, its own member row, what its
+// identity's devices are, its ask for keys and the close of it
 function seatless(ops, id) {
   if (ops.length !== 1) return false
   const [name, value] = ops[0]
   return (
     leaving(ops, id) ||
     (name === 'set-member' && value?.id === id) ||
-    ['ask-key', 'del-owed'].includes(name)
+    ['revoke', 'ask-key', 'del-owed'].includes(name)
   )
 }
 

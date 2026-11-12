@@ -644,6 +644,35 @@ test('revoke: only a seated device whose own chain stands tells the room, and fo
   t.absent(row.removed?.byteLength || row.standing?.byteLength, 'keys of another size are none')
 })
 
+test('revoke: a device of a member with no seat in the room tells it with a proof its identity signs over its core, and for that identity alone', async (t) => {
+  const b = await second('member')
+  const { db, identity, phone } = await lost(t)
+  await seat(db, phone)
+  const laptop = linked(identity)
+  const core = laptop.writer.publicKey
+  const proof = (who, writer = core) => who.identity.sign(admission(db.key, writer, writer))
+  const telling = (signed) => ({ removed: keys(phone), standing: keys(laptop), proof: signed })
+  const other = Identity.randomKeyPair().publicKey
+
+  t.is((await apply(db, core, 'revoke', telling(null)))?.rule, 'device', 'with no proof, nothing')
+  t.is(
+    (await apply(db, core, 'revoke', telling(proof(laptop, other))))?.rule,
+    'device',
+    'nor one over another core'
+  )
+  t.is(
+    (await apply(db, core, 'revoke', telling(proof(b))))?.rule,
+    'device',
+    'nor one of an identity that is no member'
+  )
+  t.ok(await seated(db, phone))
+
+  t.is(await apply(db, core, 'revoke', telling(proof(laptop))), null)
+  t.alike((await told(db, identity)).removed, keys(phone), 'told for her identity')
+  t.absent(await seated(db, phone), 'and the removed device loses its seat')
+  t.absent(await seated(db, laptop), 'the device that told takes none')
+})
+
 test('revoke: a removed device that never sat in the room claims no seat there, and a removal with nothing told takes every chain through its key', async (t) => {
   const { db, phone, tablet } = await lost(t)
   t.is(await tell(db, db.writerKey, [phone], [tablet]), null)
