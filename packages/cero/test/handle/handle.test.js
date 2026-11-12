@@ -1723,6 +1723,18 @@ test('handles: a row changes state as its table allows and no other way, on the 
   )
 })
 
+test('handles: an ended row is deleted through its type, and one asking or joining is refused', async (t) => {
+  const { me } = await ceroOpen(t)
+  for (const state of ['asking', 'joining', 'denied']) {
+    await me.store.set('handles', standing(state, state))
+  }
+  for (const state of ['asking', 'joining']) {
+    t.ok(await refused(del(me.team, state)), `refused while ${state}`)
+  }
+  await del(me.team, 'denied')
+  t.absent((await get(me.team, 'denied')).data, 'gone once it is over')
+})
+
 test('handles: a row written with no state is stored in, and takes the changes in takes', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })

@@ -584,6 +584,23 @@ test('rpc: a row is deleted over the bridge once it is over, not while asking', 
   t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
 })
 
+test('rpc: an ended row is deleted over the bridge through its type, not while asking', async (t) => {
+  const { me, client } = await openPair(t)
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+  const err = await del(client.team, 'waiting').catch((err) => err)
+  t.is(err?.code, 'REFUSED', 'refused while asking')
+  await me.store.set('handles', { id: 'waiting', state: 'denied' })
+  await del(client.team, 'waiting')
+  t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
+})
+
 test('rpc: a room created while the root closes rejects with CLOSED', async (t) => {
   const { me, client } = await openPair(t)
   const creating = open(client.team, { name: 'clinic' })
