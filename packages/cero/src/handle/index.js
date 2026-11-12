@@ -1599,7 +1599,9 @@ export class Handle extends ReadyResource {
     const run = async () => {
       try {
         const told = await this._compare(child)
-        return told && (stamp === undefined || (await this._teach(child, stamp)))
+        if (told === false) return false
+        const taught = stamp === undefined || (await this._teach(child, stamp))
+        return told === true && taught
       } catch (err) {
         // one that closes as it is told is told again, at its next open or pass
         if (this.closing || child.closing || child.closed) return false
@@ -1612,7 +1614,8 @@ export class Handle extends ReadyResource {
   }
 
   // covered once it holds what the root holds, or this device has nothing to tell it by: a reader
-  // tells from her own core, a seatless write, in a room at the version that brings it
+  // tells from her own core, a seatless write. Null for a room below the version that brings it,
+  // left untold so a pass tells it once it is at that version
   /** @private */
   async _compare(child) {
     if (child.closing || child.closed) return false
@@ -1623,28 +1626,29 @@ export class Handle extends ReadyResource {
     const { store } = child
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
     if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
-      if (!store.writable) return true
-      await this._unseat(child, removed)
-    } else {
-      if (!has(standing, this.identity.device.publicKey)) return false
-      // a root that lags has fewer removed than the handle was told: those add up, and stay
-      const told = await store.told(this.identity.id)
-      const same =
-        removed.every((key) => has(told.removed, key)) &&
-        standing.length === told.standing.length &&
-        standing.every((key) => has(told.standing, key))
-      if (child.closing || child.closed) return false
-      if (!same) {
-        const { data: seat } = await store.get('devices', hid.encode(store.writerKey))
-        const proof = seat
+      if (store.writable) await this._unseat(child, removed)
+      return child.closing || child.closed ? false : null
+    }
+    if (!has(standing, this.identity.device.publicKey)) return false
+    // a root that lags has fewer removed than the handle was told: those add up, and stay
+    const told = await store.told(this.identity.id)
+    const same =
+      removed.every((key) => has(told.removed, key)) &&
+      standing.length === told.standing.length &&
+      standing.every((key) => has(told.standing, key))
+    if (child.closing || child.closed) return false
+    if (!same) {
+      // a row with no key, or no member, tells nothing by: the proof does
+      const { data: seat } = await store.get('devices', hid.encode(store.writerKey))
+      const proof =
+        seat?.key && seat.memberId
           ? null
           : this.identity.sign(admission(store.key, store.writerKey, store.writerKey))
-        await store.call('revoke', {
-          removed: b4a.concat(removed),
-          standing: b4a.concat(standing),
-          proof
-        })
-      }
+      await store.call('revoke', {
+        removed: b4a.concat(removed),
+        standing: b4a.concat(standing),
+        proof
+      })
     }
     if (child.closing || child.closed) return false
     await this._mark(child.id, { told: digest(removed, standing) })

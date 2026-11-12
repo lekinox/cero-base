@@ -2433,7 +2433,32 @@ test('devices: a room where the identity only reads is told by the device of her
   t.pass('the removed device held the key through the root: the host rotates')
 })
 
-test('devices: a room below the version that brings revoke, where the identity only reads, is told nothing and hears no error', async (t) => {
+test('devices: a device whose row in a room keeps no key tells it with a proof', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  const own = hid.encode(room.store.writerKey)
+  const read = room.store.get.bind(room.store)
+  room.store.get = async (name, query) => {
+    const res = await read(name, query)
+    if (name !== 'devices' || query !== own || !res.data) return res
+    return { ...res, data: { ...res.data, key: null } }
+  }
+  const sent = []
+  const call = room.store.call.bind(room.store)
+  room.store.call = (op, data) => {
+    if (op === 'revoke') sent.push(data)
+    return call(op, data)
+  }
+
+  await del(a.me.devices, phone.me.device.id)
+  await toldOf(room, phone)
+  t.is(sent.length, 1)
+  t.ok(sent[0].proof, 'its identity signs over its core')
+})
+
+test('devices: a room below the version that brings revoke, where the identity only reads, is told nothing and hears no error, and is told at the launch once its version brings it', async (t) => {
   const team = spec.handles.team
   const { since } = team.meta
   const routes = { ...since.routes, '@cero/revoke': team.meta.version + 1 }
@@ -2443,9 +2468,10 @@ test('devices: a room below the version that brings revoke, where the identity o
   const errors = []
   const launch = async (opts) => {
     const onerror = (err) => errors.push(err)
-    const me = await cero(await t.tmp(), older, { bootstrap: testnet.bootstrap, onerror, ...opts })
+    const dir = await t.tmp()
+    const me = await cero(dir, older, { bootstrap: testnet.bootstrap, onerror, ...opts })
     t.teardown(() => me.close().catch(() => {}), { order: 5 })
-    return { me }
+    return { me, dir }
   }
   const a = await launch()
   const room = await open(a.me.team, { name: 'clinic' })
@@ -2460,8 +2486,17 @@ test('devices: a room below the version that brings revoke, where the identity o
 
   await del(phone.me.devices, b.me.device.id)
   await phone.me._pruneAll()
+  await phone.me._tellClosed()
   t.alike(errors, [], 'a reader there has nothing to tell it by')
   t.alike(await room.store.told(b.me.id), { removed: [], standing: [] }, 'and tells nothing')
+
+  await phone.me.close()
+  const later = await tally(async () => {
+    const again = await cero(phone.dir, spec, { bootstrap: testnet.bootstrap })
+    t.teardown(() => again.close().catch(() => {}), { order: 1 })
+    await again._telling
+  })
+  t.is(later.tellings, 1, 'at the version that brings it, the launch tells it')
 })
 
 test('devices: a room told what the root holds is not written to again at the next open', async (t) => {
