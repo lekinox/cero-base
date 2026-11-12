@@ -221,7 +221,8 @@ mirror holds that, then deletes the row, keeps none of the handle's keys and clo
 closed on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with
 the remover's id in `by`. A removal, and a join that ended `denied` or `expired`, stays 30 days so
 the app can show why, then goes at a launch; a cancelled join goes at the next launch, and a leave
-leaves no row. The app deletes an ended row whenever it likes, and a new code joins again. The last
+leaves no row. The app deletes an ended row whenever it likes, with `cero.del(me.room, id)`, and a
+new code joins again; a row still `in`, `leaving`, `asking` or `joining` is `REFUSED`. The last
 owner of a handle others are in gets `INVALID` from `cero.leave`, and nothing is written: make
 another member an owner first, with `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
 after you left brings you back; an older one, or the handle's reusable one, puts you in

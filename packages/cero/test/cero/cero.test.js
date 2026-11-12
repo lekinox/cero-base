@@ -452,7 +452,11 @@ test('invites: a room left with invites is dropped from the list at boot', async
   await waitUntil(async () =>
     (await owner.me.local.store.get('serving')).data.length ? true : null
   )
-  await owner.me.store.call('del-handle', { id: room.id })
+  await owner.me.store.tx(async (tx) => {
+    await tx.set('handles', { id: room.id, state: 'leaving' })
+    await tx.set('handles', { id: room.id, state: 'left' })
+    await tx.del('handles', room.id)
+  })
   await owner.me.close()
 
   const back = await reopen(t, owner.dir, testnet)

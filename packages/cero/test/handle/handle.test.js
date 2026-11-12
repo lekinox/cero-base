@@ -1747,12 +1747,12 @@ test('handles: a row changes state as its table allows and no other way, on the 
   )
 })
 
-test('handles: an ended row is deleted through its type, and one asking or joining is refused', async (t) => {
+test('handles: an ended row is deleted through its type, and one in, leaving, asking or joining is refused', async (t) => {
   const { me } = await ceroOpen(t)
-  for (const state of ['asking', 'joining', 'denied']) {
+  for (const state of ['in', 'leaving', 'asking', 'joining', 'denied']) {
     await me.store.set('handles', standing(state, state))
   }
-  for (const state of ['asking', 'joining']) {
+  for (const state of ['in', 'leaving', 'asking', 'joining']) {
     t.ok(await refused(del(me.team, state)), `refused while ${state}`)
   }
   await del(me.team, 'denied')
@@ -1922,19 +1922,17 @@ test('handles: a page of one type among 500 with some left reads the rooms in th
   )
 })
 
-test('handles: a row is deleted while in or leaving, never while asking or joining', async (t) => {
+test('handles: a row is deleted once it ended, never while in, leaving, asking or joining', async (t) => {
   const { me } = await ceroOpen(t)
-  for (const state of ['asking', 'joining']) {
+  for (const state of ['in', 'leaving', 'asking', 'joining']) {
     await me.store.set('handles', standing(state, state))
     t.ok(await refused(me.store.del('handles', state)), `not while ${state}`)
     t.is((await get(me.handles, state)).data.state, state, 'it stays')
   }
-  const room = await open(me.team, { name: 'clinic' })
-  await me.store.set('handles', standing('named', 'in'))
-  await me.store.set('handles', standing('leaving', 'leaving'))
-  for (const id of [room.id, 'named', 'leaving']) {
-    await me.store.del('handles', id)
-    t.absent((await get(me.handles, id)).data, 'gone')
+  for (const state of ENDED) {
+    await me.store.set('handles', standing(state, state))
+    await me.store.del('handles', state)
+    t.absent((await get(me.handles, state)).data, `gone once ${state}`)
   }
 })
 
@@ -2531,7 +2529,7 @@ test('profile: a rename reaches the member row of a room closed on this device, 
   t.is(listed, 0, 'a launch with nothing changed reads no list of its rooms')
 })
 
-test('probe: a room the identity is in is not deleted through its type, only an ended one', async (t) => {
+test('handles: a room the identity is in is not deleted through its type', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })
   t.ok(await refused(del(me.team, room.id)), 'refused while in')

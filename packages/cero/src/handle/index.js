@@ -529,7 +529,10 @@ export class Handle extends ReadyResource {
         if (out === 'removed') return
         const { data: row } = await this.store.get('handles', id)
         if (row?.state !== 'leaving') return
-        await this.store.del('handles', id)
+        await this.store.tx(async (tx) => {
+          await tx.set('handles', { id, state: 'left' })
+          await tx.del('handles', id)
+        })
       } finally {
         await child._end()
       }

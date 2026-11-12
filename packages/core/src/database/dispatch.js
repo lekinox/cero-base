@@ -112,9 +112,6 @@ function moves(was, row) {
   return from === 'denied' && to === 'joining' && row.invite === was.invite
 }
 
-// on its way in: such a row is not deleted. A leave ends by deleting its row
-const UNSETTLED = new Set(['asking', 'joining'])
-
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -1285,7 +1282,8 @@ export function makeDispatcher({
   add('set-handle', held(update('handles', false)))
   add('del-handle', async (op, ctx) => {
     const was = await ctx.view.get(col('handles'), { id: op.id })
-    if (UNSETTLED.has(was?.state)) throw CeroError.REFUSED('state')
+    // a row that is not over holds its room's key on every device of the identity
+    if (was && STATES[was.state || 'in'].length) throw CeroError.REFUSED('state')
     return remove('handles', false)(op, ctx)
   })
 
