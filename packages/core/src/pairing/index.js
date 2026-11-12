@@ -622,6 +622,50 @@ export class Pairing extends ReadyResource {
       await Promise.allSettled([inbox.close(), post.close()])
     }
   }
+
+  /**
+   * Take back a join that waits for a member: the writer's own core says so after its join, and
+   * the database drops the request unless a member let it in first. Announced as the join was,
+   * until a peer or a mirror holds it or the mailbox closes.
+   *
+   * @param {Mailbox} mailbox
+   * @param {string} invite
+   * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
+   * @returns {Promise<void>}
+   */
+  static async cancel(mailbox, invite, { spec, writer }) {
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('cancel')
+    const { network } = mailbox
+    const { store } = network
+    const core = store.get({
+      keyPair: writer,
+      manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+    })
+    await core.ready()
+    // a writer that wrote no join has nothing to take back
+    if (core.length === 0) return core.close()
+    // as of the joiner's build: the database applies it at its own version, if lower
+    const { ns = NAMESPACE, version = 1, encoding } = spec.meta || {}
+    const body = spec.dispatch.encode(
+      `@${ns}/cancel-join`,
+      { id: hid.encode(core.key) },
+      { version: encoding?.[version] }
+    )
+    await core.append(
+      Autobee.encodeValue(wrap(version, body), { optimistic: true, encrypted: true })
+    )
+    const post = new Post(network, Invite.parse(invite).key, null, {
+      core,
+      mirrors: network.mirrors
+    })
+    const stop = () => post.close().catch(safetyCatch)
+    mailbox.once('close', stop)
+    await post.ready()
+    post.delivered.then(() => {
+      mailbox.off('close', stop)
+      return stop()
+    })
+  }
 }
 
 /**

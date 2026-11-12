@@ -1019,6 +1019,24 @@ test('confirm: a member can deny with a reason', async (t) => {
   t.absent(await member(host.db, joiner.identity))
 })
 
+test('confirm: a joiner that cancels takes its request back from the room, which turns nobody away', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true })
+  const writer = crypto.keyPair()
+  const stop = new AbortController()
+  const joining = joiner.join(invite, { writer, timeout: 0, signal: stop.signal })
+  const { id } = await asked(host.db)
+
+  stop.abort()
+  t.is(await code(joining), 'CLOSED')
+  await Pairing.cancel(joiner.mailbox, invite, { spec, writer })
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('the request is gone')
+  t.absent(await host.db.view.get(`@${host.db.ns}/refusals`, { id }), 'and nobody turned it away')
+  t.absent(await member(host.db, joiner.identity), 'nor let in')
+})
+
 test('confirm: a deny after another device accepted changes nothing: the joiner gets its keys', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)

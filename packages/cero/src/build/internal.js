@@ -225,7 +225,8 @@ export function appended(ns) {
     { name: 'upgrade', requestType: `@${ns}/upgrade` },
     { name: 'revoke', requestType: `@${ns}/revoke` },
     { name: 'ask-key', requestType: `@${ns}/owed` },
-    { name: 'del-owed', requestType: `@${ns}/del-by-id` }
+    { name: 'del-owed', requestType: `@${ns}/del-by-id` },
+    { name: 'cancel-join', requestType: `@${ns}/del-by-id` }
   ]
 }
 

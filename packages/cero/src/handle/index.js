@@ -1205,6 +1205,7 @@ export class Handle extends ReadyResource {
       const alone = !join.waiting
       // a close pauses the join, anything else ends it, and its row says how
       if (end.code !== 'CLOSED') await this._over(invite, end).catch(this._onerror)
+      if (join.end?.code === 'CANCELLED') await this._retract(join).catch(this._onerror)
       if (err.code !== 'CLOSED' && alone) this._onerror(err)
       settle(join.reject, end)
     }
@@ -1222,8 +1223,17 @@ export class Handle extends ReadyResource {
     if (join) {
       root._stop(join, CeroError.CANCELLED())
       await join.done.catch(safetyCatch)
-    }
+    } else await root._retract({ id, type: row.type })
     return true
+  }
+
+  // only the device that asked holds the writer its request is under
+  /** @private */
+  async _retract({ id, type }) {
+    const { data: kept } = await this.local.store.get('handle-keypairs', id)
+    if (!kept?.invite) return
+    const writer = { publicKey: kept.publicKey, secretKey: kept.secretKey }
+    await Pairing.cancel(this.mailbox, kept.invite, { spec: pickHandle(this.spec, type), writer })
   }
 
   /** @private */

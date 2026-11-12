@@ -2365,6 +2365,36 @@ test('confirm: accepting or denying needs INVITE; only a join writes a request',
   t.absent((await db.get('requests', id)).data, 'denied by the owner')
 })
 
+test("cancel-join: the joiner takes its waiting join back from its own core, never one admitted nor another writer's", async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const invite = await minted(db, { confirm: true, reuse: true })
+  const join = async () => {
+    const identity = await Identity.create()
+    const writer = Identity.randomKeyPair().publicKey
+    t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity, writer })), null)
+    return { identity, writer, id: hid.encode(writer) }
+  }
+  const waiting = await join()
+  const admitted = await join()
+
+  const forged = await apply(db, admitted.writer, 'cancel-join', { id: waiting.id })
+  t.is(forged?.code, 'REFUSED', "another writer takes back nobody else's join")
+  t.ok((await db.get('requests', waiting.id)).data, 'still waiting')
+
+  t.is(await apply(db, waiting.writer, 'cancel-join', { id: waiting.id }), null)
+  t.absent((await db.get('requests', waiting.id)).data, 'gone from the requests')
+  t.absent(await refusal(db, waiting.id), 'and nobody turned it away')
+
+  t.is(await as('accept', { id: admitted.id }), null)
+  t.is(await apply(db, admitted.writer, 'cancel-join', { id: admitted.id }), null)
+  t.is(
+    (await db.get('requests', admitted.id)).data?.admitted,
+    true,
+    'an accept that landed first stands'
+  )
+  t.ok((await db.get('members', admitted.identity.id)).data, 'and its member')
+})
+
 test('deny: a reader turns no join away', async (t) => {
   const { db } = await withRole(t, 'owner')
   // minted first: a write through db rebuilds the view without the joins applied straight into it
