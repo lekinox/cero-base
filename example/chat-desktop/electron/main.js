@@ -53,23 +53,24 @@ ipcMain.on('pkg', (event) => {
   event.returnValue = pkg
 })
 
+function getDir() {
+  if (pearStore) return pearStore
+  if (getAppPath() === null) return path.join(os.tmpdir(), 'pear', appName)
+  return isMac
+    ? path.join(os.homedir(), 'Library', 'Application Support', appName)
+    : isLinux
+      ? path.join(os.homedir(), '.config', appName)
+      : path.join(os.homedir(), 'AppData', 'Roaming', appName)
+}
+
+const dir = getDir()
+// the window's storage beside the app's: an instance with a folder of its own never waits on another's lock to read it
+app.setPath('userData', dir)
+
 function getPear() {
   if (pear) return pear
 
   const appPath = getAppPath()
-  let dir = null
-  if (pearStore) {
-    dir = pearStore
-  } else if (appPath === null) {
-    dir = path.join(os.tmpdir(), 'pear', appName)
-  } else {
-    dir = isMac
-      ? path.join(os.homedir(), 'Library', 'Application Support', appName)
-      : isLinux
-        ? path.join(os.homedir(), '.config', appName)
-        : path.join(os.homedir(), 'AppData', 'Roaming', appName)
-  }
-
   const hasUpgrade = typeof upgrade === 'string' && upgrade.length > 0
 
   pear = new PearRuntime({
