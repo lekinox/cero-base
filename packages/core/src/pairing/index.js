@@ -15,9 +15,11 @@ import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE, MEMBER, REFUSALS, REMOVALS, SPENT } from '../lib/constants.js'
+import { NAMESPACE, MEMBER, REFUSALS, REMOVALS, SPENT, ASKS } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
+// what a sync follows in the log
+const WATCHED = ['*', 'invites', 'requests', 'members', 'devices', ASKS]
 const MAX_DELAY = 2 ** 31 - 1
 
 /**
@@ -88,13 +90,17 @@ export class Pairing extends ReadyResource {
     /** @private */
     this._denials = new Map() // writer id → the Post telling why its join was turned away
     /** @private */
+    this._keys = new Map() // writer id → the Post sending a device the keys it asked for
+    /** @private */
+    this._inbox = null
+    /** @private */
     this._expiry = null
     /** @private */
     this._onupdate = (touched) => {
-      if (['*', 'invites', 'requests', 'members'].some((name) => touched.has(name))) {
-        this._sync().catch(safetyCatch)
-      }
+      if (WATCHED.some((name) => touched.has(name))) this._sync().catch(safetyCatch)
     }
+    /** @private */
+    this._onepoch = () => this._sync().catch(safetyCatch)
   }
 
   /** @private */
@@ -103,16 +109,21 @@ export class Pairing extends ReadyResource {
     await this.db.ready()
     await this._sync()
     this.db.on('update', this._onupdate)
+    this.db.on('epoch', this._onepoch)
   }
 
   /** @private */
   async _close() {
     this.db.off('update', this._onupdate)
+    this.db.off('epoch', this._onepoch)
     clearTimeout(this._expiry)
     this._expiry = null
-    const posts = [...this._replies.values(), ...this._denials.values()]
+    const posts = [...this._replies.values(), ...this._denials.values(), ...this._keys.values()]
+    if (this._inbox) posts.push(this._inbox)
     this._replies.clear()
     this._denials.clear()
+    this._keys.clear()
+    this._inbox = null
     await Promise.allSettled(posts.map((post) => post.close()))
   }
 
@@ -263,6 +274,7 @@ export class Pairing extends ReadyResource {
     const refused = inviter ? refusals : []
     const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
     await this._answer(owed, refused, role, secrets)
+    await this._deliver(await this._list(ASKS))
     const live = invites.some((row) => !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
@@ -344,6 +356,58 @@ export class Pairing extends ReadyResource {
     for (const row of this._offer(this._denials, refused, sealed(denied), 'del-refusal')) {
       await this.db.call('del-refusal', { id: row.id }).catch(safetyCatch)
     }
+  }
+
+  // a device that asked for the keys it lacks is sent them by every seated device that holds any,
+  // inviter or not, and again once that one learns another. Nothing is settled by it: the device
+  // that asked closes its own row, once it opens the newest key
+  /** @private */
+  async _deliver(asks) {
+    // a sync that awaited past close sends and receives nothing: _close closed them already
+    if (this.closing || this.closed) return
+    const { db } = this
+    const me = hid.encode(db.writerKey)
+    const epochs = db.keyring.all()
+    const seats = asks.length > 0 && db.behind === null ? await this._seats() : new Set()
+    const sends = epochs.length > 0 && seats.has(me)
+    const rows = asks
+      .filter((row) => sends && row.id !== me && seats.has(row.id))
+      // offered again when what this device holds changed
+      .map(({ id, reply }) => ({ id, reply, invite: epochs.length, promised: true, expires: 0 }))
+    const keys = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
+    const answer = c.encode(Response, keys)
+    this._offer(this._keys, rows, () => answer, null)
+
+    const mine = asks.some((row) => row.id === me)
+    if (mine && !this._inbox) {
+      const onkeys = (message) => this._onkeys(message)
+      this._inbox = this.mailbox.receive(db.keyPair.secretKey, onkeys, { keep: false })
+    } else if (!mine && this._inbox) {
+      this._inbox.close().catch(safetyCatch)
+      this._inbox = null
+    }
+    if (mine && !(await db.rotation.lacks())) {
+      await db.call('del-owed', { id: me }).catch(safetyCatch)
+    }
+  }
+
+  // the devices of the members who stand
+  /** @private */
+  async _seats() {
+    const { data: members } = await this.db.get('members')
+    const { data: devices } = await this.db.get('devices')
+    const standing = new Set(members.map((m) => m.id))
+    return new Set(devices.filter((d) => standing.has(d.memberId)).map((d) => d.id))
+  }
+
+  // the keys this device asked for: each secret is held to its commitment in the log and saved,
+  // and the row is closed once the newest opens
+  /** @private */
+  async _onkeys(message) {
+    const answer = decode(Response, message)
+    if (!answer?.epochs) return false
+    await this.db.learn(answer.epochs)
+    await this._sync()
   }
 
   // posts each live row its answer once, closes those settled elsewhere or made for a row since

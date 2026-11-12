@@ -160,9 +160,15 @@ export declare class Pairing extends ReadyResource {
     /** @private */
     _denials;
     /** @private */
+    _keys;
+    /** @private */
+    _inbox;
+    /** @private */
     _expiry;
     /** @private */
     _onupdate;
+    /** @private */
+    _onepoch;
     /** @param {PairingOpts} [opts] */
     constructor({ mailbox, db }?: PairingOpts);
     /** @private */
@@ -214,6 +220,12 @@ export declare class Pairing extends ReadyResource {
     private _arm;
     /** @private */
     private _answer;
+    /** @private */
+    private _deliver;
+    /** @private */
+    private _seats;
+    /** @private */
+    private _onkeys;
     /** @private */
     private _offer;
     /** @private */

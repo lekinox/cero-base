@@ -1562,3 +1562,26 @@ test("rpc: inbox is the worker's, INVALID on a client", async (t) => {
   const { client } = await openPair(t)
   t.exception(() => inbox(client, Identity.randomBytes(32), () => {}), /INVALID/)
 })
+
+test('rpc: status.owed reads in the UI as in the worker, true while its device waits for keys and false after', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  const room = await open(other.team, { name: 'keys' })
+  const mine = await open(client.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members)).data.length === 2 || null)
+  t.is((await get(mine.status)).data.owed, false)
+  const seen = []
+  cero.watch(mine.status).on('data', ({ data }) => seen.push(data.owed))
+
+  // the next key sealed to the other's device alone, and a write under it
+  const { data: devices } = await room.store.get('devices')
+  const own = devices.filter((d) => d.memberId === other.identity.id)
+  await room.store.rotation._rotate(false, own)
+  await put(room.messages, { text: 'under' })
+  await waitUntil(async () => seen.includes(true) || null)
+  t.pass('owed in the UI once its device asked')
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1 || null)
+  await waitUntil(async () => (await get(mine.status)).data.owed === false || null)
+  t.pass('and not once it was sent them')
+})

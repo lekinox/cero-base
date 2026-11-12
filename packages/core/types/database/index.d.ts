@@ -553,8 +553,8 @@ export declare class Database extends ReadyResource {
     private _onwritable;
     /**
      * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
-     * once its announcement applied here and the secret meets the commitment it carries: hand them
-     * over again when an announcement applies.
+     * once its announcement applied here and the secret meets the commitment it carries; one whose
+     * announcement has not applied yet waits for it, and is checked then.
      *
      * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
      * @returns {Promise<void>}
@@ -564,6 +564,10 @@ export declare class Database extends ReadyResource {
         stamp: number;
         entropy: Uint8Array;
     }>): Promise<void>;
+    /**
+     * @returns {Promise<boolean>} Whether this device asked for keys it lacks and its ask still stands.
+     */
+    owed(): Promise<boolean>;
     /**
      * Remove a peer's writer key from the indexer set.
      *

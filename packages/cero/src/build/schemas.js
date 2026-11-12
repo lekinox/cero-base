@@ -140,7 +140,9 @@ export const main = {
     // the app version the context's data is at, what `supports` answers from
     version: uint,
     // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
-    nearby: string
+    nearby: string,
+    // this device asked for keys it lacks, and waits for them
+    owed: bool
   },
   // a join this device still waits on, without its keys
   joining: {

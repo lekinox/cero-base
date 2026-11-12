@@ -109,6 +109,7 @@ export declare const main: {
         behind: import("@cero-base/core").Prim;
         version: import("@cero-base/core").Prim;
         nearby: import("@cero-base/core").Prim;
+        owed: import("@cero-base/core").Prim;
     };
     joining: {
         id: import("@cero-base/core").Prim;

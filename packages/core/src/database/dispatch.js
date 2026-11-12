@@ -793,10 +793,12 @@ export function makeDispatcher({
     selfOnly(op, ctx)
     if (!isKey(op.reply)) return
     await bind(ctx)
+    ctx.touched?.push(ASKS)
     await ctx.view.insert(asks, { id: op.id, reply: op.reply })
   })
   add('del-owed', async (op, ctx) => {
     selfOnly(op, ctx)
+    ctx.touched?.push(ASKS)
     await ctx.view.delete(asks, op)
   })
 

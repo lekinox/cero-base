@@ -18,7 +18,8 @@ import {
   OWNER,
   WRITE,
   REMOVALS,
-  REFUSALS
+  REFUSALS,
+  ASKS
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
@@ -841,8 +842,8 @@ export class Database extends ReadyResource {
 
   /**
    * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
-   * once its announcement applied here and the secret meets the commitment it carries: hand them
-   * over again when an announcement applies.
+   * once its announcement applied here and the secret meets the commitment it carries; one whose
+   * announcement has not applied yet waits for it, and is checked then.
    *
    * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
    * @returns {Promise<void>}
@@ -853,6 +854,7 @@ export class Database extends ReadyResource {
     let added = false
     for (const e of epochs) {
       const row = rows.find((r) => r.stamp === e.stamp)
+      if (!row) this.rotation.keep(e)
       if (!row?.commit || this.rotation.held(row)) continue
       if (!b4a.equals(crypto.hash(e.entropy), row.commit)) continue
       this.keyring.add(e.stamp, e.entropy, e.epoch)
@@ -861,6 +863,14 @@ export class Database extends ReadyResource {
     if (!added) return
     await this.rotation.pick()
     await this.rotation._save()
+  }
+
+  /**
+   * @returns {Promise<boolean>} Whether this device asked for keys it lacks and its ask still stands.
+   */
+  async owed() {
+    this.guard()
+    return !!(await this.view.get(`@${this.ns}/${ASKS}`, { id: hid.encode(this.writerKey) }))
   }
 
   /**

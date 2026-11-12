@@ -1356,3 +1356,22 @@ test('Handle: an invite to a room this device is in opens it from its one row, n
     'and no list of the handles'
   )
 })
+
+test('status: owed is true while this device waits for the keys it asked for, and false once it holds them', async (t) => {
+  const { host, room, join } = await hosted(t, 'keys')
+  const joined = await join(await cero.invite(room))
+  t.is((await get(joined.room.status)).data.owed, false)
+  const seen = []
+  cero.watch(joined.room.status).on('data', ({ data }) => seen.push(data.owed))
+
+  // the next key sealed to the host's device alone, and a write under it
+  const { data: devices } = await room.store.get('devices')
+  const own = devices.filter((d) => d.memberId === host.identity.id)
+  await room.store.rotation._rotate(false, own)
+  await put(room.messages, { text: 'under' })
+  await waitUntil(async () => seen.includes(true) || null)
+  t.pass('owed once it asked')
+  await waitUntil(async () => (await get(joined.room.messages)).data.length === 1 || null)
+  await waitUntil(async () => (await get(joined.room.status)).data.owed === false || null)
+  t.pass('and not once it was sent them, and reads what was written under them')
+})

@@ -17,6 +17,8 @@ export declare class Rotation {
     _timer;
     /** @private */
     _healedFor;
+    /** @private */
+    _kept;
     /** @param {import('./index.js').Database} db */
     constructor(db: import('./index.js').Database);
     close(): void;
@@ -51,6 +53,23 @@ export declare class Rotation {
         wrapped: Uint8Array;
         commit: Uint8Array;
     }): Promise<void>;
+    /**
+     * A secret handed over before its announcement landed here: kept, and checked against the
+     * commitment when it does.
+     *
+     * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
+     */
+    keep(e: {
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }): void;
+    /** @private */
+    private _handed;
+    /**
+     * @returns {Promise<boolean>} Whether the log's newest key is one this device cannot open.
+     */
+    lacks(): Promise<boolean>;
     /**
      * Safety net after boot: an epoch applied but never saved, e.g. a crash between a
      * rotation's append and its save, is learned from the epochs collection.
@@ -105,6 +124,8 @@ export declare class Rotation {
     private _due;
     /** @private */
     private _drift;
+    /** @private */
+    private _ask;
     /** @private */
     private _unnamed;
 }

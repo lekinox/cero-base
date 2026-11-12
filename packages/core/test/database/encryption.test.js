@@ -2096,3 +2096,110 @@ test('rotate: a seated device of a plain member that the newest key does not nam
   await a.db.rotation._audit()
   t.is((await a.db.rotation._epochs()).length, 2, 'one rotation named her, and no more follow')
 })
+
+// ─── keys asked for ───────────────────────────────────────────────────────
+
+const asks = (db) => db.view.find('@cero/owed', {}).toArray()
+const own = async ({ db }) => (await db.get('devices', hid.encode(db.writerKey))).data
+
+// the next key sealed to the owner's device alone, and a write under it: the others read up to there
+async function leftOut(a) {
+  await a.db.rotation._rotate(false, [await own(a)])
+  await a.db.put('messages', { text: 'under' })
+}
+
+test('ask: a device of a plain member left out of the newest key asks once, from its own core at the address its writer owns, and writes on under the newest key it holds', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  await a.db.rotate()
+  await waitFor(() => b.db.keyring.seq === 1)
+  await b.db.rotation._audit()
+  await a.db.rotation._audit()
+  t.alike(await asks(a.db), [], 'a device that opens the newest key asks for nothing')
+  t.is(await b.db.owed(), false)
+
+  await leftOut(a)
+  await waitFor(async () => (await asks(a.db)).length === 1)
+  const [row] = await asks(a.db)
+  t.is(row.id, hid.encode(b.db.writerKey), 'its own device')
+  t.alike(row.reply, Mailbox.getAddress(b.db.keyPair.secretKey), 'where its writer receives')
+  await waitFor(() => b.db.owed())
+  const { length } = b.db
+  await b.db.rotation._audit()
+  await b.db.rotation._audit()
+  t.is(b.db.length, length, 'asked once while its row stands')
+
+  await b.db.put('messages', { text: 'mine' })
+  await waitFor(async () => (await texts(a.db)).includes('mine'))
+  t.is(b.db.keyring.seq, 1, 'it writes on, under the newest key it holds')
+  t.absent((await texts(b.db)).includes('under'), 'and reads nothing under the one it lacks')
+})
+
+test('ask: a device that only reads asks the same way, with no seat', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  const r = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
+  await admit(a.db, r.db, 'reader')
+  await waitFor(async () => await own(r))
+  await leftOut(a)
+  await waitFor(async () => (await asks(a.db)).length === 1)
+  t.is((await asks(a.db))[0].id, hid.encode(r.db.writerKey))
+  t.absent(r.db.writable, 'it took no seat to ask')
+  await waitFor(() => r.db.owed())
+  t.pass('and is owed its keys')
+})
+
+test('ask: a device of nobody asks nothing, nor does a member below the version that brings the ask', async (t) => {
+  const { since } = spec.meta
+  const routes = { ...since.routes, '@cero/ask-key': 2, '@cero/del-owed': 2 }
+  const old = { ...spec, meta: { ...spec.meta, since: { ...since, routes } } }
+  const testnet = await makeTestnet(t)
+  const room = { topic: randomTopic(), encryptionKey: Identity.randomBytes(32), spec: old }
+  const a = await makePeer(t, testnet, room)
+  await a.db.bootstrap({ name: 'owner' })
+  const b = await makePeer(t, testnet, { ...room, key: a.db.key })
+  await admit(a.db, b.db, 'member')
+  await waitFor(() => b.db.writable)
+  const nobody = await makePeer(t, testnet, { ...room, key: a.db.key, spec })
+  await leftOut(a)
+  for (const { db } of [b, nobody]) {
+    await waitFor(async () => (await db.rotation._epochs()).length === 1)
+    await db.rotation._audit()
+  }
+  t.alike(await asks(a.db), [])
+  t.alike([...b.errors, ...nobody.errors], [], 'and neither reports a write refused')
+})
+
+test('learn: a secret handed over before its rotation landed is kept, and held to the commitment when it does', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const [good, bad] = [Identity.randomBytes(32), Identity.randomBytes(32)]
+  await b.db.learn([
+    { epoch: 1, stamp: 111, entropy: good },
+    { epoch: 2, stamp: 222, entropy: bad }
+  ])
+  t.absent(b.db.keyring.entropy(111), 'not held before its row')
+
+  // no envelope opens to the commitment: one the owner opened would switch it to the key before
+  // its announcement flushed, and the member could not read that block
+  const device = await own(a)
+  const announce = (stamp, entropy) =>
+    a.db.call('rotate-key', {
+      epoch: 0,
+      stamp,
+      wrapped: c.encode(wraps, seal([device], Identity.randomBytes(32))),
+      createdAt: Date.now(),
+      commit: crypto.hash(entropy)
+    })
+  await announce(111, good)
+  await waitFor(() => b.db.keyring.entropy(111))
+  t.alike(b.db.keyring.entropy(111), good, 'held once its row landed and it met the commitment')
+  await announce(222, Identity.randomBytes(32))
+  await waitFor(() => !b.db.rotation._kept.has(222))
+  t.absent(b.db.keyring.entropy(222), 'one that fails its commitment is dropped')
+})
