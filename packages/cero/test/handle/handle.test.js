@@ -2530,3 +2530,30 @@ test('profile: a rename reaches the member row of a room closed on this device, 
   }
   t.is(listed, 0, 'a launch with nothing changed reads no list of its rooms')
 })
+
+test('probe: a room the identity is in is not deleted through its type, only an ended one', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  t.ok(await refused(del(me.team, room.id)), 'refused while in')
+  t.ok((await get(me.team, room.id)).data, 'the row stays')
+})
+
+test('probe: a cancel made just before the app closes takes the request back after it launches again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const { me, dir } = await ceroOpen(t, { testnet })
+  const joining = open(me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await cero.suspend(host.me)
+  t.ok(await cero.cancel(me, invite))
+  t.is((await joining).code, 'CANCELLED')
+  await me.close()
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  t.absent((await get(again.team, room.id)).data, 'its row went at launch')
+  await cero.resume(host.me)
+  await waitUntil(async () => (await get(room.requests)).data.length === 0, 10000).catch(() => {})
+  t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
+})
