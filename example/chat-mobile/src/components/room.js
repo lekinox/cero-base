@@ -4,6 +4,8 @@ import { cero } from '@cero-base/cero/client'
 import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
+import { Toast } from './toast'
+import { useToast } from '../hooks/use-toast'
 import { styles, colors } from '../styles'
 
 function MessageGroup({ messages, mine, sender }) {
@@ -47,8 +49,11 @@ export function Room({ onClose }) {
   const room = useRoom()
   const { data: messages } = useQuery(room.messages)
   const { data: members } = useQuery(room.members)
+  const { data: status } = useQuery(room.status)
+  const toast = useToast()
   const [text, setText] = useState('')
   const [invite, setInvite] = useState('')
+  const [open, setOpen] = useState(false)
   const scroller = useRef(null)
 
   useEffect(() => {
@@ -64,6 +69,9 @@ export function Room({ onClose }) {
     setText('')
     await cero.put(room.messages, { text: t })
   }
+
+  const canRemove = status.role === 'owner' || status.role === 'admin'
+  const remove = (id) => cero.del(room.members, id).catch((err) => toast.show(err.message))
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -81,7 +89,11 @@ export function Room({ onClose }) {
         }}
       >
         <Button title='←' onPress={onClose} variant='ghost' />
-        <Text style={styles.muted}>{members.length} members</Text>
+        <Button
+          title={`${members.length} members`}
+          onPress={() => setOpen(!open)}
+          variant='ghost'
+        />
         <View style={{ flex: 1 }} />
         {invite ? (
           <Text style={[styles.muted, { fontFamily: 'monospace' }]} numberOfLines={1}>
@@ -91,6 +103,28 @@ export function Room({ onClose }) {
           <Button title='Invite' onPress={() => cero.invite(room).then(setInvite)} />
         )}
       </View>
+
+      {open && (
+        <View
+          style={{
+            paddingHorizontal: 12,
+            paddingVertical: 8,
+            gap: 4,
+            backgroundColor: colors.card,
+            borderBottomColor: colors.border,
+            borderBottomWidth: 1
+          }}
+        >
+          {members.map((m) => (
+            <View key={m.id} style={styles.row}>
+              <Text style={[styles.text, { flex: 1 }]}>{m.name || m.id.slice(0, 8)}</Text>
+              {canRemove && m.id !== me.id && (
+                <Button title='Remove' onPress={() => remove(m.id)} variant='danger' />
+              )}
+            </View>
+          ))}
+        </View>
+      )}
 
       <ScrollView ref={scroller} style={{ flex: 1 }} contentContainerStyle={{ padding: 12 }}>
         {groups.map((g, i) => (
@@ -122,6 +156,7 @@ export function Room({ onClose }) {
         />
         <Button title='Send' onPress={send} />
       </View>
+      <Toast message={toast.message} />
     </View>
   )
 }
