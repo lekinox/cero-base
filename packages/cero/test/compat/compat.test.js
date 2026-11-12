@@ -236,14 +236,20 @@ test('compat: an invite to a room past the start is refused by the previous rele
 })
 
 test('compat: a join cancelled in a room the previous release hosts leaves every peer with the same members once the previous release accepts it', async (t) => {
-  const { old, before, now } = await previous()
+  const { old, before } = await previous()
+  // the app as it shipped and upgraded: the cancel is newer than the room, which stays at its version
+  const shipped = await shippedSpec()
   const testnet = await makeTestnet(t)
   const opts = { bootstrap: testnet.bootstrap }
   const owner = await old.cero(await t.tmp(), before, opts)
   t.teardown(() => owner.close().catch(() => {}), { order: 5 })
-  const me = await cero(await t.tmp(), now, opts)
+  const skipped = []
+  const me = await cero(await t.tmp(), shipped, {
+    ...opts,
+    onerror: (err) => skipped.push(err.message)
+  })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
-  const joiner = await cero(await t.tmp(), now, opts)
+  const joiner = await cero(await t.tmp(), shipped, opts)
   t.teardown(() => joiner.close().catch(() => {}), { order: 5 })
 
   const theirs = await old.open(owner.room, { name: 'shared' })
@@ -255,8 +261,11 @@ test('compat: a join cancelled in a room the previous release hosts leaves every
   await waitUntil(async () => waiting(await get(mine.requests)))
   t.ok(await cero.cancel(joiner, code), 'the joiner cancels')
   t.is((await joining).code, 'CANCELLED')
-  await waitUntil(async () => !(await waiting(await get(mine.requests))))
-  t.pass('this release drops the request')
+  await waitUntil(() => skipped.some((m) => m.includes('cancel-join is newer')))
+  t.ok(
+    await waiting(await get(mine.requests)),
+    'this release keeps the request, as the previous one does'
+  )
 
   await old.accept(theirs, request)
   await old.put(theirs.messages, { text: 'after the accept' })

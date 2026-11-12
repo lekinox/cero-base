@@ -448,6 +448,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _retract;
     /** @private */
+    private _forget;
+    /** @private */
     private _stop;
     /** @private */
     private _ask;

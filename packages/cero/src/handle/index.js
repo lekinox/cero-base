@@ -1223,17 +1223,30 @@ export class Handle extends ReadyResource {
     if (join) {
       root._stop(join, CeroError.CANCELLED())
       await join.done.catch(safetyCatch)
-    } else await root._retract({ id, type: row.type })
+    } else await root._retract(row)
     return true
   }
 
-  // only the device that asked holds the writer its request is under
+  // only the device that asked holds the writer its request is under: its keypair row stays, and a
+  // launch announces the cancel again, until a peer or a mirror holds it
   /** @private */
   async _retract({ id, type }) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    if (!kept?.invite) return
+    if (!kept?.invite) return false
     const writer = { publicKey: kept.publicKey, secretKey: kept.secretKey }
-    await Pairing.cancel(this.mailbox, kept.invite, { spec: pickHandle(this.spec, type), writer })
+    Pairing.cancel(this.mailbox, kept.invite, { spec: pickHandle(this.spec, type), writer })
+      .then(() => this._forget(id, writer.publicKey))
+      .catch((err) => this.closing || this._onerror(err))
+    return true
+  }
+
+  // a keypair row goes with nothing owed on it, unless a join since took it over
+  /** @private */
+  async _forget(id, publicKey) {
+    const { data: kept } = await this.local.store.get('handle-keypairs', id)
+    if (kept && b4a.equals(kept.publicKey, publicKey)) {
+      await this.local.store.del('handle-keypairs', id)
+    }
   }
 
   /** @private */
@@ -1384,20 +1397,24 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // the rows that ended go: a cancel at once, the others once the app had `KEPT` to show why
+  // the rows that ended go, with their keypairs: a cancel once no peer is owed it, the others once
+  // the app had `KEPT` to show why
   /** @private */
   async _sweep() {
     const old = Date.now() - KEPT
     const gone = []
     for (const state of SWEPT) {
-      for (const { id, updatedAt } of (await this.store.get('handles', { state })).data) {
-        if (state === 'cancelled' || updatedAt < old) gone.push(id)
+      for (const row of (await this.store.get('handles', { state })).data) {
+        if (state === 'cancelled' ? !(await this._retract(row)) : row.updatedAt < old) {
+          gone.push(row.id)
+        }
       }
     }
     if (!gone.length) return
     await this.store.tx(async (tx) => {
       for (const id of gone) await tx.del('handles', id)
     })
+    for (const id of gone) await this.local.store.del('handle-keypairs', id)
   }
 
   // the joins on their way go on, with nobody waiting; the mailbox sends what its outbox kept

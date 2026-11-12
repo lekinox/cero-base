@@ -625,46 +625,56 @@ export class Pairing extends ReadyResource {
 
   /**
    * Take back a join that waits for a member: the writer's own core says so after its join, and
-   * the database drops the request unless a member let it in first. Announced as the join was,
-   * until a peer or a mirror holds it or the mailbox closes.
+   * the database drops the request unless a member let it in first. Announced as the join was.
+   * Called again with the same writer, it announces the cancel already written.
    *
    * @param {Mailbox} mailbox
    * @param {string} invite
    * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
-   * @returns {Promise<void>}
+   * @returns {Promise<void>}  Resolves once a peer or a mirror holds it, rejects `CLOSED` when the mailbox closes first.
    */
   static async cancel(mailbox, invite, { spec, writer }) {
     if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('cancel')
     const { network } = mailbox
     const { store } = network
+    let onclose = null
+    const closed = new Promise((resolve, reject) => {
+      onclose = () => reject(CeroError.CLOSED('cancel'))
+    })
+    closed.catch(safetyCatch)
+    mailbox.once('close', onclose)
     const core = store.get({
       keyPair: writer,
       manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
     })
-    await core.ready()
-    // a writer that wrote no join has nothing to take back
-    if (core.length === 0) return core.close()
-    // as of the joiner's build: the database applies it at its own version, if lower
-    const { ns = NAMESPACE, version = 1, encoding } = spec.meta || {}
-    const body = spec.dispatch.encode(
-      `@${ns}/cancel-join`,
-      { id: hid.encode(core.key) },
-      { version: encoding?.[version] }
-    )
-    await core.append(
-      Autobee.encodeValue(wrap(version, body), { optimistic: true, encrypted: true })
-    )
-    const post = new Post(network, Invite.parse(invite).key, null, {
-      core,
-      mirrors: network.mirrors
-    })
-    const stop = () => post.close().catch(safetyCatch)
-    mailbox.once('close', stop)
-    await post.ready()
-    post.delivered.then(() => {
-      mailbox.off('close', stop)
-      return stop()
-    })
+    let post = null
+    try {
+      await core.ready()
+      // a writer that wrote no join has nothing to take back
+      if (core.length === 0) return
+      // stamped as the join was: a room older than the cancel skips it on every build, and none
+      // of its devices is put behind
+      const { ns = NAMESPACE, start = 1, encoding } = spec.meta || {}
+      const parsed = Invite.parse(invite)
+      const stamp = parsed.stamp || start
+      const at = await core.getUserData('cero/cancel')
+      if (!at || c.decode(c.uint, at) !== core.length) {
+        const body = spec.dispatch.encode(
+          `@${ns}/cancel-join`,
+          { id: hid.encode(core.key) },
+          { version: encoding?.[stamp] }
+        )
+        await core.append(
+          Autobee.encodeValue(wrap(stamp, body), { optimistic: true, encrypted: true })
+        )
+        await core.setUserData('cero/cancel', c.encode(c.uint, core.length))
+      }
+      post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
+      await Promise.race([post.ready().then(() => post.delivered), closed])
+    } finally {
+      mailbox.off('close', onclose)
+      await (post || core).close().catch(safetyCatch)
+    }
   }
 }
 

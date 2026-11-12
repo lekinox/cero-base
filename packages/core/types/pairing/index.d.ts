@@ -250,13 +250,13 @@ export declare class Pairing extends ReadyResource {
     static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal, keep }?: JoinOpts): Promise<JoinResult>;
     /**
      * Take back a join that waits for a member: the writer's own core says so after its join, and
-     * the database drops the request unless a member let it in first. Announced as the join was,
-     * until a peer or a mirror holds it or the mailbox closes.
+     * the database drops the request unless a member let it in first. Announced as the join was.
+     * Called again with the same writer, it announces the cancel already written.
      *
      * @param {Mailbox} mailbox
      * @param {string} invite
      * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
-     * @returns {Promise<void>}
+     * @returns {Promise<void>}  Resolves once a peer or a mirror holds it, rejects `CLOSED` when the mailbox closes first.
      */
     static cancel(mailbox: Mailbox, invite: string, { spec, writer }: {
         spec: JoinOpts['spec'];

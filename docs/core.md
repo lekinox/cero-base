@@ -278,7 +278,7 @@ How a join goes:
 
 A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.
 
-`Pairing.cancel(mailbox, invite, { spec, writer })` takes a waiting join back: the same `writer` says so after its join, and the database drops its request unless a member let it in first. Nobody is turned away, and the request is gone from `requests` on every device.
+`Pairing.cancel(mailbox, invite, { spec, writer })` takes a waiting join back: the same `writer` says so after its join, and the database drops its request unless a member let it in first. Nobody is turned away, and the request is gone from `requests` on every device. It resolves once a peer or a mirror holds the cancel, and rejects `CLOSED` if the mailbox closes first; called again with the same `writer`, it announces the cancel it wrote.
 
 ### Accepting or rejecting a join
 

@@ -1037,6 +1037,39 @@ test('confirm: a joiner that cancels takes its request back from the room, which
   t.absent(await member(host.db, joiner.identity), 'nor let in')
 })
 
+test('confirm: a cancel its mailbox closes on rejects CLOSED, and one made again announces the cancel already written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true })
+  const writer = crypto.keyPair()
+  const stop = new AbortController()
+  const joining = joiner.join(invite, { writer, timeout: 0, signal: stop.signal })
+  await asked(host.db)
+  stop.abort()
+  t.is(await code(joining), 'CLOSED')
+  const { store } = joiner.net
+  const core = store.get({
+    keyPair: writer,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+  })
+  t.teardown(() => core.close())
+  await core.ready()
+
+  await host.net.suspend()
+  const cancelling = Pairing.cancel(joiner.mailbox, invite, { spec, writer })
+  await waitFor(() => core.length === 2)
+  await joiner.mailbox.close()
+  t.is(await code(cancelling), 'CLOSED', 'it stops announcing')
+
+  const again = new Mailbox(joiner.net)
+  t.teardown(() => again.close())
+  await host.net.resume()
+  await Pairing.cancel(again, invite, { spec, writer })
+  t.is(core.length, 2, 'written once')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('and the room holds it')
+})
+
 test('confirm: a deny after another device accepted changes nothing: the joiner gets its keys', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)
