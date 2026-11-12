@@ -4,6 +4,7 @@ import { useCero } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input, Section, Card, Page } from './ui'
 import { Avatar } from './avatar'
+import { Joins } from './joins'
 
 export function Rooms({ onOpen, onSettings }) {
   const me = useCero()
@@ -38,7 +39,9 @@ export function Rooms({ onOpen, onSettings }) {
       setError(
         err.code === 'TIMEOUT'
           ? 'No member has answered yet. The room will appear here once someone lets you in.'
-          : err.message || 'Failed to join room'
+          : err.reason
+            ? `Denied: ${err.reason}`
+            : err.message || 'Failed to join room'
       )
     } finally {
       setBusy(false)
@@ -87,6 +90,8 @@ export function Rooms({ onOpen, onSettings }) {
           {busy ? 'Joining...' : 'Join'}
         </Button>
       </div>
+
+      <Joins />
 
       {rooms.length > 0 && (
         <Section title='Rooms'>
