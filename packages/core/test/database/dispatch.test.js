@@ -2497,6 +2497,61 @@ test('refusal: the joins a spent invite turned away leave the same row on every 
   t.alike(await refused(a.db), seen, 'and once the view is applied again')
 })
 
+// an identity the room let in and then took out
+async function ousted(db, invite) {
+  const identity = await Identity.create()
+  await joined(db, invite, { identity })
+  await apply(db, db.writerKey, 'del-member', { id: identity.id })
+  return identity
+}
+
+test('refusal: fifty joins of one removed identity on a live invite leave one row, of the newest, and another removed identity keeps her own', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const open = await minted(db, { reuse: true })
+  const asked = await minted(db, { reuse: true, confirm: true })
+  const identity = await ousted(db, open)
+  const other = await ousted(db, open)
+
+  let newest
+  for (let i = 0; i < 50; i++) newest = await joined(db, asked, { identity })
+  const rows = await refused(db)
+  t.is(rows.length, 1, 'one row')
+  t.is(rows[0].id, newest, 'of the newest join')
+  t.is(rows[0].reason, 'removed', 'which hears why')
+
+  const hers = await joined(db, asked, { identity: other })
+  await joined(db, asked, { identity: other })
+  const last = await joined(db, asked, { identity })
+  const kept = (await refused(db)).map((row) => row.id)
+  t.is(kept.length, 2, 'one for each removed identity')
+  t.ok(kept.includes(last) && !kept.includes(hers), 'the newest of each')
+})
+
+test("refusal: below the version that has an invite's secret a removed identity's joins on a live invite keep a row each", async (t) => {
+  const { since } = spec.meta
+  const invite = { ...since.types['@cero/invite'], secret: 2 }
+  const meta = {
+    ...spec.meta,
+    since: { ...since, types: { ...since.types, '@cero/invite': invite } }
+  }
+  const { db } = await withRole(t, 'owner', { spec: { ...spec, meta } })
+  const open = await minted(db, { reuse: true })
+  const asked = await minted(db, { reuse: true, confirm: true })
+  const identity = await ousted(db, open)
+
+  const before = [await joined(db, asked, { identity }), await joined(db, asked, { identity })]
+  t.alike(
+    (await refused(db)).map((row) => row.id).sort(),
+    [...before].sort(),
+    'below it: a row each'
+  )
+  t.is(await apply(db, db.writerKey, 'upgrade', { version: 2 }), null)
+  await joined(db, asked, { identity })
+  const newest = await joined(db, asked, { identity })
+  const rows = (await refused(db)).map((row) => row.id)
+  t.alike(rows.sort(), [...before, newest].sort(), 'at it: one row for her joins since')
+})
+
 test('accept: with a proof, the joiner is admitted as a device of the accepter, under its member', async (t) => {
   const { db, identity } = await withRole(t, 'owner')
   const invite = await minted(db, { confirm: true })
@@ -3361,4 +3416,28 @@ test('removal: a promise that goes with its device or its member leaves a refusa
   t.is(await apply(db, db.writerKey, 'del-member', { id: identity.id }), null)
   t.absent(await promise(db, other))
   t.is((await refusal(db, hid.encode(other)))?.reason, 'removed', 'made to a member removed')
+})
+
+test('removal: one who left, let back in by an accept on a single-use invite older than her leaving, keeps her promise through it', async (t) => {
+  const { db, id } = await withMember(t, 'member')
+  const first = await addressed(db, { reuse: true })
+  const once = await addressed(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, first, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  t.is(await apply(db, writer, 'del-member', { id: identity.id }), null, 'she leaves')
+
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, again, 'join', named(db, once, { identity, writer: again }))
+  t.absent((await promise(db, again))?.admitted, 'she waits, though the invite asks for no accept')
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(again) }), null)
+  t.ok((await promise(db, again))?.promised)
+  t.is((await spent(db, b4a.toHex(once.id)))?.confirm, true, 'the invite is spent by an accept')
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.ok((await promise(db, again))?.promised, 'so the promise a member made stays')
+  t.absent(await refusal(db, hid.encode(again)))
+  t.is(await claimed(db, identity, again), null, 'and her device claims after')
+  t.is((await db.get('devices', hid.encode(again))).data?.memberId, identity.id)
 })

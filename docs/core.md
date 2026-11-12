@@ -174,7 +174,7 @@ Who writes:
 
 - **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It claims its seat, then records its device row.
 - **A member you invited** needs nothing: its join seats it, and `db.whenWritable()` resolves once that lands.
-- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat. A device whose identity was let in through an invite with its own address runs it too: there is no member row until then, the claim writes it, and for a reader it resolves at that row.
+- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat. A claim the database refused is made again once the member row or a promise is new. A device whose identity was let in through an invite with its own address runs it too: there is no member row until then, the claim writes it, and for a reader it resolves at that row.
 - Only the genesis batch names a member directly. Everyone after comes in through a join, and a device seats only itself: an add-writer for another core is ignored.
 
 Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on one device run one after another. A removal by a device that may remove carries its rotation: it resolves with the new key in place, sealed to the devices that stay, and the device's other writes wait until both are in the log. Such a device also rotates the key by itself when the devices change any other way, a database's first removal included. A device joining later reads the epochs it is handed, `epochs`, never the envelopes sealed to others. See [How it works](how-it-works.md).
@@ -300,7 +300,7 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
 - Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
-- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. An invite that is spent or revoked answers the newest join made with it: an earlier one nobody had answered yet ends at its timeout. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
+- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. An invite that is spent or revoked answers the newest join made with it: an earlier one nobody had answered yet ends at its timeout. A live invite answers a removed identity the same way, the newest of her joins. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
 
 ## Push

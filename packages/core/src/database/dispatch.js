@@ -898,14 +898,23 @@ export function makeDispatcher({
 
   // a join turned away is answered at its reply address, under its invite. A writer with a request
   // hears through that: one of the two per writer, or a denial could race its keys. A spent
-  // invite keeps the answer to its newest join alone, so nobody holding one fills the log
-  async function refuse(ctx, { id, reply, expires, invite }, reason, last = false) {
+  // invite keeps the answer to its newest join alone, and a live one the newest to each identity
+  // it turns away as removed, so nobody holding one fills the log
+  async function refuse(
+    ctx,
+    { id, reply, expires, invite, identity = null },
+    reason,
+    last = false
+  ) {
     if (await ctx.view.get(requests, { id })) return
     const rows = last ? await ctx.view.find(refusals, {}).toArray() : []
+    const same = (row) =>
+      identity ? row.identity && b4a.equals(row.identity, identity) : row.spent
     for (const row of rows) {
-      if (row.spent && row.invite === invite) await ctx.view.delete(refusals, { id: row.id })
+      if (row.invite === invite && same(row)) await ctx.view.delete(refusals, { id: row.id })
     }
-    await ctx.view.insert(refusals, { id, reply, reason, expires, invite, spent: last })
+    const row = { id, reply, reason, expires, invite, spent: last && !identity, identity }
+    await ctx.view.insert(refusals, row)
   }
   // from the version that has an invite's secret, whatever stamp a join carries
   const bounded = async (view) => since?.types[`@${ns}/invite`]?.secret <= (await versionOf(view))
@@ -1035,7 +1044,8 @@ export function makeDispatcher({
       !(await stands(ctx.view, Identity.chain(join.proof)))
     if (out) {
       const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
-      return refuse(ctx, turned, 'removed')
+      const last = await bounded(ctx.view)
+      return refuse(ctx, { ...turned, identity: last ? join.identity : null }, 'removed', last)
     }
     await ctx.view.delete(refusals, { id })
     const gone = known ? null : await ctx.view.get(removals, { id: leftId(memberId) })
@@ -1062,7 +1072,9 @@ export function makeDispatcher({
   add('accept', async (op, ctx) => {
     const waiting = await ctx.view.get(requests, { id: op.id })
     if (!waiting || waiting.admitted) return
-    const invite = await ctx.view.get(invites, { id: waiting.invite })
+    const live = await ctx.view.get(invites, { id: waiting.invite })
+    // spent by this, it says a member let the join in, whatever it asked for itself
+    const invite = live && { ...live, confirm: true }
     const r = await getSignerRole(ctx.view, ctx.key)
     const role = op.role || invite?.role
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {

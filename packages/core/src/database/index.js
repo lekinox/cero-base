@@ -798,8 +798,10 @@ export class Database extends ReadyResource {
    * Seat this device's writer where its identity is a member, or was promised to be one: wait
    * for the member row or the promise, append the add-writer the identity signs from this
    * device's own core, and resolve once it writes. A member whose role cannot write takes no
-   * seat; a promise made to her is kept all the same, and resolves at this device's row. Rejects
-   * `DENIED`, with the reason, once the room shows this writer turned away: its promise withdrawn.
+   * seat; a promise made to her is kept all the same, and resolves at this device's row. A claim
+   * that left this device nothing is made again once her member row or a promise made to her is
+   * new. Rejects `DENIED`, with the reason, once the room shows this writer turned away: its
+   * promise withdrawn.
    *
    * @param {{ timeout?: number }} [opts]
    * @returns {Promise<void>}
@@ -807,7 +809,7 @@ export class Database extends ReadyResource {
   async claim({ timeout = 30000 } = {}) {
     this.guard()
     if (this.bee.writable) return
-    const { role, promised } = await this._member(timeout, () => this._standing())
+    const { role, promised, against } = await this._member(timeout, () => this._standing())
     // seated while it waited: a join that was admitted wrote the seat with the member row
     if (this.bee.writable) return
     if (!promised && !can(role, WRITE)) return
@@ -819,6 +821,7 @@ export class Database extends ReadyResource {
     )
     // from a core not yet admitted: apply verifies the identity's signature and seats it
     await this.bee.append(wrap(stamp, op), { optimistic: true })
+    await this.bee.local.setUserData('cero/claim', against)
     await this.bee.update()
     await this._member(timeout, () => this._kept(role))
   }
@@ -1446,10 +1449,15 @@ export class Database extends ReadyResource {
     const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
     const made = requests.filter(mine)
     const [first] = made
+    // a claim that left no row was refused: made again against the same member row and promises,
+    // it would be refused again, a block at every launch
+    const against = b4a.from(JSON.stringify([member?.role, made.map((row) => row.id)]))
+    const claimed = device ? null : await this.bee.local.getUserData('cero/claim')
+    if (claimed && b4a.equals(claimed, against)) return null
     // a member's device keeps what it was promised itself, once: its row is the promise kept
     const own = made.some((row) => b4a.equals(row.key, this.identity.device.publicKey))
-    if (member) return { role: member.role, promised: own && !device }
-    return first ? { role: first.role, promised: true } : null
+    if (member) return { role: member.role, promised: own && !device, against }
+    return first ? { role: first.role, promised: true, against } : null
   }
 
   // a claim kept: this device's seat, or its row at a role with none
