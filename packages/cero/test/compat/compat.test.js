@@ -234,3 +234,37 @@ test('compat: an invite to a room past the start is refused by the previous rele
   const err = await old.open(them.room, await invite(mine)).catch((e) => e)
   t.is(err?.code, 'INVALID_INVITE', 'it refuses the invite instead of waiting on a join')
 })
+
+test('compat: a join cancelled in a room the previous release hosts leaves every peer with the same members once the previous release accepts it', async (t) => {
+  const { old, before, now } = await previous()
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const owner = await old.cero(await t.tmp(), before, opts)
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const me = await cero(await t.tmp(), now, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const joiner = await cero(await t.tmp(), now, opts)
+  t.teardown(() => joiner.close().catch(() => {}), { order: 5 })
+
+  const theirs = await old.open(owner.room, { name: 'shared' })
+  const mine = await open(me.room, await old.invite(theirs))
+  const code = await old.invite(theirs, { confirm: true })
+  const joining = open(joiner.room, code).catch((e) => e)
+  const waiting = async (rows) => rows.data.find((r) => !r.admitted) || null
+  const request = await waitUntil(async () => waiting(await old.get(theirs.requests)))
+  await waitUntil(async () => waiting(await get(mine.requests)))
+  t.ok(await cero.cancel(joiner, code), 'the joiner cancels')
+  t.is((await joining).code, 'CANCELLED')
+  await waitUntil(async () => !(await waiting(await get(mine.requests))))
+  t.pass('this release drops the request')
+
+  await old.accept(theirs, request)
+  await old.put(theirs.messages, { text: 'after the accept' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  const ids = ({ data }) => data.map((row) => row.id).sort()
+  t.alike(
+    ids(await get(mine.members)),
+    ids(await old.get(theirs.members)),
+    'both releases list the same members'
+  )
+})
