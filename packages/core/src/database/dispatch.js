@@ -737,6 +737,14 @@ export function makeDispatcher({
     const isSelf = op.id === (await getSignerMember(ctx.view, ctx.key))
     const ranks = Boolean(op.role) && op.role !== existing.role
     if (!isSelf && !ranks) return
+    // a release before seatless writes takes every field of a reader's row: below it, none goes in
+    if (
+      isSelf &&
+      !can(existing.role, WRITE) &&
+      (since?.routes[`@${ns}/ask-key`] ?? 0) > ctx.stamp
+    ) {
+      throw CeroError.REFUSED('route', 'a reader writes her row in a room at a newer version')
+    }
     const next = !isSelf
       ? { ...existing }
       : can(existing.role, WRITE)
