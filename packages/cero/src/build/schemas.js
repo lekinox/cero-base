@@ -87,9 +87,7 @@ export const main = {
     commit: bytes,
     stamp: uint,
     // by a signer who may not remove: kept so what was written under it reads, never the key
-    aside: bool,
-    // the writer that signed it: one set aside opens only for a block of that writer
-    writer: bytes
+    aside: bool
   },
   // appended by the joiner's own writer core, sealed to the database's address, or to its
   // invite's own, which it then names

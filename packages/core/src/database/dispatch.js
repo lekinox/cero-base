@@ -717,10 +717,7 @@ export function makeDispatcher({
       throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
     }
     const rows = await ctx.view.find(`@${ns}/${EPOCHS}`, {}).toArray()
-    const taken = rows.find((r) => r.stamp === op.stamp)
-    // one set aside never claims a stamp from a rotation that counts
-    if (taken && (aside || !taken.aside)) return
-    if (taken) await ctx.view.delete(`@${ns}/${EPOCHS}`, { epoch: taken.epoch })
+    if (rows.some((r) => r.stamp === op.stamp)) return
     // sequence numbers order epochs; concurrent rotations get consecutive sequences, both readable
     const epoch = await bump(ctx.view, EPOCHS)
     const row = {
@@ -729,8 +726,7 @@ export function makeDispatcher({
       wrapped: op.wrapped,
       createdAt: op.createdAt || 0,
       commit: op.commit,
-      aside,
-      writer: ctx.key
+      aside
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
     // sealed before a removal it crossed, it names a device taken out since: one more is owed

@@ -58,13 +58,12 @@ export declare class Rotation {
         commit: Uint8Array;
     }): Promise<void>;
     /**
-     * A block met under a key this device does not hold: a rotation its writer set aside is opened now.
+     * A block met under a key this device does not hold: a rotation set aside is opened now.
      *
      * @param {number} stamp
-     * @param {Uint8Array} [writer]  The writer of the block.
      * @returns {Uint8Array | null}
      */
-    meet(stamp: number, writer?: Uint8Array): Uint8Array | null;
+    meet(stamp: number): Uint8Array | null;
     /**
      * A secret handed over before its announcement landed here: kept, and checked against the
      * commitment when it does.

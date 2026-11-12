@@ -1942,27 +1942,6 @@ test('rotate: a rotation set aside is never the newest key: a device it was not 
   t.is(await other.db.owed(), false, 'no ask')
 })
 
-test('rotate: a rotation set aside opens only for a block its own signer wrote under it', async (t) => {
-  const {
-    a,
-    members: [b]
-  } = await makeRoom(t, ['member'])
-  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
-  const entropy = Identity.randomBytes(32)
-  await b.db.call('rotate-key', {
-    epoch: 0,
-    stamp: 555,
-    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
-    createdAt: Date.now(),
-    commit: crypto.hash(entropy)
-  })
-  await waitFor(async () => (await epochRows(a.db)).some((r) => r.stamp === 555))
-  const { rotation } = a.db
-  t.is(rotation.meet(555, a.db.writerKey), null, 'a block of another writer under its stamp')
-  t.absent(a.db.keyring.entropy(555), 'opens nothing')
-  t.alike(rotation.meet(555, b.db.writerKey), entropy, 'one its signer wrote opens it')
-})
-
 test('rotate: blocks met under a thousand stamps no row holds leave at most the cap remembered, and a stamp goes once its row lands', async (t) => {
   const {
     a,
@@ -1970,10 +1949,10 @@ test('rotate: blocks met under a thousand stamps no row holds leave at most the 
   } = await makeRoom(t, ['member'])
   await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
   const { rotation } = a.db
-  rotation.meet(666, b.db.writerKey)
-  for (let stamp = 10000; stamp < 11000; stamp++) rotation.meet(stamp, b.db.writerKey)
+  rotation.meet(666)
+  for (let stamp = 10000; stamp < 11000; stamp++) rotation.meet(stamp)
   t.ok(rotation._met.size <= 64, `${rotation._met.size} remembered`)
-  rotation.meet(666, b.db.writerKey)
+  rotation.meet(666)
   t.is(rotation._met.size, 64, 'the oldest goes first')
 
   const entropy = Identity.randomBytes(32)
