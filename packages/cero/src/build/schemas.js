@@ -232,7 +232,9 @@ export const local = {
     secretKey: required(bytes),
     encryptionKey: bytes,
     // when an open last took it: the closed rooms are told the most recently used first
-    used: int
+    used: int,
+    // a digest of the device keys last told to the room, removed and standing
+    told: bytes
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {

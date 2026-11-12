@@ -180,6 +180,7 @@ export declare const local: {
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
         used: import("@cero-base/core").Prim;
+        told: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;

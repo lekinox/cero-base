@@ -1,7 +1,7 @@
 import AbortController from 'bare-abort-controller'
 import b4a from 'b4a'
 import c from 'compact-encoding'
-import { discoveryKey } from 'hypercore-crypto'
+import { discoveryKey, hash } from 'hypercore-crypto'
 import ReadyResource from 'ready-resource'
 import safetyCatch from 'safety-catch'
 import Suspendify from 'suspendify'
@@ -351,8 +351,6 @@ export class Handle extends ReadyResource {
       ...[...(this.children || [])].map((c) => () => c._end()),
       ...[...(this._pending || [])].map((c) => () => c._end()),
       ...[...(this._ending || [])].map((c) => () => c.closing),
-      // the pass opens no room once the close began: it ends with the rooms it had open
-      () => this._telling,
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -1299,27 +1297,43 @@ export class Handle extends ReadyResource {
     return pruning
   }
 
+  // covered once it holds what the root holds, or this device has no seat there to tell it from
   /** @private */
   async _compare(child) {
-    if (child.closing || child.closed) return
+    if (child.closing || child.closed) return false
     const removed = await this.store.removals()
-    if (removed.length === 0) return
+    if (removed.length === 0) return true
+    const { data: rows } = await this.store.get('devices')
+    const standing = rows.filter((row) => row.key).map((row) => row.key)
     const { store } = child
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
     if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
-      return this._unseat(child, removed)
+      await this._unseat(child, removed)
+    } else {
+      if (!store.writable) return true
+      if (!has(standing, this.identity.device.publicKey)) return false
+      // a root that lags has fewer removed than the handle was told: those add up, and stay
+      const told = await store.told(this.identity.id)
+      const same =
+        removed.every((key) => has(told.removed, key)) &&
+        standing.length === told.standing.length &&
+        standing.every((key) => has(told.standing, key))
+      if (child.closing || child.closed) return false
+      if (!same) {
+        await store.call('revoke', { removed: b4a.concat(removed), standing: b4a.concat(standing) })
+      }
     }
-    const { data: rows } = await this.store.get('devices')
-    const standing = rows.filter((row) => row.key).map((row) => row.key)
-    if (!store.writable || !has(standing, this.identity.device.publicKey)) return
-    // a root that lags has fewer removed than the handle was told: those add up, and stay
-    const told = await store.told(this.identity.id)
-    const same =
-      removed.every((key) => has(told.removed, key)) &&
-      standing.length === told.standing.length &&
-      standing.every((key) => has(told.standing, key))
-    if (same || child.closing || child.closed) return
-    await store.call('revoke', { removed: b4a.concat(removed), standing: b4a.concat(standing) })
+    if (child.closing || child.closed) return false
+    await this._mark(child.id, digest(removed, standing))
+    return true
+  }
+
+  // what a room was told, kept on its keypair row
+  /** @private */
+  async _mark(id, told) {
+    const { data } = await this.local.store.get('handle-keypairs', id)
+    if (!data || sameBytes(data.told, told)) return
+    await this.local.store.put('handle-keypairs', { ...data, told })
   }
 
   // a handle that has no route to be told by loses the removed device's seats one by one
@@ -1363,6 +1377,7 @@ export class Handle extends ReadyResource {
     const standing = devices.filter((row) => row.key).map((row) => row.key)
     if (!has(standing, this.identity.device.publicKey)) return
     const lists = { removed: b4a.concat(removed), standing: b4a.concat(standing) }
+    const marked = digest(removed, standing)
     const { data: told } = await this.local.store.get('told')
     if (
       told &&
@@ -1375,34 +1390,47 @@ export class Handle extends ReadyResource {
     const rooms = []
     for (let after; ;) {
       const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
-      for (const { id, used } of data) rooms.push({ id, used: used ?? 0 })
+      for (const { id, used, told } of data) {
+        if (!sameBytes(told, marked)) rooms.push({ id, used: used ?? 0 })
+      }
       if (data.length < PAGE) break
       after = data[data.length - 1].id
     }
     rooms.sort((a, b) => b.used - a.used)
     let next = 0
+    let covered = true
     const tell = async () => {
       while (next < rooms.length && !this.closing) {
         const { id } = rooms[next++]
-        await this._tellOne(id).catch((err) => this.closing || this._onerror(err))
+        const done = await this._tellOne(id).catch((err) => {
+          if (!this.closing) this._onerror(err)
+          return false
+        })
+        if (!done) covered = false
       }
     }
     await Promise.all(Array.from({ length: TELLING }, tell))
-    if (!this.closing) await this.local.store.set('told', lists)
+    if (covered && !this.closing) await this.local.store.set('told', lists)
   }
 
   // a closed room opened only to be told: no seat claimed, nothing handed to the app. One open
-  // here is told by its own compare
+  // here runs the same compare, behind its own
   /** @private */
   async _tellOne(id) {
-    if (this._loading.has(id) || [...this.children].some((c) => c.id === id)) return
+    const open = [...this.children].find((c) => c.id === id)
+    if (open) return this._prune(open)
+    const loading = this._loading.get(id)
+    if (loading) {
+      const child = await loading.catch(() => null)
+      return child ? this._prune(child) : false
+    }
     const telling = this._tellRoom(id)
     this._tellings.set(
       id,
       telling.catch(() => {})
     )
     try {
-      await telling
+      return await telling
     } finally {
       this._tellings.delete(id)
     }
@@ -1412,7 +1440,7 @@ export class Handle extends ReadyResource {
   async _tellRoom(id) {
     const { data: row } = await this.store.get('handles', id)
     // a room left on another device has no row
-    if (!row) return
+    if (!row) return true
     const { type, key, encryptionKey, epochs } = row
     const keyPair = await this._loadKeyPair(id)
     const child = this._room({
@@ -1425,7 +1453,7 @@ export class Handle extends ReadyResource {
     })
     try {
       await child.ready()
-      await this._prune(child)
+      return await this._prune(child)
     } finally {
       await child._end().catch(safetyCatch)
     }
@@ -1563,6 +1591,11 @@ function reserved(child) {
 
 // the entry type of a row whose type no header carries: no file server url builds it
 const UNSERVED = '\n'
+
+// what a room is told of an identity's device keys, as one value to hold it against
+function digest(removed, standing) {
+  return hash([hash(b4a.concat(removed)), hash(b4a.concat(standing))])
+}
 
 // the closed rooms a pass tells at once, and the keypairs it reads at a time
 const TELLING = 4
