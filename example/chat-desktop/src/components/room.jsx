@@ -102,6 +102,12 @@ export function Room({ onClose }) {
         ) : (
           <Button onClick={() => cero.invite(room).then(setInvite)}>Invite</Button>
         )}
+        <Button
+          onClick={() => cero.leave(room).then(onClose, (err) => toast.show(err.message))}
+          variant='ghost'
+        >
+          Leave
+        </Button>
       </div>
 
       <div ref={ref} className='flex-1 overflow-y-auto p-3 space-y-2'>
