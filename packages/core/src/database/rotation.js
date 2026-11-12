@@ -11,7 +11,7 @@ import { Identity } from '../identity/index.js'
 import { keyPair } from '../mailbox/inbox.js'
 import { CeroError } from '../lib/errors.js'
 
-// the secrets handed over for one stamp before its row landed, and the stamps waiting
+// the secrets one sender handed over for a stamp before its row landed, and its stamps waiting
 const CANDIDATES = 4
 const STAMPS = 16
 
@@ -33,7 +33,7 @@ export class Rotation {
     /** @private */
     this._healedFor = null
     /** @private */
-    this._kept = new Map() // stamp → the secrets handed over before its row landed
+    this._kept = new Map() // sender → stamp → the secrets it handed over before the row landed
     /** @private */
     this._aside = new Map() // stamp → a row set aside, opened once a block under it is met
     /** @private */
@@ -129,26 +129,34 @@ export class Rotation {
    * commitment when it does.
    *
    * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
+   * @param {string} [from]  The device that sent it: each sender has slots of its own.
    */
-  keep(e) {
-    // whoever has this device's reply address can hand it anything: bounded, and a forged one
-    // never pushes out the real one
-    for (const stamp of this._kept.keys()) {
-      if (this.db.keyring.entropy(stamp)) this._kept.delete(stamp)
+  keep(e, from = '') {
+    // a seated device can hand this one anything: bounded per sender, and a forged one never
+    // pushes out the real one
+    for (const [sender, kept] of this._kept) {
+      for (const stamp of kept.keys()) if (this.db.keyring.entropy(stamp)) kept.delete(stamp)
+      if (kept.size === 0) this._kept.delete(sender)
     }
     if (this.db.keyring.entropy(e.stamp)) return
-    const kept = this._kept.get(e.stamp) ?? []
-    if (kept.length >= CANDIDATES) return
-    this._kept.set(e.stamp, [...kept, e.entropy])
-    if (this._kept.size > STAMPS) this._kept.delete(this._kept.keys().next().value)
+    const kept = this._kept.get(from) ?? new Map()
+    const list = kept.get(e.stamp) ?? []
+    if (list.length >= CANDIDATES) return
+    kept.set(e.stamp, [...list, e.entropy])
+    if (kept.size > STAMPS) kept.delete(kept.keys().next().value)
+    this._kept.set(from, kept)
   }
 
   /** @private */
   _handed(row) {
-    const kept = this._kept.get(row.stamp) ?? []
-    this._kept.delete(row.stamp)
+    const candidates = []
+    for (const [sender, kept] of this._kept) {
+      candidates.push(...(kept.get(row.stamp) ?? []))
+      kept.delete(row.stamp)
+      if (kept.size === 0) this._kept.delete(sender)
+    }
     if (!row.commit) return null
-    return kept.find((entropy) => b4a.equals(crypto.hash(entropy), row.commit)) ?? null
+    return candidates.find((entropy) => b4a.equals(crypto.hash(entropy), row.commit)) ?? null
   }
 
   /**

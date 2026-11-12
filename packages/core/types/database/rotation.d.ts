@@ -69,12 +69,13 @@ export declare class Rotation {
      * commitment when it does.
      *
      * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
+     * @param {string} [from]  The device that sent it: each sender has slots of its own.
      */
     keep(e: {
         epoch: number;
         stamp: number;
         entropy: Uint8Array;
-    }): void;
+    }, from?: string): void;
     /** @private */
     private _handed;
     /**

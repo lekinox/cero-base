@@ -557,13 +557,14 @@ export declare class Database extends ReadyResource {
      * announcement has not applied yet waits for it, and is checked then.
      *
      * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
+     * @param {string} [from]  The device that sent them, when one did.
      * @returns {Promise<void>}
      */
     learn(epochs: Array<{
         epoch: number;
         stamp: number;
         entropy: Uint8Array;
-    }>): Promise<void>;
+    }>, from?: string): Promise<void>;
     /**
      * @returns {Promise<boolean>} Whether this device asked for keys it lacks and its ask still stands.
      */

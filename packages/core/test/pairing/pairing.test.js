@@ -18,7 +18,8 @@ import {
   STATUS_ACCEPTED,
   STATUS_DENIED,
   tag,
-  proven
+  proven,
+  signed
 } from '../../src/pairing/response.js'
 import { Mailbox } from '../../src/mailbox/index.js'
 import { unwrap } from '../../src/database/envelope.js'
@@ -2297,6 +2298,47 @@ test('keys asked for: a secret that fails its commitment is refused and the row 
   await waitFor(async () => (await texts(db)).includes('under'), { timeout: 30000 })
   await waitFor(async () => !(await db.owed()))
   t.pass('the one that meets it is learned, and closes the row')
+})
+
+test('keys asked for: keys signed by a key no seated device holds keep nothing, those a seated device signs are kept, and a stranger sending first does not stop them', async (t) => {
+  const { host, peers } = await keyed(t, 'member')
+  const [{ db, pairing }] = peers
+  await host.pairing.close()
+  await leftOut(host)
+  await waitFor(async () => (await asks(db)).length === 1)
+  const [row] = await asks(db)
+  const reads = []
+  const onkeys = pairing._onkeys.bind(pairing)
+  pairing._onkeys = async (message) => {
+    const out = await onkeys(message)
+    reads.push(out)
+    return out
+  }
+  const send = (by, writer, stamp, entropy = crypto.randomBytes(32)) => {
+    const epochs = [{ epoch: 9, stamp, entropy }]
+    const keys = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
+    const message = signed(c.encode(Response, keys), {
+      room: db.key,
+      to: db.writerKey,
+      writer,
+      secretKey: by.secretKey
+    })
+    return host.mailbox.send(row.reply, message, { keep: false })
+  }
+  const stranger = crypto.keyPair()
+  for (let stamp = 700; stamp < 704; stamp++) await send(stranger, stranger.publicKey, stamp)
+  await send(stranger, host.db.writerKey, 777)
+  await waitFor(() => reads.length === 5)
+  t.is(db.rotation._kept.size, 0, 'nothing kept from a key no device row holds')
+
+  const real = crypto.randomBytes(32)
+  await send(host.db.identity.device, host.db.writerKey, 777, real)
+  await waitFor(() => reads.length === 6)
+  t.alike(
+    db.rotation._kept.get(writerId(host)),
+    new Map([[777, [real]]]),
+    'a seated device is kept'
+  )
 })
 
 test('keys asked for: a device removed after it asked is sent nothing, nor is any by a device with no key, with no seat, or behind', async (t) => {

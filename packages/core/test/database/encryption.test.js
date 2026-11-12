@@ -2301,9 +2301,12 @@ test('learn: a secret handed over before its rotation landed is kept, and held t
   await waitFor(() => b.db.keyring.entropy(111))
   t.alike(b.db.keyring.entropy(111), good, 'held once its row landed and it met the commitment')
   await announce(222, Identity.randomBytes(32))
-  await waitFor(() => !b.db.rotation._kept.has(222))
+  await waitFor(() => !waiting(b.db, 222))
   t.absent(b.db.keyring.entropy(222), 'one that fails its commitment is dropped')
 })
+
+// whether any sender's secret for a stamp waits for its row
+const waiting = (db, stamp) => [...db.rotation._kept.values()].some((kept) => kept.has(stamp))
 
 test('learn: a forged secret handed over around the real one, before its row lands, does not stop the real one from being kept', async (t) => {
   const {
@@ -2327,7 +2330,37 @@ test('learn: a forged secret handed over around the real one, before its row lan
   })
   await waitFor(() => b.db.keyring.entropy(333))
   t.alike(b.db.keyring.entropy(333), real)
-  t.absent(b.db.rotation._kept.has(333), 'its candidates go once its row lands')
+  t.absent(waiting(b.db, 333), 'its candidates go once its row lands')
+})
+
+test('learn: secrets one sender hands over take no slot of another, nor push its stamps out, and none but 32 bytes is kept', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const real = Identity.randomBytes(32)
+  await b.db.learn([{ epoch: 1, stamp: 444, entropy: real }], 'honest')
+  for (let i = 0; i < 8; i++) {
+    await b.db.learn([{ epoch: 1, stamp: 444, entropy: Identity.randomBytes(32) }], 'forger')
+  }
+  for (let stamp = 3000; stamp < 3100; stamp++) {
+    await b.db.learn([{ epoch: 1, stamp, entropy: Identity.randomBytes(32) }], 'forger')
+  }
+  await b.db.learn([{ epoch: 1, stamp: 555, entropy: Identity.randomBytes(16) }], 'honest')
+  t.alike(b.db.rotation._kept.get('honest'), new Map([[444, [real]]]), 'the honest one stays')
+  t.ok(b.db.rotation._kept.get('forger').size <= 16, 'the forger fills its own')
+
+  const device = await own(a)
+  await a.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 444,
+    wrapped: c.encode(wraps, seal([device], Identity.randomBytes(32))),
+    createdAt: Date.now(),
+    commit: crypto.hash(real)
+  })
+  await waitFor(() => b.db.keyring.entropy(444))
+  t.alike(b.db.keyring.entropy(444), real)
 })
 
 test('learn: a thousand handed-over stamps leave at most the cap held', async (t) => {
@@ -2344,7 +2377,7 @@ test('learn: a thousand handed-over stamps leave at most the cap held', async (t
   for (let i = 0; i < 10; i++) {
     await b.db.learn([{ epoch: 1, stamp: 1999, entropy: Identity.randomBytes(32) }])
   }
-  const kept = b.db.rotation._kept
+  const kept = b.db.rotation._kept.get('')
   t.ok(kept.size <= 16, `${kept.size} stamps held`)
   t.ok(kept.has(1999), 'the newest handed over stays')
   t.ok(

@@ -847,15 +847,17 @@ export class Database extends ReadyResource {
    * announcement has not applied yet waits for it, and is checked then.
    *
    * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
+   * @param {string} [from]  The device that sent them, when one did.
    * @returns {Promise<void>}
    */
-  async learn(epochs) {
+  async learn(epochs, from) {
     this.guard()
     const rows = await this.rotation._epochs()
     let added = false
     for (const e of epochs) {
+      if (e.entropy?.byteLength !== 32) continue
       const row = rows.find((r) => r.stamp === e.stamp)
-      if (!row) this.rotation.keep(e)
+      if (!row) this.rotation.keep(e, from)
       if (!row?.commit || this.rotation.held(row)) continue
       if (!b4a.equals(crypto.hash(e.entropy), row.commit)) continue
       this.keyring.add(e.stamp, e.entropy, e.epoch)

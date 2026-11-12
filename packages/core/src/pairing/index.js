@@ -7,7 +7,15 @@ import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
 import { Invite, STAMPED } from './invite.js'
-import { Response, STATUS_ACCEPTED, STATUS_DENIED, tag, proven } from './response.js'
+import {
+  Response,
+  STATUS_ACCEPTED,
+  STATUS_DENIED,
+  tag,
+  proven,
+  signed,
+  signer
+} from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
@@ -376,7 +384,10 @@ export class Pairing extends ReadyResource {
       .map(({ id, reply }) => ({ id, reply, invite: epochs.length, promised: true, expires: 0 }))
     const keys = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
     const answer = c.encode(Response, keys)
-    this._offer(this._keys, rows, () => answer, null)
+    const { secretKey } = db.identity.device
+    const sign = (row) =>
+      signed(answer, { room: db.key, to: hid.decode(row.id), writer: db.writerKey, secretKey })
+    this._offer(this._keys, rows, sign, null)
 
     const mine = asks.some((row) => row.id === me)
     if (mine && !this._inbox) {
@@ -391,22 +402,27 @@ export class Pairing extends ReadyResource {
     }
   }
 
-  // the devices of the members who stand
+  // the devices of the members who stand, by id, to the device key each was admitted with
   /** @private */
   async _seats() {
     const { data: members } = await this.db.get('members')
     const { data: devices } = await this.db.get('devices')
     const standing = new Set(members.map((m) => m.id))
-    return new Set(devices.filter((d) => standing.has(d.memberId)).map((d) => d.id))
+    return new Map(devices.filter((d) => standing.has(d.memberId)).map((d) => [d.id, d.key]))
   }
 
-  // the keys this device asked for: each secret is held to its commitment in the log and saved,
-  // and the row is closed once the newest opens
+  // the keys this device asked for, signed by a device seated here: anyone with the address can
+  // send to it. Each secret is held to its commitment in the log and saved, and the row is closed
+  // once the newest opens
   /** @private */
   async _onkeys(message) {
-    const answer = decode(Response, message)
+    const { db } = this
+    const seats = await this._seats()
+    const keyOf = (writer) => seats.get(hid.encode(writer))
+    const sent = signer(message, { room: db.key, to: db.writerKey }, keyOf)
+    const answer = sent && decode(Response, sent.answer)
     if (!answer?.epochs) return false
-    await this.db.learn(answer.epochs)
+    await db.learn(answer.epochs, hid.encode(sent.writer))
     await this._sync()
   }
 
