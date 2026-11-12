@@ -99,6 +99,8 @@ export class Server extends RPCServer {
     this.opts = { ...opts, onerror: (err) => this._onerror(err) }
     /** @type {Set<object>} open error streams, one per connected client */
     this._errors = new Set()
+    /** @private */
+    this._reported = new WeakSet()
     /** @type {Context | null} */
     this.me = null
     /** @type {Map<string, Context>} */
@@ -139,7 +141,7 @@ export class Server extends RPCServer {
   /** @private */
   async _open() {
     await super._open()
-    // no request waits on this start: its error is the app's, unless the close stopped it
+    // its error is the app's even with no request waiting on it, unless the close stopped it
     if (await peek(this.storage, this.spec, this.opts)) {
       this._start().catch((err) => this.closing || this._onerror(err))
     }
@@ -224,6 +226,9 @@ export class Server extends RPCServer {
 
   /** @private */
   _onerror(err) {
+    // a failed start rejects every request that waits on it, and reaches onerror once
+    if (this._reported.has(err)) return
+    if (err instanceof Error) this._reported.add(err)
     if (!this._errors.size) return this._report(err)
     const frame = {
       message: err?.message || String(err),

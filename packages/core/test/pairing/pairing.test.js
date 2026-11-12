@@ -266,7 +266,7 @@ test('invite: a ttl is a positive whole number of ms the clock reaches, or INVAL
 test('invite: options that are not a plain object are INVALID and nothing is written', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing, db } = await makeHost(t, testnet)
-  for (const opts of [null, '1h', 5, [], b4a.alloc(4)]) {
+  for (const opts of [null, '1h', 5, [], b4a.alloc(4), new ArrayBuffer(4), new Map(), () => {}]) {
     t.is(await code(pairing.invite(opts)), 'INVALID', `options ${JSON.stringify(opts)}`)
   }
   t.alike(await invites(db), [], 'no invite was written')

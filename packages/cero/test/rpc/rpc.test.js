@@ -1051,6 +1051,8 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'invite with a number for options': (root, room) => cero.invite(room, 5),
     'invite with an array for options': (root, room) => cero.invite(room, [{ role: 'reader' }]),
     'invite with bytes for options': (root, room) => cero.invite(room, b4a.alloc(4)),
+    'invite with an ArrayBuffer for options': (root, room) => cero.invite(room, new ArrayBuffer(4)),
+    'invite with a function for options': (root, room) => cero.invite(room, () => {}),
     'device invite with null for options': (root) => cero.invite(root, null),
     'device invite with an array for options': (root) => cero.invite(root, [])
   }

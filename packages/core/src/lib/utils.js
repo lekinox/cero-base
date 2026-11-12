@@ -60,12 +60,9 @@ export function outranks(a, b) {
 
 /** @type {(value: unknown) => boolean} */
 export function isOptions(value) {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    !ArrayBuffer.isView(value)
-  )
+  if (typeof value !== 'object' || value === null) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
 }
 
 /**
