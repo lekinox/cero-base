@@ -1922,6 +1922,27 @@ test('rotate: a rotation by a member who may not remove is set aside: the key st
   t.absent(other.db.keyring.entropy(444), 'a device it was not sealed to holds no key')
 })
 
+test('rotate: a rotation set aside opens only for a block its own signer wrote under it', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 555,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  await waitFor(async () => (await epochRows(a.db)).some((r) => r.stamp === 555))
+  const { rotation } = a.db
+  t.is(rotation.meet(555, a.db.writerKey), null, 'a block of another writer under its stamp')
+  t.absent(a.db.keyring.entropy(555), 'opens nothing')
+  t.alike(rotation.meet(555, b.db.writerKey), entropy, 'one its signer wrote opens it')
+})
+
 test('rotate: a remover demoted while away removes and rotates: the removal is refused, her key is set aside, and every device reads what she wrote, the same rows everywhere and once applied again', async (t) => {
   const {
     a,

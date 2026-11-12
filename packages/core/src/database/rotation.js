@@ -35,9 +35,9 @@ export class Rotation {
     /** @private */
     this._kept = new Map() // sender → stamp → the secrets it handed over before the row landed
     /** @private */
-    this._aside = new Map() // stamp → a row set aside, opened once a block under it is met
+    this._aside = new Map() // writer:stamp → a row set aside, opened once a block of its signer under it is met
     /** @private */
-    this._met = new Set() // stamps of blocks met before their row landed
+    this._met = new Set() // writer:stamp of blocks met before their row landed
   }
 
   close() {
@@ -82,9 +82,9 @@ export class Rotation {
   async learn(row) {
     const { keyring } = this.db
     const known = this.held(row)
-    const met = this._met.delete(row.stamp)
+    const met = !!row.writer && this._met.delete(spot(row.writer, row.stamp))
     if (row.aside && !known && !met) {
-      this._aside.set(row.stamp, row)
+      if (row.writer) this._aside.set(spot(row.writer, row.stamp), row)
       return
     }
     const entropy = known || this._unseal(row) || this._handed(row)
@@ -107,18 +107,21 @@ export class Rotation {
   }
 
   /**
-   * A block met under a key this device does not hold: a rotation set aside is opened now.
+   * A block met under a key this device does not hold: a rotation its writer set aside is opened now.
    *
    * @param {number} stamp
+   * @param {Uint8Array} [writer]  The writer of the block.
    * @returns {Uint8Array | null}
    */
-  meet(stamp) {
-    const row = this._aside.get(stamp)
+  meet(stamp, writer) {
+    if (!writer) return null
+    const at = spot(writer, stamp)
+    const row = this._aside.get(at)
     if (!row) {
-      this._met.add(stamp)
+      this._met.add(at)
       return null
     }
-    this._aside.delete(stamp)
+    this._aside.delete(at)
     const entropy = this._unseal(row)
     if (entropy) this.db.keyring.add(row.stamp, entropy, row.epoch)
     return entropy
@@ -480,6 +483,10 @@ export function removes(ops) {
 function newest(rows) {
   const counted = rows.filter((r) => !r.aside)
   return counted.length ? counted.reduce((a, b) => (b.epoch > a.epoch ? b : a)) : null
+}
+
+function spot(writer, stamp) {
+  return `${b4a.toString(writer, 'hex')}:${stamp}`
 }
 
 // the epoch stamp autobee's encryption writes into every block header

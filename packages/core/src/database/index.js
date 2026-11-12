@@ -142,7 +142,7 @@ export class Database extends ReadyResource {
     /** @private */
     this._delivered = !!opts.epochs?.length
     this.rotation = new Rotation(this)
-    this.keyring.onmiss = (stamp) => this.rotation.meet(stamp)
+    this.keyring.onmiss = (stamp, writer) => this.rotation.meet(stamp, writer)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
     this.push = opts.push === true
