@@ -144,8 +144,9 @@ test('a removed device does not receive what Alice writes in a room after', asyn
   await expect
     .poll(
       async () => {
-        if (await laptop.page.getByText('after the removal', { exact: true }).count())
+        if (await laptop.page.getByText('after the removal', { exact: true }).count()) {
           return 'shown'
+        }
         return Date.now() - shown > 10_000 ? 'absent' : 'waiting'
       },
       { timeout: 20_000 }
