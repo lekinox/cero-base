@@ -22,10 +22,6 @@ export declare class Rotation {
     /** @private */
     _aside;
     /** @private */
-    _open;
-    /** @private */
-    _stamps;
-    /** @private */
     _met;
     /** @param {import('./index.js').Database} db */
     constructor(db: import('./index.js').Database);
@@ -61,21 +57,14 @@ export declare class Rotation {
         wrapped: Uint8Array;
         commit: Uint8Array;
     }): Promise<void>;
-    /** @private */
-    private _setAside;
     /**
-     * The key a block of `writer` under `stamp` is read with when that writer set one aside under
-     * it; a block met under a key this device does not hold is remembered until its row lands.
+     * A block met under a key this device does not hold: a rotation its writer set aside is opened now.
      *
      * @param {number} stamp
      * @param {Uint8Array} [writer]  The writer of the block.
      * @returns {Uint8Array | null}
      */
     meet(stamp: number, writer?: Uint8Array): Uint8Array | null;
-    /** @private */
-    private _opens;
-    /** @private */
-    private _remember;
     /**
      * A secret handed over before its announcement landed here: kept, and checked against the
      * commitment when it does.

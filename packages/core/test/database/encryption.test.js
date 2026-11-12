@@ -1914,78 +1914,12 @@ test('rotate: a rotation by a member who may not remove is set aside: the key st
   b.db.keyring.current = 444
   await b.db.put('messages', { text: 'aside' })
   await waitFor(async () => (await texts(a.db)).includes('aside'))
-  t.alike(a.db.rotation.meet(444, b.db.writerKey), entropy, 'opened once a block under it was met')
-  t.absent(a.db.keyring.entropy(444), 'never a key the keyring holds')
+  t.alike(a.db.keyring.entropy(444), entropy, 'opened once a block under it was met')
   b.db.rotation.pick = pick
   await b.db.rotation.pick()
   t.is(b.db.keyring.current, 0, 'and its own device writes under the key that counts')
   t.is(other.db.keyring.current, 0)
   t.absent(other.db.keyring.entropy(444), 'a device it was not sealed to holds no key')
-})
-
-test('rotate: a rotation set aside and a counted one with the same stamp both stand: what each was written under reads with its own key on every device it was sealed to and once applied again, and the room writes under the counted one', async (t) => {
-  const {
-    a,
-    members: [b, other]
-  } = await makeRoom(t, ['member', 'member'])
-  const peers = [a, b, other]
-  for (const { db } of peers) {
-    await waitFor(async () => db.writable && (await db.get('devices')).data.length === 3)
-  }
-  const stamp = 999
-  const announce = (db, devices, entropy) =>
-    db.call('rotate-key', {
-      epoch: 0,
-      stamp,
-      wrapped: c.encode(wraps, seal(devices, entropy)),
-      createdAt: Date.now(),
-      commit: crypto.hash(entropy)
-    })
-  const landed = (n) => async () => {
-    for (const { db } of peers) {
-      if ((await epochRows(db)).filter((r) => r.stamp === stamp).length !== n) return false
-    }
-    return true
-  }
-  const reads = async (db, list) => {
-    const have = await texts(db)
-    return list.every((text) => have.includes(text))
-  }
-
-  const mine = Identity.randomBytes(32)
-  await announce(b.db, [await own(a), await own(b), await own(other)], mine)
-  await waitFor(landed(1))
-  const { pick } = b.db.rotation
-  b.db.rotation.pick = async () => {}
-  b.db.keyring.current = stamp
-  await b.db.put('messages', { text: 'aside' })
-  await waitFor(() => reads(a.db, ['aside']))
-  b.db.rotation.pick = pick
-  await b.db.rotation.pick()
-  t.is(b.db.keyring.current, 0, 'she writes under the key that counts')
-
-  a.db.rotation._mint = () => stamp
-  await a.db.rotate()
-  await waitFor(landed(2))
-  const counted = a.db.keyring.entropy(stamp)
-  for (const { db } of [a, other]) {
-    await waitFor(() => db.keyring.current === stamp)
-    t.alike(db.keyring.entropy(stamp), counted, 'the room writes under the counted key')
-  }
-  await a.db.put('messages', { text: 'counted' })
-  await other.db.put('messages', { text: 'other' })
-  await b.db.put('messages', { text: 'hers' })
-  for (const { db } of peers) {
-    await waitFor(() => reads(db, ['counted', 'other', 'hers']), { timeout: 20000 })
-  }
-  t.pass('every block under the counted key reads everywhere')
-  for (const { db } of peers) await waitFor(() => reads(db, ['aside']))
-  t.pass('and what she wrote under hers, with hers')
-
-  await a.db._rebuild()
-  await waitFor(async () => (await epochRows(a.db)).filter((r) => r.stamp === stamp).length === 2)
-  await waitFor(() => reads(a.db, ['aside', 'counted', 'other', 'hers']), { timeout: 20000 })
-  t.pass('the same once the view is applied again')
 })
 
 test('rotate: a rotation set aside is never the newest key: a device it was not sealed to lacks nothing and asks for nothing', async (t) => {
@@ -2050,8 +1984,8 @@ test('rotate: blocks met under a thousand stamps no row holds leave at most the 
     createdAt: Date.now(),
     commit: crypto.hash(entropy)
   })
-  await waitFor(() => rotation._open.has(`${b4a.toString(b.db.writerKey, 'hex')}:666`))
-  t.alike(rotation.meet(666, b.db.writerKey), entropy, 'met before its row, opened once it lands')
+  await waitFor(() => a.db.keyring.entropy(666))
+  t.alike(a.db.keyring.entropy(666), entropy, 'met before its row, opened once it lands')
   t.is(rotation._met.size, 63, 'and no longer remembered')
 })
 

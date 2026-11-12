@@ -142,7 +142,7 @@ export class Database extends ReadyResource {
     /** @private */
     this._delivered = !!opts.epochs?.length
     this.rotation = new Rotation(this)
-    this.keyring.onread = (stamp, writer) => this.rotation.meet(stamp, writer)
+    this.keyring.onmiss = (stamp, writer) => this.rotation.meet(stamp, writer)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
     this.push = opts.push === true
@@ -856,7 +856,7 @@ export class Database extends ReadyResource {
     let added = false
     for (const e of epochs) {
       if (e.entropy?.byteLength !== 32) continue
-      const row = rows.find((r) => r.stamp === e.stamp && !r.aside)
+      const row = rows.find((r) => r.stamp === e.stamp)
       if (!row) this.rotation.keep(e, from)
       if (!row?.commit || this.rotation.held(row)) continue
       if (!b4a.equals(crypto.hash(e.entropy), row.commit)) continue

@@ -71,8 +71,8 @@ export declare class Keyring {
     seq: number;
     /** @type {(() => void) | null} called when an epoch is learned or dropped */
     onchange: (() => void) | null;
-    /** @type {((stamp: number, writer?: Uint8Array) => Uint8Array | null) | null} asked first for the key a block of a writer is read with: one that writer set aside */
-    onread: ((stamp: number, writer?: Uint8Array) => Uint8Array | null) | null;
+    /** @type {((stamp: number, writer?: Uint8Array) => Uint8Array | null) | null} asked for a key a block of a writer needs and it lacks */
+    onmiss: ((stamp: number, writer?: Uint8Array) => Uint8Array | null) | null;
     constructor();
     /** @returns {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} ascending by seq */
     all(): Array<{

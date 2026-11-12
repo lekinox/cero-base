@@ -2884,36 +2884,29 @@ test('rotate-key: a rotation by a signer who may not remove lands aside, owes no
   t.is((await apply(db, stranger, 'rotate-key', rotation([])))?.code, 'REFUSED', 'no seat, none')
 })
 
-test('rotate-key: a rotation set aside and a counted one with the same stamp both land, in either order, and a stamp is taken once among counted ones and once among those one writer set aside', async (t) => {
+test('rotate-key: a counted rotation takes a stamp a rotation set aside claimed first, and a rotation of either kind after a counted one takes nothing', async (t) => {
   const b = await second('member')
-  const other = await second('member')
-  const { db } = await owing(t, { members: [b.row, other.row] })
+  const { db } = await owing(t, { members: [b.row] })
   t.is(await seat(db, b), null)
-  t.is(await seat(db, other), null)
   const epochs = () => db.view.find(`@${db.ns}/epochs`, {}).toArray()
   const ids = [db.writerKey, b.writer.publicKey].map((k) => hid.encode(k))
-  const at = (stamp, n) => ({ ...rotation(ids), stamp, commit: b4a.alloc(32, n) })
-  const kinds = (rows, stamp) =>
-    rows
-      .filter((r) => r.stamp === stamp)
-      .map((r) => !!r.aside)
-      .sort()
+  const claimed = rotation(ids)
+  const same = (commit) => ({ ...rotation(ids), stamp: claimed.stamp, commit })
+  t.is(await apply(db, b.writer.publicKey, 'rotate-key', claimed), null)
+  t.ok((await epochs())[0].aside)
+  t.alike((await epochs())[0].writer, b.writer.publicKey, 'kept with its signer')
 
-  const one = rotation(ids)
-  t.is(await apply(db, b.writer.publicKey, 'rotate-key', one), null)
-  t.is(await apply(db, db.writerKey, 'rotate-key', at(one.stamp, 2)), null)
-  const two = rotation(ids)
-  t.is(await apply(db, db.writerKey, 'rotate-key', two), null)
-  t.is(await apply(db, b.writer.publicKey, 'rotate-key', at(two.stamp, 3)), null)
+  t.is(await apply(db, db.writerKey, 'rotate-key', same(b4a.alloc(32, 2))), null)
   const rows = await epochs()
-  t.alike(kinds(rows, one.stamp), [false, true], 'set aside first: both land')
-  t.alike(kinds(rows, two.stamp), [false, true], 'counted first: both land')
+  t.is(rows.length, 1, 'one row for the stamp')
+  t.absent(rows[0].aside, 'the counted one')
+  t.alike(rows[0].commit, b4a.alloc(32, 2))
+  t.alike(rows[0].writer, db.writerKey)
 
-  t.is(await apply(db, db.writerKey, 'rotate-key', at(one.stamp, 4)), null)
-  t.is(await apply(db, b.writer.publicKey, 'rotate-key', at(one.stamp, 5)), null)
-  t.alike(await epochs(), rows, 'nor a second counted one, nor a second one writer set aside')
-  t.is(await apply(db, other.writer.publicKey, 'rotate-key', at(one.stamp, 6)), null)
-  t.is(kinds(await epochs(), one.stamp).length, 3, 'one another writer set aside lands')
+  t.is(await apply(db, b.writer.publicKey, 'rotate-key', same(b4a.alloc(32, 3))), null)
+  t.alike(await epochs(), rows, 'one set aside after it takes nothing')
+  t.is(await apply(db, db.writerKey, 'rotate-key', same(b4a.alloc(32, 4))), null)
+  t.alike(await epochs(), rows, 'nor a second counted one')
 })
 
 test('rotate-key: a database below the version that sets a rotation aside refuses one by a signer who may not remove, and at it keeps it', async (t) => {
