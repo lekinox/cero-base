@@ -21,7 +21,8 @@ Bare.on('unhandledRejection', (reason) => {
 
 let server
 try {
-  server = await serve(ipc, { storage, ...(bootstrap && { bootstrap }) })
+  // a phrase waits for a device of the profile as long as it takes: the user cancels, not a timer
+  server = await serve(ipc, { storage, recoveryTimeout: 0, ...(bootstrap && { bootstrap }) })
 } catch (err) {
   console.error(`__BOOT_ERROR__${err.message}`)
   Bare.exit(1)

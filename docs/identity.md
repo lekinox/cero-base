@@ -99,7 +99,7 @@ this device, and the device holds the phrase from then on, like the one that cre
 Use a fresh directory, and have a device of yours online, or in range with the radio on at both
 ends: `bluetooth: { on: true }` on the new one, since the recovery runs inside `cero()`. The new one
 finds it and is let in by it, with the proof the phrase gave its device key. It waits in three steps, each up to
-`recoveryTimeout` (30 s by default), and rejects `TIMEOUT` when no device of yours answers.
+`recoveryTimeout` (30 s by default, `0` for as long as it takes), and rejects `TIMEOUT` when no device of yours answers.
 
 The seed is stored before that wait, so a retry is plain `cero(dir, spec)` with the same channel and
 mirrors, and `cero.peek` reports the directory as used. It rejects `TIMEOUT` again until one of your

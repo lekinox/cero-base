@@ -6,9 +6,10 @@ import { useChat } from './hooks/use-chat'
 import { ErrorBoundary } from './components/error'
 import { Router } from './components/router'
 import { Setup } from './components/setup'
+import { Button } from './components/ui'
 
 function App() {
-  const { status, me, error, request, init } = useChat()
+  const { status, me, error, request, init, cancel } = useChat()
 
   if (status === 'error') {
     return (
@@ -31,6 +32,17 @@ function App() {
       <div className='h-screen bg-background flex flex-col items-center justify-center gap-2 text-muted p-8'>
         <div>Approve this device on your other device</div>
         <div className='text-xs font-mono text-foreground break-all text-center'>{request}</div>
+      </div>
+    )
+  }
+  if (status === 'restoring') {
+    return (
+      <div className='h-screen bg-background flex flex-col items-center justify-center gap-2 text-muted p-8'>
+        <div>Looking for your other device…</div>
+        <div className='text-xs'>Keep one of your devices online</div>
+        <Button onClick={cancel} variant='secondary'>
+          Cancel
+        </Button>
       </div>
     )
   }
