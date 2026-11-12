@@ -4,9 +4,9 @@ import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
 import { Toast } from './toast'
-import { Sharing } from './sharing'
 import { People } from './people'
 import { useToast } from '../hooks/use-toast'
+import { useSeated } from '../hooks/use-seated'
 
 function MessageGroup({ messages, mine, sender }) {
   return (
@@ -26,7 +26,7 @@ function MessageGroup({ messages, mine, sender }) {
   )
 }
 
-function ChatInput({ onSend }) {
+function ChatInput({ onSend, disabled }) {
   const [text, setText] = useState('')
 
   const submit = () => {
@@ -42,9 +42,11 @@ function ChatInput({ onSend }) {
         placeholder='Message...'
         value={text}
         onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && submit()}
+        onKeyDown={(e) => e.key === 'Enter' && !disabled && submit()}
       />
-      <Button onClick={submit}>Send</Button>
+      <Button onClick={submit} disabled={disabled}>
+        Send
+      </Button>
     </div>
   )
 }
@@ -92,6 +94,7 @@ export function Room({ onClose }) {
   const { data: row } = useQuery(me.room, room.id)
   const { data: status } = useQuery(room.status)
   const toast = useToast()
+  const seated = useSeated()
   const [invite, setInvite] = useState('')
   const [open, setOpen] = useState(false)
   const [naming, setNaming] = useState(false)
@@ -103,14 +106,9 @@ export function Room({ onClose }) {
 
   const sorted = [...messages].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
   const groups = groupMessages(sorted, me.id)
-  const send = (text) => cero.put(room.messages, { text })
-  const canRemove = status.role === 'owner' || status.role === 'admin'
-  const remove = (id) => cero.del(room.members, id).catch((err) => toast.show(err.message))
-  const rename = (name) =>
-    cero.set(room.profile, { name }).then(
-      () => setNaming(false),
-      (err) => toast.show(err.message)
-    )
+  const fail = (err) => toast.show(err.message)
+  const send = (text) => cero.put(room.messages, { text }).catch(fail)
+  const rename = (name) => cero.set(room.profile, { name }).then(() => setNaming(false), fail)
 
   return (
     <div className='h-screen flex flex-col'>
@@ -132,47 +130,36 @@ export function Room({ onClose }) {
           {members.length} members
         </Button>
         <div className='flex-1' />
-        {invite ? (
-          <div className='flex items-center gap-2'>
-            <span className='font-mono text-muted max-w-48 truncate'>{invite}</span>
-            <Button
-              onClick={() => {
-                navigator.clipboard.writeText(invite)
-                toast.show('Copied to clipboard')
-              }}
-              variant='ghost'
-              className='text-accent'
-            >
-              Copy
-            </Button>
-          </div>
-        ) : (
-          <Button onClick={() => cero.invite(room).then(setInvite)}>Invite</Button>
-        )}
-        <Button
-          onClick={() => cero.leave(room).then(onClose, (err) => toast.show(err.message))}
-          variant='ghost'
-        >
-          Leave
-        </Button>
-      </div>
-      <People />
-
-      {open && (
-        <ul className='px-3 py-2 bg-card border-b border-border space-y-1 text-sm'>
-          {members.map((m) => (
-            <li key={m.id} className='flex items-center gap-2'>
-              <span className='flex-1 text-card-foreground'>{m.name || m.id.slice(0, 8)}</span>
-              {canRemove && m.id !== me.id && (
-                <Button onClick={() => remove(m.id)} variant='danger'>
-                  Remove
-                </Button>
-              )}
-            </li>
+        {seated &&
+          (invite ? (
+            <div className='flex items-center gap-2'>
+              <span className='font-mono text-muted max-w-48 truncate'>{invite}</span>
+              <Button
+                onClick={() => {
+                  navigator.clipboard.writeText(invite)
+                  toast.show('Copied to clipboard')
+                }}
+                variant='ghost'
+                className='text-accent'
+              >
+                Copy
+              </Button>
+            </div>
+          ) : (
+            <Button onClick={() => cero.invite(room).then(setInvite, fail)}>Invite</Button>
           ))}
-        </ul>
+        {seated && (
+          <Button onClick={() => cero.leave(room).then(onClose, fail)} variant='ghost'>
+            Leave
+          </Button>
+        )}
+      </div>
+      {status.role === 'reader' && (
+        <div className='px-3 py-2 border-b border-border text-xs text-muted'>
+          Read only: readers cannot write here
+        </div>
       )}
-      <Sharing />
+      {open && <People seated={seated} onError={fail} />}
 
       <div ref={ref} className='flex-1 overflow-y-auto p-3 space-y-2'>
         {groups.map((g, i) => (
@@ -185,7 +172,7 @@ export function Room({ onClose }) {
         ))}
       </div>
 
-      <ChatInput onSend={send} />
+      <ChatInput onSend={send} disabled={!seated} />
       <Toast message={toast.message} />
     </div>
   )

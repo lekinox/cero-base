@@ -2,7 +2,7 @@ import os from 'os'
 import { test, expect } from '../fixtures.js'
 
 // an invite or a request id: one long word
-const token = /^\S{40,}$/
+const token = /^[a-z0-9]{40,}$/
 // every device of the example is named after the machine it runs on
 const host = os.hostname()
 

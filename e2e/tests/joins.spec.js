@@ -19,17 +19,20 @@ async function back(page) {
   await expect(page.getByPlaceholder('Room name')).toBeVisible()
 }
 
+// opens the room's people panel from its "N members" button, once
 async function people(page) {
-  await page.getByRole('button', { name: 'People' }).click()
-  await expect(page.getByRole('region', { name: 'Members' })).toBeVisible()
+  const members = page.getByRole('region', { name: 'Members' })
+  if (!(await members.count())) await page.getByRole('button', { name: /members$/ }).click()
+  await expect(members).toBeVisible()
 }
 
 // an invite whose joins wait for a member to accept them, valid for ttl when given
 async function approval(page, ttl) {
   await people(page)
   if (ttl) await page.getByPlaceholder('Expires in, e.g. 10s').fill(ttl)
-  await page.getByRole('button', { name: 'Invite with approval' }).click()
-  const code = page.getByRole('textbox', { name: 'Approval invite' })
+  await page.getByRole('checkbox', { name: 'Needs approval' }).check()
+  await page.getByRole('button', { name: 'Create code' }).click()
+  const code = page.getByRole('textbox', { name: 'Code' })
   await expect(code).toHaveValue(/.+/)
   return code.inputValue()
 }
@@ -76,7 +79,7 @@ async function asked(launch, ttl) {
 }
 
 function requests(page) {
-  return page.getByRole('region', { name: 'Requests' }).getByRole('button', { name: 'Accept' })
+  return page.getByRole('region', { name: 'Requests' }).getByRole('button', { name: 'Approve' })
 }
 
 // Bob signs up on his phone and links his laptop to it from Settings

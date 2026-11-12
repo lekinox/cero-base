@@ -17,8 +17,16 @@ async function host(launch) {
   return alice
 }
 
+// opens the room's people panel from its "N members" button, once
+async function people(page) {
+  const members = page.getByRole('region', { name: 'Members' })
+  if (!(await members.count())) await page.getByRole('button', { name: /members$/ }).click()
+  await expect(members).toBeVisible()
+}
+
 // mints a code with the room's invite options and reads it off the screen
 async function code(page, { confirm = false, role = 'member', reuse = false } = {}) {
+  await people(page)
   const field = page.getByRole('textbox', { name: 'Code' })
   const previous = (await field.count()) ? await field.inputValue() : ''
   await page.getByRole('checkbox', { name: 'Needs approval' }).setChecked(confirm)
@@ -38,6 +46,15 @@ async function send(page, text) {
   await page.getByPlaceholder('Message...').fill(text)
   await page.getByRole('button', { name: 'Send' }).click()
   await expect(page.getByText(text, { exact: true })).toBeVisible()
+}
+
+// the rooms on the list, apart from the joins that ended
+function rooms(page) {
+  return page.getByRole('region', { name: 'Rooms' })
+}
+
+function ended(page) {
+  return page.getByRole('region', { name: 'Ended' })
 }
 
 async function enter(page, room) {
@@ -64,14 +81,14 @@ test('a join under an invite that needs approval waits until the owner approves,
   const invite = await code(alice.page, { confirm: true })
 
   await join(bob.page, invite)
-  await expect(bob.page.getByText('Waiting to be let in')).toBeVisible()
+  await expect(bob.page.getByText('Waiting for a member to let you in')).toBeVisible()
   await expect(alice.page.getByText(/^member · /)).toBeVisible()
   await alice.page.getByRole('button', { name: 'Approve' }).click()
   await expect(alice.page.getByRole('button', { name: 'Approve' })).toHaveCount(0)
 
   await expect(bob.page.getByPlaceholder('Message...')).toBeVisible()
   await bob.page.getByRole('button', { name: '←' }).click()
-  await expect(bob.page.getByText('Waiting to be let in')).toHaveCount(0)
+  await expect(bob.page.getByText('Waiting for a member to let you in')).toHaveCount(0)
   await enter(bob.page, 'clinic')
   await send(bob.page, 'approved and in')
   await expect(alice.page.getByText('approved and in', { exact: true })).toBeVisible()
@@ -85,12 +102,12 @@ test('a join denied with a reason shows the joiner that reason and the room stay
   const invite = await code(alice.page, { confirm: true })
 
   await join(carol.page, invite)
-  await expect(carol.page.getByText('Waiting to be let in')).toBeVisible()
+  await expect(carol.page.getByText('Waiting for a member to let you in')).toBeVisible()
   await alice.page.getByPlaceholder('Reason').fill('not staff')
   await alice.page.getByRole('button', { name: 'Deny' }).click()
   await expect(alice.page.getByRole('button', { name: 'Deny' })).toHaveCount(0)
 
-  await expect(carol.page.getByText('Turned away: not staff')).toBeVisible()
+  await expect(ended(carol.page).getByText('Denied: not staff', { exact: true })).toBeVisible()
   await absent(carol.page.getByText('clinic', { exact: true }))
 })
 
@@ -107,7 +124,7 @@ test('a single-use invite lets the first joiner in and turns the second away', a
   await expect(alice.page.getByText('Bob · member')).toBeVisible()
 
   await join(carol.page, invite)
-  await expect(carol.page.getByText('Turned away: spent')).toBeVisible()
+  await expect(ended(carol.page).getByText('Denied: spent', { exact: true })).toBeVisible()
   await absent(carol.page.getByText('clinic', { exact: true }))
 })
 
@@ -136,15 +153,15 @@ test('a revoked invite turns away the join that waited for approval under it and
   const invite = await code(alice.page, { confirm: true, reuse: true })
 
   await join(carol.page, invite)
-  await expect(carol.page.getByText('Waiting to be let in')).toBeVisible()
+  await expect(carol.page.getByText('Waiting for a member to let you in')).toBeVisible()
   await expect(alice.page.getByRole('button', { name: 'Approve' })).toBeVisible()
   await expect(alice.page.getByText('member, reusable, needs approval')).toBeVisible()
   await alice.page.getByRole('button', { name: 'Revoke' }).click()
   await expect(alice.page.getByText('member, reusable, needs approval')).toHaveCount(0)
 
-  await expect(carol.page.getByText('Turned away: revoked')).toBeVisible()
+  await expect(ended(carol.page).getByText('Denied: revoked', { exact: true })).toBeVisible()
   await join(dave.page, invite)
-  await expect(dave.page.getByText('Turned away: revoked')).toBeVisible()
+  await expect(ended(dave.page).getByText('Denied: revoked', { exact: true })).toBeVisible()
   await absent(dave.page.getByText('clinic', { exact: true }))
   await expect(carol.page.getByText('clinic', { exact: true })).toHaveCount(0)
 })
@@ -185,12 +202,12 @@ test('a removed joiner is turned away by the reusable code she saw and let in by
   await alice.page.getByRole('button', { name: 'Remove' }).click()
   await expect(alice.page.getByText('Carol · member')).toHaveCount(0)
   await expect(carol.page.getByText(/^Removed by /)).toBeVisible()
-  await expect(carol.page.getByText('clinic', { exact: true })).toHaveCount(0)
+  await expect(rooms(carol.page).getByText('clinic', { exact: true })).toHaveCount(0)
 
   await join(carol.page, reusable)
   await expect(carol.page.getByText('Denied: removed')).toBeVisible()
   await expect(carol.page.getByText(/^Removed by /)).toBeVisible()
-  await absent(carol.page.getByText('clinic', { exact: true }))
+  await absent(rooms(carol.page).getByText('clinic', { exact: true }))
 
   const fresh = await code(alice.page)
   await join(carol.page, fresh)

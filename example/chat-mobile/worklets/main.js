@@ -1,5 +1,6 @@
 /* global BareKit, Bare */
 import fs from 'fs'
+import { isInitialized } from 'chat-backend'
 import { serve } from 'chat-backend/server'
 
 const storage = Bare.argv[0]
@@ -21,5 +22,10 @@ Bare.on('unhandledRejection', (err) => {
 Bare.on('uncaughtException', (err) => {
   logError('uncaughtException', err)
 })
+
+// the app cannot read the store itself: its first message asks what the store holds, before the RPC takes the stream
+await new Promise((resolve) => ipc.once('data', resolve))
+ipc.pause()
+ipc.write(Buffer.from(JSON.stringify(await isInitialized(storage))))
 
 await serve(ipc, { storage })

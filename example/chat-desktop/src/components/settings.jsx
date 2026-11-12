@@ -7,7 +7,7 @@ import { useToast } from '../hooks/use-toast'
 import { Button, Input, Section, Card } from './ui'
 import { Avatar } from './avatar'
 import { Toast } from './toast'
-import { Removed } from './removed'
+import { useSeated } from '../hooks/use-seated'
 
 export function Settings() {
   const me = useCero()
@@ -16,6 +16,8 @@ export function Settings() {
   const { data: requests } = useQuery(me.requests, { admitted: false })
   const { theme, toggle } = useTheme()
   const toast = useToast()
+  const seated = useSeated()
+  const fail = (err) => toast.show(err.message)
   const [seed, setSeed] = useState(null)
   const [invite, setInvite] = useState(null)
 
@@ -35,22 +37,27 @@ export function Settings() {
   return (
     <div className='space-y-4'>
       <Card className='flex items-center gap-4'>
-        <label className='cursor-pointer'>
+        <label className={seated ? 'cursor-pointer' : ''}>
           <Avatar name={profile?.name} src={profile?.avatar?.url} size={48} />
           <input
             type='file'
             accept='image/*'
             className='hidden'
+            disabled={!seated}
             onChange={async (e) => {
               const file = e.target.files?.[0]
               if (!file) return
               const data = new Uint8Array(await file.arrayBuffer())
-              const { data: row } = await cero.put(me.files, {
-                data,
-                name: file.name,
-                type: file.type
-              })
-              await cero.set(me.profile, { avatar: row.id })
+              try {
+                const { data: row } = await cero.put(me.files, {
+                  data,
+                  name: file.name,
+                  type: file.type
+                })
+                await cero.set(me.profile, { avatar: row.id })
+              } catch (err) {
+                fail(err)
+              }
             }}
           />
         </label>
@@ -60,9 +67,10 @@ export function Settings() {
             placeholder='Your name'
             key={profile?.name}
             defaultValue={profile?.name}
+            disabled={!seated}
             onBlur={(e) => {
               const v = e.target.value.trim()
-              if (v && v !== profile?.name) cero.set(me.profile, { name: v })
+              if (v && v !== profile?.name) cero.set(me.profile, { name: v }).catch(fail)
             }}
           />
           <div className='text-xs text-muted font-mono'>{me.id?.slice(0, 16)}...</div>
@@ -95,42 +103,48 @@ export function Settings() {
         )}
       </Section>
 
-      <Section title='Link a Device'>
-        {invite ? (
-          <>
-            <div className='p-2 bg-input border border-border rounded text-xs font-mono break-all'>
-              {invite}
-            </div>
-            <div className='flex gap-2'>
-              <Button onClick={() => copy(invite)}>Copy</Button>
-              <Button onClick={() => setInvite(null)} variant='secondary'>
-                Hide
-              </Button>
-            </div>
-          </>
-        ) : (
-          <Button onClick={async () => setInvite(await cero.invite(me))} className='w-full'>
-            Show Device Invite
-          </Button>
-        )}
-        {requests.map((r) => (
-          <Card key={r.id}>
-            <div className='text-xs text-muted'>
-              A device asks to be yours. Approve it only if it shows this id:
-            </div>
-            <div className='text-xs font-mono text-card-foreground break-all my-1'>{r.id}</div>
-            <div className='flex gap-2'>
-              <Button onClick={() => cero.accept(me, r)}>Approve</Button>
-              <Button onClick={() => cero.deny(me, r, 'denied')} variant='secondary'>
-                Deny
-              </Button>
-            </div>
-          </Card>
-        ))}
-      </Section>
+      {seated && (
+        <Section title='Link a Device'>
+          {invite ? (
+            <>
+              <div className='p-2 bg-input border border-border rounded text-xs font-mono break-all'>
+                {invite}
+              </div>
+              <div className='flex gap-2'>
+                <Button onClick={() => copy(invite)}>Copy</Button>
+                <Button onClick={() => setInvite(null)} variant='secondary'>
+                  Hide
+                </Button>
+              </div>
+            </>
+          ) : (
+            <Button onClick={() => cero.invite(me).then(setInvite, fail)} className='w-full'>
+              Show Device Invite
+            </Button>
+          )}
+          {requests.map((r) => (
+            <Card key={r.id}>
+              <div className='text-xs text-muted'>
+                A device asks to be yours. Approve it only if it shows this id:
+              </div>
+              <div className='text-xs font-mono text-card-foreground break-all my-1'>{r.id}</div>
+              <div className='flex gap-2'>
+                <Button onClick={() => cero.accept(me, r).catch(fail)}>Approve</Button>
+                <Button onClick={() => cero.deny(me, r, 'denied').catch(fail)} variant='secondary'>
+                  Deny
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </Section>
+      )}
 
       <Section title='Devices'>
-        <Removed />
+        {!seated && (
+          <div className='p-2 bg-error/10 border border-error/30 rounded text-xs text-error'>
+            This device was removed from your profile
+          </div>
+        )}
         {devices.map((d) => {
           const current = d.id === me.device?.id
           return (
@@ -141,17 +155,17 @@ export function Settings() {
                   className='flex-1'
                   placeholder='Device name'
                   defaultValue={d.name}
+                  disabled={!seated}
                   onBlur={(e) => {
                     const v = e.target.value.trim()
-                    if (v && v !== d.name) cero.set(me.devices, { id: d.id, name: v })
+                    if (v && v !== d.name) cero.set(me.devices, { id: d.id, name: v }).catch(fail)
                   }}
                 />
                 <span className='text-muted font-mono'>{d.id?.slice(0, 8)}</span>
-                {current ? (
-                  <span className='text-accent'>(current)</span>
-                ) : (
+                {current && <span className='text-accent'>(current)</span>}
+                {seated && !current && (
                   <Button
-                    onClick={() => cero.del(me.devices, d.id)}
+                    onClick={() => cero.del(me.devices, d.id).catch(fail)}
                     variant='danger'
                     className='ml-auto'
                   >
