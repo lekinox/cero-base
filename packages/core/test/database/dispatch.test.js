@@ -1380,6 +1380,35 @@ test("promise: one made to a member is kept by her other device at the role she 
   t.alike(seated, [hid.encode(other), hid.encode(stray)])
 })
 
+test("promise: one made for a reader's device is kept by that device alone: another device of hers, nothing promised to it, is refused", async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const invite = await addressed(db, { reuse: true })
+  const identity = await Identity.create()
+  const first = Identity.randomKeyPair().publicKey
+  const once = await addressed(db, { role: 'reader' })
+  await apply(db, first, 'join', named(db, once, { identity, writer: first }))
+  t.is(await claimed(db, identity, first), null)
+  t.is(await apply(db, db.writerKey, 'del-request', { id: hid.encode(first) }), null)
+
+  const promised = linked(identity)
+  const writer = promised.writer.publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity: promised.identity, writer }))
+  t.ok((await promise(db, writer))?.promised, 'a device of hers is promised')
+
+  const other = linked(identity)
+  t.is((await seat(db, other))?.code, 'REFUSED', 'another, its chain valid, stands on nothing')
+  t.absent((await db.get('devices', hid.encode(other.writer.publicKey))).data, 'no device row')
+  t.is(await seat(db, promised), null, 'the device it was made for keeps it')
+  t.is((await db.get('devices', hid.encode(writer))).data?.memberId, identity.id)
+
+  const stranger = await Identity.create()
+  const stray = Identity.randomKeyPair().publicKey
+  await apply(db, stray, 'join', named(db, invite, { identity: stranger, writer: stray }))
+  const phone = linked(stranger)
+  t.is(await seat(db, phone), null, 'no member yet, any device of hers keeps what she was promised')
+  t.is((await db.get('members', stranger.id)).data?.role, 'member')
+})
+
 test('promise: another device of the identity completes it at the earliest role, and the one that joined then seats itself', async (t) => {
   const { db } = await withRole(t, 'owner')
   const invite = await addressed(db, { role: 'reader', reuse: true })
