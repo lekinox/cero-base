@@ -189,6 +189,7 @@ export declare const local: {
         invite: import("@cero-base/core").Prim;
         used: import("@cero-base/core").Prim;
         told: import("@cero-base/core").Prim;
+        stamp: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;
@@ -233,6 +234,7 @@ export declare const local: {
     told: {
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
+        stamp: import("@cero-base/core").Prim;
     };
 };
 export declare const contract: {

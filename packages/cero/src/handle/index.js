@@ -177,6 +177,10 @@ export class Handle extends ReadyResource {
     this._tellings = parent ? null : new Map()
     /** @private */
     this._telling = null
+    // what an extension tells the rooms closed here, through the same pass: `stamp` names it,
+    // `tell` writes it into a room opened for it
+    /** @private @type {Array<{ stamp: () => Promise<string | null>, tell: (child: Handle) => Promise<void> }> | null} */
+    this._tellers = parent ? null : []
     /** @private */
     this._retell = false
 
@@ -1554,8 +1558,11 @@ export class Handle extends ReadyResource {
   // told the identity's keys the root removed and those it seats, by a device that stands there,
   // when that is not what it was told. One compare at a time: two would tell it twice
   /** @private */
-  _prune(child) {
-    const run = () => this._compare(child)
+  _prune(child, stamp) {
+    const run = async () => {
+      const told = await this._compare(child)
+      return told && (stamp === undefined || (await this._teach(child, stamp)))
+    }
     const pruning = child._pruning ? child._pruning.then(run) : run()
     child._pruning = pruning.catch(safetyCatch)
     return pruning
@@ -1588,16 +1595,25 @@ export class Handle extends ReadyResource {
       }
     }
     if (child.closing || child.closed) return false
-    await this._mark(child.id, digest(removed, standing))
+    await this._mark(child.id, { told: digest(removed, standing) })
+    return true
+  }
+
+  // what the extensions tell a room this device may write in, stamped once it is told
+  /** @private */
+  async _teach(child, stamp) {
+    if (child.store.writable) for (const { tell } of this._tellers) await tell(child)
+    if (child.closing || child.closed) return false
+    await this._mark(child.id, { stamp })
     return true
   }
 
   // what a room was told, kept on its keypair row
   /** @private */
-  async _mark(id, told) {
+  async _mark(id, marks) {
     const { data } = await this.local.store.get('handle-keypairs', id)
-    if (!data || sameBytes(data.told, told)) return
-    await this.local.store.put('handle-keypairs', { ...data, told })
+    if (!data || Object.keys(marks).every((k) => sameBytes(data[k], marks[k]))) return
+    await this.local.store.put('handle-keypairs', { ...data, ...marks })
   }
 
   // a handle that has no route to be told by loses the removed device's seats one by one
@@ -1618,8 +1634,8 @@ export class Handle extends ReadyResource {
   }
 
   // the closed rooms are told too, by a pass over those this device has a writer in, when the root's
-  // device lists are not the ones last told to all of them. One pass at a time: a call while one
-  // waits to start joins it
+  // device lists or the extensions' stamp are not the ones last told to all of them. One pass at a
+  // time: a call while one waits to start joins it
   /** @private */
   _tellClosed() {
     if (this._retell) return this._telling
@@ -1635,27 +1651,21 @@ export class Handle extends ReadyResource {
   /** @private */
   async _pass() {
     if (this.closing) return
-    const removed = await this.store.removals()
-    if (removed.length === 0) return
-    const { data: devices } = await this.store.get('devices')
-    const standing = devices.filter((row) => row.key).map((row) => row.key)
-    if (!has(standing, this.identity.device.publicKey)) return
-    const lists = { removed: b4a.concat(removed), standing: b4a.concat(standing) }
-    const marked = digest(removed, standing)
+    const lists = await this._lists()
+    const stamp = await this._stamp()
     const { data: told } = await this.local.store.get('told')
-    if (
-      told &&
-      sameBytes(told.removed, lists.removed) &&
-      sameBytes(told.standing, lists.standing)
-    ) {
-      return
-    }
+    const listed =
+      !lists ||
+      (told && sameBytes(told.removed, lists.removed) && sameBytes(told.standing, lists.standing))
+    if (listed && sameBytes(told?.stamp, stamp)) return
     // a writer in a room is the writer keypair this device keeps for it
     const rooms = []
     for (let after; ;) {
       const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
-      for (const { id, used, told } of data) {
-        if (!sameBytes(told, marked)) rooms.push({ id, used: used ?? 0 })
+      for (const row of data) {
+        if ((lists && !sameBytes(row.told, lists.marked)) || !sameBytes(row.stamp, stamp)) {
+          rooms.push({ id: row.id, used: row.used ?? 0 })
+        }
       }
       if (data.length < PAGE) break
       after = data[data.length - 1].id
@@ -1666,7 +1676,7 @@ export class Handle extends ReadyResource {
     const tell = async () => {
       while (next < rooms.length && !this.closing) {
         const { id } = rooms[next++]
-        const done = await this._tellOne(id).catch((err) => {
+        const done = await this._tellOne(id, stamp).catch((err) => {
           if (!this.closing) this._onerror(err)
           return false
         })
@@ -1674,21 +1684,44 @@ export class Handle extends ReadyResource {
       }
     }
     await Promise.all(Array.from({ length: TELLING }, tell))
-    if (covered && !this.closing) await this.local.store.set('told', lists)
+    if (!covered || this.closing) return
+    const { removed, standing } = lists ?? told ?? {}
+    await this.local.store.set('told', { removed, standing, stamp })
+  }
+
+  // the root's device lists, 32-byte keys back to back, when there is a removal to tell and this
+  // device stands to tell it
+  /** @private */
+  async _lists() {
+    const removed = await this.store.removals()
+    if (removed.length === 0) return null
+    const { data: devices } = await this.store.get('devices')
+    const standing = devices.filter((row) => row.key).map((row) => row.key)
+    if (!has(standing, this.identity.device.publicKey)) return null
+    const marked = digest(removed, standing)
+    return { removed: b4a.concat(removed), standing: b4a.concat(standing), marked }
+  }
+
+  // what the extensions tell the rooms, as one digest: null when they tell nothing
+  /** @private */
+  async _stamp() {
+    const stamps = await Promise.all(this._tellers.map(({ stamp }) => stamp()))
+    if (stamps.every((s) => s === null)) return null
+    return hash(b4a.from(JSON.stringify(stamps)))
   }
 
   // a closed room opened only to be told: no seat claimed, nothing handed to the app. One open
   // here runs the same compare, behind its own
   /** @private */
-  async _tellOne(id) {
+  async _tellOne(id, stamp) {
     const open = [...this.children].find((c) => c.id === id)
-    if (open) return this._prune(open)
+    if (open) return this._prune(open, stamp)
     const loading = this._loading.get(id)
     if (loading) {
       const child = await loading.catch(() => null)
-      return child ? this._prune(child) : false
+      return child ? this._prune(child, stamp) : false
     }
-    const telling = this._tellRoom(id)
+    const telling = this._tellRoom(id, stamp)
     this._tellings.set(
       id,
       telling.catch(() => {})
@@ -1701,7 +1734,7 @@ export class Handle extends ReadyResource {
   }
 
   /** @private */
-  async _tellRoom(id) {
+  async _tellRoom(id, stamp) {
     const { data: row } = await this.store.get('handles', id)
     // a room left on another device has no row; one still being joined is told by its own open
     if (!row?.encryptionKey) return true
@@ -1717,7 +1750,7 @@ export class Handle extends ReadyResource {
     })
     try {
       await child.ready()
-      return await this._prune(child)
+      return await this._prune(child, stamp)
     } finally {
       await child._end().catch(safetyCatch)
     }
