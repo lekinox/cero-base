@@ -1318,7 +1318,10 @@ export function makeDispatcher({
     const was = await ctx.view.get(col('handles'), { id: op.id })
     // a write naming no state keeps the row's, `in` on a new row: its device may read an older one
     if (!op.state) {
-      if (was) Object.assign(op, { reason: was.reason, by: was.by, invite: was.invite })
+      if (was) {
+        const { reason, by, invite, writer } = was
+        Object.assign(op, { reason, by, invite, writer })
+      }
       op.state = was?.state || 'in'
     }
     if (!moves(was, op)) throw CeroError.REFUSED('state')

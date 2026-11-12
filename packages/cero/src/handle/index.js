@@ -1231,7 +1231,9 @@ export class Handle extends ReadyResource {
       const alone = !join.waiting
       // a close pauses the join, anything else ends it, and its row says how
       const report = (err) => this.closing || this._onerror(err)
-      if (end.code !== 'CLOSED') await this._over(invite, end, join.writer).catch(report)
+      if (end.code !== 'CLOSED') {
+        await this._over(join.id, end, { invite, writer: join.writer }).catch(report)
+      }
       if (err.code !== 'CLOSED' && alone) this._onerror(err)
       settle(join.reject, end)
     }
@@ -1244,7 +1246,7 @@ export class Handle extends ReadyResource {
     const id = hid.encode(Invite.parse(invite).key)
     const { data: row } = await root.store.get('handles', id)
     if (row?.state !== 'asking') return false
-    await root._over(invite, CeroError.CANCELLED())
+    await root._over(id, CeroError.CANCELLED())
     const join = root._joining.get(id)
     if (join) {
       root._stop(join, CeroError.CANCELLED())
@@ -1370,17 +1372,17 @@ export class Handle extends ReadyResource {
     await this.store.set('handles', { id, state, ...fields })
   }
 
-  // how a join ended, on its row, which keeps none of the keys it was handed
+  // how a join ended, on its row, which keeps none of the keys it was handed. A join ends only its
+  // own ask, a cancel the one that stands under any invite of the room
   /** @private */
-  async _over(invite, err, writer) {
+  async _over(id, err, join) {
     const state = OVER[err.code]
-    const id = hid.encode(Invite.parse(invite).key)
     const { data: row } = await this.store.get('handles', id)
     // a join on its way ends its own request, one seated or over stays as it reads
-    const own = !writer || row?.writer === hid.encode(writer.publicKey)
+    const own = !join?.writer || row?.writer === hid.encode(join.writer.publicKey)
     const ends =
       (row?.state === 'asking' && own) || (row?.state === 'joining' && state === 'denied')
-    if (!state || !ends || row.invite !== invite) return
+    if (!state || !ends || (join && row.invite !== join.invite)) return
     const reason = err.reason ?? null
     await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
   }

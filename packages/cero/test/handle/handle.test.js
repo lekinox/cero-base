@@ -16,6 +16,7 @@ import { Database } from '@cero-base/core/database'
 import { Storage } from '@cero-base/core/storage'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 import { epochEntries } from '@cero-base/core/database/encryption'
+import { CeroError } from '@cero-base/core/errors'
 
 import { Handle, Ref } from '../../src/handle/index.js'
 import { cero, schema, t as T } from '../../src/index.js'
@@ -2139,10 +2140,17 @@ test('handles: the rows asking, joining and leaving among 500 handles are read t
   t.alike(paths, Array(3).fill('@cero/handles-state'), 'one read of the index for each state')
 })
 
+test('handles: a join that ends under an invite its row no longer reads leaves the row as it stands', async (t) => {
+  const { me } = await ceroOpen(t)
+  await me.store.set('handles', standing('room', 'joining', 'second'))
+  await me._over('room', CeroError.DENIED('full'), { invite: 'first', writer: null })
+  t.is((await get(me.handles, 'room')).data.state, 'joining')
+})
+
 test('handles: a rename from a device whose copy of the row is behind on the state is not refused and does not change the state', async (t) => {
   const errors = []
   const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
-  await me.store.set('handles', standing('room', 'asking'))
+  await me.store.set('handles', { ...standing('room', 'asking'), writer: 'first' })
 
   const sent = []
   const write = me.store.write
@@ -2152,15 +2160,24 @@ test('handles: a rename from a device whose copy of the row is behind on the sta
   t.absent(sent[0][1].state, 'a rename sends no state')
   t.is((await get(me.handles, 'room')).data.state, 'asking', 'and the row stands where it stood')
 
-  await me.store.set('handles', { id: 'room', state: 'denied', reason: 'full', by: 'ana' })
+  await me.store.set('handles', {
+    id: 'room',
+    state: 'denied',
+    reason: 'full',
+    by: 'ana',
+    writer: 'second'
+  })
   // the rename of a device that still reads asking
-  await behind(me, { ...standing('room'), name: 'renamed' })
+  await behind(me, { ...standing('room'), name: 'renamed', writer: 'first' })
   const row = await waitUntil(async () => {
     const { data } = await get(me.handles, 'room')
     return data.name === 'renamed' || errors.length ? data : null
   })
   t.is(row.name, 'renamed', 'the rename lands')
-  t.alike([row.state, row.reason, row.by, row.invite], ['denied', 'full', 'ana', 'first'])
+  t.alike(
+    [row.state, row.reason, row.by, row.invite, row.writer],
+    ['denied', 'full', 'ana', 'first', 'second']
+  )
   t.alike(errors, [], 'and nothing was refused')
 })
 
