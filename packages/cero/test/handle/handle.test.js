@@ -476,6 +476,24 @@ test('join: a cancelled row a second device deletes and asks again under the sam
   )
 })
 
+test('join: a cancel under the invite a device asked with, once a second device asked again under another, ends the ask that stands', async (t) => {
+  const { room, invite, a, b } = await twins(t)
+  const second = await cero.invite(room, { confirm: true })
+  const first = open(a.me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  open(b.me.team, second).catch(() => {})
+  const latest = await nextRequest(room, request)
+  t.is((await first).code, 'CANCELLED', 'the first ask is taken back')
+  t.ok(await cero.cancel(a.me, invite), 'a join was asking')
+  const row = async () => (await get(b.me.team, room.id)).data
+  const ended = await waitUntil(async () => (await row())?.state === 'cancelled', 5000).catch(
+    () => false
+  )
+  t.ok(ended, 'the row reads cancelled on every device')
+  const left = async () => !(await get(room.requests)).data.some((r) => r.id === latest.id)
+  t.ok(await waitUntil(left, 5000).catch(() => false), 'and the request that stood leaves the room')
+})
+
 test('join: a cancel as the app closes reaches onerror with nothing', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
