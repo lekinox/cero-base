@@ -220,6 +220,8 @@ export declare class Handle extends ReadyResource {
     _tellings;
     /** @private */
     _telling;
+    /** @private @type {Array<{ stamp: () => Promise<string | null>, tell: (child: Handle) => Promise<void> }> | null} */
+    _tellers;
     /** @private */
     _retell;
     store: Database;
@@ -501,6 +503,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _compare;
     /** @private */
+    private _teach;
+    /** @private */
     private _mark;
     /** @private */
     private _unseat;
@@ -510,6 +514,10 @@ export declare class Handle extends ReadyResource {
     private _tellClosed;
     /** @private */
     private _pass;
+    /** @private */
+    private _lists;
+    /** @private */
+    private _stamp;
     /** @private */
     private _tellOne;
     /** @private */

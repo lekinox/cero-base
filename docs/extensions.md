@@ -68,10 +68,10 @@ it is `null`.
 
 ## The two that ship
 
-| Extension       | Does                                                                                                                                             |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every handle you are in, on open and on every change. |
-| `handleSync()`  | Copies a handle's own `profile` onto its row in your `handles` list, so a handle list shows names without opening the handles.                   |
+| Extension       | Does                                                                                                                                                                                                                                                 |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every handle you are in, on open and on every change; a change reaches the handles closed on this device in the background, the most recently used first. |
+| `handleSync()`  | Copies a handle's own `profile` onto its row in your `handles` list, so a handle list shows names without opening the handles.                                                                                                                       |
 
 Both run when the build names no extensions, and neither writes when the row already matches.
 Drop one by naming a list without it, or both with `[]`.

@@ -12,6 +12,7 @@ import { encode, createNotification } from 'blind-push'
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
 import { Database } from '@cero-base/core/database'
+import { Storage } from '@cero-base/core/storage'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
@@ -2457,4 +2458,40 @@ test('devices: a room open when the pass runs is told by its open and not again 
     await next._telling
   })
   t.is(again.opened, 0, 'and the next launch opens none')
+})
+
+test('profile: a rename reaches the member row of a room closed on this device, a member there reads it, and a launch with nothing changed reads no list of its rooms', async (t) => {
+  const a = await ceroOpen(t, { keepOpen: 0 })
+  await set(a.me.profile, { name: 'alice' })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const { me: b } = await ceroOpen(t, { testnet: a.testnet })
+  const theirs = await open(b.team, await cero.invite(room, { role: 'member' }))
+  const named = (want) =>
+    waitUntil(async () => (await get(theirs.members, a.me.identity.id)).data?.name === want)
+  await named('alice')
+  await room.close()
+  t.is(a.me.children.size, 0, 'the room is closed here')
+
+  const seen = await tally(async () => {
+    await set(a.me.profile, { name: 'alice north' })
+    await named('alice north')
+  })
+  t.is(seen.opened, 1, 'the pass opened the closed room')
+  t.is(seen.lists, 0, 'and read no list of the handles')
+  await a.me.close()
+
+  let listed = 0
+  const { get: read } = Storage.prototype
+  Storage.prototype.get = function (name, query) {
+    if (name === 'handle-keypairs' && typeof query !== 'string') listed++
+    return read.call(this, name, query)
+  }
+  try {
+    const next = await relaunch(t, a)
+    await next._telling
+    await next.close()
+  } finally {
+    Storage.prototype.get = read
+  }
+  t.is(listed, 0, 'a launch with nothing changed reads no list of its rooms')
 })
