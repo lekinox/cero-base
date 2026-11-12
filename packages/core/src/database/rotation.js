@@ -11,6 +11,10 @@ import { Identity } from '../identity/index.js'
 import { keyPair } from '../mailbox/inbox.js'
 import { CeroError } from '../lib/errors.js'
 
+// the secrets handed over for one stamp before its row landed, and the stamps waiting
+const CANDIDATES = 4
+const STAMPS = 16
+
 /**
  * Epoch key rotation for a database: mint a secret, seal it to every device, announce it
  * through the log, and on every peer learn the secrets addressed to it.
@@ -29,7 +33,7 @@ export class Rotation {
     /** @private */
     this._healedFor = null
     /** @private */
-    this._kept = new Map() // stamp → a secret handed over before its row landed
+    this._kept = new Map() // stamp → the secrets handed over before its row landed
   }
 
   close() {
@@ -100,14 +104,24 @@ export class Rotation {
    * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
    */
   keep(e) {
-    this._kept.set(e.stamp, e.entropy)
+    // whoever has this device's reply address can hand it anything: bounded, and a forged one
+    // never pushes out the real one
+    for (const stamp of this._kept.keys()) {
+      if (this.db.keyring.entropy(stamp)) this._kept.delete(stamp)
+    }
+    if (this.db.keyring.entropy(e.stamp)) return
+    const kept = this._kept.get(e.stamp) ?? []
+    if (kept.length >= CANDIDATES) return
+    this._kept.set(e.stamp, [...kept, e.entropy])
+    if (this._kept.size > STAMPS) this._kept.delete(this._kept.keys().next().value)
   }
 
   /** @private */
   _handed(row) {
-    const entropy = this._kept.get(row.stamp)
+    const kept = this._kept.get(row.stamp) ?? []
     this._kept.delete(row.stamp)
-    return entropy && row.commit && b4a.equals(crypto.hash(entropy), row.commit) ? entropy : null
+    if (!row.commit) return null
+    return kept.find((entropy) => b4a.equals(crypto.hash(entropy), row.commit)) ?? null
   }
 
   /**

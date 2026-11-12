@@ -2203,3 +2203,57 @@ test('learn: a secret handed over before its rotation landed is kept, and held t
   await waitFor(() => !b.db.rotation._kept.has(222))
   t.absent(b.db.keyring.entropy(222), 'one that fails its commitment is dropped')
 })
+
+test('learn: a forged secret handed over around the real one, before its row lands, does not stop the real one from being kept', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const real = Identity.randomBytes(32)
+  const forged = () => ({ epoch: 1, stamp: 333, entropy: Identity.randomBytes(32) })
+  await b.db.learn([forged()])
+  await b.db.learn([{ epoch: 1, stamp: 333, entropy: real }])
+  await b.db.learn([forged()])
+
+  const device = await own(a)
+  await a.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 333,
+    wrapped: c.encode(wraps, seal([device], Identity.randomBytes(32))),
+    createdAt: Date.now(),
+    commit: crypto.hash(real)
+  })
+  await waitFor(() => b.db.keyring.entropy(333))
+  t.alike(b.db.keyring.entropy(333), real)
+  t.absent(b.db.rotation._kept.has(333), 'its candidates go once its row lands')
+})
+
+test('learn: a thousand handed-over stamps leave at most the cap held', async (t) => {
+  const {
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  for (let stamp = 1000; stamp < 2000; stamp++) {
+    await b.db.learn([
+      { epoch: 1, stamp, entropy: Identity.randomBytes(32) },
+      { epoch: 1, stamp, entropy: Identity.randomBytes(32) }
+    ])
+  }
+  for (let i = 0; i < 10; i++) {
+    await b.db.learn([{ epoch: 1, stamp: 1999, entropy: Identity.randomBytes(32) }])
+  }
+  const kept = b.db.rotation._kept
+  t.ok(kept.size <= 16, `${kept.size} stamps held`)
+  t.ok(kept.has(1999), 'the newest handed over stays')
+  t.ok(
+    [...kept.values()].every((list) => list.length <= 4),
+    'at most four candidates a stamp'
+  )
+
+  b.db.keyring.add(1999, Identity.randomBytes(32))
+  await b.db.learn([{ epoch: 1, stamp: 2500, entropy: Identity.randomBytes(32) }])
+  t.absent(kept.has(1999), 'a stamp held since keeps no candidates')
+  await b.db.learn([{ epoch: 1, stamp: 1999, entropy: Identity.randomBytes(32) }])
+  t.absent(kept.has(1999), 'nor takes new ones')
+})
