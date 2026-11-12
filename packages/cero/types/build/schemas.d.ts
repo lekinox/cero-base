@@ -140,6 +140,10 @@ export declare const main: {
         secret: import("@cero-base/core").Prim;
         confirm: import("@cero-base/core").Prim;
     };
+    owed: {
+        id: import("@cero-base/core").Prim;
+        reply: import("@cero-base/core").Prim;
+    };
     deny: {
         id: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;

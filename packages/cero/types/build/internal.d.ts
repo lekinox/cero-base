@@ -130,6 +130,15 @@ export declare function collections(ns: string, scope: 'main' | 'local'): Array<
 }>;
 /**
  * @param {string} ns
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
+export declare function added(ns: string): Array<{
+    name: string;
+    schema: string;
+    key: string[];
+}>;
+/**
+ * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
 export declare function dispatches(ns: string): Array<{

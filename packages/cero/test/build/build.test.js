@@ -474,6 +474,18 @@ test('build: the app routes start at the id they shipped with', async (t) => {
   t.is(ids['@cero/set-profile'], 25, 'the first app route')
 })
 
+test("build: a collection Cero added once apps shipped is numbered after the app's collections and indexes", async (t) => {
+  const specDir = await buildInto(t, 'added-ids')
+  const json = await fs.readFile(join(specDir, 'main/db/db.json'), 'utf-8')
+  const rows = JSON.parse(json).schema
+  const owed = rows.find((row) => row.name === 'owed')
+  t.ok(
+    rows.some((row) => row.type === 2),
+    'the app has an index'
+  )
+  t.is(owed?.id, Math.max(...rows.map((row) => row.id)), 'so none of theirs moved')
+})
+
 // a route's id is the wire format: one added later takes a free id, wherever its schema registers it,
 // and never the id of a route registered after it, as the bundled extensions' are after an app's
 test('build: a collection added to a shipped app builds a spec that loads, every route on its id', async (a) => {

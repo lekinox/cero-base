@@ -16,6 +16,7 @@ import {
   REMOVALS,
   REFUSALS,
   SPENT,
+  ASKS,
   OWNER,
   INVITE,
   REMOVE,
@@ -66,7 +67,8 @@ const REQUESTS = {
   accept: 'accept',
   deny: 'deny',
   'rotate-key': 'epoch',
-  revoke: 'revoke'
+  revoke: 'revoke',
+  'ask-key': 'owed'
 }
 
 // the device keys a request stands on: its own, and those of the chain its join proved or a link
@@ -137,6 +139,7 @@ export function makeDispatcher({
   const removals = `@${ns}/${REMOVALS}`
   const refusals = `@${ns}/${REFUSALS}`
   const spent = `@${ns}/${SPENT}`
+  const asks = `@${ns}/${ASKS}`
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
   const getDevice = (view, id) => view.get(`@${ns}/devices`, { id })
 
@@ -548,6 +551,7 @@ export function makeDispatcher({
     await ctx.host.removeWriter(hid.decode(id))
     await revoke(ctx, device, by)
     await drop(ctx, 'devices', id)
+    await ctx.view.delete(asks, { id })
     if (device) await owe(ctx.view)
     // with the seat go the keys its writer was still owed, and what its device key was promised:
     // a rotation is sealed to the promised
@@ -722,6 +726,7 @@ export function makeDispatcher({
         if (device.memberId !== op.id) continue
         await ctx.host.removeWriter(hid.decode(device.id))
         await drop(ctx, 'devices', device.id)
+        await ctx.view.delete(asks, { id: device.id })
         await owe(ctx.view)
         await drop(ctx, 'requests', device.id)
       }
@@ -841,6 +846,19 @@ export function makeDispatcher({
       createdAt: existing?.createdAt || op.createdAt || ts,
       updatedAt: ts
     })
+  })
+
+  // a device of a member who stands asks for the keys it lacks, from its own core whether it
+  // writes or only reads: one row, at the address it asked with last, that only its own op closes
+  add('ask-key', async (op, ctx) => {
+    selfOnly(op, ctx)
+    if (!isKey(op.reply)) return
+    await bind(ctx)
+    await ctx.view.insert(asks, { id: op.id, reply: op.reply })
+  })
+  add('del-owed', async (op, ctx) => {
+    selfOnly(op, ctx)
+    await ctx.view.delete(asks, op)
   })
 
   // any WRITE member mints an invite, its rank capped at admission; an existing row is never

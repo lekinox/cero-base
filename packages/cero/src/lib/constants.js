@@ -4,6 +4,7 @@ export const EPOCHS = 'epochs'
 export const REMOVALS = 'removals'
 export const REFUSALS = 'refusals'
 export const SPENT = 'spent'
+export const ASKS = 'owed'
 
 // Writer-admission / pairing timeout (ms).
 export const TIMEOUT = 30000

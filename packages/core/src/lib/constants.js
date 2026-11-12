@@ -61,3 +61,5 @@ export const REMOVALS = 'removals'
 export const REFUSALS = 'refusals'
 // invites spent or revoked, until they expire
 export const SPENT = 'spent'
+// devices that asked for the keys they lack, until each closes its own
+export const ASKS = 'owed'

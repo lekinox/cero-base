@@ -1,5 +1,5 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
@@ -167,6 +167,16 @@ export function collections(ns, scope) {
 
 /**
  * @param {string} ns
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
+// collections cero added once apps shipped: numbered after the app's collections and indexes, so
+// a new spec gives each of those the id an older release gave it
+export function added(ns) {
+  return [{ name: ASKS, schema: `@${ns}/owed`, key: ['id'] }]
+}
+
+/**
+ * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
 // a route keeps the id a built spec gave it, and one added here takes the next free id there
@@ -196,7 +206,9 @@ export function dispatches(ns) {
 export function appended(ns) {
   return [
     { name: 'upgrade', requestType: `@${ns}/upgrade` },
-    { name: 'revoke', requestType: `@${ns}/revoke` }
+    { name: 'revoke', requestType: `@${ns}/revoke` },
+    { name: 'ask-key', requestType: `@${ns}/owed` },
+    { name: 'del-owed', requestType: `@${ns}/del-by-id` }
   ]
 }
 
@@ -214,6 +226,7 @@ export function reserved(ns, scope, root) {
   return {
     refs: new Set([
       ...collections(ns, scope).map((c) => c.name),
+      ...(main ? added(ns) : []).map((c) => c.name),
       ...Object.keys(main ? live(ns, root) : {})
     ]),
     types: new Set(Object.keys({ ...schemas[scope], ...(main && schemas.rpc) })),
