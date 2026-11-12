@@ -79,9 +79,12 @@ export declare class Rotation {
     /** @private */
     private _handed;
     /**
-     * @returns {Promise<boolean>} Whether the log's newest key is one this device cannot open.
+     * @returns {Promise<boolean>} Whether this device cannot open the log's newest key, or one set
+     * aside that a block it met was written under.
      */
     lacks(): Promise<boolean>;
+    /** @private */
+    private _lacking;
     /**
      * Safety net after boot: an epoch applied but never saved, e.g. a crash between a
      * rotation's append and its save, is learned from the epochs collection.
