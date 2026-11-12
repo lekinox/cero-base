@@ -103,6 +103,7 @@ export declare const main: {
         by: import("@cero-base/core").Prim;
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
+        spent: import("@cero-base/core").Prim;
     };
     status: {
         role: import("@cero-base/core").Prim;

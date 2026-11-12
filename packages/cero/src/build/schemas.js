@@ -133,7 +133,9 @@ export const main = {
     // what an identity's devices told of its device keys, 32 bytes each, back to back: those
     // removed, and those that stand whatever linked them
     removed: bytes,
-    standing: bytes
+    standing: bytes,
+    // the open invites were spent when it was written
+    spent: bool
   },
   // this device's live view of a context: computed on read, never stored
   status: {
