@@ -423,6 +423,10 @@ async function ask(local, network, spec, { invite, writer, onrequest, timeout, s
         keep,
         signal
       })
+    } catch (err) {
+      // an expired invite leaves no join a later launch could resume
+      if (err.code === 'EXPIRED') await local.store.del('joins', row.id)
+      throw err
     } finally {
       await mailbox.close()
     }

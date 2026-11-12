@@ -147,10 +147,13 @@ export class Server extends RPCServer {
    * @private
    */
   _start(how = {}) {
-    this._booting = this._boot(how)
-    // it surfaces on the request that waits for it
-    this._booting.catch(() => {})
-    return this._booting
+    const booting = this._boot(how)
+    this._booting = booting
+    // it surfaces on the request that waits for it; the next one starts over
+    booting.catch(() => {
+      if (this._booting === booting) this._booting = null
+    })
+    return booting
   }
 
   /** @private */

@@ -1823,11 +1823,34 @@ test('rpc: status.owed reads in the UI as in the worker, true while its device w
   t.pass('and not once it was sent them')
 })
 
-test('probe: a wrong phrase on a new store leaves the worker able to create or recover', async (t) => {
+test('rpc: a wrong phrase on a new store leaves the worker able to create', async (t) => {
   const testnet = await makeTestnet(t)
   const { open } = await fresh(t, testnet)
   const phrase = Identity.toPhrase(Identity.randomBytes(32)).split(' ').slice(1).join(' ')
   await t.exception(open({ phrase }), /BIP-39/)
   const created = await open().catch((err) => err)
   t.ok(created?.id, `created after the wrong phrase: ${created?.message ?? ''}`)
+})
+
+test('rpc: a link denied on a new store leaves the worker able to create', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 6 })
+  const { open } = await fresh(t, testnet)
+  const linking = open({ invite: await cero.invite(owner) })
+  linking.catch(() => {})
+  await deny(owner, await nextRequest(owner))
+  await t.exception(linking, /DENIED/)
+  const created = await open()
+  t.not(created.id, owner.id, 'a new identity')
+})
+
+test('rpc: a link that expires on a new store leaves the worker able to create', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 6 })
+  const { open } = await fresh(t, testnet)
+  await t.exception(open({ invite: await cero.invite(owner, { ttl: 1000 }) }), /EXPIRED/)
+  const created = await open()
+  t.not(created.id, owner.id, 'a new identity')
 })
