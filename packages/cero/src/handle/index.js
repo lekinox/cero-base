@@ -1637,8 +1637,8 @@ export class Handle extends ReadyResource {
   /** @private */
   async _tellRoom(id) {
     const { data: row } = await this.store.get('handles', id)
-    // a room left on another device has no row
-    if (!row) return true
+    // a room left on another device has no row; one still being joined is told by its own open
+    if (!row?.encryptionKey) return true
     const { type, key, encryptionKey, epochs } = row
     const keyPair = await this._loadKeyPair(id)
     const child = this._room({

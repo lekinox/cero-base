@@ -2175,7 +2175,8 @@ async function tally(act, onrevoke = () => {}) {
     return call.call(this, op, data)
   }
   Database.prototype.get = function (name, query) {
-    if (name === 'handles' && typeof query !== 'string') seen.lists++
+    // the joins and leaves are read through the index by state, never as a list of every handle
+    if (name === 'handles' && typeof query !== 'string' && query?.state === undefined) seen.lists++
     return read.call(this, name, query)
   }
   Handle.prototype._open = function () {
