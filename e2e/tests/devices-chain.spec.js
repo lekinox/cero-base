@@ -109,8 +109,6 @@ test('after the laptop removes the lost phone it reads and writes in a room it h
 test('the removed phone does not receive what the laptop writes after in a room it has open', async ({
   launch
 }) => {
-  // fails today: the removed phone, with the room open, still shows what the laptop writes there after
-  test.fail()
   const { phone, laptop } = await lost(launch)
   await back(laptop.page)
   await open(laptop.page, 'clinic')
@@ -131,8 +129,6 @@ test('after the laptop removes the lost phone it opens a room the phone made and
 test('after the laptop removes the lost phone it links a tablet, which reads both rooms', async ({
   launch
 }) => {
-  // fails today: the tablet waits on its request for good after the laptop approves it; with no removal it links
-  test.fail()
   const { laptop } = await lost(launch)
   await back(laptop.page)
   await open(laptop.page, 'clinic')

@@ -153,7 +153,6 @@ test('a join a member denies moves to Ended with the reason', async ({ launch })
 })
 
 test('an ended join the joiner dismisses is gone, after a restart too', async ({ launch }) => {
-  test.fail(true, 'cero.del(me.room, id) rejects ROUTE_NOT_FOUND_BY_NAME: @cero/del-room')
   const { alice, bob } = await asked(launch)
   await expect(requests(alice.page)).toHaveCount(1)
   await alice.page.getByRole('button', { name: 'Deny' }).click()
