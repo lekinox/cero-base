@@ -1094,7 +1094,9 @@ export class Handle extends ReadyResource {
     }
     // a join another device of this identity asks with is waited on here, not asked again
     const theirs =
-      row?.state === 'asking' && row.invite === invite && !(await this._asked(id, invite))
+      row?.state === 'asking' &&
+      row.invite === invite &&
+      !(await this._asked(id, invite, row.writer))
     const join = theirs ? null : this._start(invite, type)
     // a row in a room this identity lost its seat in is not the join landing: it lands once it moved on
     const stale = !!row && (row.state || 'in') === 'in'
@@ -1152,9 +1154,9 @@ export class Handle extends ReadyResource {
 
   // the device that asked holds the writer the answer is sealed to
   /** @private */
-  async _asked(id, invite) {
+  async _asked(id, invite, writer) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    return kept?.invite === invite
+    return kept?.invite === invite && hid.encode(kept.publicKey) === writer
   }
 
   // one join a handle, whoever waits on it: it goes on until its row says how it ended, and a close only pauses it
@@ -1212,7 +1214,7 @@ export class Handle extends ReadyResource {
       const alone = !join.waiting
       // a close pauses the join, anything else ends it, and its row says how
       const report = (err) => this.closing || this._onerror(err)
-      if (end.code !== 'CLOSED') await this._over(invite, end).catch(report)
+      if (end.code !== 'CLOSED') await this._over(invite, end, join.writer).catch(report)
       if (err.code !== 'CLOSED' && alone) this._onerror(err)
       settle(join.reject, end)
     }
@@ -1243,12 +1245,11 @@ export class Handle extends ReadyResource {
     const { data: kept } = await this.local.store.get('handle-keypairs', ask.handle)
     const state = row && (row.state || 'in')
     const mine = !!kept && b4a.equals(kept.publicKey, ask.publicKey)
-    // a join this writer takes to another invite keeps it, while either is on the row
     const asks = state === 'asking' || state === 'joining'
-    if (mine && asks && (row.invite === ask.invite || row.invite === kept.invite)) return
-    if (row?.invite === ask.invite && !asks && state !== 'cancelled') {
-      return this.local.store.del('asks', ask.id)
-    }
+    if (mine && asks && row.writer === ask.id) return
+    // a seated row names no writer
+    const ended = row && !asks && state !== 'cancelled' && (!row.writer || row.writer === ask.id)
+    if (ended && row.invite === ask.invite) return this.local.store.del('asks', ask.id)
     // only the join that asks with this writer stops: one still choosing its writer may ask anew
     const join = this._joining.get(ask.handle)
     if (join?.writer && b4a.equals(join.writer.publicKey, ask.publicKey)) {
@@ -1268,9 +1269,7 @@ export class Handle extends ReadyResource {
     if (ask.createdAt >= Date.now() - KEPT) await this._announce(ask.type, ask)
     await this.local.store.del('asks', ask.id)
     const { data: row } = await this.store.get('handles', ask.handle)
-    if (row?.state !== 'cancelled' || row.invite !== ask.invite) {
-      await this._forget(ask.handle, ask)
-    }
+    if (row?.state !== 'cancelled' || row.writer !== ask.id) await this._forget(ask.handle, ask)
   }
 
   // a launch of the device that asked announces the cancel again, and once a peer or a mirror holds
@@ -1297,7 +1296,9 @@ export class Handle extends ReadyResource {
     if (kept?.invite !== invite || !b4a.equals(kept.publicKey, publicKey)) return
     await this.local.store.del('handle-keypairs', id)
     const { data: row } = await this.store.get('handles', id)
-    if (row?.state === 'cancelled' && row.invite === invite) await this.store.del('handles', id)
+    if (row?.state === 'cancelled' && row.writer === hid.encode(publicKey)) {
+      await this.store.del('handles', id)
+    }
   }
 
   /** @private */
@@ -1315,7 +1316,9 @@ export class Handle extends ReadyResource {
     const state = row && (row.state || 'in')
     // the writer this device asks with: fixed before the join is written, so a resumed one hears the reply to it
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    const mine = !!kept?.invite && (state === 'asking' || state === 'joining')
+    // an ask another device made since is the one that stands: this device asks anew in its place
+    const latest = state === 'asking' && !!kept && row.writer === hid.encode(kept.publicKey)
+    const mine = !!kept?.invite && (state === 'joining' || latest)
     if (mine && (state === 'joining' || row.invite === invite)) return id
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
     const writer = mine ? kept : Identity.randomKeyPair()
@@ -1325,6 +1328,7 @@ export class Handle extends ReadyResource {
     // a room she left is asked again under any invite, the one she came in with too
     if (state === 'left' && row.invite === invite) await this.store.call('del-handle', { id })
     const ts = Date.now()
+    const { publicKey, secretKey } = writer
     await this.store.call('add-handle', {
       id,
       type,
@@ -1333,9 +1337,9 @@ export class Handle extends ReadyResource {
       createdAt: ts,
       updatedAt: ts,
       state: 'asking',
-      invite
+      invite,
+      writer: hid.encode(publicKey)
     })
-    const { publicKey, secretKey } = writer
     const ask = { id: hid.encode(publicKey), handle: id, type, invite, publicKey, secretKey }
     await this.local.store.put('asks', ask)
     return id
@@ -1351,12 +1355,14 @@ export class Handle extends ReadyResource {
 
   // how a join ended, on its row, which keeps none of the keys it was handed
   /** @private */
-  async _over(invite, err) {
+  async _over(invite, err, writer) {
     const state = OVER[err.code]
     const id = hid.encode(Invite.parse(invite).key)
     const { data: row } = await this.store.get('handles', id)
-    // a join on its way ends under its own invite, one seated or over stays as it reads
-    const ends = row?.state === 'asking' || (row?.state === 'joining' && state === 'denied')
+    // a join on its way ends its own request, one seated or over stays as it reads
+    const own = !writer || row?.writer === hid.encode(writer.publicKey)
+    const ends =
+      (row?.state === 'asking' && own) || (row?.state === 'joining' && state === 'denied')
     if (!state || !ends || row.invite !== invite) return
     const reason = err.reason ?? null
     await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
@@ -1476,10 +1482,11 @@ export class Handle extends ReadyResource {
   async _carryOn() {
     // the rows not settled, through their index: never every handle
     for (const state of ['asking', 'joining']) {
-      for (const { id, type, invite, encryptionKey } of (await this.store.get('handles', { state }))
-        .data) {
+      for (const { id, type, invite, writer, encryptionKey } of (
+        await this.store.get('handles', { state })
+      ).data) {
         // an answer is heard by the device that asked, and the keys on a row seat any device
-        if (encryptionKey || (await this._asked(id, invite))) this._start(invite, type)
+        if (encryptionKey || (await this._asked(id, invite, writer))) this._start(invite, type)
       }
     }
     for (const { id, type } of (await this.store.get('handles', { state: 'leaving' })).data) {

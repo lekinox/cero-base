@@ -462,12 +462,17 @@ test('join: a cancelled row a second device deletes and asks again under the sam
   t.ok(await cero.cancel(b.me, invite))
   await del(b.me.team, room.id)
   open(b.me.team, invite).catch(() => {})
-  await nextRequest(room, request)
+  const latest = await nextRequest(room, request)
   await cero.resume(a.me)
   const ended = await Promise.race([joining, new Promise((r) => setTimeout(r, 10000, null))])
   t.is(ended?.code, 'CANCELLED', 'the join under the first request ends')
   const left = async () => !(await get(room.requests)).data.some((r) => r.id === request.id)
   t.ok(await waitUntil(left, 5000).catch(() => false), 'its request leaves the room')
+  t.is((await get(a.me.team, room.id)).data?.state, 'asking', 'the latest ask stands')
+  t.ok(
+    (await get(room.requests)).data.some((r) => r.id === latest.id),
+    'and its request waits'
+  )
 })
 
 test('join: a cancel as the app closes reaches onerror with nothing', async (t) => {

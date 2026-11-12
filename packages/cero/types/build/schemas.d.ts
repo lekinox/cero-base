@@ -60,6 +60,7 @@ export declare const main: {
         reason: import("@cero-base/core").Prim;
         by: import("@cero-base/core").Prim;
         invite: import("@cero-base/core").Prim;
+        writer: import("@cero-base/core").Prim;
     };
     file: {
         id: import("@cero-base/core").Prim;

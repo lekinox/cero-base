@@ -75,7 +75,9 @@ export const main = {
     state: string,
     reason: string,
     by: string,
-    invite: string
+    invite: string,
+    // the writer of the latest ask, the one request of the identity that stands
+    writer: string
   },
   file: {
     id: required(string),
