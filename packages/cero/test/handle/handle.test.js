@@ -2666,6 +2666,46 @@ test('devices: a room the identity reads only from the removed device is told by
   t.pass('and the host rotates')
 })
 
+test('devices: a room the identity only reads, told by a pass as its host drops off, is told once the host is back', async (t) => {
+  const host = await ceroOpen(t)
+  const news = await open(host.me.team, { name: 'news' })
+  const laptop = await ceroOpen(t, { testnet: host.testnet })
+  const phone = await linkTo(t, laptop)
+  await seats(laptop.me, 2)
+  await laptop.me.close()
+  const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+  await waitUntil(() => sits(news, phone))
+  const me = await relaunch(t, laptop)
+  await waitUntil(async () => (await me.store.get('handles', seen.id)).data?.state === 'in')
+
+  const { call } = Database.prototype
+  Database.prototype.call = async function (op, data) {
+    const theirs = this === news.store || this === seen.store
+    if (op === 'revoke' && !theirs && b4a.equals(this.key, news.store.key)) {
+      await host.me.network.suspend()
+      await phone.me.network.suspend()
+    }
+    return call.call(this, op, data)
+  }
+  t.teardown(() => (Database.prototype.call = call))
+  await del(me.devices, phone.me.device.id)
+  await passed(me)
+  Database.prototype.call = call
+  await host.me.network.resume()
+  await phone.me.network.resume()
+
+  const told = await waitUntil(async () => {
+    const told = await news.store.told(me.id)
+    return names(told.removed, deviceKey(phone))
+  }, 20000).catch(() => false)
+  t.ok(told, 'the host hears the removal')
+  await put(news.messages, { text: 'after' })
+  const read = await waitUntil(async () => (await get(seen.messages)).data.length === 1, 10000)
+    .then(() => true)
+    .catch(() => false)
+  t.absent(read, 'and the removed device reads nothing written next')
+})
+
 test('devices: a device whose row in a room keeps no key tells it with a proof', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
