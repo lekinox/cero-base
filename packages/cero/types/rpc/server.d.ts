@@ -68,9 +68,9 @@ export type GetResult = {
  * @typedef {{ data: import('../lib/spec.js').Row | import('../lib/spec.js').Row[] | null, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
  */
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
- * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
- * exposes data ops, pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: a store that holds an identity
+ * boots its root via `cero()` as soon as it opens, so the network is up while the UI still loads; a new one waits
+ * for the client to say how, by init, restore or link. Then it exposes data ops, pairing, and handle lifecycle.
  */
 export declare class Server extends RPCServer {
     storage: string;
@@ -94,6 +94,8 @@ export declare class Server extends RPCServer {
     _booting;
     /** @private */
     _adopting;
+    /** @private */
+    _stop;
     /**
      * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec
@@ -114,6 +116,11 @@ export declare class Server extends RPCServer {
     get identity(): import('@cero-base/core/identity').Identity | undefined;
     /** @private */
     private _open;
+    /**
+     * Open the root, as `how` says on a new store: a phrase recovers, an invite links, neither creates.
+     * @private
+     */
+    private _start;
     /** @private */
     private _boot;
     /** @private */

@@ -3,7 +3,7 @@ const { app, BrowserWindow, ipcMain, nativeTheme } = electron
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { readFileSync } from 'fs'
+import { readFileSync, promises as fs } from 'fs'
 import PearRuntime from 'pear-runtime'
 import { isLinux, isMac } from 'which-runtime'
 import { command, flag } from 'paparam'
@@ -202,23 +202,27 @@ ipcMain.handle('pear:startWorker', (event, filename) => {
   if (filename !== WORKER) throw new Error(`unknown worker: ${filename}`)
   getWorker(WORKER)
   // set up now: a reloaded page must not offer setup again
-  initialized = true
+  state ??= 'ready'
   return true
 })
-// a cancelled recovery ends with its worker: the identity it waited for never opens behind the user's back
+// a cancelled recovery ends with its worker and leaves nothing: the identity it waited for never opens behind the
+// user's back, and the next launch offers setup
 ipcMain.handle('pear:stopWorker', async (event, filename) => {
   if (filename !== WORKER) throw new Error(`unknown worker: ${filename}`)
   const worker = workers.get(WORKER)
-  if (!worker) return
-  const exited = new Promise((resolve) => worker.once('exit', resolve))
-  worker.destroy()
-  await exited
+  if (worker) {
+    const exited = new Promise((resolve) => worker.once('exit', resolve))
+    worker.destroy()
+    await exited
+  }
+  await fs.rm(getPear().storage, { recursive: true, force: true })
+  state = null
 })
-let initialized = null
+// what the store holds: undefined until read, null when new
+let state
 async function checkInitialized() {
-  if (initialized !== null) return initialized
-  initialized = await isInitialized(getPear().storage)
-  return initialized
+  if (state === undefined) state = await isInitialized(getPear().storage)
+  return state
 }
 
 ipcMain.handle('pear:isInitialized', checkInitialized)

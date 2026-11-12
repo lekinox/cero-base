@@ -944,18 +944,61 @@ test('cero(): rejects missing spec', async (t) => {
 
 // ─── peek ─────────────────────────────────────────────────────────────────
 
-test('peek(): false on fresh dir', async (t) => {
+test('peek(): null on fresh dir', async (t) => {
   const dir = await t.tmp()
-  t.is(await peek(dir, spec), false)
+  t.is(await peek(dir, spec), null)
 })
 
-test('peek(): true after cero() seeds master', async (t) => {
+test('peek(): ready after cero() seeds master', async (t) => {
   const { me, dir } = await ceroOpen(t)
   await me.close()
-  t.is(await peek(dir, spec), true)
+  t.is(await peek(dir, spec), 'ready')
 })
 
-test('peek(): true after reopening with the stored phrase', async (t) => {
+test('peek(): a recovery or a link still waiting for a device of its identity reads as one', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const opts = { bootstrap: testnet.bootstrap, recoveryTimeout: 500 }
+
+  const recovering = await t.tmp()
+  const phrase = (await Identity.create()).toPhrase()
+  await t.exception(cero(recovering, spec, { ...opts, phrase }), /TIMEOUT/)
+  t.is(await peek(recovering, spec), 'recovering')
+
+  const linking = await t.tmp()
+  const invite = await cero.invite(owner)
+  await t.exception(cero(linking, spec, { ...opts, invite }), /TIMEOUT/)
+  t.is(await peek(linking, spec), 'linking')
+})
+
+test('cero(): a phrase that is no BIP-39 mnemonic is refused before anything is stored', async (t) => {
+  const dir = await t.tmp()
+  await t.exception(cero(dir, spec, { phrase: 'eleven words are not a phrase' }), /BIP-39/)
+  t.absent(fs.existsSync(`${dir}/main`), 'no store')
+  t.is(await peek(dir, spec), null)
+})
+
+test('cero(): a recovery stopped while it waits goes on at the next open, with no phrase, once a device of it is online', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const ownerDir = await t.tmp()
+  const owner = await cero(ownerDir, spec, opts)
+  const { id } = owner
+  const phrase = owner.identity.toPhrase()
+  await owner.close()
+
+  const dir = await t.tmp()
+  await t.exception(cero(dir, spec, { ...opts, phrase, recoveryTimeout: 500 }), /TIMEOUT/)
+  const resumed = cero(dir, spec, { ...opts, recoveryTimeout: 0 })
+  const again = await cero(ownerDir, spec, opts)
+  t.teardown(() => again.close().catch(() => {}), { order: 6 })
+  const me = await resumed
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.is(me.id, id, 'the identity of the phrase')
+  t.alike(me.store.key, again.store.key, 'recovered into its database')
+})
+
+test('peek(): ready after reopening with the stored phrase', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
   const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
@@ -963,7 +1006,7 @@ test('peek(): true after reopening with the stored phrase', async (t) => {
   await first.close()
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
   await me.close()
-  t.is(await peek(dir, spec), true)
+  t.is(await peek(dir, spec), 'ready')
 })
 
 test('cero(): a storage from before device keys is refused, to be recreated', async (t) => {
@@ -971,7 +1014,7 @@ test('cero(): a storage from before device keys is refused, to be recreated', as
   // the seed stored with no device key beside it: what an older cero left
   await me.local.store.del('device')
   await me.close()
-  t.is(await peek(dir, spec), false, 'no device, no identity to open')
+  t.is(await peek(dir, spec), null, 'no device, no identity to open')
   await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }), /predates device keys/)
 })
 
@@ -1075,8 +1118,8 @@ test('peek: reads a store opened with a storageKey', async (t) => {
   const storageKey = b4a.alloc(32, 7)
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey })
   await me.close()
-  t.is(await peek(dir, spec, { storageKey }), true, 'an identity, read with its key')
-  t.is(await peek(await t.tmp(), spec, { storageKey }), false, 'a fresh dir holds none')
+  t.is(await peek(dir, spec, { storageKey }), 'ready', 'an identity, read with its key')
+  t.is(await peek(await t.tmp(), spec, { storageKey }), null, 'a fresh dir holds none')
 })
 
 test('peek(): rejects bad dir', async (t) => {
@@ -1285,7 +1328,7 @@ test('restore(): peek reflects the new identity', async (t) => {
   me = await restore(me, phrase)
   await me.close()
 
-  t.is(await peek(dir, spec), true, 'peek sees new identity')
+  t.is(await peek(dir, spec), 'ready', 'peek sees new identity')
 })
 
 test('restore(): syncs data from the peer holding the phrase', async (t) => {

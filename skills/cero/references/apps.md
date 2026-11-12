@@ -96,7 +96,7 @@ const room = await cero.open(me.room, { name: 'team' })
 cero.watch(room.notes).on('data', ({ data }) => render(data)) // render: your UI's
 ```
 
-`cero.connect(ipc, spec)` is the same function. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses: the worker runs the same operator on the same context, so it returns and refuses as it does there, and it runs nothing else the UI names.
+`cero.connect(ipc, spec)` is the same function. On a worker whose store is new it takes what `cero(dir, spec, opts)` takes for a new device: `phrase` recovers that identity, `invite` with `onrequest` links to it, neither creates one, and the worker opens nothing until then. The client carries the worker root's refs: your schema's, the builtins, and `me.local.<ref>` for local refs, which stay on this device and never sync. Every verb but `before`, `after` and `tx` crosses: the worker runs the same operator on the same context, so it returns and refuses as it does there, and it runs nothing else the UI names.
 
 `connect(ipc, spec, { push: firebase(messaging()) })` subscribes the device to pushes for its handles and acts on each push, with the platform's messaging service: see [Push while the app is dead](network.md#push-while-the-app-is-dead).
 
@@ -169,7 +169,7 @@ document.addEventListener('visibilitychange', () => {
 ## What runs in the worker
 
 - `before`, `after` and `tx` take functions, so they run in the worker and the client has none. Register hooks in an extension's `setup`, which runs there.
-- `peek` reads a local directory, so it runs in a process that has one: chat-desktop's Electron main calls it, through `isInitialized`, before it starts the worker.
+- `peek` reads a local directory, so it runs in a process that has one: chat-desktop's Electron main calls it, through `isInitialized`, before it starts the worker. A store still `'recovering'` or `'linking'` opens to the waiting screen, and the worker goes on with it.
 - Errors cross as `code` and `message`, and a denied join with its `reason`, so match `err.code`. A hook that refuses a UI's write arrives as `REFUSED`.
 
 ## Ship one spec to both sides
@@ -195,16 +195,16 @@ import { cero } from '@cero-base/cero/client'
 import { spec } from './spec/index.js'
 
 export const restore = cero.restore
+export const link = cero.link
 
-export async function connect(ipc, { name, phrase } = {}) {
-  const me = await cero(ipc, spec)
-  if (phrase) await cero.restore(me, phrase)
+export async function connect(ipc, { name, phrase, invite, onrequest } = {}) {
+  const me = await cero(ipc, spec, { phrase, invite, onrequest })
   if (name) await cero.set(me.profile, { name })
   return me
 }
 ```
 
-`connect(ipc, { phrase })` is how the desktop setup screen recovers, and `{ name }` how it creates.
+`connect(ipc, { phrase })` is how the desktop setup screen recovers, `{ invite }` how it links, and `{ name }` how it creates.
 
 ## Run the examples
 

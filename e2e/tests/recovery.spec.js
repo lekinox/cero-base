@@ -62,15 +62,22 @@ test('after recovery a message written on either app shows on the other', async 
   await expect(second.page.getByText('from the first app', { exact: true })).toBeVisible()
 })
 
-test('twelve words that are not her phrase show an error', async ({ launch }) => {
+test('twelve words that are not her phrase wait for a device of theirs, and Cancel leaves no profile behind', async ({
+  launch
+}) => {
   const { phrase } = await alice(launch)
   const other =
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
   expect(other).not.toBe(phrase)
-  const { page } = await recover(launch, other)
+  const { page, storage, close } = await recover(launch, other)
 
-  // the app looks for a device of that identity for 30 s before it gives up
-  await expect(page.getByText(/finding a device of this identity/)).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByText('Looking for your other device')).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByPlaceholder('Your name')).toBeVisible()
+  await close()
+
+  const again = await launch('recovered', { storage })
+  await expect(again.page.getByPlaceholder('Your name')).toBeVisible()
 })
 
 test('an eleven-word phrase shows an error', async ({ launch }) => {
@@ -80,8 +87,7 @@ test('an eleven-word phrase shows an error', async ({ launch }) => {
   await expect(page.getByText(/BIP-39 mnemonic/)).toBeVisible()
 })
 
-// the worker mints a fresh identity when it starts, before the phrase is checked, and a failed restore keeps it
-test.fail('a wrong phrase leaves no profile behind', async ({ launch }) => {
+test('a wrong phrase leaves no profile behind', async ({ launch }) => {
   const { phrase } = await alice(launch)
   const { page, storage, close } = await recover(launch, eleven(phrase))
   await expect(page.getByText(/BIP-39 mnemonic/)).toBeVisible()

@@ -463,6 +463,8 @@ export declare class Handle extends ReadyResource {
      */
     private _enter;
     /** @private */
+    private _sweep;
+    /** @private */
     private _carryOn;
     /**
      * Get an open child by id, or re-open it. Concurrent calls for the same id share one
