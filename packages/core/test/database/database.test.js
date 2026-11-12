@@ -1554,6 +1554,54 @@ test('claim: a device whose first add-writer was refused claims again and is sea
   t.is(b.db.length, 2, 'a second add-writer, where the first left nothing')
 })
 
+test('claim: a device refused for good appends its claim once, and again only on a promise made since', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+
+  // its device key removed, every claim it makes is refused; no rotation yet, so it reads on
+  a.db.rotation._rotate = async () => {}
+  await a.db.call('del-device', { id: hid.encode(b.db.writerKey) })
+  await waitFor(() => !b.db.bee.writable)
+  const length = b.db.length
+  for (let i = 0; i < 3; i++) await t.exception(b.db.claim({ timeout: 1500 }), /timed out/)
+  t.is(b.db.length, length + 1, 'three calls, one claim')
+
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const { Mailbox } = await import('../../src/mailbox/index.js')
+  const secret = Identity.randomBytes(32)
+  const invite = Invite.create({ key: a.db.key, address: Mailbox.getAddress(secret), own: true })
+  const row = { id: b4a.toHex(invite.id), role: 'member', createdAt: 1, secret, reuse: true }
+  const stamp = await a.db.write([['add-invite', row]])
+  const tablet = await Identity.create({ seed: b.identity.seed })
+  const kp = Identity.randomKeyPair()
+  const core = a.store.get({
+    keyPair: kp,
+    manifest: { version: a.store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const join = sealJoin(invite, tablet, core.key, Identity.randomBytes(32))
+  const op = wrap(stamp, spec.dispatch.encode('@cero/join', join))
+  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links: [] }))
+  await a.db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await b.db.get('requests', hid.encode(core.key))).data?.promised)
+  await t.exception(b.db.claim({ timeout: 1500 }), /timed out/)
+  t.is(b.db.length, length + 2, 'a promise made to her since: it claims again')
+})
+
+test('claim: a device that has its row is not held back by the claim that got it', async (t) => {
+  const { db } = await withRole(t, 'reader')
+  const { against } = await db._standing()
+  await db.bee.local.setUserData('cero/claim', against)
+  t.ok(await db._standing(), 'its next claim finds where it stands and returns')
+})
+
 // ─── key-type invariants ──────────────────────────────────────────────────
 
 test('the genesis device row is keyed by the writer, bound to the identity', async (t) => {

@@ -531,8 +531,10 @@ export declare class Database extends ReadyResource {
      * Seat this device's writer where its identity is a member, or was promised to be one: wait
      * for the member row or the promise, append the add-writer the identity signs from this
      * device's own core, and resolve once it writes. A member whose role cannot write takes no
-     * seat; a promise made to her is kept all the same, and resolves at this device's row. Rejects
-     * `DENIED`, with the reason, once the room shows this writer turned away: its promise withdrawn.
+     * seat; a promise made to her is kept all the same, and resolves at this device's row. A claim
+     * that left this device nothing is made again once her member row or a promise made to her is
+     * new. Rejects `DENIED`, with the reason, once the room shows this writer turned away: its
+     * promise withdrawn.
      *
      * @param {{ timeout?: number }} [opts]
      * @returns {Promise<void>}
