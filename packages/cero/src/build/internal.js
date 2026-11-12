@@ -10,8 +10,8 @@ export const defs = {
     members: { type: 'member' },
     devices: { type: 'device' },
     invites: { type: 'invite' },
-    // the handles not settled are read through it, never every row
-    handles: { type: 'handle', indexes: { state: ['state'] } },
+    // the handles not settled, and a page of one type in list order, are read through them
+    handles: { type: 'handle', indexes: { state: ['state'], type: ['type', 'index'] } },
     files: { type: 'file' },
     requests: { type: 'request' }
   },

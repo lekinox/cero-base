@@ -230,7 +230,7 @@ export async function ceroOpen(t, opts = {}) {
 }
 
 // `count` handles rows added to a root in one transaction, rooms it holds and never opened: their ids
-export async function addHandles(me, count, from = 0) {
+export async function addHandles(me, count, from = 0, type = 'team') {
   const ids = []
   const ts = Date.now()
   await me.store.tx(async (tx) => {
@@ -240,7 +240,7 @@ export async function addHandles(me, count, from = 0) {
       ids.push(id)
       await tx.call('add-handle', {
         id,
-        type: 'team',
+        type,
         key,
         encryptionKey: Identity.randomBytes(32),
         name: `room ${i}`,

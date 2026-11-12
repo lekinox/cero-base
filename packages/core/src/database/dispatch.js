@@ -596,13 +596,15 @@ export function makeDispatcher({
   }
   // a removal by someone who may remove spends the invites that let in on their own: one the
   // removed held, or saw, brings nobody in after it. Those that wait for an accept stay. A promise
-  // no device claimed goes too, its invite used up or not, unless that invite waited for an accept
+  // no device claimed goes too, its invite used up or not, unless a member accepted it
   async function shut(ctx) {
     for (const invite of await ctx.view.find(invites, {}).toArray()) {
       if (invite.secret && !invite.confirm) await spend(ctx, invite, 'removed')
     }
     for (const row of await ctx.view.find(requests, {}).toArray()) {
-      if (!row.promised || (await ctx.view.get(invites, { id: row.invite }))) continue
+      if (!row.promised || row.accepted || (await ctx.view.get(invites, { id: row.invite }))) {
+        continue
+      }
       if ((await ctx.view.get(spent, { id: row.invite }))?.confirm) continue
       if (!(await sat(ctx.view, row))) await withdraw(ctx, row)
     }
@@ -934,7 +936,7 @@ export function makeDispatcher({
       if (!request.admitted) return false
       if (!request.promised || reason === 'spent') return true
       // a removal withdraws what no device claimed: a promise kept waits for a member to settle it
-      return reason === 'removed' && sat(ctx.view, request)
+      return reason === 'removed' && (request.accepted || sat(ctx.view, request))
     }
     for (const request of await ctx.view.find(requests, {}).toArray()) {
       if (request.invite !== invite.id || (await kept(request))) continue
@@ -965,6 +967,8 @@ export function makeDispatcher({
   }
   // from the version that has an invite's secret, whatever stamp a join carries
   const bounded = async (view) => since?.types[`@${ns}/invite`]?.secret <= (await versionOf(view))
+  // from the version whose requests say a member accepted them
+  const marked = async (view) => since?.types[`@${ns}/request`]?.accepted <= (await versionOf(view))
 
   // the member, when new, and its device, seated when the member writes; its request stays until
   // a member delivered the keys. The invite is spent unless it is reusable
@@ -1017,12 +1021,15 @@ export function makeDispatcher({
   // until a device of the identity, holding the keys, seats itself. With a link's chain for its
   // proof, that one device
   async function promise(ctx, { invite, identity, key, writer, reply, role, ts, proof }) {
+    // only an accept hands a promise an invite that waits
+    const accepted = !!invite.confirm && (await marked(ctx.view))
     await save(ctx, 'put', 'requests', {
       ...request(invite, identity, key, writer, reply, ts),
       role,
       admitted: true,
       promised: true,
-      proof
+      proof,
+      ...(accepted && { accepted })
     })
     if (!invite.reuse) await spend(ctx, invite, 'spent')
   }

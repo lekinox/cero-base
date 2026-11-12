@@ -16,6 +16,7 @@ export declare const defs: {
             type: string;
             indexes: {
                 state: string[];
+                type: string[];
             };
         };
         files: {

@@ -3603,3 +3603,26 @@ test('ask-key: the same log gives the same rows on every device, a reader asking
   for (const { db } of peers) await waitFor(async () => (await rows(db)).length === 0)
   t.pass('closed by its own device, and taken with a removal, on every device')
 })
+
+test('removal: one who left, let back in by an accept on a reusable invite older than her leaving, keeps her promise through it', async (t) => {
+  const { db, id } = await withMember(t, 'member')
+  const again = await addressed(db, { reuse: true })
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, again, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  t.is(await apply(db, writer, 'del-member', { id: identity.id }), null, 'she leaves')
+
+  const back = Identity.randomKeyPair().publicKey
+  await apply(db, back, 'join', named(db, again, { identity, writer: back }))
+  t.absent((await promise(db, back))?.admitted, 'she waits, though the invite asks for no accept')
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(back) }), null)
+  t.ok((await promise(db, back))?.accepted, 'the promise says a member made it')
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.is((await spent(db, b4a.toHex(again.id)))?.reason, 'removed', 'the removal spends the invite')
+  t.ok((await promise(db, back))?.promised, 'and the promise a member made stays')
+  t.absent(await refusal(db, hid.encode(back)))
+  t.is(await claimed(db, identity, back), null, 'her device claims after')
+  t.is((await db.get('devices', hid.encode(back))).data?.memberId, identity.id)
+})

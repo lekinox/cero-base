@@ -1596,10 +1596,12 @@ const RANGE = new Set(['gt', 'gte', 'lt', 'lte'])
 
 const byIndex = (a, b) => (a.index ?? 0) - (b.index ?? 0)
 
-// the index whose fields are exactly the query's equality keys
+// the index whose fields are exactly the query's equality keys, or those and then `index`: that
+// one reads the matches in list order
 function matchIndex(indexes, fields) {
   for (const [name, keys] of Object.entries(indexes || {})) {
-    if (keys.length === fields.length && keys.every((f) => fields.includes(f))) return name
+    const eq = keys.at(-1) === 'index' && !fields.includes('index') ? keys.slice(0, -1) : keys
+    if (eq.length === fields.length && eq.every((f) => fields.includes(f))) return name
   }
   return null
 }
