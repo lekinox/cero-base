@@ -482,6 +482,8 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
   for (const desc of internal.collections(ns, 'main')) dns.collections.register(desc)
   for (const desc of collections) dns.collections.register(desc)
   for (const desc of indexes) dns.indexes.register(desc)
+  // after the app's: indexes number by position, and the app's keep theirs
+  for (const desc of internal.indexes(ns, 'main')) dns.indexes.register(desc)
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)

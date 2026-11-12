@@ -1,14 +1,20 @@
 import test from 'brittle'
+import process from 'process'
 import b4a from 'b4a'
 import c from 'compact-encoding'
 import z32 from 'z32'
+import { rmSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath, pathToFileURL } from 'url'
 
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
-import { cero } from '../../src/index.js'
+import { cero, schema, t as T } from '../../src/index.js'
+import { build } from '../../src/build/index.js'
+import { defs } from '../../src/build/internal.js'
 import { put, set, get, del, open, rotate, accept, watch, after } from '../../src/lib/operators.js'
 import { Response, STATUS_ACCEPTED } from '../../../core/src/pairing/response.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -20,7 +26,8 @@ import {
   nextRequest,
   fetch,
   openHandle,
-  ceroOpen
+  ceroOpen,
+  addHandles
 } from '../helpers/index.js'
 
 // ─── Phase 4: root getter, fileServer, blobs, files ops ─────────────────────
@@ -1354,5 +1361,94 @@ test('Handle: an invite to a room this device is in opens it from its one row, n
     reads.filter((query) => typeof query !== 'string'),
     [],
     'and no list of the handles'
+  )
+})
+
+test('Handle: a page of one type reads through its index the rows, in the order, that filtering every handle gives', async (t) => {
+  const { me } = await ceroOpen(t)
+  for (const [type, count] of Object.entries({ team: 7, club: 5, room: 6 })) {
+    await addHandles(me, count, 0, type)
+  }
+  await addHandles(me, 4, 7, 'team')
+  await me.store.set('handles', { id: (await me.store.get('handles')).data[0].id, name: 'renamed' })
+  const every = (await me.store.get('handles')).data
+  const filtered = every.filter((row) => row.type === 'team').sort((a, b) => a.index - b.index)
+  const ids = (rows) => rows.map((row) => row.id)
+
+  const reads = []
+  const read = me.store.get.bind(me.store)
+  me.store.get = (name, query) => {
+    if (name === 'handles') reads.push(query)
+    return read(name, query)
+  }
+  t.alike(ids((await get(me.team)).data), ids(filtered), 'the whole list')
+  t.alike(ids((await get(me.team, { limit: 4 })).data), ids(filtered.slice(0, 4)), 'a page')
+  const back = await get(me.team, { limit: 4, reverse: true, total: true })
+  t.alike(ids(back.data), ids(filtered.slice(-4).reverse()), 'a page from the end')
+  t.is(back.total, filtered.length, 'and the count of the type')
+  const after = filtered[2].id
+  const past = filtered.filter((row) => row.id > after)
+  t.alike(ids((await get(me.team, { gt: after })).data), ids(past), 'a range of ids')
+
+  const stream = watch(me.team, { limit: 3, reverse: true })
+  t.teardown(() => stream.destroy())
+  const [first] = await new Promise((resolve) => stream.once('data', (res) => resolve([res])))
+  t.alike(ids(first.data), ids(filtered.slice(-3).reverse()), 'a watch of the type')
+  t.ok(
+    reads.every((query) => query.type === 'team'),
+    'each read asks the store for the type'
+  )
+})
+
+const builds = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', '.build-typed')
+process.on('exit', () => rmSync(builds, { recursive: true, force: true }))
+
+test('Handle: a store written before the index of the handles by type lists its rooms by type', async (t) => {
+  const sch = schema({
+    room: { notes: T.collection({ text: T.string }) },
+    club: { notes: T.collection({ text: T.string }) }
+  })
+  // the spec as a release with no such index built it
+  const shipped = async (dir) => {
+    rmSync(dir, { recursive: true, force: true })
+    const { indexes } = defs.main.handles
+    delete defs.main.handles.indexes
+    try {
+      await build(dir, sch, { extensions: [] })
+    } finally {
+      defs.main.handles.indexes = indexes
+    }
+  }
+  const load = async (dir) => (await import(pathToFileURL(join(dir, 'index.js')).href)).spec
+  await shipped(join(builds, 'before'))
+  const before = await load(join(builds, 'before'))
+
+  const testnet = await makeTestnet(t)
+  const store = await t.tmp()
+  const opts = { bootstrap: testnet.bootstrap, extensions: [] }
+  const first = await cero(store, before, opts)
+  for (const n of [1, 2, 3]) {
+    await open(first.room, { name: `room ${n}` })
+    await open(first.club, { name: `club ${n}` })
+  }
+  await first.close()
+
+  // the app's next build, over the spec it shipped
+  await shipped(join(builds, 'now'))
+  await build(join(builds, 'now'), sch, { extensions: [] })
+  const now = await load(join(builds, 'now'))
+  t.not(now.database.versions.db, before.database.versions.db, 'the index changes the database')
+  const me = await cero(store, now, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const page = await get(me.room, { limit: 2, reverse: true, total: true })
+  t.alike(
+    page.data.map((row) => row.name),
+    ['room 3', 'room 2'],
+    'the rooms written before it'
+  )
+  t.is(page.total, 3)
+  t.alike(
+    (await get(me.club)).data.map((row) => row.name),
+    ['club 1', 'club 2', 'club 3']
   )
 })

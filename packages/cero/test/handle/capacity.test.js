@@ -7,6 +7,7 @@ import { encode, createNotification } from 'blind-push'
 import { cero, open, put, get, receive } from '../../src/index.js'
 import { Handle } from '../../src/handle/index.js'
 import { spec } from '../fixtures/spec/index.js'
+import HyperDB from 'hyperdb'
 import { Database } from '@cero-base/core/database'
 import { Storage } from '@cero-base/core/storage'
 import { addHandles, makeTestnet, waitUntil } from '../helpers/index.js'
@@ -68,6 +69,29 @@ async function counted(act) {
     Handle.prototype._open = ready
   }
   return { ...seen, rows: seen.rows.size, topics: seen.topics.size }
+}
+
+// the rows `act` reads of the handles: through each index or the collection, by its name
+async function reads(act) {
+  const seen = {}
+  const { find } = HyperDB.prototype
+  HyperDB.prototype.find = function (name, query, opts) {
+    const stream = find.call(this, name, query, opts)
+    if (!name.startsWith('@cero/handles')) return stream
+    const all = stream.toArray.bind(stream)
+    stream.toArray = async () => {
+      const rows = await all()
+      seen[name] = (seen[name] ?? 0) + rows.length
+      return rows
+    }
+    return stream
+  }
+  try {
+    await act()
+  } finally {
+    HyperDB.prototype.find = find
+  }
+  return seen
 }
 
 // the same counts at every size
@@ -156,5 +180,25 @@ test('capacity: handles opened and closed past keepOpen leave keepOpen of them o
       await waitUntil(() => made.every((room) => room.closed || !room.closing))
     })
     return { lists, open: me.children.size }
+  })
+})
+
+test('capacity: a page of one type among handles of several types reads its rows through the index, never every handle', async (t) => {
+  const page = 10
+  await flat(t, { '@cero/handles-type': page }, async (testnet, size) => {
+    const { me } = await root(t, testnet, 0)
+    const types = { team: size / 2, club: size / 5, room: (size * 3) / 10 }
+    for (const [type, count] of Object.entries(types)) await addHandles(me, count, 0, type)
+    await me._indexing
+    let res = null
+    const seen = await reads(async () => {
+      res = await get(me.team, { limit: page, reverse: true })
+    })
+    t.is(res.data.length, page)
+    t.ok(
+      res.data.every((row) => row.type === 'team'),
+      'of the one type'
+    )
+    return seen
   })
 })
