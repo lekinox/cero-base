@@ -311,8 +311,8 @@ export const local = {
     epochs: bytes,
     writers: bytes
   },
-  // the root's device lists, 32-byte keys back to back, and the extensions' stamp, last told to
-  // the rooms: a launch with the same opens none of them
+  // the root's device lists, 32-byte keys back to back, and a digest of the extensions' stamp and
+  // the build, last told to the rooms: a launch with the same opens none of them
   told: {
     removed: bytes,
     standing: bytes,

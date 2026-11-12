@@ -1624,7 +1624,8 @@ export class Handle extends ReadyResource {
   }
 
   // covered once it holds what the root holds, or this device has nothing to tell it by: a reader
-  // tells from her own core, a seatless write, in a room at the version that brings it
+  // tells from her own core, a seatless write, in a room at the version that brings it. One below
+  // it is marked for this build, so a pass opens it again only for a build that may bring it there
   /** @private */
   async _compare(child) {
     if (child.closing || child.closed) return false
@@ -1635,28 +1636,31 @@ export class Handle extends ReadyResource {
     const { store } = child
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
     if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
-      if (!store.writable) return true
-      await this._unseat(child, removed)
-    } else {
-      if (!has(standing, this.identity.device.publicKey)) return false
-      // a root that lags has fewer removed than the handle was told: those add up, and stay
-      const told = await store.told(this.identity.id)
-      const same =
-        removed.every((key) => has(told.removed, key)) &&
-        standing.length === told.standing.length &&
-        standing.every((key) => has(told.standing, key))
+      if (store.writable) await this._unseat(child, removed)
       if (child.closing || child.closed) return false
-      if (!same) {
-        const { data: seat } = await store.get('devices', hid.encode(store.writerKey))
-        const proof = seat
+      await this._mark(child.id, { told: below(digest(removed, standing), store.meta) })
+      return true
+    }
+    if (!has(standing, this.identity.device.publicKey)) return false
+    // a root that lags has fewer removed than the handle was told: those add up, and stay
+    const told = await store.told(this.identity.id)
+    const same =
+      removed.every((key) => has(told.removed, key)) &&
+      standing.length === told.standing.length &&
+      standing.every((key) => has(told.standing, key))
+    if (child.closing || child.closed) return false
+    if (!same) {
+      // a row with no key, or no member, tells nothing by: the proof does
+      const { data: seat } = await store.get('devices', hid.encode(store.writerKey))
+      const proof =
+        seat?.key && seat.memberId
           ? null
           : this.identity.sign(admission(store.key, store.writerKey, store.writerKey))
-        await store.call('revoke', {
-          removed: b4a.concat(removed),
-          standing: b4a.concat(standing),
-          proof
-        })
-      }
+      await store.call('revoke', {
+        removed: b4a.concat(removed),
+        standing: b4a.concat(standing),
+        proof
+      })
     }
     if (child.closing || child.closed) return false
     await this._mark(child.id, { told: digest(removed, standing) })
@@ -1718,12 +1722,14 @@ export class Handle extends ReadyResource {
     if (this.closing) return
     const lists = await this._lists()
     const stamp = await this._stamp()
+    // the build too: one that may bring revoke to a room found below it opens that room again
+    const seen = hash([stamp ?? b4a.alloc(0), built(this.spec)])
     const { data: told } = await this.local.store.get('told')
     const listed =
       told &&
       (!lists ||
         (sameBytes(told.removed, lists.removed) && sameBytes(told.standing, lists.standing)))
-    if (listed && sameBytes(told.stamp, stamp)) return
+    if (listed && sameBytes(told.stamp, seen)) return
     // a writer in a room is the writer keypair this device keeps for it
     const rooms = []
     const held = new Set()
@@ -1731,7 +1737,7 @@ export class Handle extends ReadyResource {
       const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
       for (const row of data) {
         held.add(row.id)
-        if ((lists && !sameBytes(row.told, lists.marked)) || !sameBytes(row.stamp, stamp)) {
+        if ((lists && !(await this._marked(row, lists))) || !sameBytes(row.stamp, stamp)) {
           rooms.push({ id: row.id, used: row.used ?? 0 })
         }
       }
@@ -1761,7 +1767,17 @@ export class Handle extends ReadyResource {
     await Promise.all(Array.from({ length: TELLING }, tell))
     if (!covered || this.closing) return
     const { removed, standing } = lists ?? told ?? {}
-    await this.local.store.set('told', { removed, standing, stamp })
+    await this.local.store.set('told', { removed, standing, stamp: seen })
+  }
+
+  // a room told what the root holds, or found below the version that brings revoke by this build
+  /** @private */
+  async _marked(row, lists) {
+    if (sameBytes(row.told, lists.marked)) return true
+    if (!row.told) return false
+    const { data: handle } = await this.store.get('handles', row.id)
+    const spec = handle && this.spec.handles?.[handle.type]
+    return Boolean(spec) && sameBytes(row.told, below(lists.marked, spec.meta))
   }
 
   // the root's device lists, 32-byte keys back to back, when there is a removal to tell and this
@@ -2079,6 +2095,16 @@ const UNSERVED = '\n'
 // what a room is told of an identity's device keys, as one value to hold it against
 function digest(removed, standing) {
   return hash([hash(b4a.concat(removed)), hash(b4a.concat(standing))])
+}
+
+// the mark of a room below the version that brings revoke, for the build that found it there
+function below(marked, meta = {}) {
+  return hash([marked, b4a.from(JSON.stringify([meta.version, meta.since?.routes]))])
+}
+
+function built(spec) {
+  const handles = Object.values(spec.handles ?? {})
+  return hash(b4a.from(JSON.stringify(handles.map(({ meta = {} }) => [meta.version, meta.since]))))
 }
 
 // the closed rooms a pass tells at once, and those that wait for a peer at once; the keypairs it

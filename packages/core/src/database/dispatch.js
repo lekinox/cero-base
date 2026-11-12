@@ -120,6 +120,7 @@ export const leftId = (memberId) => `left:${memberId}`
 
 // what an identity's devices told a room of its device keys, in the removals too
 export const toldId = (memberId) => `told:${memberId}`
+const MAX_REMOVED = 64
 
 /**
  * 32-byte keys back to back, or none when they are not that.
@@ -675,16 +676,16 @@ export function makeDispatcher({
     return keys.slice(cut + 1).some((key) => has(standing, key))
   }
 
-  // the chain of the device that tells, and whether it sits here: its seat's, or for a member's
-  // device with none here, a reader's other one, the chain of the proof its identity signs over
-  // the core it tells from
+  // the chain of the device that tells: its seat's, or for a member's device with none here, a
+  // reader's other one, or one whose row keeps no key, the chain of the proof its identity signs
+  // over the core it tells from
   async function teller(op, ctx) {
-    if (!ctx.key) return {}
+    if (!ctx.key) return null
     const device = await getDevice(ctx.view, hid.encode(ctx.key))
-    if (device) return { chain: device.memberId && device.key && seatChain(device), sits: true }
+    if (device?.memberId && device.key) return seatChain(device)
     const chain = Identity.chain(op.proof)
-    if (!Identity.verify(op.proof, admission(ctx.dbKey, ctx.key, ctx.key), chain[0])) return {}
-    return { chain: (await getMember(ctx.view, hid.encode(chain[0]))) && chain, sits: false }
+    if (!Identity.verify(op.proof, admission(ctx.dbKey, ctx.key, ctx.key), chain[0])) return null
+    return (await getMember(ctx.view, hid.encode(chain[0]))) ? chain : null
   }
 
   // a device tells the room which device keys of its identity are removed and which stand. For
@@ -693,21 +694,31 @@ export function makeDispatcher({
   // through one. Told by someone who may remove, a key no removal that spent the open invites
   // covers is a removal by her
   add('revoke', async (op, ctx) => {
-    const { chain, sits } = await teller(op, ctx)
+    const chain = await teller(op, ctx)
     if (!chain) throw CeroError.REFUSED('device')
     if (!(await stands(ctx.view, chain))) throw CeroError.REFUSED('removed')
     const memberId = hid.encode(chain[0])
     const id = toldId(memberId)
     const told = await ctx.view.get(removals, { id })
     const before = keysOf(told?.removed)
-    const named = keysOf(op.removed).filter((key) => !has(before, key))
-    // one with no row here takes out only a device that has one, or the removed one, telling
-    // first, would shut out a sibling that never sat here
+    const added = keysOf(op.removed).filter((key) => !has(before, key))
+    const removed = [...before, ...added]
     const rowed = (await ctx.view.find(`@${ns}/devices`, {}).toArray())
       .filter((d) => d.memberId === memberId && d.key)
       .map((d) => d.key)
-    const added = sits ? named : named.filter((key) => has(rowed, key))
-    const removed = [...before, ...added]
+    // one with no row here is known by what it tells: itself among those that stand
+    const own = chain[chain.length - 1]
+    if (!has(rowed, own) && !has(keysOf(op.standing), own)) {
+      throw CeroError.REFUSED('revoke', 'a device tells itself standing')
+    }
+    // one telling is bounded, an identity's removals are not: a cap on those would let a device
+    // fill it with made-up keys and keep its own in
+    if (added.length > MAX_REMOVED && !ctx.host.genesis) {
+      throw CeroError.REFUSED(
+        'revoke',
+        `at most ${MAX_REMOVED} new device keys removed per telling`
+      )
+    }
     let uncovered = false
     for (const key of told?.spent ? added : removed) {
       if (!(await ctx.view.get(removals, { id: hid.encode(key) }))?.spent) uncovered = true
@@ -719,7 +730,7 @@ export function makeDispatcher({
     await ctx.view.insert(removals, row)
     // a removed device that never sat here may hold the key through its identity's root, unless
     // the room was made after the removal
-    if (named.length && !ctx.host.genesis) await owe(ctx.view)
+    if (added.length && !ctx.host.genesis) await owe(ctx.view)
     for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (seated.memberId !== memberId || !seated.key) continue
       if (await stands(ctx.view, seatChain(seated))) continue

@@ -2499,7 +2499,32 @@ test('devices: a room the identity reads only from the removed device is told by
   t.pass('and the host rotates')
 })
 
-test('devices: a room below the version that brings revoke, where the identity only reads, is told nothing and hears no error', async (t) => {
+test('devices: a device whose row in a room keeps no key tells it with a proof', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  const own = hid.encode(room.store.writerKey)
+  const read = room.store.get.bind(room.store)
+  room.store.get = async (name, query) => {
+    const res = await read(name, query)
+    if (name !== 'devices' || query !== own || !res.data) return res
+    return { ...res, data: { ...res.data, key: null } }
+  }
+  const sent = []
+  const call = room.store.call.bind(room.store)
+  room.store.call = (op, data) => {
+    if (op === 'revoke') sent.push(data)
+    return call(op, data)
+  }
+
+  await del(a.me.devices, phone.me.device.id)
+  await toldOf(room, phone)
+  t.is(sent.length, 1)
+  t.ok(sent[0].proof, 'its identity signs over its core')
+})
+
+test('devices: a room below the version that brings revoke, where the identity only reads, is told nothing and hears no error, and is told at the launch once its version brings it', async (t) => {
   const team = spec.handles.team
   const { since } = team.meta
   const routes = { ...since.routes, '@cero/revoke': team.meta.version + 1 }
@@ -2509,9 +2534,10 @@ test('devices: a room below the version that brings revoke, where the identity o
   const errors = []
   const launch = async (opts) => {
     const onerror = (err) => errors.push(err)
-    const me = await cero(await t.tmp(), older, { bootstrap: testnet.bootstrap, onerror, ...opts })
+    const dir = await t.tmp()
+    const me = await cero(dir, older, { bootstrap: testnet.bootstrap, onerror, ...opts })
     t.teardown(() => me.close().catch(() => {}), { order: 5 })
-    return { me }
+    return { me, dir }
   }
   const a = await launch()
   const room = await open(a.me.team, { name: 'clinic' })
@@ -2526,8 +2552,63 @@ test('devices: a room below the version that brings revoke, where the identity o
 
   await del(phone.me.devices, b.me.device.id)
   await phone.me._pruneAll()
+  await phone.me._tellClosed()
   t.alike(errors, [], 'a reader there has nothing to tell it by')
   t.alike(await room.store.told(b.me.id), { removed: [], standing: [] }, 'and tells nothing')
+
+  await phone.me.close()
+  const later = await tally(async () => {
+    const again = await cero(phone.dir, spec, { bootstrap: testnet.bootstrap })
+    t.teardown(() => again.close().catch(() => {}), { order: 1 })
+    await again._telling
+  })
+  t.is(later.tellings, 1, 'at the version that brings it, the launch tells it')
+})
+
+test('devices: a room that stays below the version that brings revoke is not opened again at every launch', async (t) => {
+  const team = spec.handles.team
+  const { since } = team.meta
+  const routes = { ...since.routes, '@cero/revoke': team.meta.version + 1 }
+  const meta = { ...team.meta, since: { ...since, routes } }
+  const older = { ...spec, handles: { ...spec.handles, team: { ...team, meta } } }
+  const testnet = await makeTestnet(t)
+  const launch = async (opts) => {
+    const dir = await t.tmp()
+    const me = await cero(dir, older, { bootstrap: testnet.bootstrap, ...opts })
+    t.teardown(() => me.close().catch(() => {}), { order: 5 })
+    return { me, dir }
+  }
+  const a = await launch()
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await launch()
+  const linking = launch({ invite: await cero.invite(b.me) })
+  await cero.accept(b.me, await asked(b.me))
+  const phone = await linking
+  const seen = await open(b.me.team, await cero.invite(room, { role: 'reader' }))
+  await waitUntil(() => sits(room, b))
+  const theirs = await open(phone.me.team, { id: seen.id })
+  await waitUntil(() => theirs.store.opened)
+  await del(phone.me.devices, b.me.device.id)
+  await phone.me._pruneAll()
+  await phone.me._tellClosed()
+  await phone.me.close()
+
+  const relaunch = () =>
+    tally(async () => {
+      const again = await cero(phone.dir, older, { bootstrap: testnet.bootstrap })
+      await again._telling
+      await again.close()
+    })
+  await relaunch()
+  const later = await relaunch()
+  t.is(later.opened, 0, 'nothing changed since the last launch: no room is opened')
+
+  const forgot = await cero(phone.dir, older, { bootstrap: testnet.bootstrap })
+  await forgot._telling
+  await forgot.local.store.set('told', { stamp: null })
+  await forgot.close()
+  const pass = await relaunch()
+  t.is(pass.opened, 0, 'a pass that runs again opens no room it found below')
 })
 
 test('devices: a room told what the root holds is not written to again at the next open', async (t) => {
