@@ -65,6 +65,7 @@ export function Room({ onClose }) {
   const room = useRoom()
   const { data: messages } = useQuery(room.messages)
   const { data: members } = useQuery(room.members)
+  const { data: row } = useQuery(me.room, room.id)
   const toast = useToast()
   const [invite, setInvite] = useState('')
   const ref = useRef(null)
@@ -83,6 +84,7 @@ export function Room({ onClose }) {
         <Button onClick={onClose} variant='ghost'>
           ←
         </Button>
+        <span className='font-medium text-card-foreground'>{row?.name || 'Unnamed'}</span>
         <span className='text-muted'>{members.length} members</span>
         <div className='flex-1' />
         {invite ? (

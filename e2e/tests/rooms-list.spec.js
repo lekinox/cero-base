@@ -41,11 +41,13 @@ test('a room opened from the list shows that room, and back returns to the list'
   await create(page, 'pharmacy', 'in the pharmacy')
 
   await page.getByText('clinic', { exact: true }).click()
+  await expect(page.getByText('clinic', { exact: true })).toBeVisible()
   await expect(page.getByText('in the clinic', { exact: true })).toBeVisible()
   await expect(page.getByText('in the pharmacy', { exact: true })).toHaveCount(0)
   await back(page)
 
   await page.getByText('pharmacy', { exact: true }).click()
+  await expect(page.getByText('pharmacy', { exact: true })).toBeVisible()
   await expect(page.getByText('in the pharmacy', { exact: true })).toBeVisible()
   await expect(page.getByText('in the clinic', { exact: true })).toHaveCount(0)
   await back(page)

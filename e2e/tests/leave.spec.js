@@ -53,8 +53,6 @@ async function joined(launch) {
 test('a member who leaves a room is back on his list and the room is not in it', async ({
   launch
 }) => {
-  // the list still shows a room its device has left, until the SDK lists only the rooms you are in
-  test.fail()
   const { bob } = await joined(launch)
 
   await bob.page.getByRole('button', { name: 'Leave' }).click()
