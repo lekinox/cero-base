@@ -1173,7 +1173,8 @@ export class Handle extends ReadyResource {
   /** @private */
   async _asked(id, invite, writer) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    return kept?.invite === invite && hid.encode(kept.publicKey) === writer
+    // a row from before rows named their writer is the ask of the device that kept its invite
+    return kept?.invite === invite && (!writer || hid.encode(kept.publicKey) === writer)
   }
 
   // one join a handle, whoever waits on it: it goes on until its row says how it ended, and a close only pauses it
@@ -1334,7 +1335,10 @@ export class Handle extends ReadyResource {
     // the writer this device asks with: fixed before the join is written, so a resumed one hears the reply to it
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
     // an ask another device made since is the one that stands: this device asks anew in its place
-    const latest = state === 'asking' && !!kept && row.writer === hid.encode(kept.publicKey)
+    const latest =
+      state === 'asking' &&
+      !!kept &&
+      (row.writer ? row.writer === hid.encode(kept.publicKey) : kept.invite === row.invite)
     const mine = !!kept?.invite && (state === 'joining' || latest)
     if (mine && (state === 'joining' || row.invite === invite)) return id
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
