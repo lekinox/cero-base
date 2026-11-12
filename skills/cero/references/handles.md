@@ -211,18 +211,18 @@ mechanism.
 ## Leave a handle
 
 ```js
-await cero.leave(room) // its row reads leaving, then left on every device
+await cero.leave(room) // its row reads leaving, then is gone on every device
 ```
 
 `cero.leave` writes `leaving` on the handle's row. Every device of yours seated in the handle
 carries it: it takes you out of the handle's members, at any role, waits until another device or a
-mirror holds that, then writes `left`, keeps none of the handle's keys and closes it. An app closed
-on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with the
-remover's id in `by`. The row stays in your list until the app deletes it: a row at `left`,
-`removed`, `denied`, `expired` or `cancelled` can be deleted, or joined again with a new code, and
-`cero.get(me.room, { state: 'in' })` lists only the handles you are in. The last owner of a handle
-others are in gets `INVALID` from `cero.leave`, and nothing is written: make another member an
-owner first, with `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
+mirror holds that, then deletes the row, keeps none of the handle's keys and closes it. An app
+closed on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with
+the remover's id in `by`. A removal, and a join that ended `denied` or `expired`, stays 30 days so
+the app can show why, then goes at a launch; a cancelled join goes at the next launch, and a leave
+leaves no row. The app deletes an ended row whenever it likes, and a new code joins again. The last
+owner of a handle others are in gets `INVALID` from `cero.leave`, and nothing is written: make
+another member an owner first, with `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
 after you left brings you back; an older one, or the handle's reusable one, puts you in
 `room.requests` until a member accepts or denies you, so leaving first never dodges a removal. The
 handle still rotates its key, sealing you out. Removed by someone else, only a code minted after the removal does.
@@ -238,14 +238,19 @@ removal and `cero.close(me)` close it at once. Over RPC, the page's holds end wh
 ## List your handles
 
 ```js
-const { data: rooms } = await cero.get(me.room)
-// [{ id, type: 'room', name, key, encryptionKey, createdAt, updatedAt }]
+const { data: rooms } = await cero.get(me.room) // the rooms you are in
+// [{ id, type: 'room', name, key, encryptionKey, state: 'in', createdAt, updatedAt }]
+const { data: denied } = await cero.get(me.room, { state: 'denied' }) // joins turned away
+const { data: row } = await cero.get(me.room, id) // one room, whatever its state
 
 await cero.activate(room) // the room on screen syncs first
 ```
 
-`encryptionKey` is the handle's secret: never log it or send it anywhere. `cero.watch(me.room)` follows
-the list, joined handles included. [Network](network.md) covers `cero.activate`.
+A list of rooms is the rooms you are in. Name a `state` to list the others: `asking` and `joining`
+for joins on their way, `leaving`, `removed`, `denied` or `expired`. A room read by its id comes
+whatever its state.
+`encryptionKey` is the handle's secret: never log it or send it anywhere. `cero.watch(me.room)`
+follows the list, a joined handle once you are in. [Network](network.md) covers `cero.activate`.
 
 ## Next
 

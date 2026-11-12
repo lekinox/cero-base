@@ -65,6 +65,11 @@ test('compat: a store the previous release wrote opens, reads and writes on this
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   t.is((await get(me.profile)).data.name, 'from ' + version, 'the profile')
   t.is((await get(me.notes)).data.length, 1, 'a root collection')
+  t.alike(
+    (await get(me.room)).data.map((row) => row.id),
+    [theirs.id],
+    'its rooms, in a list'
+  )
   const room = await open(me.room, { id: theirs.id })
   t.is((await get(room.messages)).data.length, 1, 'a handle and its rows')
   await put(room.messages, { text: 'second' })

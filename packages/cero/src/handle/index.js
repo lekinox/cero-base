@@ -322,6 +322,7 @@ export class Handle extends ReadyResource {
       // the joins on their way, at launch and as their rows move
       this._offJoins = this.store.onUpdate('handles', () => this._carryOn().catch(this._onerror))
       await this._carryOn().catch(this._onerror)
+      await this._sweep().catch(this._onerror)
       this._reserve().catch(this._onerror)
       this._tellClosed()
       // the handles rows, keyed by push topic, for a cold push process that cannot read the root
@@ -507,7 +508,7 @@ export class Handle extends ReadyResource {
   }
 
   // a leaving row is carried by every device of the identity seated in its room: its removal of
-  // herself, held by another device or a mirror, then left
+  // herself, held by another device or a mirror, then the row goes
   /** @private */
   _depart(type, id) {
     if (this._departing.has(id)) return
@@ -523,7 +524,7 @@ export class Handle extends ReadyResource {
         if (out === 'removed') return
         const { data: row } = await this.store.get('handles', id)
         if (row?.state !== 'leaving') return
-        await this.store.set('handles', { id, state: 'left', encryptionKey: null, epochs: null })
+        await this.store.del('handles', id)
       } finally {
         await child._end()
       }
@@ -1368,6 +1369,22 @@ export class Handle extends ReadyResource {
     }
   }
 
+  // the rows that ended go: a cancel at once, the others once the app had `KEPT` to show why
+  /** @private */
+  async _sweep() {
+    const old = Date.now() - KEPT
+    const gone = []
+    for (const state of SWEPT) {
+      for (const { id, updatedAt } of (await this.store.get('handles', { state })).data) {
+        if (state === 'cancelled' || updatedAt < old) gone.push(id)
+      }
+    }
+    if (!gone.length) return
+    await this.store.tx(async (tx) => {
+      for (const id of gone) await tx.del('handles', id)
+    })
+  }
+
   // the joins on their way go on, with nobody waiting; the mailbox sends what its outbox kept
   /** @private */
   async _carryOn() {
@@ -1823,6 +1840,10 @@ export class Handle extends ReadyResource {
     }
   }
 }
+
+// the states a row ends in, read through their index at launch, and how long one stays
+const SWEPT = ['cancelled', 'denied', 'expired', 'removed', 'left']
+const KEPT = 30 * 24 * 60 * 60 * 1000
 
 // how a join ends, as its row says it and as `open` throws it
 const OVER = { DENIED: 'denied', EXPIRED: 'expired', CANCELLED: 'cancelled' }

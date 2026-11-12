@@ -105,8 +105,8 @@ function moves(was, row) {
   return from === 'denied' && to === 'joining' && row.invite === was.invite
 }
 
-// on its way in or out: such a row is not deleted
-const UNSETTLED = new Set(['asking', 'joining', 'leaving'])
+// on its way in: such a row is not deleted. A leave ends by deleting its row
+const UNSETTLED = new Set(['asking', 'joining'])
 
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
@@ -1234,9 +1234,10 @@ export function makeDispatcher({
   // held to its states on every peer, so a device with an older picture writes over no newer one
   const held = (write) => async (op, ctx) => {
     const was = await ctx.view.get(col('handles'), { id: op.id })
-    // a write that names no state leaves the row where it stands: its device may read an older one
-    if (was && !op.state) {
-      Object.assign(op, { state: was.state, reason: was.reason, by: was.by, invite: was.invite })
+    // a write naming no state keeps the row's, `in` on a new row: its device may read an older one
+    if (!op.state) {
+      if (was) Object.assign(op, { reason: was.reason, by: was.by, invite: was.invite })
+      op.state = was?.state || 'in'
     }
     if (!moves(was, op)) throw CeroError.REFUSED('state')
     return write(op, ctx)
