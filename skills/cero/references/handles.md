@@ -218,10 +218,11 @@ await cero.leave(room) // its row reads leaving, then left on every device
 carries it: it takes you out of the handle's members, at any role, waits until another device or a
 mirror holds that, then writes `left`, keeps none of the handle's keys and closes it. An app closed
 on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with the
-remover's id in `by`. A row at `left`, `removed`, `denied`, `expired` or `cancelled` can be deleted,
-or joined again with a new code. The
-last owner of a handle others are in gets `INVALID`: make another member an owner first, with
-`cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
+remover's id in `by`. The row stays in your list until the app deletes it: a row at `left`,
+`removed`, `denied`, `expired` or `cancelled` can be deleted, or joined again with a new code, and
+`cero.get(me.room, { state: 'in' })` lists only the handles you are in. The last owner of a handle
+others are in gets `INVALID` from `cero.leave`, and nothing is written: make another member an
+owner first, with `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
 after you left brings you back; an older one, or the handle's reusable one, puts you in
 `room.requests` until a member accepts or denies you, so leaving first never dodges a removal. The
 handle still rotates its key, sealing you out. Removed by someone else, only a code minted after the removal does.

@@ -486,6 +486,13 @@ export class Handle extends ReadyResource {
     if (!this.parent) throw CeroError.INVALID('the root cannot be left')
     // leaving is written on the root row: behind there, nothing is done
     if (this.parent.store.behind !== null) throw CeroError.BEHIND(this.parent.store.behind)
+    // what the room refuses of her removal is refused here, before the row says leaving
+    const { data: members } = await this.store.get('members')
+    const others = members.filter((m) => m.id !== this.identity.id)
+    const owner = members.some((m) => m.id === this.identity.id && m.role === 'owner')
+    if (owner && others.length && !others.some((m) => m.role === 'owner')) {
+      throw CeroError.INVALID('the last owner cannot leave: make another member an owner first')
+    }
     await this.root.store.set('handles', { id: this.id, state: 'leaving' })
   }
 
