@@ -37,9 +37,20 @@ async function settings(page) {
   await expect(page.getByText('(current)')).toBeVisible()
 }
 
-async function rename(page, name) {
-  await page.getByPlaceholder('Device name').fill(name)
-  await page.getByPlaceholder('Device name').press('Tab')
+// the name field on this device's row, or on the other device's, the row with a Remove button
+function field(page, other = false) {
+  const mark = other ? page.getByRole('button', { name: 'Remove' }) : page.getByText('(current)')
+  return page
+    .locator('div')
+    .filter({ has: mark })
+    .filter({ has: page.getByPlaceholder('Device name') })
+    .last()
+    .getByPlaceholder('Device name')
+}
+
+async function rename(page, name, other = false) {
+  await field(page, other).fill(name)
+  await field(page, other).press('Tab')
 }
 
 async function restart(launch, device) {
@@ -72,9 +83,9 @@ test('each linked device shows one Remove button, beside the other device', asyn
   const { phone, laptop } = await linked(launch)
   await settings(laptop.page)
   for (const { page } of [phone, laptop]) {
-    await expect(page.getByText(host, { exact: true })).toBeVisible()
+    await expect(field(page, true)).toHaveValue(host)
     await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(1)
-    await expect(page.getByPlaceholder('Device name')).toHaveCount(1)
+    await expect(page.getByPlaceholder('Device name')).toHaveCount(2)
   }
 })
 
@@ -85,15 +96,14 @@ test('renaming this device shows the new name on both devices, and after a resta
   await settings(laptop.page)
 
   await rename(phone.page, 'Alice phone')
-  await expect(laptop.page.getByText('Alice phone', { exact: true })).toBeVisible()
+  await expect(field(laptop.page, true)).toHaveValue('Alice phone')
 
   phone = await restart(launch, phone)
-  await expect(phone.page.getByPlaceholder('Device name')).toHaveValue('Alice phone')
+  await expect(field(phone.page)).toHaveValue('Alice phone')
   laptop = await restart(launch, laptop)
-  await expect(laptop.page.getByText('Alice phone', { exact: true })).toBeVisible()
+  await expect(field(laptop.page, true)).toHaveValue('Alice phone')
 })
 
-// a device names only itself: the other device's row offers no name field, the rename is made on it
 test('renaming the other device, on it, shows the new name on both devices, and after a restart', async ({
   launch
 }) => {
@@ -101,21 +111,37 @@ test('renaming the other device, on it, shows the new name on both devices, and 
   await settings(laptop.page)
 
   await rename(laptop.page, 'Alice laptop')
-  await expect(phone.page.getByText('Alice laptop', { exact: true })).toBeVisible()
+  await expect(field(phone.page, true)).toHaveValue('Alice laptop')
 
   laptop = await restart(launch, laptop)
-  await expect(laptop.page.getByPlaceholder('Device name')).toHaveValue('Alice laptop')
+  await expect(field(laptop.page)).toHaveValue('Alice laptop')
   phone = await restart(launch, phone)
-  await expect(phone.page.getByText('Alice laptop', { exact: true })).toBeVisible()
+  await expect(field(phone.page, true)).toHaveValue('Alice laptop')
+})
+
+test('renaming the laptop from the phone shows the new name on both devices, and after a restart', async ({
+  launch
+}) => {
+  let { phone, laptop } = await linked(launch)
+  await settings(laptop.page)
+
+  await rename(phone.page, 'Alice laptop', true)
+  await expect(field(laptop.page)).toHaveValue('Alice laptop')
+  await expect(field(phone.page, true)).toHaveValue('Alice laptop')
+
+  laptop = await restart(launch, laptop)
+  await expect(field(laptop.page)).toHaveValue('Alice laptop')
+  phone = await restart(launch, phone)
+  await expect(field(phone.page, true)).toHaveValue('Alice laptop')
 })
 
 test('removing the other device takes it out of the list on both devices', async ({ launch }) => {
   const { phone, laptop } = await linked(launch)
   await settings(laptop.page)
-  await expect(phone.page.getByText(host, { exact: true })).toBeVisible()
+  await expect(phone.page.getByPlaceholder('Device name')).toHaveCount(2)
 
   await phone.page.getByRole('button', { name: 'Remove' }).click()
-  await expect(phone.page.getByText(host, { exact: true })).toHaveCount(0)
+  await expect(phone.page.getByPlaceholder('Device name')).toHaveCount(1)
   await expect(phone.page.getByRole('button', { name: 'Remove' })).toHaveCount(0)
   await expect(laptop.page.getByText('(current)')).toHaveCount(0)
 })

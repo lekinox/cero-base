@@ -3172,6 +3172,46 @@ test('devices: a device record is written only by its own device', async (t) => 
   )
 })
 
+test('devices: another device of the member renames a device, and changes nothing else on its row', async (t) => {
+  const other = await second('member')
+  const { db, phone } = await lost(t, { members: [other.row] })
+  await seat(db, phone)
+  await seat(db, other)
+  const id = hid.encode(db.writerKey)
+  const before = (await db.get('devices', id)).data
+  const by = phone.writer.publicKey
+  t.is(await apply(db, by, 'set-device', { id, name: 'laptop', updatedAt: 2 }), null)
+  t.is((await db.get('devices', id)).data.name, 'laptop', 'a sibling renames it')
+
+  const key = Identity.randomKeyPair().publicKey
+  const forged = {
+    id,
+    name: 'desk',
+    memberId: other.id,
+    key,
+    chain: key,
+    createdAt: 9,
+    updatedAt: 3
+  }
+  t.is(await apply(db, by, 'set-device', forged), null)
+  t.alike(
+    (await db.get('devices', id)).data,
+    { ...before, name: 'desk', updatedAt: 3 },
+    'nothing but the name'
+  )
+
+  const stranger = other.writer.publicKey
+  t.is(
+    (await apply(db, stranger, 'set-device', { id, name: 'pwned', updatedAt: 4 }))?.code,
+    'REFUSED'
+  )
+  t.is(
+    (await db.get('devices', id)).data.name,
+    'desk',
+    'a device of another member renames nothing'
+  )
+})
+
 test('singles: wiping one needs write', async (t) => {
   const { db, as } = await withMember(t, 'reader')
   await db.set('profile', { name: 'owner' })

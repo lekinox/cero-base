@@ -83,20 +83,16 @@ export function Settings() {
           return (
             <Card key={d.id}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                {/* a device names only itself: the SDK refuses a rename of another */}
-                {current ? (
-                  <Input
-                    style={{ flex: 1 }}
-                    placeholder='Device name'
-                    defaultValue={d.name}
-                    onEndEditing={(e) => {
-                      const v = e.nativeEvent.text.trim()
-                      if (v && v !== d.name) cero.set(me.devices, { id: d.id, name: v })
-                    }}
-                  />
-                ) : (
-                  <Text style={styles.text}>{d.name || 'Unnamed'}</Text>
-                )}
+                <Input
+                  key={d.name}
+                  style={{ flex: 1 }}
+                  placeholder='Device name'
+                  defaultValue={d.name}
+                  onEndEditing={(e) => {
+                    const v = e.nativeEvent.text.trim()
+                    if (v && v !== d.name) cero.set(me.devices, { id: d.id, name: v })
+                  }}
+                />
                 <Text style={styles.muted}>{d.id?.slice(0, 8)}</Text>
                 {current ? (
                   <Text style={{ color: colors.accent }}>(current)</Text>

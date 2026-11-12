@@ -890,11 +890,18 @@ export function makeDispatcher({
     const kept = { key: existing?.key, chain: existing?.chain }
     await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), ...kept })
   })
+  // another device of its member renames it, and changes nothing else of the row
   add('set-device', async (op, ctx) => {
-    selfOnly(op, ctx)
-    const memberId = await bind(ctx)
     const existing = await getDevice(ctx.view, op.id)
     const ts = op.updatedAt || 0
+    if (ctx.key && existing && op.id !== hid.encode(ctx.key)) {
+      const by = await getDevice(ctx.view, hid.encode(ctx.key))
+      if (!by?.memberId || by.memberId !== existing.memberId) throw CeroError.REFUSED('device')
+      await save(ctx, 'set', 'devices', { ...existing, name: op.name, updatedAt: ts })
+      return
+    }
+    selfOnly(op, ctx)
+    const memberId = await bind(ctx)
     await save(ctx, 'set', 'devices', {
       ...op,
       memberId,
