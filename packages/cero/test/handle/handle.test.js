@@ -2624,6 +2624,22 @@ test('devices: a rename after a removal was told opens no room this device holds
   t.is(seen.opened, 0, 'the room made after the removal stays closed there')
 })
 
+test('devices: a device linked after a removal was told takes no seat in a room that holds every removal', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  await del(a.me.devices, phone.me.device.id)
+  await passed(a.me)
+  await toldOf(room, phone)
+
+  const desk = await linkTo(t, a)
+  await waitUntil(async () => (await desk.me.store.get('handles', room.id)).data?.encryptionKey)
+  await passed(desk.me)
+  t.absent(await desk.me._loadKeyPair(room.id), 'the new device opened it not')
+  t.absent(await sits(room, desk), 'and holds no seat there')
+})
+
 test('devices: a room whose telling throws is told at the next pass, and only it', async (t) => {
   const { a, phone } = await closedRooms(t)
   const errors = []
