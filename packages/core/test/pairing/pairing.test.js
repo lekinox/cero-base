@@ -263,6 +263,15 @@ test('invite: a ttl is a positive whole number of ms the clock reaches, or INVAL
   t.ok(Invite.parse(await pairing.invite({ ttl: 1 })).expires > 0, 'one ms is a ttl')
 })
 
+test('invite: options that are not a plain object are INVALID and nothing is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  for (const opts of [null, '1h', 5, [], b4a.alloc(4)]) {
+    t.is(await code(pairing.invite(opts)), 'INVALID', `options ${JSON.stringify(opts)}`)
+  }
+  t.alike(await invites(db), [], 'no invite was written')
+})
+
 test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing, db } = await makeHost(t, testnet)

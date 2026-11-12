@@ -16,7 +16,7 @@ import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { seal, unseal, decodeAddress } from '../lib/mail.js'
 import hid from 'hypercore-id-encoding'
-import { admission, onAbort, filter, can, WRITE } from '@cero-base/core/utils'
+import { admission, onAbort, filter, can, isOptions, WRITE } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
@@ -436,7 +436,7 @@ export class Handle extends ReadyResource {
   // device checks its chain against
   /** @private */
   async _invite(opts = {}) {
-    if (!opts || typeof opts !== 'object') throw CeroError.INVALID('invite options are an object')
+    if (!isOptions(opts)) throw CeroError.INVALID('invite options are an object')
     if (this.parent) {
       const invite = await this._pair.invite(opts)
       // a close right after the invite must not drop the row that reopens this handle at boot

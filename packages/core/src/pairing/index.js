@@ -22,7 +22,7 @@ import { wrap } from '../database/envelope.js'
 import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
-import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
+import { can, grants, isRank, isOptions, joining, INVITE, REMOVE } from '../lib/utils.js'
 import { NAMESPACE, MEMBER, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
@@ -141,7 +141,9 @@ export class Pairing extends ReadyResource {
    * @param {InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async invite({ role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = {}) {
+  async invite(opts = {}) {
+    if (!isOptions(opts)) throw CeroError.INVALID('invite options are an object')
+    const { role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = opts
     if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
     if (!this.opened) await this.ready()
     // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently

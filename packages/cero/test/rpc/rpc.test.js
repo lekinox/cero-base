@@ -1049,7 +1049,10 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'invite with null for options': (root, room) => cero.invite(room, null),
     'invite with a string for options': (root, room) => cero.invite(room, '1d'),
     'invite with a number for options': (root, room) => cero.invite(room, 5),
-    'device invite with null for options': (root) => cero.invite(root, null)
+    'invite with an array for options': (root, room) => cero.invite(room, [{ role: 'reader' }]),
+    'invite with bytes for options': (root, room) => cero.invite(room, b4a.alloc(4)),
+    'device invite with null for options': (root) => cero.invite(root, null),
+    'device invite with an array for options': (root) => cero.invite(root, [])
   }
   // a TypeError has no code, and none crosses as ''
   const outcome = (run) =>

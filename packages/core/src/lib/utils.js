@@ -58,6 +58,16 @@ export function outranks(a, b) {
   return isRank(a) && isRank(b) && RANK[a] > RANK[b]
 }
 
+/** @type {(value: unknown) => boolean} */
+export function isOptions(value) {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    !ArrayBuffer.isView(value)
+  )
+}
+
 /**
  * Stream-of-snapshots primitive. Couples a `get` (returns the latest value) with a `watch`
  * (re-fires on change) and emits the newest snapshot every time `watch` ticks.
