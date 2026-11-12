@@ -683,8 +683,10 @@ test('revoke: a list of standing keys passes only what its own identity removed:
   const { db, writer, open, asks, phone, tablet } = await hers(t)
   t.is(await apply(db, db.writerKey, 'del-device', { id: phone.writer.id }), null)
   t.ok(await seated(db, tablet), 'the device it linked keeps the seat it has')
+  t.is(await ask(db, tablet.writer.publicKey), null)
   t.is(await tell(db, writer, [], [tablet]), null)
   t.absent(await seated(db, tablet), 'which no list of hers keeps')
+  t.absent(await asked(db, hid.encode(tablet.writer.publicKey)), 'nor the keys it asked for')
 
   const fresh = { identity: tablet.identity, writer: Identity.randomKeyPair() }
   t.is((await seat(db, fresh))?.rule, 'removed', 'no claim')

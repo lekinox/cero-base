@@ -682,6 +682,7 @@ export function makeDispatcher({
       if (await stands(ctx.view, seatChain(seated))) continue
       await ctx.host.removeWriter(hid.decode(seated.id))
       await drop(ctx, 'devices', seated.id)
+      await ctx.view.delete(asks, { id: seated.id })
       await owe(ctx.view)
       await forget(ctx, await ctx.view.get(requests, { id: seated.id }))
     }
