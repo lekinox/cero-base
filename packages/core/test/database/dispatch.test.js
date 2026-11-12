@@ -769,6 +769,34 @@ test('revoke: a telling by one who may remove spends the invites that let in on 
   t.ok(await live(db, asks), 'and one that waits for an accept stays')
 })
 
+test('revoke: a telling spends the invites only when it removes a key the room did not hold as removed', async (t) => {
+  const { db, identity, phone, tablet } = await lost(t)
+  // minted after a telling, straight into the view like the telling
+  const mint = async () => {
+    const secret = crypto.randomBytes(32)
+    const invite = Invite.create({ key: db.key, address: Mailbox.getAddress(secret) })
+    const row = inviteRow(b4a.toHex(invite.id), { secret, reuse: true })
+    t.is(await apply(db, db.writerKey, 'add-invite', row), null)
+    return invite
+  }
+  await seat(db, phone)
+  t.is(await tell(db, db.writerKey, [phone], []), null)
+  const invite = await mint()
+  t.is(await tell(db, db.writerKey, [phone], [tablet]), null)
+  t.ok(await live(db, invite), 'a telling that only adds a standing key spends nothing')
+
+  const old = linked(identity)
+  t.is(await seat(db, old), null)
+  t.is(await apply(db, db.writerKey, 'del-device', { id: old.writer.id }), null)
+  const kept = await mint()
+  t.is(await tell(db, db.writerKey, [old], [tablet]), null)
+  t.ok(await live(db, kept), 'nor one that tells a key a removal already took')
+
+  t.is(await tell(db, db.writerKey, [linked(identity)], [tablet]), null)
+  t.absent(await live(db, kept), 'one that adds a removed key spends them')
+  t.is((await spent(db, b4a.toHex(kept.id)))?.reason, 'removed')
+})
+
 test('revoke: what a room was told is the same on every device, and after the view is applied again', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()

@@ -621,7 +621,8 @@ export function makeDispatcher({
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats
   // of the identity whose chain no longer stands go, with the joins that wait or were promised
-  // through one. Told by someone who may remove, it is a removal by her
+  // through one. Told by someone who may remove, a key the room did not hold as removed is a
+  // removal by her
   add('revoke', async (op, ctx) => {
     const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
     if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
@@ -629,7 +630,12 @@ export function makeDispatcher({
     const { memberId } = device
     const id = toldId(memberId)
     const before = keysOf((await ctx.view.get(removals, { id }))?.removed)
-    const removed = [...before, ...keysOf(op.removed).filter((key) => !has(before, key))]
+    const added = keysOf(op.removed).filter((key) => !has(before, key))
+    const removed = [...before, ...added]
+    let fresh = false
+    for (const key of added) {
+      if (!(await ctx.view.get(removals, { id: hid.encode(key) }))) fresh = true
+    }
     const standing = b4a.concat(keysOf(op.standing))
     const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing }
     await ctx.view.insert(removals, row)
@@ -646,7 +652,7 @@ export function makeDispatcher({
       if (row.admitted && !row.promised) continue
       if (!(await stands(ctx.view, [row.identity, ...chainOf(row)]))) await withdraw(ctx, row)
     }
-    if (can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
+    if (fresh && can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
   })
 
   // the genesis batch names the creator; everyone after comes in through a signed join
