@@ -219,6 +219,10 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _tellings;
     /** @private */
+    _waiting;
+    /** @private */
+    _waiters;
+    /** @private */
     _telling;
     /** @private @type {Array<{ stamp: () => Promise<string | null>, tell: (child: Handle) => Promise<void> }> | null} */
     _tellers;
@@ -524,6 +528,10 @@ export declare class Handle extends ReadyResource {
     private _stamp;
     /** @private */
     private _tellOne;
+    /** @private */
+    private _wait;
+    /** @private */
+    private _turns;
     /** @private */
     private _tellRoom;
     /** @private */

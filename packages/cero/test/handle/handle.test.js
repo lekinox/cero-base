@@ -1747,6 +1747,9 @@ test('devices: a room made while the root owes the rotation of a removal has the
     if (!data?.epochs) return false
     return c.decode(epochEntries, data.epochs).some((e) => b4a.equals(e.entropy, key))
   }
+  await waitUntil(async () => (await phone.me.store.get('handles', room.id)).data)
+  const read = await waitUntil(() => held(phone.me), 2000).catch(() => false)
+  t.absent(read, 'the removed device reads the room but not its key while the root owes')
 
   delete a.me.store.rotation._rotate
   await a.me.store.rotate()

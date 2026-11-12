@@ -175,6 +175,11 @@ export class Handle extends ReadyResource {
     // the closed rooms a pass is telling, by id: an open of one waits for it to close
     /** @private */
     this._tellings = parent ? null : new Map()
+    // the closed rooms no peer served when a pass reached them, by id, and the turns telling them
+    /** @private */
+    this._waiting = parent ? null : new Map()
+    /** @private */
+    this._waiters = 0
     /** @private */
     this._telling = null
     // what an extension tells the rooms closed here, through the same pass: `stamp` names it,
@@ -1781,10 +1786,10 @@ export class Handle extends ReadyResource {
   }
 
   // a closed room opened only to be told: nothing handed to the app. One open here runs the same
-  // compare, behind its own. One that waits for a peer to serve it is untold for now, and holds
-  // no other room: it goes on apart until it is told, or reports its wait once per removal
+  // compare, behind its own. One no peer serves yet is untold for now and holds no other room:
+  // it waits closed for its turn, a few at a time, and reports its wait once per removal
   /** @private */
-  async _tellOne(id, stamp, marked) {
+  async _tellOne(id, stamp, marked, turn = false) {
     const open = [...this.children].find((c) => c.id === id)
     if (open) return this._prune(open, stamp)
     const loading = this._loading.get(id)
@@ -1793,16 +1798,46 @@ export class Handle extends ReadyResource {
       return child ? this._prune(child, stamp) : false
     }
     if (this._tellings.has(id)) return false
-    let park = () => {}
-    const parked = new Promise((resolve) => (park = () => resolve(false)))
-    const telling = this._tellRoom(id, stamp, marked, park)
+    if (!turn && this._waiting.has(id)) {
+      this._waiting.set(id, { stamp, marked })
+      return false
+    }
+    const telling = this._tellRoom(id, stamp, marked, turn)
     const done = () => this._tellings.delete(id)
     this._tellings.set(id, telling.then(done, done))
-    return Promise.race([telling, parked])
+    // set aside once it is closed, so its turn opens it again
+    const told = await telling
+    if (told !== null) return told
+    this._wait(id, stamp, marked)
+    return false
   }
 
   /** @private */
-  async _tellRoom(id, stamp, marked, park) {
+  _wait(id, stamp, marked) {
+    this._waiting.set(id, { stamp, marked })
+    if (this._waiters >= TELLING) return
+    this._waiters++
+    this._turns()
+  }
+
+  /** @private */
+  async _turns() {
+    try {
+      while (this._waiting.size && !this.closing) {
+        const [[id, { stamp, marked }]] = this._waiting
+        this._waiting.delete(id)
+        await this._tellOne(id, stamp, marked, true).catch((err) => {
+          if (!this.closing) this._onerror(err)
+        })
+      }
+    } finally {
+      this._waiters--
+    }
+  }
+
+  // null when no peer serves it yet: set aside for a turn
+  /** @private */
+  async _tellRoom(id, stamp, marked, turn) {
     const { data: row } = await this.store.get('handles', id)
     // a room left on another device has no row; one still being joined is told by its own open
     if (!row?.encryptionKey) return true
@@ -1825,13 +1860,9 @@ export class Handle extends ReadyResource {
     try {
       await child.ready()
       if (!child.store.writable && child.store.length === 0) {
-        park()
+        if (!turn && !(await served(child.store, SERVED))) return null
         try {
           await child.store.claim({ timeout: TIMEOUT })
-          // told after its pass ended: the next one records the rooms covered
-          const told = await this._prune(child, stamp)
-          if (told) this._tellClosed()
-          return told
         } catch (err) {
           if (this.closing || child.closing || child.closed) return false
           if (err.code === 'TIMEOUT') {
@@ -1843,20 +1874,25 @@ export class Handle extends ReadyResource {
           return false
         }
       }
-      return await this._prune(child, stamp)
+      const told = await this._prune(child, stamp)
+      // told after its pass ended: the next one records the rooms covered
+      if (told && turn) this._tellClosed()
+      return told
     } finally {
       await child._end().catch(safetyCatch)
     }
   }
 
   // a handle's epochs ride in its root row, which only the identity's devices read: one that
-  // opens the handle later reads history with them, since envelopes in the log address a device
+  // opens the handle later reads history with them, since envelopes in the log address a device.
+  // Written once the root holds no device it removed, which would read them there
   /** @private */
   _carry(child) {
     const save = async () => {
       const epochs = c.encode(epochEntries, child.store.keyring.all())
       const { data: row } = await this.store.get('handles', child.id)
       if (!row || b4a.equals(row.epochs || b4a.alloc(0), epochs)) return
+      if (!(await this.store.rotated())) return
       await this.store.set('handles', { id: row.id, epochs })
     }
     // read when the row changes, and when an announcement applies: it is learned only after that
@@ -1871,11 +1907,15 @@ export class Handle extends ReadyResource {
     child.store.on('epoch', onepoch)
     child.store.on('update', onchild)
     this.store.on('update', onroot)
+    this.store.on('epoch', onepoch)
     child.once('close', () => {
       child.store.off('epoch', onepoch)
       child.store.off('update', onchild)
       this.store.off('update', onroot)
+      this.store.off('epoch', onepoch)
     })
+    // one that rotated before it is carried, as a room made while the root owes a rotation
+    if (child.store.keyring.seq > 0) read().then(save).catch(this._onerror)
   }
 
   // before(me.room.notes, fn): on every handle open now and every one opened later
@@ -2041,9 +2081,32 @@ function digest(removed, standing) {
   return hash([hash(b4a.concat(removed)), hash(b4a.concat(standing))])
 }
 
-// the closed rooms a pass tells at once, and the keypairs it reads at a time
+// the closed rooms a pass tells at once, and those that wait for a peer at once; the keypairs it
+// reads at a time; how long a pass waits for a peer to serve a room before it sets it aside
 const TELLING = 4
 const PAGE = 1000
+const SERVED = 2000
+
+// whether a peer serves a room within `timeout`: its members reach the view
+function served(store, timeout) {
+  return new Promise((resolve) => {
+    const done = (found) => {
+      clearTimeout(timer)
+      store.off('update', check)
+      store.off('close', done)
+      resolve(!!found)
+    }
+    const check = () =>
+      store.get('members', { limit: 1 }).then(
+        (res) => res.data.length > 0 && done(true),
+        () => done(false)
+      )
+    const timer = setTimeout(done, timeout)
+    store.on('update', check)
+    store.once('close', done)
+    check()
+  })
+}
 
 // a file as its url names it to the file server
 function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {
