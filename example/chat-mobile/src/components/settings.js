@@ -78,15 +78,39 @@ export function Settings() {
       </Section>
 
       <Section title='Devices'>
-        {devices.map((d) => (
-          <Card key={d.id}>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <Text style={styles.text}>{d.name || 'Unnamed'}</Text>
-              <Text style={styles.muted}>{d.id?.slice(0, 8)}</Text>
-              {d.id === me.device?.id && <Text style={{ color: colors.accent }}>(current)</Text>}
-            </View>
-          </Card>
-        ))}
+        {devices.map((d) => {
+          const current = d.id === me.device?.id
+          return (
+            <Card key={d.id}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {/* a device names only itself: the SDK refuses a rename of another */}
+                {current ? (
+                  <Input
+                    style={{ flex: 1 }}
+                    placeholder='Device name'
+                    defaultValue={d.name}
+                    onEndEditing={(e) => {
+                      const v = e.nativeEvent.text.trim()
+                      if (v && v !== d.name) cero.set(me.devices, { id: d.id, name: v })
+                    }}
+                  />
+                ) : (
+                  <Text style={styles.text}>{d.name || 'Unnamed'}</Text>
+                )}
+                <Text style={styles.muted}>{d.id?.slice(0, 8)}</Text>
+                {current ? (
+                  <Text style={{ color: colors.accent }}>(current)</Text>
+                ) : (
+                  <Button
+                    title='Remove'
+                    variant='danger'
+                    onPress={() => cero.del(me.devices, d.id)}
+                  />
+                )}
+              </View>
+            </Card>
+          )
+        })}
       </Section>
 
       <Section title='Recovery phrase'>
