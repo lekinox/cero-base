@@ -5,6 +5,7 @@ import z32 from 'z32'
 
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
+import { Database } from '@cero-base/core/database'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
@@ -1512,4 +1513,70 @@ test('devices: two devices of the identity that tell a room at once leave the sa
   await Promise.all([a.me._pruneAll(), b.me._pruneAll()])
   t.alike([room.store.length, mine.store.length], lengths, 'and neither tells again')
   t.alike(await room.store.told(a.me.id), await mine.store.told(a.me.id))
+})
+
+test('devices: a reader in a room hears no error when its root removes a device, and the room is told nothing by it', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const errors = []
+  const b = await ceroOpen(t, { testnet: a.testnet, onerror: (err) => errors.push(err) })
+  const seen = await open(b.me.team, await cero.invite(room, { role: 'reader' }))
+  const phone = await linkTo(t, b)
+  await seats(b.me, 2)
+
+  await del(b.me.devices, phone.me.device.id)
+  await b.me._pruneAll()
+  t.absent(seen.store.writable, 'a reader has no seat')
+  t.alike(errors, [], 'its compare writes nothing')
+  t.alike(await room.store.told(b.me.id), { removed: [], standing: [] })
+})
+
+test('devices: a room told what the root holds is not written to again at the next open', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  await del(a.me.devices, phone.me.device.id)
+  await toldOf(room, phone)
+  await a.me._pruneAll()
+
+  const { id } = room
+  await a.me.close()
+  const again = await cero(a.dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 1 })
+  const { call } = Database.prototype
+  let tellings = 0
+  Database.prototype.call = function (op, data) {
+    if (op === 'revoke') tellings++
+    return call.call(this, op, data)
+  }
+  try {
+    await open(again.team, { id })
+    await again._pruneAll()
+  } finally {
+    Database.prototype.call = call
+  }
+  t.is(tellings, 0, 'the compare finds it told')
+})
+
+test('devices: a device its own root does not seat tells no room', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  const mine = await open(phone.me.team, { id: room.id })
+  await waitUntil(() => mine.store.writable)
+  await waitUntil(() => sits(room, phone))
+
+  // its root as a removal of it reaches the device before the rooms were told
+  const root = phone.me.store
+  const read = root.get.bind(root)
+  const out = (row) => row.key && b4a.equals(row.key, deviceKey(phone))
+  root.removals = async () => [deviceKey(phone)]
+  root.get = async (name, query) => {
+    const res = await read(name, query)
+    return name === 'devices' ? { ...res, data: res.data.filter((row) => !out(row)) } : res
+  }
+  await phone.me._prune(mine)
+  t.alike(await mine.store.told(phone.me.id), { removed: [], standing: [] }, 'it tells nothing')
+  t.ok(await sits(mine, phone), 'and keeps its seat until a device that stands tells')
 })
