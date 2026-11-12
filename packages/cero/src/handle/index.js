@@ -192,6 +192,7 @@ export class Handle extends ReadyResource {
       namespace: opts.namespace,
       keyPair: opts.keyPair,
       pinned: !parent,
+      root: !parent,
       // the root has no topic to push to
       push: !!parent,
       // the root says which of this identity's devices are removed: behind there, behind here

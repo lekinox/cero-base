@@ -1751,6 +1751,23 @@ test('link: a removed device loses its seats in every handle, and the root rotat
   t.pass('the device writes nowhere')
 })
 
+test('link: a device linked by one removed since links another, and reads the rooms', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'from the phone' })
+  const laptop = await linkTo(t, phone)
+  await devices(laptop.me, 2)
+  await del(laptop.me.devices, phone.me.device.id)
+  await devices(laptop.me, 1)
+
+  const tablet = await linkTo(t, laptop)
+  t.is(tablet.me.id, phone.me.id, 'the same identity')
+  await devices(laptop.me, 2)
+  const mine = await open(tablet.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  t.pass('and it reads the room')
+})
+
 // a new device accepted on `a` that stops waiting before its keys: promised a seat it never takes
 async function accepted(t, a) {
   const invite = await cero.invite(a.me, { ttl: '6s' })

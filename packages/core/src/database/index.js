@@ -55,6 +55,7 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
+ * @property {boolean} [root]                                         The identity's own database: a device key past a removed one stands while a device of the identity is seated on it.
  * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {Database | null} [parent]                               A database whose members this one follows: behind there, it is behind here too.
@@ -145,6 +146,7 @@ export class Database extends ReadyResource {
     this.keyring.onmiss = (stamp) => this.rotation.meet(stamp)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
+    this.root = opts.root === true
     this.push = opts.push === true
     /** @private */
     this._pushes = pushes(this.refs)
@@ -250,6 +252,7 @@ export class Database extends ReadyResource {
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
       room: () => this._room,
+      root: this.root,
       hooks: (phase, op) => this._hooks(phase, op),
       touch: (name) => this._touched.add(name),
       read: (view, name, query) => this._read(view, name, query)

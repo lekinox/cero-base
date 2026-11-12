@@ -142,6 +142,25 @@ test("add-writer: a reader's other device takes no seat", async (t) => {
   t.absent((await db.get('devices', phone.writer.id)).data, 'no row')
 })
 
+test('add-writer: in the root a device linked by a removed one stands while seated, and one the removed signs after stays out', async (t) => {
+  for (const root of [true, false]) {
+    const { db, identity } = await withRole(t, 'owner', { root })
+    const phone = linked(identity)
+    const laptop = linked(phone.identity)
+    t.is(await seat(db, phone), null)
+    t.is(await seat(db, laptop), null)
+    t.is(await apply(db, laptop.writer.publicKey, 'del-device', { id: phone.writer.id }), null)
+    const tablet = linked(laptop.identity)
+    const late = linked(phone.identity)
+    t.is(
+      (await seat(db, tablet))?.code,
+      root ? undefined : 'REFUSED',
+      `the laptop links, root ${root}`
+    )
+    t.is((await seat(db, late))?.code, 'REFUSED', `the removed phone links nobody, root ${root}`)
+  }
+})
+
 test("add-writer: a member's other device seats itself", async (t) => {
   const { db, identity } = await withRole(t, 'member')
   const phone = linked(identity)
