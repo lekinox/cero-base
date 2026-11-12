@@ -744,6 +744,19 @@ test('revoke: a device that fills its identity removals before the room hears of
   t.is(refused?.rule, 'removed', 'and the removed one tells nothing after')
 })
 
+test('revoke: a device with no row in the room tells itself among those that stand, so a sibling can always take it out', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  const made = b4a.concat(Array.from({ length: 64 }, () => Identity.randomKeyPair().publicKey))
+  const core = phone.writer.publicKey
+  const proof = phone.identity.sign(admission(db.key, core, core))
+  const hidden = { removed: made, standing: keys(laptop), proof }
+  t.is((await apply(db, core, 'revoke', hidden))?.rule, 'revoke', 'left out, it tells nothing')
+  t.absent(await told(db, identity))
+  t.is(await apply(db, core, 'revoke', { ...hidden, standing: keys(phone, laptop) }), null)
+  t.is(await seatless(db, laptop, [phone], [laptop]), null, 'and the laptop takes it out')
+})
+
 test('revoke: a room its first batch made with more than 64 removals of an identity is still told who stands', async (t) => {
   const { db, identity } = await lost(t)
   const laptop = linked(identity)

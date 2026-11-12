@@ -519,6 +519,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _pass;
     /** @private */
+    private _marked;
+    /** @private */
     private _lists;
     /** @private */
     private _stamp;

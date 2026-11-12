@@ -2536,6 +2536,13 @@ test('devices: a room that stays below the version that brings revoke is not ope
   await relaunch()
   const later = await relaunch()
   t.is(later.opened, 0, 'nothing changed since the last launch: no room is opened')
+
+  const forgot = await cero(phone.dir, older, { bootstrap: testnet.bootstrap })
+  await forgot._telling
+  await forgot.local.store.set('told', { stamp: null })
+  await forgot.close()
+  const pass = await relaunch()
+  t.is(pass.opened, 0, 'a pass that runs again opens no room it found below')
 })
 
 test('devices: a room told what the root holds is not written to again at the next open', async (t) => {

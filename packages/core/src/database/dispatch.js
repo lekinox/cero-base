@@ -703,9 +703,20 @@ export function makeDispatcher({
     const before = keysOf(told?.removed)
     const added = keysOf(op.removed).filter((key) => !has(before, key))
     const removed = [...before, ...added]
-    // a device with no seat here tells too, so what is kept for an identity is bounded; the first
-    // batch carries whatever its root holds, or the room could not be made
-    if (removed.length > MAX_REMOVED && !ctx.host.genesis) {
+    const rowed = (await ctx.view.find(`@${ns}/devices`, {}).toArray())
+      .filter((d) => d.memberId === memberId && d.key)
+      .map((d) => d.key)
+    // one with no row here is known by what it tells: itself among those that stand
+    const own = chain[chain.length - 1]
+    if (!has(rowed, own) && !has(keysOf(op.standing), own)) {
+      throw CeroError.REFUSED('revoke', 'a device tells itself standing')
+    }
+    // a device with no seat here tells too, so what is kept for an identity is bounded, past the
+    // first batch, which carries whatever its root holds. A key told standing or seated here is
+    // always taken out, or a device could fill the bound with made-up keys to keep its own in
+    const known = [...rowed, ...keysOf(told?.standing)]
+    const fresh = added.filter((key) => !has(known, key))
+    if (fresh.length && removed.length > MAX_REMOVED && !ctx.host.genesis) {
       throw CeroError.REFUSED('revoke', `at most ${MAX_REMOVED} device keys removed per identity`)
     }
     let uncovered = false
