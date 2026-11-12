@@ -1822,3 +1822,12 @@ test('rpc: status.owed reads in the UI as in the worker, true while its device w
   await waitUntil(async () => (await get(mine.status)).data.owed === false || null)
   t.pass('and not once it was sent them')
 })
+
+test('probe: a wrong phrase on a new store leaves the worker able to create or recover', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { open } = await fresh(t, testnet)
+  const phrase = Identity.toPhrase(Identity.randomBytes(32)).split(' ').slice(1).join(' ')
+  await t.exception(open({ phrase }), /BIP-39/)
+  const created = await open().catch((err) => err)
+  t.ok(created?.id, `created after the wrong phrase: ${created?.message ?? ''}`)
+})
