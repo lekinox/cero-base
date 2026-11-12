@@ -2148,7 +2148,7 @@ async function tally(act, onrevoke = () => {}) {
   Database.prototype.call = function (op, data) {
     if (op === 'revoke') {
       seen.tellings++
-      onrevoke()
+      onrevoke(this)
     }
     return call.call(this, op, data)
   }
@@ -2271,4 +2271,55 @@ test('devices: a room this device holds no writer in is skipped by its pass', as
     await toldOf(room, phone)
   })
   t.is(seen.opened, 0, 'the device without a writer there opens it not')
+})
+
+test('devices: a room whose telling throws is told at the next pass, and only it', async (t) => {
+  const { a, phone } = await closedRooms(t)
+  const errors = []
+  const me = await relaunch(t, a, { onerror: (err) => errors.push(err) })
+  let attempts = 0
+  let failing = null
+  await tally(
+    async () => {
+      await del(me.devices, phone.me.device.id)
+      await waitUntil(() => attempts >= 3)
+      await me._telling
+    },
+    (store) => {
+      attempts++
+      failing ??= store.key
+      if (b4a.equals(store.key, failing)) throw new Error('lost')
+    }
+  )
+  t.ok(errors.length > 0, 'the failure reported')
+  await me.close()
+
+  const seen = await tally(async () => {
+    const again = await relaunch(t, a)
+    await again._telling
+    await passed(again)
+  })
+  t.is(seen.opened, 1, 'the next pass opens the room it failed')
+  t.is(seen.tellings, 1, 'and tells it')
+})
+
+test('devices: a room open when the pass runs is told by its open and not again by the pass', async (t) => {
+  const { a, ids, phone } = await closedRooms(t)
+  const me = await relaunch(t, a)
+  const room = await open(me.team, { id: ids[0] })
+  await waitUntil(() => room.store.writable)
+  const seen = await tally(async () => {
+    await del(me.devices, phone.me.device.id)
+    await passed(me)
+    await me._pruneAll()
+  })
+  t.is(seen.tellings, 3, 'each room told once')
+  t.is(seen.opened, 2, 'the pass opens the closed ones')
+  await me.close()
+
+  const again = await tally(async () => {
+    const next = await relaunch(t, a)
+    await next._telling
+  })
+  t.is(again.opened, 0, 'and the next launch opens none')
 })

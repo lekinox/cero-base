@@ -495,6 +495,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _compare;
     /** @private */
+    private _mark;
+    /** @private */
     private _unseat;
     /** @private */
     private _pruneAll;
