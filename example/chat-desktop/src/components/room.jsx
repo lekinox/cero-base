@@ -5,6 +5,7 @@ import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
 import { Toast } from './toast'
 import { Sharing } from './sharing'
+import { People } from './people'
 import { useToast } from '../hooks/use-toast'
 
 function MessageGroup({ messages, mine, sender }) {
@@ -118,6 +119,7 @@ export function Room({ onClose }) {
           Leave
         </Button>
       </div>
+      <People />
 
       {open && (
         <ul className='px-3 py-2 bg-card border-b border-border space-y-1 text-sm'>
