@@ -351,6 +351,8 @@ export class Handle extends ReadyResource {
       ...[...(this.children || [])].map((c) => () => c._end()),
       ...[...(this._pending || [])].map((c) => () => c._end()),
       ...[...(this._ending || [])].map((c) => () => c.closing),
+      // the pass opens no room once the close began: it ends with the rooms it had open
+      () => this._telling,
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -1370,18 +1372,19 @@ export class Handle extends ReadyResource {
       return
     }
     // a writer in a room is the writer keypair this device keeps for it
-    const { data: keys } = await this.local.store.get('handle-keypairs')
-    const held = new Map(keys.map((row) => [row.id, row]))
-    const used = (row) => held.get(row.id).used ?? 0
-    const { data: rows } = await this.store.get('handles')
-    const rooms = rows.filter((row) => held.has(row.id)).sort((a, b) => used(b) - used(a))
+    const rooms = []
+    for (let after; ;) {
+      const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
+      for (const { id, used } of data) rooms.push({ id, used: used ?? 0 })
+      if (data.length < PAGE) break
+      after = data[data.length - 1].id
+    }
+    rooms.sort((a, b) => b.used - a.used)
     let next = 0
     const tell = async () => {
       while (next < rooms.length && !this.closing) {
-        const row = rooms[next++]
-        await this._tellOne(row, held.get(row.id)).catch(
-          (err) => this.closing || this._onerror(err)
-        )
+        const { id } = rooms[next++]
+        await this._tellOne(id).catch((err) => this.closing || this._onerror(err))
       }
     }
     await Promise.all(Array.from({ length: TELLING }, tell))
@@ -1391,22 +1394,27 @@ export class Handle extends ReadyResource {
   // a closed room opened only to be told: no seat claimed, nothing handed to the app. One open
   // here is told by its own compare
   /** @private */
-  async _tellOne(row, { publicKey, secretKey }) {
-    if (this._loading.has(row.id) || [...this.children].some((c) => c.id === row.id)) return
-    const telling = this._tellRoom(row, { publicKey, secretKey })
+  async _tellOne(id) {
+    if (this._loading.has(id) || [...this.children].some((c) => c.id === id)) return
+    const telling = this._tellRoom(id)
     this._tellings.set(
-      row.id,
+      id,
       telling.catch(() => {})
     )
     try {
       await telling
     } finally {
-      this._tellings.delete(row.id)
+      this._tellings.delete(id)
     }
   }
 
   /** @private */
-  async _tellRoom({ id, type, key, encryptionKey, epochs }, keyPair) {
+  async _tellRoom(id) {
+    const { data: row } = await this.store.get('handles', id)
+    // a room left on another device has no row
+    if (!row) return
+    const { type, key, encryptionKey, epochs } = row
+    const keyPair = await this._loadKeyPair(id)
     const child = this._room({
       spec: pickHandle(this.spec, type),
       namespace: `${NS}/handle/${type}/${id}`,
@@ -1556,8 +1564,9 @@ function reserved(child) {
 // the entry type of a row whose type no header carries: no file server url builds it
 const UNSERVED = '\n'
 
-// the closed rooms a pass tells at once
+// the closed rooms a pass tells at once, and the keypairs it reads at a time
 const TELLING = 4
+const PAGE = 1000
 
 // a file as its url names it to the file server
 function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {

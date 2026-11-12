@@ -1594,7 +1594,7 @@ const passed = (me) => waitUntil(async () => (await me.local.store.get('told')).
 
 // the tellings written, the lists of the handles read and the rooms opened while `act` runs
 async function tally(act, onrevoke = () => {}) {
-  const seen = { tellings: 0, lists: 0, opened: 0 }
+  const seen = { tellings: 0, lists: 0, opened: 0, rooms: [] }
   const { call, get: read } = Database.prototype
   const ready = Handle.prototype._open
   Database.prototype.call = function (op, data) {
@@ -1609,7 +1609,10 @@ async function tally(act, onrevoke = () => {}) {
     return read.call(this, name, query)
   }
   Handle.prototype._open = function () {
-    if (this.parent) seen.opened++
+    if (this.parent) {
+      seen.opened++
+      seen.rooms.push(this)
+    }
     return ready.call(this)
   }
   try {
@@ -1655,9 +1658,69 @@ test('devices: a device removed in the root while three rooms are closed is told
     await passed(me)
   })
   t.is(seen.tellings, 3, 'each room told once')
-  t.is(seen.lists, 1, 'from one list of the handles')
+  t.is(seen.lists, 0, 'and reads no list of the handles')
   t.alike(handed, [], 'none handed to the app')
   t.is(me.children.size + me._pending.size, 0, 'and none left open')
   await me.close()
   await toldAtOpen(t, a, ids, phone)
+})
+
+test('devices: a close while the pass tells rooms resolves with every room it opened closed, and the next launch goes on', async (t) => {
+  const { a, ids, phone } = await closedRooms(t)
+  const errors = []
+  const me = await relaunch(t, a, { onerror: (err) => errors.push(err) })
+  let closing = null
+  const first = await tally(
+    async () => {
+      await del(me.devices, phone.me.device.id)
+      await waitUntil(() => closing !== null)
+      await closing
+    },
+    () => (closing ??= me.close())
+  )
+  t.ok(first.rooms.length > 0, 'the pass had rooms open')
+  t.ok(
+    first.rooms.every((room) => room.closed),
+    'every one closed when the close resolves'
+  )
+  t.alike(errors, [], 'nothing reported')
+
+  const seen = await tally(async () => {
+    const again = await relaunch(t, a)
+    await passed(again)
+    await again.close()
+  })
+  t.ok(seen.opened > 0, 'the next launch goes on with nothing changed')
+  await toldAtOpen(t, a, ids, phone)
+})
+
+test('devices: a launch with nothing changed since its rooms were told reads no list of the handles and opens none', async (t) => {
+  const { a, phone } = await closedRooms(t)
+  const me = await relaunch(t, a)
+  await del(me.devices, phone.me.device.id)
+  await passed(me)
+  await me.close()
+
+  const seen = await tally(async () => {
+    const again = await relaunch(t, a)
+    await again._telling
+  })
+  t.is(seen.lists, 0, 'no list of the handles')
+  t.is(seen.opened, 0, 'no room opened')
+})
+
+test('devices: a room this device holds no writer in is skipped by its pass', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
+  const phone = await linkTo(t, a)
+  await seats(b.me, 3)
+  await waitUntil(async () => (await b.me.store.get('handles', room.id)).data)
+
+  const seen = await tally(async () => {
+    await del(a.me.devices, phone.me.device.id)
+    await passed(b.me)
+    await toldOf(room, phone)
+  })
+  t.is(seen.opened, 0, 'the device without a writer there opens it not')
 })
