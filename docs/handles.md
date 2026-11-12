@@ -90,7 +90,11 @@ try {
 
 `cero.open` waits a fixed 30 s, then rejects `TIMEOUT`. The join goes on, across restarts: once a
 member answers, the handle appears in `me.room`, so watch that list. An expired invite rejects
-`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
+`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`. The latest ask stands: a join
+with another invite on another device of yours asks again, and the device that asked first takes
+its request back once it is online, its waiting `open` rejecting `CANCELLED`. A cancel, or a row
+the app deletes, takes the request back the same way, and so does a new ask under the same invite
+after either.
 
 ```js
 const { data: waiting } = await cero.get(me.room, { state: 'asking' }) // still waiting for an answer
@@ -224,7 +228,7 @@ carries it: it takes you out of the handle's members, at any role, waits until a
 mirror holds that, then deletes the row, keeps none of the handle's keys and closes it. An app
 closed on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with
 the remover's id in `by`. A removal, and a join that ended `denied` or `expired`, stays 30 days so
-the app can show why, then goes at a launch; a cancelled join goes at a launch once the room holds the cancel, 30 days at most, and a leave
+the app can show why, then goes at a launch; a cancelled join goes at a launch of the device that asked once the room holds the cancel, 30 days at most, and a leave
 leaves no row. The app deletes an ended row whenever it likes, with `cero.del(me.room, id)`, and a
 new code joins again; a row still `in`, `leaving`, `asking` or `joining` is `REFUSED`. The last
 owner of a handle others are in gets `INVALID` from `cero.leave`, and nothing is written: make

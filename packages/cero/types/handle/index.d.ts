@@ -189,6 +189,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _joining;
     /** @private */
+    _taking;
+    /** @private */
     _coreKeys;
     /** @private */
     _offJoins;
@@ -450,7 +452,13 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _cancel;
     /** @private */
+    private _check;
+    /** @private */
+    private _takeBack;
+    /** @private */
     private _retract;
+    /** @private */
+    private _announce;
     /** @private */
     private _forget;
     /** @private */

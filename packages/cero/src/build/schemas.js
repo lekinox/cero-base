@@ -75,7 +75,9 @@ export const main = {
     state: string,
     reason: string,
     by: string,
-    invite: string
+    invite: string,
+    // the writer of the latest ask, the one request of the identity that stands
+    writer: string
   },
   file: {
     id: required(string),
@@ -317,6 +319,17 @@ export const local = {
     removed: bytes,
     standing: bytes,
     stamp: bytes
+  },
+  // a request this device's writer made: it stays until its row says how it ended, or the room
+  // holds it taken back
+  ask: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    invite: required(string),
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    createdAt: int
   }
 }
 

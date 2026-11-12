@@ -657,18 +657,18 @@ export class Pairing extends ReadyResource {
       const { ns = NAMESPACE, start = 1, encoding } = spec.meta || {}
       const parsed = Invite.parse(invite)
       const stamp = parsed.stamp || start
-      const at = await core.getUserData('cero/cancel')
-      if (!at || c.decode(c.uint, at) !== core.length) {
+      const id = hid.encode(core.key)
+      let appending = cancels.get(id)
+      if (!appending) {
         const body = spec.dispatch.encode(
           `@${ns}/cancel-join`,
-          { id: hid.encode(core.key) },
+          { id },
           { version: encoding?.[stamp] }
         )
-        await core.append(
-          Autobee.encodeValue(wrap(stamp, body), { optimistic: true, encrypted: true })
-        )
-        await core.setUserData('cero/cancel', c.encode(c.uint, core.length))
+        appending = retract(core, wrap(stamp, body)).finally(() => cancels.delete(id))
+        cancels.set(id, appending)
       }
+      await appending
       post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
       await Promise.race([post.ready().then(() => post.delivered), closed])
     } finally {
@@ -700,6 +700,16 @@ export function sealJoin(invite, identity, writer, reply) {
   }
   const box = crypto.encrypt(c.encode(Join, join), invite.address)
   return invite.own ? { box, invite: invite.id } : { box }
+}
+
+// the cancel being appended, by writer: two at once on one writer append it once
+const cancels = new Map()
+
+async function retract(core, op) {
+  const at = await core.getUserData('cero/cancel')
+  if (at && c.decode(c.uint, at) === core.length) return
+  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true }))
+  await core.setUserData('cero/cancel', c.encode(c.uint, core.length))
 }
 
 // one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
