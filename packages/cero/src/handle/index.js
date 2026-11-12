@@ -1244,9 +1244,7 @@ export class Handle extends ReadyResource {
   async _cancel(invite) {
     const root = this.root
     const id = hid.encode(Invite.parse(invite).key)
-    const { data: row } = await root.store.get('handles', id)
-    if (row?.state !== 'asking') return false
-    await root._over(id, CeroError.CANCELLED())
+    if (!(await root._over(id, CeroError.CANCELLED()))) return false
     const join = root._joining.get(id)
     if (join) {
       root._stop(join, CeroError.CANCELLED())
@@ -1372,19 +1370,26 @@ export class Handle extends ReadyResource {
     await this.store.set('handles', { id, state, ...fields })
   }
 
-  // how a join ended, on its row, which keeps none of the keys it was handed. A join ends only its
-  // own ask, a cancel the one that stands under any invite of the room
+  // how a join ended, on its row, which keeps none of the keys it was handed, and whether it did. A
+  // join ends only its own ask, a cancel the one that stands under any invite of the room
   /** @private */
   async _over(id, err, join) {
     const state = OVER[err.code]
     const { data: row } = await this.store.get('handles', id)
-    // a join on its way ends its own request, one seated or over stays as it reads
-    const own = !join?.writer || row?.writer === hid.encode(join.writer.publicKey)
+    // a join ends its own request once it chose its writer, one seated or over stays as it reads
+    const own = !join || (!!join.writer && row?.writer === hid.encode(join.writer.publicKey))
     const ends =
       (row?.state === 'asking' && own) || (row?.state === 'joining' && state === 'denied')
-    if (!state || !ends || (join && row.invite !== join.invite)) return
+    if (!state || !ends || (join && row.invite !== join.invite)) return false
     const reason = err.reason ?? null
-    await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
+    try {
+      await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
+    } catch (err) {
+      // an answer that landed since the read moved the row on
+      if (err.code === 'REFUSED') return false
+      throw err
+    }
+    return true
   }
 
   // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,

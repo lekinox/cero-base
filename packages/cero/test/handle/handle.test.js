@@ -495,6 +495,32 @@ test('join: a cancel under the invite a device asked with, once a second device 
   t.ok(await waitUntil(left, 5000).catch(() => false), 'and the request that stood leaves the room')
 })
 
+test('join: a cancel the answer beats once it read the row asking cancels nothing, and the join lands', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const { me } = await ceroOpen(t, { testnet })
+  const joining = open(me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  const read = me.store.get
+  let asking = null
+  // the answer lands right after the cancel read the row
+  me.store.get = async function (name, query) {
+    const result = await read.call(this, name, query)
+    if (name !== 'handles' || query !== room.id || asking) return result
+    asking = result
+    await accept(room, request)
+    await waitUntil(async () => (await read.call(this, name, query)).data?.encryptionKey)
+    return asking
+  }
+  t.is(await cero.cancel(me, invite), false, 'nothing was cancelled')
+  me.store.get = read
+  const joined = await joining
+  t.is(joined.id, room.id, 'the join lands')
+  await joined.close()
+})
+
 test('join: a cancel as the app closes reaches onerror with nothing', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
@@ -2145,6 +2171,13 @@ test('handles: a join that ends under an invite its row no longer reads leaves t
   await me.store.set('handles', standing('room', 'joining', 'second'))
   await me._over('room', CeroError.DENIED('full'), { invite: 'first', writer: null })
   t.is((await get(me.handles, 'room')).data.state, 'joining')
+})
+
+test('handles: a join that ends before it chose its writer leaves the ask another device made under its invite', async (t) => {
+  const { me } = await ceroOpen(t)
+  await me.store.set('handles', { ...standing('room', 'asking'), writer: 'theirs' })
+  await me._over('room', CeroError.EXPIRED(), { invite: 'first', writer: null })
+  t.is((await get(me.handles, 'room')).data.state, 'asking')
 })
 
 test('handles: a rename from a device whose copy of the row is behind on the state is not refused and does not change the state', async (t) => {
