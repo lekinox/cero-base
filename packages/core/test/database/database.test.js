@@ -4415,6 +4415,16 @@ test("version: an owner's write on a newer build raises the version in its own b
   )
 })
 
+test("version: an owner's removal of what is already gone appends nothing on a newer build, and rotates no key", async (t) => {
+  const db = await upgraded(t)
+  db._raise = async () => {}
+  const nodes = appended(db)
+  const seq = db.keyring.seq
+  await db.del('devices', genId())
+  t.is(nodes.length, 0, 'no raise in front of it')
+  t.is(db.keyring.seq, seq, 'and no rotation')
+})
+
 test("version: an owner's raise on its own is one upgrade", async (t) => {
   const db = await upgraded(t)
   const nodes = appended(db)

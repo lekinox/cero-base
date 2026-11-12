@@ -542,6 +542,7 @@ export class Database extends ReadyResource {
     // the dry run refuses what apply would; a no-op never reaches the log, an action always does
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
+      if (raise && !action && !(await this._changes(ops))) return
       const { wrapped, changed, stamp } = await this._dryRun(batch)
       if (!changed && !action) return
       // a newer op may have applied while this write awaited
@@ -1402,6 +1403,16 @@ export class Database extends ReadyResource {
     if (this.target <= (await this.dispatcher.version(this.view))) return false
     const me = await this.view.get(`@${this.ns}/members`, { id: this.identity.id })
     return me?.role === OWNER
+  }
+
+  // a write that changes nothing appends no raise in front of it; one the view refuses may need the raise
+  /** @private */
+  async _changes(ops) {
+    try {
+      return (await this._dryRun(ops)).changed
+    } catch {
+      return true
+    }
   }
 
   // a device writes as the version, its own contract while it is behind
