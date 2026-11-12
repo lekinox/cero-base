@@ -350,3 +350,21 @@ test('compat: a reader on this release with a profile opens a room the previous 
     'the profile the bundled sync mirrors raises nothing'
   )
 })
+
+test('compat: a store the previous release wrote joins a room as soon as this release opens it', async (t) => {
+  const { old, before } = await previous()
+  const shipped = await shippedSpec()
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const host = await cero(await t.tmp(), shipped, opts)
+  t.teardown(() => host.close().catch(() => {}), { order: 5 })
+  const dir = await t.tmp()
+  const was = await old.cero(dir, before, opts)
+  await was.close()
+
+  const code = await invite(await open(host.room, { name: 'shared' }))
+  const me = await cero(dir, shipped, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  const err = await open(me.room, code).then(() => null, (e) => e)
+  t.is(err?.message ?? null, null, 'the join is asked under the version the root is at')
+})
