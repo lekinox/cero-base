@@ -2734,6 +2734,219 @@ test('devices: a room the identity reads only from the removed device is told by
   t.pass('and the host rotates')
 })
 
+test('devices: a room the identity only reads, told by a pass as its host drops off, is told once the host is back', async (t) => {
+  const host = await ceroOpen(t)
+  const news = await open(host.me.team, { name: 'news' })
+  const laptop = await ceroOpen(t, { testnet: host.testnet })
+  const phone = await linkTo(t, laptop)
+  await seats(laptop.me, 2)
+  await laptop.me.close()
+  const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+  await waitUntil(() => sits(news, phone))
+  const me = await relaunch(t, laptop)
+  await waitUntil(async () => (await me.store.get('handles', seen.id)).data?.state === 'in')
+
+  const { call } = Database.prototype
+  let suspended = false
+  Database.prototype.call = async function (op, data) {
+    const theirs = this === news.store || this === seen.store
+    if (op === 'revoke' && !theirs && !suspended && b4a.equals(this.key, news.store.key)) {
+      suspended = true
+      await host.me.network.suspend()
+      await phone.me.network.suspend()
+    }
+    return call.call(this, op, data)
+  }
+  t.teardown(() => (Database.prototype.call = call))
+  await del(me.devices, phone.me.device.id)
+  await waitUntil(() => suspended)
+  await me._telling
+  Database.prototype.call = call
+  const { removed } = await me._lists()
+  const { data: before } = await me.local.store.get('told')
+  t.absent(before?.removed && b4a.equals(before.removed, removed), 'no pass counts it told yet')
+  await host.me.network.resume()
+  await phone.me.network.resume()
+
+  const told = await waitUntil(async () => {
+    const told = await news.store.told(me.id)
+    return names(told.removed, deviceKey(phone))
+  }, 20000).catch(() => false)
+  t.ok(told, 'the host hears the removal')
+  await passed(me)
+  t.pass('and a pass counts it told')
+  await waitUntil(() => news.store.keyring.seq === 1)
+  t.pass('the host rotates')
+  await put(news.messages, { text: 'after' })
+  const read = await waitUntil(async () => (await get(seen.messages)).data.length === 1, 10000)
+    .then(() => true)
+    .catch(() => false)
+  t.absent(read, 'and the removed device reads nothing written next')
+})
+
+// a peer that holds the telling may be the removed device itself: delivery has to count only a
+// writer there or a mirror, and a connection does not say which device it comes from
+test.todo(
+  'devices: a room the identity only reads, told by a pass that only the removed device hears, is told once the host is back',
+  async (t) => {
+    const host = await ceroOpen(t)
+    const news = await open(host.me.team, { name: 'news' })
+    const laptop = await ceroOpen(t, { testnet: host.testnet })
+    const phone = await linkTo(t, laptop)
+    await seats(laptop.me, 2)
+    await laptop.me.close()
+    const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+    await waitUntil(() => sits(news, phone))
+    const me = await relaunch(t, laptop)
+    await waitUntil(async () => (await me.store.get('handles', seen.id)).data?.state === 'in')
+
+    const { call } = Database.prototype
+    let suspended = false
+    Database.prototype.call = async function (op, data) {
+      const theirs = this === news.store || this === seen.store
+      if (op === 'revoke' && !theirs && !suspended && b4a.equals(this.key, news.store.key)) {
+        suspended = true
+        await host.me.network.suspend()
+      }
+      return call.call(this, op, data)
+    }
+    t.teardown(() => (Database.prototype.call = call))
+    await del(me.devices, phone.me.device.id)
+    await waitUntil(() => suspended)
+    await me._telling
+    Database.prototype.call = call
+    // the removed device, the one peer that held the telling, goes away with it
+    await phone.me.network.suspend()
+    await host.me.network.resume()
+
+    const told = await waitUntil(async () => {
+      const told = await news.store.told(me.id)
+      return names(told.removed, deviceKey(phone))
+    }, 20000).catch(() => false)
+    t.ok(told, 'the host hears the removal')
+  }
+)
+
+test('devices: a room the identity only reads, open as its host and the removed device drop off, is told once the host is back after the app quits', async (t) => {
+  const host = await ceroOpen(t)
+  const news = await open(host.me.team, { name: 'news' })
+  const laptop = await ceroOpen(t, { testnet: host.testnet })
+  const phone = await linkTo(t, laptop)
+  await seats(laptop.me, 2)
+  await laptop.me.close()
+  const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+  await waitUntil(() => sits(news, phone))
+  const me = await relaunch(t, laptop)
+  await waitUntil(async () => (await me.store.get('handles', seen.id)).data?.state === 'in')
+  await open(me.team, { id: seen.id })
+
+  const { call } = Database.prototype
+  let suspended = false
+  Database.prototype.call = async function (op, data) {
+    const theirs = this === news.store || this === seen.store
+    if (op === 'revoke' && !theirs && !suspended && b4a.equals(this.key, news.store.key)) {
+      suspended = true
+      await host.me.network.suspend()
+      await phone.me.network.suspend()
+    }
+    return call.call(this, op, data)
+  }
+  t.teardown(() => (Database.prototype.call = call))
+  await del(me.devices, phone.me.device.id)
+  await waitUntil(() => suspended)
+  await me._telling
+  Database.prototype.call = call
+  const { removed } = await me._lists()
+  const { data: before } = await me.local.store.get('told')
+  t.absent(before?.removed && b4a.equals(before.removed, removed), 'no pass counts it told yet')
+  await me.close()
+  const again = await relaunch(t, laptop)
+  await host.me.network.resume()
+  await phone.me.network.resume()
+
+  const told = await waitUntil(async () => {
+    const told = await news.store.told(again.id)
+    return names(told.removed, deviceKey(phone))
+  }, 20000).catch(() => false)
+  t.ok(told, 'the host hears the removal')
+})
+
+test('devices: a room whose view shows no device yet is not taken for one only the identity writes in', async (t) => {
+  const host = await ceroOpen(t)
+  const news = await open(host.me.team, { name: 'news' })
+  const laptop = await ceroOpen(t, { testnet: host.testnet })
+  const phone = await linkTo(t, laptop)
+  await seats(laptop.me, 2)
+  await laptop.me.close()
+  const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+  await waitUntil(() => sits(news, phone))
+  const me = await relaunch(t, laptop)
+  await waitUntil(async () => (await me.store.get('handles', seen.id)).data?.state === 'in')
+
+  const { call, get } = Database.prototype
+  const mine = (db) => db !== news.store && db !== seen.store && b4a.equals(db.key, news.store.key)
+  let suspended = false
+  Database.prototype.call = async function (op, data) {
+    if (op === 'revoke' && mine(this) && !suspended) {
+      suspended = true
+      await host.me.network.suspend()
+      await phone.me.network.suspend()
+    }
+    return call.call(this, op, data)
+  }
+  Database.prototype.get = async function (name, query) {
+    if (name === 'devices' && query === undefined && suspended && mine(this)) return { data: [] }
+    return get.call(this, name, query)
+  }
+  t.teardown(() => {
+    Database.prototype.call = call
+    Database.prototype.get = get
+  })
+  await del(me.devices, phone.me.device.id)
+  await waitUntil(() => suspended)
+  await me._telling
+  const { removed } = await me._lists()
+  const { data: told } = await me.local.store.get('told')
+  t.absent(told?.removed && b4a.equals(told.removed, removed), 'no pass counts it told')
+})
+
+test('devices: a room no peer holds the telling of is tried once more on its turn, then left untold for the next pass', async (t) => {
+  const host = await ceroOpen(t)
+  const news = await open(host.me.team, { name: 'news' })
+  const laptop = await ceroOpen(t, { testnet: host.testnet })
+  const phone = await linkTo(t, laptop)
+  await seats(laptop.me, 2)
+  await laptop.me.close()
+  const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+  await waitUntil(() => sits(news, phone))
+  const me = await relaunch(t, laptop)
+  await waitUntil(async () => (await me.store.get('handles', seen.id)).data?.state === 'in')
+
+  const { held } = Database.prototype
+  let tries = 0
+  Database.prototype.held = async function () {
+    const theirs = this === news.store || this === seen.store
+    if (theirs || !b4a.equals(this.key, news.store.key)) return held.call(this)
+    tries++
+    throw new Error('nobody holds it')
+  }
+  t.teardown(() => (Database.prototype.held = held))
+  await del(me.devices, phone.me.device.id)
+  await waitUntil(() => tries >= 2 && me._waiters === 0)
+  await me._telling
+  t.is(tries, 2, 'tried by the pass and once more on its turn')
+  const { data: row } = await me.local.store.get('handle-keypairs', seen.id)
+  t.absent(row.told, 'the room is not marked told')
+  const { removed } = await me._lists()
+  const { data: told } = await me.local.store.get('told')
+  t.absent(told?.removed && b4a.equals(told.removed, removed), 'nor does the pass count it')
+
+  Database.prototype.held = held
+  await me._tellClosed()
+  await passed(me)
+  t.pass('the next pass tells it')
+})
+
 test('devices: a device whose row in a room keeps no key tells it with a proof', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
