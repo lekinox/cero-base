@@ -690,6 +690,7 @@ test('revoke: a device of the identity with no seat in the room cuts, with a pro
     'the device that stands still tells the room'
   )
   t.alike((await told(db, identity)).standing, keys(laptop), 'and the laptop stands there')
+  t.is(await owed(db), 1, 'the removed one may hold the key through the root: a rotation is owed')
 })
 
 test('revoke: a removed device that never sat in the room claims no seat there, and a removal with nothing told takes every chain through its key', async (t) => {

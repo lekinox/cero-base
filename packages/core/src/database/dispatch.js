@@ -675,15 +675,16 @@ export function makeDispatcher({
     return keys.slice(cut + 1).some((key) => has(standing, key))
   }
 
-  // the chain of the device that tells: its seat's, or for a member's device with none here, a
-  // reader's other one, the chain of the proof its identity signs over the core it tells from
+  // the chain of the device that tells, and whether it sits here: its seat's, or for a member's
+  // device with none here, a reader's other one, the chain of the proof its identity signs over
+  // the core it tells from
   async function teller(op, ctx) {
-    if (!ctx.key) return null
+    if (!ctx.key) return {}
     const device = await getDevice(ctx.view, hid.encode(ctx.key))
-    if (device) return device.memberId && device.key ? seatChain(device) : null
+    if (device) return { chain: device.memberId && device.key && seatChain(device), sits: true }
     const chain = Identity.chain(op.proof)
-    if (!Identity.verify(op.proof, admission(ctx.dbKey, ctx.key, ctx.key), chain[0])) return null
-    return (await getMember(ctx.view, hid.encode(chain[0]))) ? chain : null
+    if (!Identity.verify(op.proof, admission(ctx.dbKey, ctx.key, ctx.key), chain[0])) return {}
+    return { chain: (await getMember(ctx.view, hid.encode(chain[0]))) && chain, sits: false }
   }
 
   // a device tells the room which device keys of its identity are removed and which stand. For
@@ -692,14 +693,20 @@ export function makeDispatcher({
   // through one. Told by someone who may remove, a key no removal that spent the open invites
   // covers is a removal by her
   add('revoke', async (op, ctx) => {
-    const chain = await teller(op, ctx)
+    const { chain, sits } = await teller(op, ctx)
     if (!chain) throw CeroError.REFUSED('device')
     if (!(await stands(ctx.view, chain))) throw CeroError.REFUSED('removed')
     const memberId = hid.encode(chain[0])
     const id = toldId(memberId)
     const told = await ctx.view.get(removals, { id })
     const before = keysOf(told?.removed)
-    const added = keysOf(op.removed).filter((key) => !has(before, key))
+    const named = keysOf(op.removed).filter((key) => !has(before, key))
+    // one with no row here takes out only a device that has one, or the removed one, telling
+    // first, would shut out a sibling that never sat here
+    const rowed = (await ctx.view.find(`@${ns}/devices`, {}).toArray())
+      .filter((d) => d.memberId === memberId && d.key)
+      .map((d) => d.key)
+    const added = sits ? named : named.filter((key) => has(rowed, key))
     const removed = [...before, ...added]
     let uncovered = false
     for (const key of told?.spent ? added : removed) {
@@ -711,7 +718,7 @@ export function makeDispatcher({
     const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing, spent }
     await ctx.view.insert(removals, row)
     // a removed device that never sat here may hold the key through its identity's root
-    if (added.length) await owe(ctx.view)
+    if (named.length) await owe(ctx.view)
     for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (seated.memberId !== memberId || !seated.key) continue
       if (await stands(ctx.view, seatChain(seated))) continue
