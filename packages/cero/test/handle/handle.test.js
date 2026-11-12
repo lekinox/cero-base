@@ -420,6 +420,38 @@ test('join: a cancel from a second device while the asking one is offline takes 
   t.absent((await a.me.local.store.get('handle-keypairs', room.id)).data, 'and its writer goes')
 })
 
+test('join: a cancel from a second device that then asks under another invite, while the asking one is offline, takes the first request back once it is online', async (t) => {
+  const { room, invite, a, b } = await twins(t)
+  const second = await cero.invite(room, { confirm: true })
+  const joining = open(a.me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await cero.suspend(a.me)
+  t.ok(await cero.cancel(b.me, invite))
+  open(b.me.team, second).catch(() => {})
+  await nextRequest(room, request)
+  await cero.resume(a.me)
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.invite === second)
+  const ended = await Promise.race([joining, new Promise((r) => setTimeout(r, 10000, null))])
+  t.is(ended?.code, 'CANCELLED', 'the join under the first invite ends')
+  const left = async () => !(await get(room.requests)).data.some((r) => r.id === request.id)
+  t.ok(await waitUntil(left, 5000).catch(() => false), 'its request leaves the room')
+})
+
+test('join: a cancelled row the app deletes on a second device, while the asking one is offline, still takes the request back once it is online', async (t) => {
+  const { room, invite, a, b } = await twins(t)
+  const joining = open(a.me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await cero.suspend(a.me)
+  t.ok(await cero.cancel(b.me, invite))
+  await del(b.me.team, room.id)
+  await cero.resume(a.me)
+  await waitUntil(async () => !(await get(a.me.team, room.id)).data)
+  const ended = await Promise.race([joining, new Promise((r) => setTimeout(r, 10000, null))])
+  t.is(ended?.code, 'CANCELLED', 'the join ends')
+  const left = async () => !(await get(room.requests)).data.some((r) => r.id === request.id)
+  t.ok(await waitUntil(left, 5000).catch(() => false), 'its request leaves the room')
+})
+
 test('join: a cancel as the app closes reaches onerror with nothing', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
