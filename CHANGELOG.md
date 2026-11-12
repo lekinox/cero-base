@@ -1,5 +1,59 @@
 # Changelog
 
+## 3.0.0 (2026-11-12)
+
+### Features
+
+- end-to-end tests of the chat examples, and the fixes they found: rooms you are in, ended rows, cancelled joins, device removal, renames (#71)
+- handles nobody holds stay open up to a count, keepOpen, and one more closes the least recently used (#62)
+- a database keeps its version in its log, so no member's update blocks the others, and t.later holds a thing back (#57)
+
+### Bug Fixes
+
+- a removal reaches every room, the latest ask stands, and an upgrade keeps its rooms and joins (#72)
+- joins, invites, keys and devices in the log, joins on the row, a lock around link and restore; deps (#69)
+- a write cut by its database's close rejects CLOSED before its seed is hashed, where Bare 1.37 ended the process (#68)
+- a message an inbox was reading as it closed is handed to the inbox still open at its address, where it was lost when its block landed after the close (#67)
+- closing the root stops a link or a restore that still waits, and waits for one already taking its place (#61)
+- a message stored as the app is killed is handed over at the next start (#59)
+- the write key is the newest landed rotation whose secret meets its commitment (#53)
+- a block that is not encrypted carries only a join, a message is delivered once stored, a join rejects made-up keys, and a link killed at the end resumes (#52)
+- a write through a finished tx is refused, me.topics and me.joins read by id, a file is keyed by its row, and holds nobody takes are given back (#51)
+- the release script finishes a partial publish and stages by path; the examples run only their own worker and keep keys out of backups and off the command line (#50)
+- devtools: the tap masks single rows, watch changes and epochs, drops a large frame before its token, and stats lists the open cores (#49)
+- build: a collection, a single or an action removed from a shipped schema is refused (#48)
+- build: a route added to a shipped spec takes a free id, and a required field added to a shipped type is refused (#46)
+- what a database skipped is read before its first boot, a rebuild closes the log before it wipes its record, and the view's marker is written after (#45)
+- a key rotation its close cut short is done at the next open, and a handle's background errors reach onerror (#44)
+- a batch that changes no row wakes no watcher, what a hook wrote in a refused batch neither, and an op that landed still ranks its database (#43)
+- a closing inbox hands nothing over, inboxes at one address take turns as one closes, and no room opens on a closing root (#42)
+- a push only from who may write, and an inbox that keeps only what it validated (#41)
+- apply: what a refused batch taught, file ids, hook ids and times, a view rebuilt under new rules (contract 3) (#40)
+- the build refuses what corrupts stored rows or shadows Cero; every app's contract rises once (#39)
+- device link expiry, the version gate, RPC handler errors and close while suspended, with no wire or stored change (#38)
+
+### Performance
+
+- a change of who may write to a handle wakes no topics watch, which shows no writers (#64)
+- a push is verified from its own handle's topics row, a topic read by its id reads one row, and the topics watch wakes only when a topics row changed (#63)
+- an invite to a room this device is in opens it from its one row, where a join read every handle (#60)
+- a launch reads only the handles that changed since the last one, and a handle's change writes its own topics row (#58)
+- a full list scans and sorts, a page's total counts the collection, and a search filters before it sorts (#54)
+
+### Documentation
+
+- a key change is called a rotation everywhere: guides, comments and test names (#47)
+
+### Chores
+
+- npm run outdated lists what is behind its latest release, by folder (#55)
+
+### Other
+
+- 🚀 test: what a device does with one handle costs the same however many it holds, by count in the suite and by the clock in npm run test:capacity (#66)
+- 🚀 test: the RPC verbs test builds its stray invite at an address that can be sealed to (#65)
+- 🚀 deps: bare 1.37, hypercore, compact-encoding, protomux, blind-peering and blind-push on their latest releases (#56)
+
 ## 2.12.0 (2026-11-09)
 
 ### Features
