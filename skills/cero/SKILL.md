@@ -26,6 +26,8 @@ file for each task.
 - `me = await cero(dir, spec)` is the root: the user, their devices, their handles.
 - A handle is a space shared with other people: `cero.open(me.room, { name })` creates one,
   `cero.open(me.room, invite)` joins one, `cero.open(me.room, { id })` reopens one.
+  `cero.get(me.room)` lists the rooms you are in; name a `state` (`asking`, `joining`, `leaving`,
+  `removed`, `denied`, `expired`) to list the others. A room read by its id comes whatever its state.
 - `me` and every handle are contexts: plain state, no methods. Refs hang off them: `me.notes`,
   `room.messages`, and the builtins `members`, `devices`, `invites`, `requests`, `handles`,
   `files`, `status` on every context, `joins` and `nearby` on `me`.
@@ -104,10 +106,19 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    (`owner`, `admin`, `member`, `reader`; `member` by default). A `confirm` invite holds each join in
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
    `cero.del(room.members, id)` removes a member and rotates the handle's key in the same step;
-   `await cero.rotate(room)` rotates it at any other time.
+   `await cero.rotate(room)` rotates it at any other time. `cero.revoke(room, invite)` takes the code
+   or the `id` of its `room.invites` row. A join waiting for approval is ended from any device with
+   `cero.cancel(me, invite)`; the latest ask stands, so asking again under another invite takes the
+   older request back. A leave deletes the room's row; a row that ended otherwise (`denied`,
+   `expired`, `removed`, `cancelled`) stays 30 days at most, and `cero.del(me.room, id)` deletes an
+   ended row sooner.
 9. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
    show `await cero.phrase(me)` to the user once. With a phrase, Cero finds one of the user's devices
-   (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT`.
+   (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT` past `recoveryTimeout`
+   (30 s by default, `0` waits as long as it takes). `await cero.peek(dir, spec)` reads `null` on a
+   first run, `'ready'`, or `'recovering'` / `'linking'` while a recovery or a link waits for another
+   device. `cero.set(me.devices, { id, name })` names a device; `cero.del(me.devices, id)` removes a
+   lost one: it loses its seat everywhere and every room rotates its key.
 10. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no `node:` prefix, and map
     them in your package.json `imports` (`"fs": { "bare": "bare-fs", "default": "fs" }`), as Cero
     does for its own.
@@ -120,7 +131,7 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 ```js
 const { data, total } = await cero.get(me.notes, { title: 'first', reverse: true, limit: 20 })
 cero.watch(me.notes, {}).on('data', ({ data }) => console.log(data))
-const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, version, nearby, owed }
+const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, version, nearby, topic, owed }
 ```
 
 - `get(ref)` lists, `get(ref, id)` fetches one, `get(ref, { field })` filters. Queries: equality on
