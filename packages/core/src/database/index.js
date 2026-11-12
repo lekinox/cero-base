@@ -1388,6 +1388,13 @@ export class Database extends ReadyResource {
     return Math.min(this.version, await this.dispatcher.version(view))
   }
 
+  // whether a device with no seat writes its own member row at the version this room is at
+  /** @private */
+  async _seatless() {
+    const since = this.meta.since?.routes[`@${this.ns}/ask-key`] ?? 0
+    return since <= (await this._stamp(this.view))
+  }
+
   // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the
   // write. Each is encoded and stamped as of the version it meets, an upgrade earlier in the batch
   // included, as apply will run it

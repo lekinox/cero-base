@@ -167,7 +167,8 @@ and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invi
 `@cero-base/core/utils` checks a rank in your UI; it knows the four names in the table, and any
 other is `INVALID`. Every member sets the `name` and `avatar` of her own row in `room.members`, a
 reader too, which is how `profileSync` shows her profile; a reader sets nothing else of it. In a
-handle at a version from before readers wrote, a reader's write to her row is `REFUSED`.
+handle at a version from before readers wrote, a reader's write to her row is `REFUSED`, and
+`profileSync` leaves her row as it is.
 
 ## Remove a member
 

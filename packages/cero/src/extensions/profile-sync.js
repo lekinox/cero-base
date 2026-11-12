@@ -1,3 +1,5 @@
+import { can, WRITE } from '@cero-base/core/utils'
+
 import { t } from '../lib/spec.js'
 import { get, watch } from '../lib/operators.js'
 import { mirror } from './mirror.js'
@@ -19,6 +21,9 @@ export function profileSync({ fields = { avatar: t.string } } = {}) {
     setup(me) {
       const publish = async (child, profile) => {
         try {
+          // a reader's row takes it in a room at the version where every release reads it alike
+          const { data: row } = await get(child.members, me.identity.id)
+          if (row && !can(row.role, WRITE) && !(await child.store._seatless())) return
           await mirror(me.profile, profile, fields, child.members, me.identity.id)
         } catch (err) {
           // a handle that closed meanwhile has no member row left to update
