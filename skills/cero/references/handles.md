@@ -178,7 +178,8 @@ they come back only through an invite minted after the removal: an older one rej
 `err.reason` `'removed'`. A removal by an admin or the owner, of a member, of a device, or of someone
 who already left, also spends the invites that let people in without `confirm`, since the one
 removed may hold one: a join with one rejects `DENIED` with `err.reason` `'removed'`, and a join one
-had let in that has not taken its seat yet ends the same. Invites with `confirm` stay. Mint a new
+had let in that has not taken its seat yet ends the same, unless a member accepted it. Invites with
+`confirm` stay. Mint a new
 invite for anyone still expected.
 
 ### Removed

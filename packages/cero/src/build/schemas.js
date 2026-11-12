@@ -120,7 +120,9 @@ export const main = {
     promised: bool,
     // the chain its join proved; once a member linked its device, the chain that link wrote, which
     // the device's seat keeps
-    proof: bytes
+    proof: bytes,
+    // a promise a member's accept made: a removal leaves it for a member to settle
+    accepted: bool
   },
   // a removed member comes back only through an invite minted after `index`
   removal: {

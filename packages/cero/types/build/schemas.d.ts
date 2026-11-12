@@ -95,6 +95,7 @@ export declare const main: {
         key: import("@cero-base/core").Prim;
         promised: import("@cero-base/core").Prim;
         proof: import("@cero-base/core").Prim;
+        accepted: import("@cero-base/core").Prim;
     };
     removal: {
         id: import("@cero-base/core").Prim;
