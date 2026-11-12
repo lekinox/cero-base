@@ -22,7 +22,7 @@ import { wrap } from '../database/envelope.js'
 import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
-import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
+import { can, grants, isRank, isOptions, joining, INVITE, REMOVE } from '../lib/utils.js'
 import { NAMESPACE, MEMBER, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
@@ -141,7 +141,9 @@ export class Pairing extends ReadyResource {
    * @param {InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async invite({ role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = {}) {
+  async invite(opts = {}) {
+    if (!isOptions(opts)) throw CeroError.INVALID('invite options are an object')
+    const { role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = opts
     if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
     if (!this.opened) await this.ready()
     // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently
@@ -551,12 +553,14 @@ export class Pairing extends ReadyResource {
       fail = rej
     })
     let settling = false
+    let expired = false
     const settle = async (answer, done) => {
       settling = true
       try {
         await keep(answer)
       } catch (err) {
         settling = false
+        if (expired) stop(CeroError.EXPIRED())
         throw err
       }
       done(answer)
@@ -605,10 +609,14 @@ export class Pairing extends ReadyResource {
     signal?.addEventListener('abort', onabort)
     mailbox.once('close', onabort)
     const timer = timeout > 0 ? setTimeout(() => stop(CeroError.TIMEOUT('join')), timeout) : null
+    // a reply being kept as the invite runs out settles the join: the device it answers is let in
+    const expire = () => {
+      expired = true
+      if (!settling) stop(CeroError.EXPIRED())
+    }
     const left = parsed.expires - Date.now()
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
-    const expiry =
-      parsed.expires && left < MAX_DELAY ? setTimeout(() => stop(CeroError.EXPIRED()), left) : null
+    const expiry = parsed.expires && left < MAX_DELAY ? setTimeout(expire, left) : null
     write(core, spec, stamp, parsed, identity, writer)
       .then(() => post.ready())
       .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))

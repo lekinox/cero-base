@@ -192,6 +192,8 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 | `confirm` | `false`           | `true` holds each join in `room.requests` until a member accepts or denies it.                                  |
 | `data`    | `null`            | A `Uint8Array` the joiner reads before joining, with `Invite.parse(invite).data` from `@cero-base/core/invite`. |
 
+Options that are not a plain object: `INVALID`.
+
 ### Roles
 
 | Role     | May                                      |
@@ -368,7 +370,7 @@ import { serve } from '@cero-base/cero/server'
 const server = await serve(ipc, spec, { storage: './data', name: 'laptop' })
 ```
 
-`serve(ipc, spec, opts)` resolves a ready `Server` that bridges a framed duplex to a Cero instance. `opts.storage` is the data dir (`REQUIRED`); every other option goes to `cero()`. A `storage` that holds an identity, or a recovery or a link still waiting, opens at once, and a client's connect waits for it; a new one opens as the first client says. The worker's `onerror` gets background errors only while no client is connected; otherwise each client gets them. `Server` is exported too.
+`serve(ipc, spec, opts)` resolves a ready `Server` that bridges a framed duplex to a Cero instance. `opts.storage` is the data dir (`REQUIRED`); every other option goes to `cero()`. A `storage` that holds an identity, or a recovery or a link still waiting, opens at once, and a client's connect waits for it; an open that fails there reaches `onerror`, and the next connect opens it again. A new one opens as the first client says. The worker's `onerror` gets background errors only while no client is connected; otherwise each client gets them. `Server` is exported too.
 
 ## @cero-base/cero/client
 

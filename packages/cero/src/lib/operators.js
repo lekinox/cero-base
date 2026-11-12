@@ -1,7 +1,7 @@
 import { Readable } from 'streamx'
 
 import { encodeId, decodeId, checkType } from '@cero-base/core/blobs/codec'
-import { onAbort, subscribe } from '@cero-base/core/utils'
+import { onAbort, subscribe, isOptions } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 
 /**
@@ -389,7 +389,9 @@ const OPENS = new Set(['invite', 'id', 'name'])
  * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
  * @returns {Promise<string>}
  */
-export function invite(ctx, opts) {
+export async function invite(ctx, opts = {}) {
+  // checked before anything crosses to the worker, which would carry an ArrayBuffer or a Map as {}
+  if (!isOptions(opts)) throw CeroError.INVALID('invite options are an object')
   return ctx._invite(opts)
 }
 

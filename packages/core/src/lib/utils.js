@@ -58,6 +58,13 @@ export function outranks(a, b) {
   return isRank(a) && isRank(b) && RANK[a] > RANK[b]
 }
 
+/** @type {(value: unknown) => boolean} */
+export function isOptions(value) {
+  if (typeof value !== 'object' || value === null) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 /**
  * Stream-of-snapshots primitive. Couples a `get` (returns the latest value) with a `watch`
  * (re-fires on change) and emits the newest snapshot every time `watch` ticks.

@@ -181,7 +181,7 @@ export declare class Pairing extends ReadyResource {
      * @param {InviteOpts} [opts]
      * @returns {Promise<string>}
      */
-    invite({ role, ttl, reuse, confirm, data }?: InviteOpts): Promise<string>;
+    invite(opts?: InviteOpts): Promise<string>;
     /** @private */
     private _secret;
     /**

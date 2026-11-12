@@ -263,6 +263,15 @@ test('invite: a ttl is a positive whole number of ms the clock reaches, or INVAL
   t.ok(Invite.parse(await pairing.invite({ ttl: 1 })).expires > 0, 'one ms is a ttl')
 })
 
+test('invite: options that are not a plain object are INVALID and nothing is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  for (const opts of [null, '1h', 5, [], b4a.alloc(4), new ArrayBuffer(4), new Map(), () => {}]) {
+    t.is(await code(pairing.invite(opts)), 'INVALID', `options ${JSON.stringify(opts)}`)
+  }
+  t.alike(await invites(db), [], 'no invite was written')
+})
+
 test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing, db } = await makeHost(t, testnet)
@@ -828,6 +837,48 @@ test('join: a reply its keep failed on leaves the next one to settle it', async 
   await host.mailbox.send(reply, answer)
   t.alike((await joining).key, host.db.key)
   t.is(tries, 2)
+})
+
+// joins with the invite's expiry handed to `take` instead of the clock
+function expiring(join, take) {
+  const { setTimeout } = globalThis
+  globalThis.setTimeout = (fn, ms, ...args) =>
+    ms > 3600000 ? take(fn) : setTimeout(fn, ms, ...args)
+  try {
+    return join()
+  } finally {
+    globalThis.setTimeout = setTimeout
+  }
+}
+
+test('expiry: an invite that runs out while its reply is kept settles the join with the keys', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true, ttl: '1d' })
+  await joiner.mailbox.ready()
+  let expire = null
+  const keep = async () => expire()
+  const join = () => joiner.join(invite, { writer: crypto.keyPair(), keep, timeout: 0 })
+  const joined = expiring(join, (fn) => (expire = fn)).catch((err) => err)
+  t.ok(expire, 'the expiry is in hand')
+  await host.pairing.accept((await asked(host.db)).id)
+  t.alike((await joined).key, host.db.key)
+})
+
+test('expiry: an invite that ran out while a reply failed to be kept ends the join EXPIRED', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true, ttl: '1d' })
+  await joiner.mailbox.ready()
+  let expire = null
+  const keep = async () => {
+    expire()
+    throw new Error('disk full')
+  }
+  const join = () => joiner.join(invite, { writer: crypto.keyPair(), keep, timeout: 0 })
+  const ended = code(expiring(join, (fn) => (expire = fn)))
+  await host.pairing.accept((await asked(host.db)).id)
+  t.is(await ended, 'EXPIRED')
 })
 
 test('offline: an old denial a mirror still announces does not settle the same writer joining again', async (t) => {
