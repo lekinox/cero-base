@@ -1692,11 +1692,11 @@ async function hostedRoom(t) {
   return { me, client, host, room, joined }
 }
 
-test('rpc: leave reads leaving then left in the UI, once the room holds the removal', async (t) => {
+test('rpc: leave reads leaving, then the row is gone in the UI once the room holds the removal', async (t) => {
   const { me, client, room, joined } = await hostedRoom(t)
   await cero.leave(joined)
-  t.ok(['leaving', 'left'].includes((await get(client.team, room.id)).data.state), 'leaving')
-  await waitUntil(async () => (await get(client.team, room.id)).data.state === 'left')
+  t.ok([undefined, 'leaving'].includes((await get(client.team, room.id)).data?.state), 'leaving')
+  await waitUntil(async () => !(await get(client.team, room.id)).data)
   t.is(await room.store.removed(me.identity.id), 'left', 'the room holds her leaving')
 })
 

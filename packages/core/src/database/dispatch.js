@@ -105,8 +105,8 @@ function moves(was, row) {
   return from === 'denied' && to === 'joining' && row.invite === was.invite
 }
 
-// on its way in or out: such a row is not deleted
-const UNSETTLED = new Set(['asking', 'joining', 'leaving'])
+// on its way in: such a row is not deleted. A leave ends by deleting its row
+const UNSETTLED = new Set(['asking', 'joining'])
 
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`

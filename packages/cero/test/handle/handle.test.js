@@ -1690,7 +1690,12 @@ test('handles: a row changes state as its table allows and no other way, on the 
   const again = await cero(dir, { ...spec, meta }, { bootstrap: testnet.bootstrap, onerror() {} })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
   t.is((await again.store.dispatcher.built(again.store.view))[1], meta.rules, 'applied again')
-  t.alike(await states(again), { ...before, last: 'asking' }, 'every row stands where it stood')
+  const kept = Object.entries(before).filter(([, state]) => state !== 'cancelled')
+  t.alike(
+    await states(again),
+    { ...Object.fromEntries(kept), last: 'asking' },
+    'every row stands where it stood, past a cancelled one the launch deleted'
+  )
 })
 
 test('handles: a row written with no state is stored in, and takes the changes in takes', async (t) => {
@@ -1856,19 +1861,64 @@ test('handles: a page of one type among 500 with some left reads the rooms in th
   )
 })
 
-test('handles: a row is deleted while in, never while asking, joining or leaving', async (t) => {
+test('handles: a row is deleted while in or leaving, never while asking or joining', async (t) => {
   const { me } = await ceroOpen(t)
-  for (const state of ['asking', 'joining', 'leaving']) {
+  for (const state of ['asking', 'joining']) {
     await me.store.set('handles', standing(state, state))
     t.ok(await refused(me.store.del('handles', state)), `not while ${state}`)
     t.is((await get(me.handles, state)).data.state, state, 'it stays')
   }
   const room = await open(me.team, { name: 'clinic' })
   await me.store.set('handles', standing('named', 'in'))
-  for (const id of [room.id, 'named']) {
+  await me.store.set('handles', standing('leaving', 'leaving'))
+  for (const id of [room.id, 'named', 'leaving']) {
     await me.store.del('handles', id)
     t.absent((await get(me.handles, id)).data, 'gone')
   }
+})
+
+test('handles: a launch deletes a cancelled row, and a denied, expired, removed or left one once it is over 30 days old', async (t) => {
+  const { me, dir, testnet } = await ceroOpen(t)
+  const relaunch = async (was) => {
+    await was.close()
+    const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+    t.teardown(() => again.close().catch(() => {}), { order: 5 })
+    return again
+  }
+  const day = 24 * 60 * 60 * 1000
+  const aged = async (store, id, days) => {
+    const { data: row } = await store.get('handles', id)
+    const at = Date.now() - days * day
+    await store.call('add-handle', { ...row, updatedAt: at })
+    t.is((await store.get('handles', id)).data.updatedAt, at, `${id} written ${days} days ago`)
+  }
+  await me.store.set('handles', standing('cancelled', 'cancelled'))
+  await me.store.set('handles', { ...standing('denied', 'denied'), reason: 'full' })
+  await me.store.set('handles', { ...standing('month', 'denied'), reason: 'full' })
+  await aged(me.store, 'month', 29)
+  for (const state of ['expired', 'removed', 'left']) {
+    await me.store.set('handles', standing(state, state))
+    await aged(me.store, state, 31)
+  }
+
+  const next = await relaunch(me)
+  const read = async (id) => (await get(next.handles, id)).data
+  t.absent(await read('cancelled'), 'a cancel is gone')
+  for (const state of ['expired', 'removed', 'left']) {
+    t.absent(await read(state), `${state} is gone`)
+  }
+  const denied = await read('denied')
+  t.alike(
+    [denied?.state, denied?.reason],
+    ['denied', 'full'],
+    'a denied row stays, with its reason'
+  )
+  t.is((await read('month'))?.state, 'denied', 'a denied row 29 days old stays')
+  await aged(next.store, 'denied', 31)
+
+  const last = await relaunch(next)
+  t.absent((await get(last.handles, 'denied')).data, 'and is gone over 30 days old')
+  t.ok((await get(last.handles, 'month')).data, 'the younger one stays')
 })
 
 test('Handle: a page of one type reads through its index the rows, in the order, that filtering every handle gives', async (t) => {
@@ -2026,14 +2076,15 @@ async function seatedTwins(t) {
   return { host, room, a, b, onA, onB, states }
 }
 
-test('leave: the row reads leaving then left on every device of the identity, once the room holds the removal', async (t) => {
+test('leave: the row reads leaving, then is gone on every device of the identity once the room holds the removal', async (t) => {
   const { room, a, b, onA, states } = await seatedTwins(t)
   const seen = [states(a.me), states(b.me)]
   await cero.leave(onA)
-  for (const s of seen) await waitUntil(() => s.includes('left'))
-  for (const s of seen) t.alike(s, ['leaving', 'left'], 'leaving, then left')
+  for (const me of [a.me, b.me]) {
+    await waitUntil(async () => !(await get(me.team, room.id)).data)
+  }
+  for (const s of seen) t.alike(s, ['leaving'], 'leaving, then gone')
   t.is(await room.store.removed(a.identity.id), 'left', 'the room holds her leaving')
-  t.absent((await get(b.me.team, room.id)).data.encryptionKey, 'the row keeps no key')
 })
 
 test('leave: an app closed while leaving goes on at the next launch', async (t) => {
@@ -2048,7 +2099,7 @@ test('leave: an app closed while leaving goes on at the next launch', async (t) 
   await me.close()
   const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
-  await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'left')
+  await waitUntil(async () => !(await get(again.team, room.id)).data)
   t.is(await room.store.removed(me.identity.id), 'left', 'the launch carried it out')
 })
 
@@ -2087,10 +2138,10 @@ test('removed: a device removed from a room opens it with a new invite: the open
   t.is((await get(a.me.team, room.id)).data.state, 'in', 'and writes no state')
 })
 
-test('leave: a row at left is joined again with a new invite, and one at removed is deleted by the app', async (t) => {
+test('leave: a room left is joined again with a new invite, and a row at removed is deleted by the app', async (t) => {
   const { room, a, onA } = await seatedTwins(t)
   await cero.leave(onA)
-  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'left')
+  await waitUntil(async () => !(await get(a.me.team, room.id)).data)
   // a code minted after she left brings her back
   const back = await open(a.me.team, await cero.invite(room))
   t.teardown(() => back.close().catch(() => {}))

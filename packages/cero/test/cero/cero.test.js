@@ -2192,8 +2192,8 @@ test('leave: you are no longer a member of the room you left', async (t) => {
   await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
 
   await cero.leave(joined)
-  await waitUntil(async () => (await get(joiner.me.team, room.id)).data?.state === 'left')
-  t.is((await get(joiner.me.team, { state: 'in' })).data.length, 0, 'the room left the list')
+  await waitUntil(async () => !(await get(joiner.me.team, room.id)).data)
+  t.is((await get(joiner.me.team)).data.length, 0, 'the room left the list')
   await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
   t.pass('the owner sees the member gone')
 })
@@ -2221,8 +2221,8 @@ test('leave: a room can be left, the root cannot', async (t) => {
   await set(room.members, { id: joiner.me.id, role: 'owner' })
 
   await cero.leave(room)
-  await waitUntil(async () => (await get(owner.me.team, room.id)).data?.state === 'left')
-  t.is((await get(owner.me.team, { state: 'in' })).data.length, 0, 'the room left the list')
+  await waitUntil(async () => !(await get(owner.me.team, room.id)).data)
+  t.is((await get(owner.me.team)).data.length, 0, 'the room left the list')
   await t.exception(cero.leave(owner.me), /the root cannot be left/)
 })
 
@@ -2452,8 +2452,8 @@ test('status: behind, invite, rotate and tx wait for the update, and a member ca
   }
 
   await cero.leave(joined)
-  await waitUntil(async () => (await get(joiner.me.team, room.id)).data?.state === 'left')
-  t.is((await get(joiner.me.team, { state: 'in' })).data.length, 0, 'the member left while behind')
+  await waitUntil(async () => !(await get(joiner.me.team, room.id)).data)
+  t.is((await get(joiner.me.team)).data.length, 0, 'the member left while behind')
   await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
   t.pass('and the owner, behind too, applied it')
 })
