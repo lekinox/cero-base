@@ -5,7 +5,7 @@ import autobeeEncryption from 'autobee/lib/encryption.js'
 import crypto from 'hypercore-crypto'
 import c from 'compact-encoding'
 
-import { Keyring, EpochAutobee, wraps, seal } from '../../src/database/encryption.js'
+import { Keyring, EpochAutobee, wraps, seal, epochEntries } from '../../src/database/encryption.js'
 import { wrap } from '../../src/database/envelope.js'
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
@@ -2057,6 +2057,14 @@ test('rotate: a remover demoted while away rotates, sealed to two devices, and a
   }
   await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 4)
   await waitFor(async () => (await kept.db.get('devices')).data.length === 4)
+  // from the start: a key handed over quickly leaves its ask row in the view for one update only
+  const owes = []
+  kept.db.on('update', () =>
+    kept.db.owed().then(
+      (is) => owes.push(is),
+      () => {}
+    )
+  )
 
   const { keyPair } = b.db
   await b.db.close()
@@ -2107,13 +2115,6 @@ test('rotate: a remover demoted while away rotates, sealed to two devices, and a
   await waitFor(async () => (await texts(a.db)).includes('theirs'), { timeout: 30000 })
   t.ok((await texts(a.db)).includes('hers'), 'a device she sealed it to reads both')
 
-  const owes = []
-  kept.db.on('update', () =>
-    kept.db.owed().then(
-      (is) => owes.push(is),
-      () => {}
-    )
-  )
   await waitFor(
     async () => {
       const all = await texts(kept.db)
@@ -2579,4 +2580,57 @@ test('learn: a thousand handed-over stamps leave at most the cap held', async (t
   t.absent(kept.has(1999), 'a stamp held since keeps no candidates')
   await b.db.learn([{ epoch: 1, stamp: 1999, entropy: Identity.randomBytes(32) }])
   t.absent(kept.has(1999), 'nor takes new ones')
+})
+
+test('rotate: a key set aside, opened on meeting a block, is saved: after a restart it still reads, and hands it to a device that asks', async (t) => {
+  const {
+    a,
+    members: [b, other]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 444,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  for (const { db } of [a, b, other]) {
+    await waitFor(async () => (await epochRows(db)).some((r) => r.stamp === 444))
+  }
+  const [row] = await epochRows(a.db)
+  t.ok(row.aside, 'set aside')
+  b.db.rotation.pick = async () => {}
+  b.db.keyring.add(444, entropy, row.epoch)
+  b.db.keyring.current = 444
+  await b.db.put('messages', { text: 'aside' })
+  await waitFor(async () => (await texts(a.db)).includes('aside'))
+  t.alike(a.db.keyring.entropy(444), entropy, 'a opened it on meeting the block')
+
+  const saved = async () => {
+    const value = await a.db.bee.local.getUserData('cero/epochs')
+    return !!value && c.decode(epochEntries, value).some((e) => e.stamp === 444)
+  }
+  await waitFor(saved)
+  t.pass('a saved it')
+
+  const keyPair = a.db.keyPair
+  await a.db.close()
+  const again = new Database({
+    store: a.db.store,
+    identity: a.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey: a.db.encryptionKey
+  })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.ok((await texts(again)).includes('aside'), 'a reads the block after the restart')
+  t.alike(again.keyring.entropy(444), entropy, 'and still holds the key it read it with')
+  t.ok(
+    again.keyring.all().some((e) => e.stamp === 444),
+    'so it would hand it to a device that asks'
+  )
 })

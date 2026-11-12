@@ -130,6 +130,11 @@ export class Rotation {
     const entropy = row && this._unseal(row)
     if (entropy) {
       this.db.keyring.add(row.stamp, entropy, row.epoch)
+      // kept like any key it holds: a restart still reads with it, and it is handed to a device that asks
+      this._save().then(
+        () => this.db.emit('epoch'),
+        (err) => this.db._onerror(err)
+      )
       return entropy
     }
     this._met.delete(stamp)
