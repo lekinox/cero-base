@@ -1500,6 +1500,35 @@ test('claim: same identity on second db claims against its member record', async
   t.ok(b.db.writable, 'b is admitted as a writer after claim')
 })
 
+test('claim: a close at any step of it rejects CLOSED', async (t) => {
+  const testnet = await makeTestnet(t)
+  const identity = await Identity.create()
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { identity, topic })
+  await a.db.bootstrap({ name: 'a' })
+  const second = () =>
+    makePeer(t, testnet, { identity, topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+
+  const stamped = await second()
+  const stamp = stamped.db._stamp.bind(stamped.db)
+  stamped.db._stamp = async (view) => {
+    const at = await stamp(view)
+    await stamped.db.close()
+    return at
+  }
+  await t.exception(stamped.db.claim(), /CLOSED/, 'closed once it is stamped')
+
+  const appended = await second()
+  const { bee } = appended.db
+  const append = bee.append.bind(bee)
+  bee.append = async (...args) => {
+    const at = await append(...args)
+    await appended.db.close()
+    return at
+  }
+  await t.exception(appended.db.claim(), /CLOSED/, 'closed once its seat is appended')
+})
+
 test('claim: appends nothing until the member row arrives', { timeout: 10000 }, async (t) => {
   const testnet = await makeTestnet(t)
   const { db } = await abandoned(t, testnet)

@@ -855,21 +855,26 @@ export class Database extends ReadyResource {
   async claim({ timeout = 30000 } = {}) {
     this.guard()
     if (this.bee.writable) return
-    const { role, promised, against } = await this._member(timeout, () => this._standing())
-    // seated while it waited: a join that was admitted wrote the seat with the member row
-    if (this.bee.writable) return
-    if (!promised && !can(role, WRITE)) return
-    const stamp = await this._stamp(this.view)
-    const op = this.dispatcher.encode(
-      `@${this.ns}/add-writer`,
-      this._admission(this.writerKey),
-      stamp
-    )
-    // from a core not yet admitted: apply verifies the identity's signature and seats it
-    await this.bee.append(wrap(stamp, op), { optimistic: true })
-    await this.bee.local.setUserData('cero/claim', against)
-    await this.bee.update()
-    await this._member(timeout, () => this._kept(role))
+    try {
+      const { role, promised, against } = await this._member(timeout, () => this._standing())
+      // seated while it waited: a join that was admitted wrote the seat with the member row
+      if (this.bee.writable) return
+      if (!promised && !can(role, WRITE)) return
+      const stamp = await this._stamp(this.view)
+      const op = this.dispatcher.encode(
+        `@${this.ns}/add-writer`,
+        this._admission(this.writerKey),
+        stamp
+      )
+      // from a core not yet admitted: apply verifies the identity's signature and seats it
+      await this.bee.append(wrap(stamp, op), { optimistic: true })
+      await this.bee.local.setUserData('cero/claim', against)
+      await this.bee.update()
+      await this._member(timeout, () => this._kept(role))
+    } catch (err) {
+      if (this.closing || this.closed) throw CeroError.CLOSED('Database')
+      throw err
+    }
   }
 
   /**
