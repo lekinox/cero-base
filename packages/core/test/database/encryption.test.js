@@ -2042,143 +2042,137 @@ test('rotate: a remover demoted while away removes and rotates: the removal is r
   t.alike(await epochRows(a.db), rows, 'and once the view is applied again')
 })
 
-test(
-  'rotate: a remover demoted while away rotates, sealed to two devices, and a member who took it as counted writes under it: the device she removed, still in, asks, is handed it, and reads what both wrote and what comes after',
-  async (t) => {
-    const {
-      a,
-      members: [b, kept, m],
-      testnet,
-      topic,
-      encryptionKey
-    } = await makeRoom(t, ['admin', 'member', 'member'])
-    for (const p of [a, kept]) {
-      const pairing = new Pairing({ mailbox: new Mailbox(p.network), db: p.db })
-      await pairing.ready()
-      t.teardown(() => pairing.close().catch(() => {}), { order: 0 })
-    }
-    await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 4)
-    await waitFor(async () => (await kept.db.get('devices')).data.length === 4)
-
-    const { keyPair } = b.db
-    await b.db.close()
-    await b.network.close().catch(() => {})
-    await a.db.set('members', { id: b.identity.id, role: 'member' })
-    const opts = {
-      store: b.store,
-      identity: b.identity,
-      spec,
-      key: a.db.key,
-      keyPair,
-      encryptionKey
-    }
-    const off = new Database({ ...opts, onerror() {} })
-    await off.ready()
-    const two = [hid.encode(a.db.writerKey), hid.encode(off.writerKey)]
-    const { data: devices } = await off.get('devices')
-    off.rotation._staying = async () => devices.filter((d) => two.includes(d.id))
-    await off.del('members', kept.identity.id)
-    const stamp = off.keyring.current
-    const entropy = off.keyring.entropy(stamp)
-    await off.put('messages', { text: 'hers' })
-    await off.close()
-
-    const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
-    await net.ready()
-    const disc = net.join(topic)
-    await disc.flush()
-    const back = new Database({ ...opts, network: net, onerror() {} })
-    await back.ready()
-    t.teardown(
-      async () => {
-        await back.close().catch(() => {})
-        await disc.destroy().catch(() => {})
-        await net.close().catch(() => {})
-      },
-      { order: 4 }
-    )
-    await waitFor(async () => (await epochRows(m.db)).some((r) => r.stamp === stamp && r.aside))
-    t.ok((await kept.db.get('members', kept.identity.id)).data, 'her removal is refused')
-    const { pick } = m.db.rotation
-    m.db.rotation.pick = async () => {}
-    m.db.keyring.add(stamp, entropy)
-    m.db.keyring.current = stamp
-    await m.db.put('messages', { text: 'theirs' })
-    m.db.rotation.pick = pick
-    await m.db.rotation.pick()
-    await waitFor(async () => (await texts(a.db)).includes('theirs'), { timeout: 30000 })
-    t.ok((await texts(a.db)).includes('hers'), 'a device she sealed it to reads both')
-
-    const owes = []
-    kept.db.on('update', () =>
-      kept.db.owed().then(
-        (is) => owes.push(is),
-        () => {}
-      )
-    )
-    await waitFor(
-      async () => {
-        const all = await texts(kept.db)
-        return all.includes('hers') && all.includes('theirs')
-      },
-      { timeout: 30000 }
-    )
-    t.pass('the device she removed reads what both wrote under her key')
-    await m.db.put('messages', { text: 'after' })
-    await waitFor(async () => (await texts(kept.db)).includes('after'), { timeout: 30000 })
-    t.pass('and what comes after')
-    t.ok(owes.includes(true), 'owed while it waited')
-    await waitFor(async () => !(await kept.db.owed()))
-    t.pass('and no longer')
+test('rotate: a remover demoted while away rotates, sealed to two devices, and a member who took it as counted writes under it: the device she removed, still in, asks, is handed it, and reads what both wrote and what comes after', async (t) => {
+  const {
+    a,
+    members: [b, kept, m],
+    testnet,
+    topic,
+    encryptionKey
+  } = await makeRoom(t, ['admin', 'member', 'member'])
+  for (const p of [a, kept]) {
+    const pairing = new Pairing({ mailbox: new Mailbox(p.network), db: p.db })
+    await pairing.ready()
+    t.teardown(() => pairing.close().catch(() => {}), { order: 0 })
   }
-)
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 4)
+  await waitFor(async () => (await kept.db.get('devices')).data.length === 4)
 
-test(
-  'rotate: a counted rotation takes its stamp from one set aside: that row goes, the key is gone from every device, and the room reads and writes under the counted key, once applied again too',
-  async (t) => {
-    const {
-      a,
-      members: [b, other]
-    } = await makeRoom(t, ['member', 'member'])
-    await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
-    const aside = Identity.randomBytes(32)
-    const stamp = 777
-    await b.db.call('rotate-key', {
-      epoch: 0,
-      stamp,
-      wrapped: c.encode(wraps, seal([await own(a), await own(b)], aside)),
-      createdAt: Date.now(),
-      commit: crypto.hash(aside)
-    })
-    for (const { db } of [a, b, other]) {
-      await waitFor(async () => (await epochRows(db)).some((r) => r.stamp === stamp))
-    }
-    t.alike(a.db.rotation.meet(stamp), aside, 'opened by a block under it')
-    t.alike(b.db.rotation.meet(stamp), aside)
-    other.db.keyring.add(stamp, aside)
-
-    a.db.rotation._mint = () => stamp
-    await a.db.rotation._rotate(false, [await own(a), await own(b)])
-    const counted = a.db.keyring.entropy(stamp)
-    t.unlike(counted, aside, 'the counted key')
-    const only = (rows) => rows.length === 1 && !rows[0].aside
-    for (const { db } of [a, b, other]) await waitFor(async () => only(await epochRows(db)))
-    await waitFor(() => b4a.equals(b.db.keyring.entropy(stamp) || b4a.alloc(0), counted))
-    await waitFor(() => other.db.keyring.entropy(stamp) === null)
-    t.pass('every device holds the counted key or none')
-    t.is(a.db.keyring.current, stamp, 'written under')
-    await a.db.put('messages', { text: 'counted' })
-    await waitFor(async () => (await texts(b.db)).includes('counted'))
-    t.pass('and read')
-
-    const rows = await epochRows(a.db)
-    await a.db._rebuild()
-    await waitFor(async () => only(await epochRows(a.db)))
-    t.alike(await epochRows(a.db), rows, 'the same row once the view is applied again')
-    t.alike(a.db.keyring.entropy(stamp), counted)
-    t.is(a.db.keyring.current, stamp)
+  const { keyPair } = b.db
+  await b.db.close()
+  await b.network.close().catch(() => {})
+  await a.db.set('members', { id: b.identity.id, role: 'member' })
+  const opts = {
+    store: b.store,
+    identity: b.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey
   }
-)
+  const off = new Database({ ...opts, onerror() {} })
+  await off.ready()
+  const two = [hid.encode(a.db.writerKey), hid.encode(off.writerKey)]
+  const { data: devices } = await off.get('devices')
+  off.rotation._staying = async () => devices.filter((d) => two.includes(d.id))
+  await off.del('members', kept.identity.id)
+  const stamp = off.keyring.current
+  const entropy = off.keyring.entropy(stamp)
+  await off.put('messages', { text: 'hers' })
+  await off.close()
+
+  const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
+  await net.ready()
+  const disc = net.join(topic)
+  await disc.flush()
+  const back = new Database({ ...opts, network: net, onerror() {} })
+  await back.ready()
+  t.teardown(
+    async () => {
+      await back.close().catch(() => {})
+      await disc.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 4 }
+  )
+  await waitFor(async () => (await epochRows(m.db)).some((r) => r.stamp === stamp && r.aside))
+  t.ok((await kept.db.get('members', kept.identity.id)).data, 'her removal is refused')
+  const { pick } = m.db.rotation
+  m.db.rotation.pick = async () => {}
+  m.db.keyring.add(stamp, entropy)
+  m.db.keyring.current = stamp
+  await m.db.put('messages', { text: 'theirs' })
+  m.db.rotation.pick = pick
+  await m.db.rotation.pick()
+  await waitFor(async () => (await texts(a.db)).includes('theirs'), { timeout: 30000 })
+  t.ok((await texts(a.db)).includes('hers'), 'a device she sealed it to reads both')
+
+  const owes = []
+  kept.db.on('update', () =>
+    kept.db.owed().then(
+      (is) => owes.push(is),
+      () => {}
+    )
+  )
+  await waitFor(
+    async () => {
+      const all = await texts(kept.db)
+      return all.includes('hers') && all.includes('theirs')
+    },
+    { timeout: 30000 }
+  )
+  t.pass('the device she removed reads what both wrote under her key')
+  await m.db.put('messages', { text: 'after' })
+  await waitFor(async () => (await texts(kept.db)).includes('after'), { timeout: 30000 })
+  t.pass('and what comes after')
+  t.ok(owes.includes(true), 'owed while it waited')
+  await waitFor(async () => !(await kept.db.owed()))
+  t.pass('and no longer')
+})
+
+test('rotate: a counted rotation takes its stamp from one set aside: that row goes, the key is gone from every device, and the room reads and writes under the counted key, once applied again too', async (t) => {
+  const {
+    a,
+    members: [b, other]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  const aside = Identity.randomBytes(32)
+  const stamp = 777
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], aside)),
+    createdAt: Date.now(),
+    commit: crypto.hash(aside)
+  })
+  for (const { db } of [a, b, other]) {
+    await waitFor(async () => (await epochRows(db)).some((r) => r.stamp === stamp))
+  }
+  t.alike(a.db.rotation.meet(stamp), aside, 'opened by a block under it')
+  t.alike(b.db.rotation.meet(stamp), aside)
+  other.db.keyring.add(stamp, aside)
+
+  a.db.rotation._mint = () => stamp
+  await a.db.rotation._rotate(false, [await own(a), await own(b)])
+  const counted = a.db.keyring.entropy(stamp)
+  t.unlike(counted, aside, 'the counted key')
+  const only = (rows) => rows.length === 1 && !rows[0].aside
+  for (const { db } of [a, b, other]) await waitFor(async () => only(await epochRows(db)))
+  await waitFor(() => b4a.equals(b.db.keyring.entropy(stamp) || b4a.alloc(0), counted))
+  await waitFor(() => other.db.keyring.entropy(stamp) === null)
+  t.pass('every device holds the counted key or none')
+  t.is(a.db.keyring.current, stamp, 'written under')
+  await a.db.put('messages', { text: 'counted' })
+  await waitFor(async () => (await texts(b.db)).includes('counted'))
+  t.pass('and read')
+
+  const rows = await epochRows(a.db)
+  await a.db._rebuild()
+  await waitFor(async () => only(await epochRows(a.db)))
+  t.alike(await epochRows(a.db), rows, 'the same row once the view is applied again')
+  t.alike(a.db.keyring.entropy(stamp), counted)
+  t.is(a.db.keyring.current, stamp)
+})
 
 // what the log keeps: 1 while a rotation is owed, 0 once one cleared it, null when none ever was
 const owed = async (db) =>
