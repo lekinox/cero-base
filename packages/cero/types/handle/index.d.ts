@@ -207,6 +207,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _refs;
     /** @private */
+    _pruning;
+    /** @private */
     _idle;
     store: Database;
     /** @private */
@@ -466,6 +468,10 @@ export declare class Handle extends ReadyResource {
     private _seats;
     /** @private */
     private _prune;
+    /** @private */
+    private _compare;
+    /** @private */
+    private _unseat;
     /** @private */
     private _pruneAll;
     /** @private */

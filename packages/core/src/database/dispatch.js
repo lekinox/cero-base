@@ -83,8 +83,13 @@ export const leftId = (memberId) => `left:${memberId}`
 // what an identity's devices told a room of its device keys, in the removals too
 export const toldId = (memberId) => `told:${memberId}`
 
-// 32-byte keys back to back, or none when they are not that
-function keysOf(buf) {
+/**
+ * 32-byte keys back to back, or none when they are not that.
+ *
+ * @param {Uint8Array | null} [buf]
+ * @returns {Uint8Array[]}
+ */
+export function keysOf(buf) {
   if (!buf?.byteLength || buf.byteLength % 32) return []
   return Array.from({ length: buf.byteLength / 32 }, (_, i) => buf.subarray(i * 32, i * 32 + 32))
 }

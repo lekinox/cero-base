@@ -7,6 +7,13 @@ export declare const linkOf: (proof: any) => any;
 export declare const leftId: (memberId: any) => string;
 export declare const toldId: (memberId: any) => string;
 /**
+ * 32-byte keys back to back, or none when they are not that.
+ *
+ * @param {Uint8Array | null} [buf]
+ * @returns {Uint8Array[]}
+ */
+export declare function keysOf(buf?: Uint8Array | null): Uint8Array[];
+/**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
  *
