@@ -1756,6 +1756,42 @@ test('devices: two devices of the identity that tell a room at once leave the sa
   t.alike(await room.store.told(a.me.id), await mine.store.told(a.me.id))
 })
 
+test('devices: two devices of the identity that tell a room at the same moment rotate it at most twice, and both read on', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
+  const mine = await open(b.me.team, { id: room.id })
+  await waitUntil(() => mine.store.writable)
+  const phone = await linkTo(t, a)
+  await seats(a.me, 3)
+  await seats(b.me, 3)
+  // each decides to carry a rotation before the other's telling reaches it
+  let arrived = 0
+  let go = () => {}
+  const both = new Promise((resolve) => (go = resolve))
+  for (const { rotation } of [room.store, mine.store]) {
+    const staying = rotation._staying.bind(rotation)
+    rotation._staying = async (ops) => {
+      const devices = await staying(ops)
+      if (++arrived === 2) go()
+      await both
+      return devices
+    }
+  }
+
+  await del(a.me.devices, phone.me.device.id)
+  await Promise.all([toldOf(room, phone), toldOf(mine, phone)])
+  const seq = () => [room.store.keyring.seq, mine.store.keyring.seq]
+  await waitUntil(() => seq()[0] > 0 && seq()[0] === seq()[1])
+  await put(room.messages, { text: 'laptop' })
+  await put(mine.messages, { text: 'desk' })
+  const texts = async (h) => (await get(h.messages)).data.map((row) => row.text).sort()
+  await waitUntil(async () => (await texts(room)).length === 2 && (await texts(mine)).length === 2)
+  t.alike(await texts(room), await texts(mine), 'each reads what the other writes')
+  t.comment(`rotations: ${seq()}`)
+  t.ok(Math.max(...seq()) <= 2, 'under one rotation each at most')
+})
+
 const MOVES = {
   asking: ['joining', 'denied', 'expired', 'cancelled'],
   joining: ['in', 'denied'],
