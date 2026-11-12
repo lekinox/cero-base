@@ -454,6 +454,22 @@ test('join: a cancelled row the app deletes on a second device, while the asking
   t.ok(await waitUntil(left, 5000).catch(() => false), 'its request leaves the room')
 })
 
+test('join: a cancelled row a second device deletes and asks again under the same invite, while the asking one is offline, takes the first request back once it is online', async (t) => {
+  const { room, invite, a, b } = await twins(t)
+  const joining = open(a.me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await cero.suspend(a.me)
+  t.ok(await cero.cancel(b.me, invite))
+  await del(b.me.team, room.id)
+  open(b.me.team, invite).catch(() => {})
+  await nextRequest(room, request)
+  await cero.resume(a.me)
+  const ended = await Promise.race([joining, new Promise((r) => setTimeout(r, 10000, null))])
+  t.is(ended?.code, 'CANCELLED', 'the join under the first request ends')
+  const left = async () => !(await get(room.requests)).data.some((r) => r.id === request.id)
+  t.ok(await waitUntil(left, 5000).catch(() => false), 'its request leaves the room')
+})
+
 test('join: a cancel as the app closes reaches onerror with nothing', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
