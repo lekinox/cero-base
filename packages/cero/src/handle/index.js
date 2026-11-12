@@ -1313,8 +1313,8 @@ export class Handle extends ReadyResource {
     const id = hid.encode(reply.key)
     // a room this identity lost its seat in stays open on its old writer: it ends before the new seat opens it
     const stale = [...this.children].find((c) => c.id === id && !c.closing)
-    if (stale && (await stale.store.removed(this.identity.id)))
-      await stale._end().catch(safetyCatch)
+    const out = stale && (await stale.store.removed(this.identity.id))
+    if (out) await stale._end().catch(safetyCatch)
     const child = /** @type {Child} */ (
       this._room({
         spec: pickHandle(this.spec, type),
