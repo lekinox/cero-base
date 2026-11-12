@@ -517,7 +517,27 @@ test('rpc: a room reads as in over the bridge, and its state once it has one', a
   t.is((await get(client.team, team.id)).data.state, 'leaving')
 })
 
-test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored with none', async (t) => {
+test('rpc: a list over the bridge is the rooms the identity is in, a state named lists the others, and an id reads any', async (t) => {
+  const { me, client } = await openPair(t)
+  const room = await open(client.team, { name: 'clinic' })
+  for (const [i, state] of ['asking', 'left', 'denied'].entries()) {
+    const key = b4a.alloc(32, i + 1)
+    await me.store.set('handles', { id: state, type: 'team', key, state, invite: 'one' })
+  }
+
+  const ids = (res) => res.data.map((row) => row.id)
+  t.alike(ids(await get(client.team)), [room.id], 'by type')
+  t.alike(ids(await get(client.handles)), [room.id], 'among every handle')
+  t.alike(ids(await get(client.team, { state: 'left' })), ['left'], 'a state named')
+  t.is((await get(client.team, 'denied')).data.state, 'denied', 'an id whatever its state')
+
+  const stream = watch(client.team)
+  t.teardown(() => stream.destroy())
+  const seen = await new Promise((resolve) => stream.once('data', resolve))
+  t.alike(ids(seen), [room.id], 'and by a watch')
+})
+
+test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored in', async (t) => {
   const { me, client } = await openPair(t)
   const team = await open(client.team, { name: 'clinic' })
   const key = b4a.alloc(32, 1)
@@ -538,7 +558,7 @@ test('rpc: a rename over the bridge sends no state, and a list filtered on in re
   const { data: row } = await get(client.team, 'waiting')
   t.alike([row.name, row.state], ['renamed', 'asking'], 'and the row stands where it stood')
 
-  t.absent((await me.store.get('handles', team.id)).data.state, 'the room is stored with no state')
+  t.is((await me.store.get('handles', team.id)).data.state, 'in', 'the room is stored in')
   const listed = await get(client.team, { state: 'in' })
   t.alike(
     listed.data.map((row) => row.id),
@@ -1180,8 +1200,8 @@ test('rpc: a promise withdrawn while the UI waits for its seat rejects DENIED, w
   const err = await refusedAtClaim(t, me, client.team, await cero.invite(room), withdraw)
   t.is(err.code, 'DENIED')
   t.is(err.reason, 'not you')
-  t.is((await get(client.team, { state: 'in' })).data.length, 0, 'in no room')
-  const [row] = (await get(client.team)).data
+  t.is((await get(client.team)).data.length, 0, 'in no room')
+  const [row] = (await get(client.team, { state: 'denied' })).data
   t.alike([row.state, row.reason], ['denied', 'not you'], 'its row reads denied, with the reason')
 })
 

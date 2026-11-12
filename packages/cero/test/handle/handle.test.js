@@ -1634,7 +1634,7 @@ const refused = (write) =>
   )
 
 const states = async (me) =>
-  Object.fromEntries((await get(me.handles)).data.map((row) => [row.id, row.state]))
+  Object.fromEntries((await me.store.get('handles')).data.map((row) => [row.id, row.state]))
 
 // past the device's own check, as a device with an older picture appends it
 async function behind(me, row) {
@@ -1693,10 +1693,10 @@ test('handles: a row changes state as its table allows and no other way, on the 
   t.alike(await states(again), { ...before, last: 'asking' }, 'every row stands where it stood')
 })
 
-test('handles: a row with no state reads as in, and takes the changes in takes', async (t) => {
+test('handles: a row written with no state is stored in, and takes the changes in takes', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })
-  t.absent((await me.store.get('handles', room.id)).data.state, 'a room is stored with no state')
+  t.is((await me.store.get('handles', room.id)).data.state, 'in', 'a room is stored in')
   t.is((await get(me.team, room.id)).data.state, 'in', 'read by id')
   t.alike(
     (await get(me.team)).data.map((row) => row.state),
@@ -1800,24 +1800,60 @@ test('handles: a rename from a device whose copy of the row is behind on the sta
   t.alike(errors, [], 'and nothing was refused')
 })
 
-test('handles: a list filtered on state in returns the rooms written before the field', async (t) => {
+test('handles: a list is the rooms the identity is in, a state named lists the others, and an id reads any', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })
-  t.absent((await me.store.get('handles', room.id)).data.state, 'a room is stored with no state')
-  await me.store.set('handles', standing('named', 'in'))
-  await me.store.set('handles', standing('waiting', 'asking'))
+  for (const state of ['asking', 'left', 'denied']) {
+    await me.store.set('handles', standing(state, state))
+  }
 
-  const ids = (res) => res.data.map((row) => row.id).sort()
-  const both = [room.id, 'named'].sort()
-  t.alike(ids(await get(me.team, { state: 'in' })), both, 'by type')
-  t.alike(ids(await get(me.handles, { state: 'in' })), both, 'among every handle')
-  t.alike(ids(await get(me.team, { state: 'asking' })), ['waiting'], 'another state as stored')
-  const page = await get(me.team, { state: 'in', limit: 1 })
-  t.alike([page.data.length, page.size, page.total], [1, 1, 2], 'a page of them')
+  const ids = (res) => res.data.map((row) => row.id)
+  t.alike(ids(await get(me.team)), [room.id], 'by type')
+  t.alike(ids(await get(me.handles)), [room.id], 'among every handle')
+  t.alike(ids(await get(me.team, { state: 'left' })), ['left'], 'a state named')
+  t.alike(ids(await get(me.handles, { state: 'asking' })), ['asking'], 'among every handle')
+  t.is((await get(me.team, 'denied')).data.state, 'denied', 'an id whatever its state')
 
-  const stream = watch(me.team, { state: 'in' })
+  const stream = watch(me.team)
   t.teardown(() => stream.destroy())
-  t.alike(ids(await new Promise((resolve) => stream.once('data', resolve))), both, 'and by a watch')
+  const seen = await new Promise((resolve) => stream.once('data', resolve))
+  t.alike(ids(seen), [room.id], 'and by a watch')
+})
+
+test('handles: a page of one type among 500 with some left reads the rooms in through the index, with the exact total', async (t) => {
+  const { me } = await ceroOpen(t)
+  const teams = await addHandles(me, 250, 0, 'team')
+  await addHandles(me, 250, 250, 'club')
+  const gone = teams.filter((id, i) => i % 10 === 0)
+  await me.store.tx(async (tx) => {
+    for (const id of gone) {
+      await tx.set('handles', { id, state: 'leaving' })
+      await tx.set('handles', { id, state: 'left' })
+    }
+  })
+
+  const reads = []
+  const read = me.store._read
+  me.store._read = function (view, name, query) {
+    const find = (path, range) => (reads.push([path, range.limit]), view.find(path, range))
+    return read.call(this, { find }, name, query)
+  }
+  const page = await get(me.team, { limit: 50, total: true })
+  me.store._read = read
+  t.is(page.data.length, 50, 'a page of 50')
+  t.ok(
+    page.data.every((row) => row.state === 'in'),
+    'of rooms in'
+  )
+  t.is(page.total, 250 - gone.length, 'the exact total')
+  t.alike(
+    reads,
+    [
+      ['@cero/handles-type', 50],
+      ['@cero/handles-type', undefined]
+    ],
+    'the page and its count from the index'
+  )
 })
 
 test('handles: a row is deleted while in, never while asking, joining or leaving', async (t) => {

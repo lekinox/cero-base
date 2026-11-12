@@ -165,26 +165,8 @@ const parentStore = (ref) => (ref.handle.root ? ref.handle.root.store : ref.hand
 const ofType = (ref, q) => (typeof q === 'string' ? q : { ...q, type: ref.name })
 const typed = (row, name) => ({ data: row?.type === name ? row : null })
 
-// a handles row with no state is one of a handle the identity is in
-const stand = (row) => (row && !row.state ? { ...row, state: 'in' } : row)
-const standing = (res) =>
-  res?.data
-    ? { ...res, data: Array.isArray(res.data) ? res.data.map(stand) : stand(res.data) }
-    : res
-
-// a handles query and what reads its result. A filter on `in` is made on what is read: such a row is stored
-// with `in` or with no state
-function stood(q) {
-  if (q?.state !== 'in') return [q, standing]
-  const { state, limit, ...rest } = q
-  const read = (res) => {
-    if (!Array.isArray(res?.data)) return res
-    const all = res.data.map(stand).filter((row) => row.state === state)
-    const data = limit === undefined ? all : all.slice(0, limit)
-    return { ...res, data, total: all.length, size: data.length }
-  }
-  return [rest, read]
-}
+// a list of handles is the ones the identity is in, unless it names a state
+const standing = (q) => (typeof q === 'string' || q?.state ? q : { ...q, state: 'in' })
 
 function resolveResult(ref, res) {
   if (res == null || res.data == null) return res
@@ -228,13 +210,11 @@ export async function get(ref, q) {
   const live = ref.handle._live?.[ref.name]
   if (live) return live.get(q)
   if (ref.kind === 'handle') {
-    const [query, read] = stood(q)
-    const res = await parentStore(ref).get('handles', ofType(ref, query))
-    return read(typeof q === 'string' ? typed(res.data, ref.name) : res)
+    const res = await parentStore(ref).get('handles', ofType(ref, standing(q)))
+    return typeof q === 'string' ? typed(res.data, ref.name) : res
   }
-  if (ref.name !== 'handles') return resolveResult(ref, await ref.handle.store.get(ref.name, q))
-  const [query, read] = stood(q)
-  return read(resolveResult(ref, await ref.handle.store.get(ref.name, query)))
+  if (ref.name === 'handles') q = standing(q)
+  return resolveResult(ref, await ref.handle.store.get(ref.name, q))
 }
 
 /**
@@ -295,17 +275,11 @@ function source(ref, q) {
     return { src: subscribe({ get: () => live.get(q), watch: live.watch }), map: (res) => res }
   }
   if (ref.kind === 'handle') {
-    const [query, read] = stood(q)
     const map = typeof q === 'string' ? (snap) => typed(snap?.data, ref.name) : (res) => res
-    return {
-      src: parentStore(ref).watch('handles', ofType(ref, query)),
-      map: (res) => read(map(res))
-    }
+    return { src: parentStore(ref).watch('handles', ofType(ref, standing(q))), map }
   }
-  const map = (res) => resolveResult(ref, res)
-  if (ref.name !== 'handles') return { src: ref.handle.store.watch(ref.name, q), map }
-  const [query, read] = stood(q)
-  return { src: ref.handle.store.watch(ref.name, query), map: (res) => read(map(res)) }
+  if (ref.name === 'handles') q = standing(q)
+  return { src: ref.handle.store.watch(ref.name, q), map: (res) => resolveResult(ref, res) }
 }
 
 // snapshots are idempotent: a slow reader gets only the newest
