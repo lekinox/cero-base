@@ -2339,6 +2339,34 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   t.ok(seen, 'a saw b row after claim')
 })
 
+test('replication: heard once another device writes over what this one wrote, not once a peer holds it, and never by a removed device', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+  const seat = await waitFor(
+    async () => (await a.db.get('devices', hid.encode(b.db.writerKey))).data
+  )
+
+  const { data: row } = await a.db.put('messages', { text: 'from-a' })
+  const removed = a.db.heard([seat.key], 30000)
+  await a.db.held()
+  await waitFor(async () => (await b.db.get('messages', row.id)).data)
+  t.absent(await a.db.heard([], 500), 'a peer that holds it has not heard it')
+
+  const heard = a.db.heard([], 15000)
+  await b.db.put('messages', { text: 'from-b' })
+  t.ok(await heard, 'heard once the other device writes over it')
+  t.absent(await a.db.heard([seat.key], 1000), 'never by a removed device')
+  await a.db.close()
+  t.absent(await removed.catch(() => false), 'and a wait cut short by a close hears nothing')
+})
+
 test('replication: after("put") on A fires for B-originated writes', async (t) => {
   // hooks run at apply, so every peer runs them on every op, whoever wrote it
   const testnet = await makeTestnet(t)

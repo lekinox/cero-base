@@ -1745,7 +1745,9 @@ export class Handle extends ReadyResource {
   async _record(child, marks, timeout) {
     const { data } = await this.local.store.get('handle-keypairs', child.id)
     if (data && Object.keys(marks).every((k) => sameBytes(data[k], marks[k]))) return true
-    const holds = await reached(child.store, this.identity.id, timeout)
+    // a removal counts once a device that stands has it: a peer that holds it may be the removed one
+    const removed = marks.told ? await this.store.removals() : null
+    const holds = await reached(child.store, this.identity.id, removed, timeout)
     if (child.closing || child.closed) return false
     if (!holds) return null
     await this._mark(child.id, marks)
@@ -2212,12 +2214,14 @@ function served(store, timeout) {
   })
 }
 
-// whether a peer holds every block this device wrote to a room within `timeout`: one where only the
+// whether a peer holds every block this device wrote to a room within `timeout`, or with `removed`
+// a device there that is neither this one nor a removed one applied them: one where only the
 // identity's own devices write has no other member to hear it
-async function reached(store, id, timeout) {
+async function reached(store, id, removed, timeout) {
   const { data: devices } = await store.get('devices')
   // an empty view has not shown yet who else writes there
   if (devices.length > 0 && devices.every((row) => row.memberId === id)) return true
+  if (removed) return store.heard(removed, timeout).catch(() => false)
   let timer = null
   const late = new Promise((resolve) => (timer = setTimeout(resolve, timeout, false)))
   try {

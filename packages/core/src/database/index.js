@@ -714,6 +714,93 @@ export class Database extends ReadyResource {
     })
   }
 
+  /**
+   * Whether a device seated here, other than this one and those whose keys are `removed`, wrote a
+   * node this view applied with every block this device wrote in its causal past, within `timeout`.
+   * A peer that only holds those blocks may be a removed device, which passes them on to no one.
+   *
+   * @param {Uint8Array[]} removed
+   * @param {number} timeout
+   * @returns {Promise<boolean>}
+   */
+  async heard(removed, timeout) {
+    this.guard()
+    const length = this.length
+    if (length === 0) return true
+    return new Promise((resolve, reject) => {
+      let busy = false
+      let again = false
+      const check = async () => {
+        if (busy) return (again = true)
+        busy = true
+        try {
+          do {
+            again = false
+            if (this.closing || this.closed) return done(CeroError.CLOSED('Database'))
+            if (await this._heard(removed, length)) return done(null, true)
+          } while (again)
+        } catch (err) {
+          done(err)
+        } finally {
+          busy = false
+        }
+      }
+      const timer = setTimeout(() => done(null, false), timeout)
+      const done = (err, yes) => {
+        clearTimeout(timer)
+        this.off('update', check)
+        this.off('close', check)
+        if (err) reject(err)
+        else resolve(yes)
+      }
+      this.on('update', check)
+      this.on('close', check)
+      check()
+    })
+  }
+
+  // a walk back from the last node of each other device that stands here, through what it links,
+  // to this device's block at `length`: a node stamped before that block cannot link it
+  /** @private */
+  async _heard(removed, length) {
+    const local = this.bee.local
+    const floor = (await this.bee.readOplog(local, length)).op.timestamp
+    const own = hid.encode(local.key)
+    const { data: devices } = await this.get('devices')
+    const stack = []
+    for (const row of devices) {
+      if (row.id === own || !row.key || removed.some((key) => b4a.equals(key, row.key))) continue
+      const key = hid.decode(row.id)
+      const info = await this.bee.system.get(key)
+      if (info) stack.push({ key, length: info.length })
+    }
+    const cores = new Map()
+    const seen = new Set()
+    try {
+      while (stack.length) {
+        const link = stack.pop()
+        if (b4a.equals(link.key, local.key)) {
+          if (link.length >= length) return true
+          continue
+        }
+        const hex = b4a.toHex(link.key)
+        if (link.length === 0 || seen.has(`${hex}/${link.length}`)) continue
+        seen.add(`${hex}/${link.length}`)
+        let core = cores.get(hex)
+        if (!core) cores.set(hex, (core = this.bee.openCore(link.key)))
+        await core.ready()
+        if (!(await core.has(link.length - 1))) continue
+        const { op } = await this.bee.readOplog(core, link.length)
+        if (op.timestamp < floor) continue
+        stack.push(...op.links, { key: link.key, length: link.length - 1 })
+        if (op.witness) stack.push(op.witness.link)
+      }
+      return false
+    } finally {
+      for (const core of cores.values()) await core.close()
+    }
+  }
+
   // the same read against any view: hooks read the transaction they run in
   /** @private */
   async _read(view, name, query) {
