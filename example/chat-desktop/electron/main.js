@@ -205,6 +205,15 @@ ipcMain.handle('pear:startWorker', (event, filename) => {
   initialized = true
   return true
 })
+// a cancelled recovery ends with its worker: the identity it waited for never opens behind the user's back
+ipcMain.handle('pear:stopWorker', async (event, filename) => {
+  if (filename !== WORKER) throw new Error(`unknown worker: ${filename}`)
+  const worker = workers.get(WORKER)
+  if (!worker) return
+  const exited = new Promise((resolve) => worker.once('exit', resolve))
+  worker.destroy()
+  await exited
+})
 let initialized = null
 async function checkInitialized() {
   if (initialized !== null) return initialized
