@@ -66,8 +66,10 @@ export function Room({ onClose }) {
   const { data: messages } = useQuery(room.messages)
   const { data: members } = useQuery(room.members)
   const { data: row } = useQuery(me.room, room.id)
+  const { data: status } = useQuery(room.status)
   const toast = useToast()
   const [invite, setInvite] = useState('')
+  const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
   useEffect(() => {
@@ -77,6 +79,8 @@ export function Room({ onClose }) {
   const sorted = [...messages].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
   const groups = groupMessages(sorted, me.id)
   const send = (text) => cero.put(room.messages, { text })
+  const canRemove = status.role === 'owner' || status.role === 'admin'
+  const remove = (id) => cero.del(room.members, id).catch((err) => toast.show(err.message))
 
   return (
     <div className='h-screen flex flex-col'>
@@ -85,7 +89,9 @@ export function Room({ onClose }) {
           ←
         </Button>
         <span className='font-medium text-card-foreground'>{row?.name || 'Unnamed'}</span>
-        <span className='text-muted'>{members.length} members</span>
+        <Button onClick={() => setOpen(!open)} variant='ghost'>
+          {members.length} members
+        </Button>
         <div className='flex-1' />
         {invite ? (
           <div className='flex items-center gap-2'>
@@ -111,6 +117,21 @@ export function Room({ onClose }) {
           Leave
         </Button>
       </div>
+
+      {open && (
+        <ul className='px-3 py-2 bg-card border-b border-border space-y-1 text-sm'>
+          {members.map((m) => (
+            <li key={m.id} className='flex items-center gap-2'>
+              <span className='flex-1 text-card-foreground'>{m.name || m.id.slice(0, 8)}</span>
+              {canRemove && m.id !== me.id && (
+                <Button onClick={() => remove(m.id)} variant='danger'>
+                  Remove
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div ref={ref} className='flex-1 overflow-y-auto p-3 space-y-2'>
         {groups.map((g, i) => (
