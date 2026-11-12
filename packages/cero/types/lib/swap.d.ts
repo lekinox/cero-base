@@ -21,8 +21,20 @@ export declare function current(dir: string): Promise<string>;
  */
 export declare function settle(dir: string): Promise<void>;
 /**
+ * The lock on `dir`, a file beside the stores, held from before a store closes or opens until the one in `main` is
+ * open: a store's own lock goes with its close and moves with its directory. Another holder is waited for, a try
+ * every few ms; a kill frees it.
+ *
+ * @param {string} dir
+ * @param {number} [timeout]  The longest wait in ms, 0 for no limit.
+ * @returns {Promise<{ close: () => Promise<void> }>}  Held until closed.
+ */
+export declare function lock(dir: string, timeout?: number): Promise<{
+    close: () => Promise<void>;
+}>;
+/**
  * What a killed swap left in `main.next` goes, unless a swap is running there. Only once `main` is open: a swap in
- * another process holds its lock while the incoming identity opens, and lets it go to rename, a window this misses.
+ * another process keeps main open while the incoming identity opens.
  *
  * @param {string} dir
  */
@@ -37,7 +49,14 @@ export declare function sweep(dir: string): Promise<void>;
  */
 export declare function staging<T>(dir: string, fn: () => Promise<T>): Promise<T>;
 /**
- * The identity opened and closed in `main.next` takes main's place. Both must be closed.
+ * The identity opened and closed in `main.next`, all of it on disk: a rename that follows never points at data
+ * still in a cache.
+ *
+ * @param {string} dir
+ */
+export declare function flush(dir: string): Promise<void>;
+/**
+ * The identity opened, closed and flushed in `main.next` takes main's place. Both must be closed.
  *
  * @param {string} dir
  */

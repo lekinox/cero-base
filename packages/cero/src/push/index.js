@@ -9,7 +9,7 @@ import { CeroError } from '@cero-base/core/errors'
 import { epochEntries } from '@cero-base/core/database/encryption'
 
 import { Local } from '../local/index.js'
-import { current } from '../lib/swap.js'
+import { current, lock } from '../lib/swap.js'
 
 /**
  * A push verified against the handle its topic names, read from that handle's `topics` row alone,
@@ -67,10 +67,13 @@ async function rowOf(storage, spec, hit, { encryptionKey, epochs }) {
  * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
  */
 export async function receive(dir, spec, payload, { storageKey } = {}) {
-  const storage = new HypercoreStorage(await current(dir), { readOnly: true })
+  let held = null
+  let storage = null
   let store = null
   let local = null
   try {
+    held = await lock(dir)
+    storage = new HypercoreStorage(await current(dir), { readOnly: true })
     await storage.ready()
     store = new Corestore(storage, { manifestVersion: 2 })
     local = new Local(null, spec, { store, storageKey })
@@ -82,7 +85,8 @@ export async function receive(dir, spec, payload, { storageKey } = {}) {
   } finally {
     await local?.close().catch(safetyCatch)
     await store?.close().catch(safetyCatch)
-    await storage.close().catch(safetyCatch)
+    await storage?.close().catch(safetyCatch)
+    await held?.close().catch(safetyCatch)
   }
 }
 

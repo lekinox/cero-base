@@ -122,6 +122,7 @@
     "ble-swarm": "^2.4.0",
     "compact-encoding": "^3.6.0",
     "corestore": "^7.16.1",
+    "fd-lock": "^2.2.0",
     "hrpc": "^4.3.1",
     "hypercore": "^11.40.3",
     "hypercore-crypto": "^3.7.0",

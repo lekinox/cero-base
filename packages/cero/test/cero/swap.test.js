@@ -2,7 +2,9 @@
 // after a failed or killed swap opens it again
 import test from 'brittle'
 import fs from 'fs'
+import FDLock from 'fd-lock'
 import { cero, put, get, restore } from '../../src/index.js'
+import { receive } from '../../src/push/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import { makeTestnet, waitUntil, ceroOpen } from '../helpers/index.js'
 
@@ -22,6 +24,19 @@ async function mine(t, opts = {}) {
   const phrase = await cero.phrase(other)
   await other.close()
   return { me, dir, testnet, phrase }
+}
+
+// the lock beside the stores, taken as another process would: it throws while one holds it
+async function hold(dir) {
+  const held = new FDLock(fs.openSync(`${dir}/main.lock`, 'a'))
+  await held.ready()
+  return held
+}
+
+// long enough for a launch that does not wait to have opened: another dir, launched after it, opens and closes
+async function meanwhile(t, bootstrap) {
+  const other = await cero(await t.tmp(), spec, { bootstrap })
+  await other.close()
 }
 
 async function kept(t, me, id) {
@@ -401,4 +416,103 @@ test('swap: another process launching the dir while it is open leaves main.next 
   await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }))
   t.ok(fs.existsSync(`${dir}/main.next/main/staged`), 'the incoming identity is still there')
   await kept(t, me, me.id)
+})
+
+test('swap: a launch of the dir as the swap takes its place waits for it, and never opens the old identity', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => a.close().catch(() => {}), { order: 5 })
+  const { me, dir } = await mine(t, { bootstrap: testnet.bootstrap })
+  const rename = fs.promises.rename
+  let second = null
+  let settled = false
+  let resume = null
+  // held at its first rename: the old store is closed, and still where a launch looks
+  fs.promises.rename = async (...args) => {
+    fs.promises.rename = rename
+    second = cero(dir, spec, { bootstrap: testnet.bootstrap }).finally(() => (settled = true))
+    second
+      .then((opened) => t.teardown(() => opened.close().catch(() => {}), { order: 3 }))
+      .catch(() => {})
+    await new Promise((resolve) => (resume = resolve))
+    return rename(...args)
+  }
+  t.teardown(() => {
+    fs.promises.rename = rename
+  })
+  const restoring = restore(me, await cero.phrase(a))
+  await waitUntil(() => resume)
+  await meanwhile(t, testnet.bootstrap)
+  t.absent(settled, 'the launch waits')
+  resume()
+  const next = await restoring
+  t.teardown(() => next.close().catch(() => {}), { order: 4 })
+  t.is(next.id, a.id, 'restored')
+  // the new identity has the dir by then, so this launch opens nowhere, as any second one
+  await t.exception(second)
+  await next.close()
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(again.id, a.id, 'the next launch opens the new identity')
+})
+
+test('swap: a launch waits on a swap between its renames, and finishes it once a kill frees the lock', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const old = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  await old.close()
+  const next = await t.tmp()
+  const incoming = await cero(next, spec, { bootstrap: testnet.bootstrap })
+  const id = incoming.id
+  await incoming.close()
+  const held = await hold(dir)
+  fs.renameSync(`${dir}/main`, `${dir}/main.old`)
+  fs.mkdirSync(`${dir}/main.next`)
+  fs.renameSync(`${next}/main`, `${dir}/main.next/main`)
+  const opening = cero(dir, spec, { bootstrap: testnet.bootstrap })
+  opening.then((me) => t.teardown(() => me.close().catch(() => {}), { order: 4 })).catch(() => {})
+  await meanwhile(t, testnet.bootstrap)
+  t.ok(fs.existsSync(`${dir}/main.old`), 'nothing moves under the lock')
+  t.absent(fs.existsSync(`${dir}/main`), 'and nothing opens')
+  await held.close()
+  const me = await opening
+  t.is(me.id, id, 'the new identity')
+  t.absent(fs.existsSync(`${dir}/main.old`), 'the old one gone')
+  t.absent(fs.existsSync(`${dir}/main.next`))
+})
+
+test('swap: an ordinary launch takes the lock beside the stores once, frees it, and leaves nothing else', async (t) => {
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+  const open = fs.open
+  let taken = 0
+  fs.open = (path, ...args) => {
+    if (path === `${dir}/main.lock`) taken++
+    return open(path, ...args)
+  }
+  t.teardown(() => {
+    fs.open = open
+  })
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 4 })
+  fs.open = open
+  t.is(taken, 1, 'taken once')
+  await (await hold(dir)).close()
+  t.pass('and free once the store is open')
+  t.alike(fs.readdirSync(dir).sort(), ['main', 'main.lock'])
+})
+
+test('swap: peek and a push read from a dead app wait on the lock too', async (t) => {
+  const { me, dir, testnet } = await mine(t)
+  await me.close()
+  const held = await hold(dir)
+  let done = 0
+  const peeking = cero.peek(dir, spec).finally(() => done++)
+  const reading = receive(dir, spec, new Uint8Array(64)).finally(() => done++)
+  await meanwhile(t, testnet.bootstrap)
+  t.is(done, 0, 'both wait')
+  await held.close()
+  t.ok(await peeking, 'the identity is there')
+  t.is(await reading, null, 'a push about nothing here')
+  t.is(done, 2)
 })
