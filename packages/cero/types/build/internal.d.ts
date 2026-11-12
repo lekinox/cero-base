@@ -65,6 +65,9 @@ export declare const defs: {
             type: string;
             kind: string;
         };
+        cancels: {
+            type: string;
+        };
     };
 };
 export declare const base: {

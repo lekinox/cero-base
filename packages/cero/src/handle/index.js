@@ -1207,8 +1207,9 @@ export class Handle extends ReadyResource {
       // counted before its row says how it ended: a waiter hears that row
       const alone = !join.waiting
       // a close pauses the join, anything else ends it, and its row says how
-      if (end.code !== 'CLOSED') await this._over(invite, end).catch(this._onerror)
-      if (join.end?.code === 'CANCELLED') await this._retract(join).catch(this._onerror)
+      const report = (err) => this.closing || this._onerror(err)
+      if (end.code !== 'CLOSED') await this._over(invite, end).catch(report)
+      if (join.end?.code === 'CANCELLED') await this._retract(join).catch(report)
       if (err.code !== 'CLOSED' && alone) this._onerror(err)
       settle(join.reject, end)
     }
@@ -1230,26 +1231,45 @@ export class Handle extends ReadyResource {
     return true
   }
 
-  // only the device that asked holds the writer its request is under: its keypair row stays, and a
-  // launch announces the cancel again, until a peer or a mirror holds it
+  // only the device that asked holds the writer its request is under: its keypair row stays, and
+  // each launch announces the cancel again, until one after a peer or a mirror holds it
   /** @private */
-  async _retract({ id, type }) {
+  async _retract({ id, type }, launch = false) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    if (!kept?.invite) return false
-    const writer = { publicKey: kept.publicKey, secretKey: kept.secretKey }
-    Pairing.cancel(this.mailbox, kept.invite, { spec: pickHandle(this.spec, type), writer })
-      .then(() => this._forget(id, writer.publicKey))
+    if (!kept?.invite) return
+    this._announce(type, kept)
+      .then(() => launch && this._forget(id, kept))
       .catch((err) => this.closing || this._onerror(err))
-    return true
   }
 
-  // a keypair row goes with nothing owed on it, unless a join since took it over
   /** @private */
-  async _forget(id, publicKey) {
+  _announce(type, { invite, publicKey, secretKey }) {
+    const spec = pickHandle(this.spec, type)
+    return Pairing.cancel(this.mailbox, invite, { spec, writer: { publicKey, secretKey } })
+  }
+
+  /** @private */
+  async _owe(type, { invite, publicKey, secretKey }) {
+    const owed = { id: hid.encode(publicKey), type, invite, publicKey, secretKey }
+    const { data } = await this.local.store.put('cancels', owed)
+    this._pay(data).catch((err) => this.closing || this._onerror(err))
+  }
+
+  // an owed cancel goes once a peer or a mirror holds it, or `KEPT` on with none reached
+  /** @private */
+  async _pay(owed) {
+    if (owed.createdAt >= Date.now() - KEPT) await this._announce(owed.type, owed)
+    await this.local.store.del('cancels', owed.id)
+  }
+
+  // a held cancel takes its writer, and the row it ended, unless a join since took them over
+  /** @private */
+  async _forget(id, { publicKey, invite }) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    if (kept && b4a.equals(kept.publicKey, publicKey)) {
-      await this.local.store.del('handle-keypairs', id)
-    }
+    if (kept?.invite !== invite || !b4a.equals(kept.publicKey, publicKey)) return
+    await this.local.store.del('handle-keypairs', id)
+    const { data: row } = await this.store.get('handles', id)
+    if (row?.state === 'cancelled' && row.invite === invite) await this.store.del('handles', id)
   }
 
   /** @private */
@@ -1270,6 +1290,8 @@ export class Handle extends ReadyResource {
     const mine = !!kept?.invite && (state === 'asking' || state === 'joining')
     if (mine && (state === 'joining' || row.invite === invite)) return id
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
+    // a join under another invite takes the keypair row: a cancel the room may not hold yet keeps its own
+    if (state === 'cancelled' && kept?.invite) await this._owe(row.type, kept)
     await this._saveKeyPair(id, mine ? kept : Identity.randomKeyPair(), invite)
     // a room another device of this identity already has the keys of is joined with them
     if (state === 'joining') return id
@@ -1400,19 +1422,20 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // the rows that ended go, with their keypairs: a cancel once no peer is owed it, or `KEPT` on
-  // with none reached, the others once the app had `KEPT` to show why
+  // the rows that ended go, with their keypairs, once the app had `KEPT` to show why; a cancel sooner,
+  // at a launch of the device that asked once a peer holds it: another device may yet owe it
   /** @private */
   async _sweep() {
     const old = Date.now() - KEPT
     const gone = []
     for (const state of SWEPT) {
       for (const row of (await this.store.get('handles', { state })).data) {
-        const owed = state === 'cancelled' && row.updatedAt >= old && (await this._retract(row))
-        if (!owed && (state === 'cancelled' || row.updatedAt < old)) {
-          gone.push(row.id)
-        }
+        if (row.updatedAt < old) gone.push(row.id)
+        else if (state === 'cancelled') await this._retract(row, true)
       }
+    }
+    for (const owed of (await this.local.store.get('cancels')).data) {
+      this._pay(owed).catch((err) => this.closing || this._onerror(err))
     }
     if (!gone.length) return
     await this.store.tx(async (tx) => {

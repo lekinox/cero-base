@@ -314,6 +314,15 @@ export const local = {
     removed: bytes,
     standing: bytes,
     stamp: bytes
+  },
+  // a cancel this device owes a room, from a writer a join under another invite took the place of
+  cancel: {
+    id: required(string),
+    type: required(string),
+    invite: required(string),
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    createdAt: int
   }
 }
 

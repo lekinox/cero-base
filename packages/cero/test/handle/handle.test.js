@@ -11,6 +11,7 @@ import { encode, createNotification } from 'blind-push'
 
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
+import { Pairing } from '@cero-base/core/pairing'
 import { Database } from '@cero-base/core/database'
 import { Storage } from '@cero-base/core/storage'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
@@ -399,6 +400,54 @@ test('join: a cancel from a second device ends the join on the first with CANCEL
   t.pass('the first device stopped carrying it')
   await waitUntil(async () => (await get(room.requests)).data.length === 0)
   t.pass('the room no longer lists it')
+})
+
+test('join: a cancel from a second device while the asking one is offline takes the request back once it is online, and its launch then deletes the row', async (t) => {
+  const { room, invite, a, b } = await twins(t)
+  const joining = open(a.me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await cero.suspend(a.me)
+  t.ok(await cero.cancel(b.me, invite))
+  await b.me._sweep()
+  const row = async (me) => (await get(me.team, room.id)).data
+  t.is((await row(b.me))?.state, 'cancelled', 'a launch keeps a cancel the asking device owes')
+  await cero.resume(a.me)
+  t.is((await joining).code, 'CANCELLED')
+  await waitUntil(async () => (await get(room.requests)).data.length === 0)
+  t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
+  await a.me._sweep()
+  await waitUntil(async () => !(await row(b.me)))
+  t.absent((await a.me.local.store.get('handle-keypairs', room.id)).data, 'and its writer goes')
+})
+
+test('join: a cancel as the app closes reaches onerror with nothing', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const errors = []
+  const { me } = await ceroOpen(t, { testnet, onerror: (err) => errors.push(err) })
+  const joining = open(me.team, invite).catch((e) => e)
+  await nextRequest(room)
+  const { local } = me
+  const read = local.store.get
+  let closing = null
+  // the close runs while the cancel reads the writer it asked with
+  local.store.get = async function (name, query) {
+    if (name === 'handle-keypairs' && !closing) {
+      closing = me.close()
+      await waitUntil(() => local.closed)
+    }
+    return read.call(this, name, query)
+  }
+  await cero.cancel(me, invite).catch(() => {})
+  t.is((await joining).code, 'CANCELLED')
+  await closing
+  t.alike(
+    errors.map((err) => err.code || err.message),
+    [],
+    'nothing reached onerror'
+  )
 })
 
 test('join: a cancel takes the request back from the room, and an approve after it lets nobody in', async (t) => {
@@ -1804,12 +1853,7 @@ test('handles: a row changes state as its table allows and no other way, on the 
   const again = await cero(dir, { ...spec, meta }, { bootstrap: testnet.bootstrap, onerror() {} })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
   t.is((await again.store.dispatcher.built(again.store.view))[1], meta.rules, 'applied again')
-  const kept = Object.entries(before).filter(([, state]) => state !== 'cancelled')
-  t.alike(
-    await states(again),
-    { ...Object.fromEntries(kept), last: 'asking' },
-    'every row stands where it stood, past a cancelled one the launch deleted'
-  )
+  t.alike(await states(again), { ...before, last: 'asking' }, 'every row stands where it stood')
 })
 
 test('handles: an ended row is deleted through its type, and one in, leaving, asking or joining is refused', async (t) => {
@@ -2003,7 +2047,7 @@ test('handles: a row is deleted while in or leaving, never while asking or joini
   }
 })
 
-test('handles: a launch deletes a cancelled row, and a denied, expired, removed or left one once it is over 30 days old', async (t) => {
+test('handles: a launch keeps a cancel another device asked, and deletes a denied, expired, removed or left row once it is over 30 days old', async (t) => {
   const { me, dir, testnet } = await ceroOpen(t)
   const relaunch = async (was) => {
     await was.close()
@@ -2029,7 +2073,11 @@ test('handles: a launch deletes a cancelled row, and a denied, expired, removed 
 
   const next = await relaunch(me)
   const read = async (id) => (await get(next.handles, id)).data
-  t.absent(await read('cancelled'), 'a cancel is gone')
+  t.is(
+    (await read('cancelled'))?.state,
+    'cancelled',
+    'a cancel whose writer is on no device here stays'
+  )
   for (const state of ['expired', 'removed', 'left']) {
     t.absent(await read(state), `${state} is gone`)
   }
@@ -2047,6 +2095,18 @@ test('handles: a launch deletes a cancelled row, and a denied, expired, removed 
   t.ok((await get(last.handles, 'month')).data, 'the younger one stays')
 })
 
+test('handles: a held cancel leaves the writer and the row of a join under another invite', async (t) => {
+  const { me } = await ceroOpen(t)
+  const held = { publicKey: b4a.alloc(32, 1), secretKey: b4a.alloc(64, 1), invite: 'first' }
+  const asking = { publicKey: b4a.alloc(32, 2), secretKey: b4a.alloc(64, 2), invite: 'second' }
+  await me.local.store.put('handle-keypairs', { ...asking, id: 'room' })
+  await me.store.set('handles', standing('room', 'asking', 'second'))
+  await me._forget('room', held)
+  const { data: kept } = await me.local.store.get('handle-keypairs', 'room')
+  t.is(kept?.invite, 'second', 'the writer of the join under the other invite stays')
+  t.is((await get(me.handles, 'room')).data?.state, 'asking', 'and so does its row')
+})
+
 test('handles: a cancel no peer took goes at a launch once it is over 30 days old', async (t) => {
   const { me, dir, testnet } = await ceroOpen(t)
   const retract = Handle.prototype._retract
@@ -2054,17 +2114,34 @@ test('handles: a cancel no peer took goes at a launch once it is over 30 days ol
   t.teardown(() => {
     Handle.prototype._retract = retract
   })
+  const { cancel } = Pairing
+  Pairing.cancel = () => new Promise(() => {})
+  t.teardown(() => void (Pairing.cancel = cancel))
   const at = Date.now() - 31 * 24 * 60 * 60 * 1000
   await me.store.set('handles', standing('young', 'cancelled'))
   await me.store.set('handles', standing('old', 'cancelled'))
   const { data: row } = await me.store.get('handles', 'old')
   await me.store.call('add-handle', { ...row, updatedAt: at })
+  // the cancels a join under another invite left owed, on rows of their own
+  const writer = {
+    publicKey: b4a.alloc(32),
+    secretKey: b4a.alloc(64),
+    type: 'team',
+    invite: 'first'
+  }
+  await me.local.store.put('cancels', { ...writer, id: 'young' })
+  const { now } = Date
+  Date.now = () => at
+  await me.local.store.put('cancels', { ...writer, id: 'old' }).finally(() => (Date.now = now))
   await me.close()
 
   const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
   t.ok((await get(again.handles, 'young')).data, 'a cancel still owed stays')
   t.absent((await get(again.handles, 'old')).data, 'and goes over 30 days old')
+  const owed = async (id) => (await again.local.store.get('cancels', id)).data
+  await waitUntil(async () => !(await owed('old')))
+  t.ok(await owed('young'), 'so does one a join under another invite left')
 })
 
 test('Handle: a page of one type reads through its index the rows, in the order, that filtering every handle gives', async (t) => {
@@ -2643,10 +2720,13 @@ test('join: a cancel made just before the app closes takes the request back afte
   await waitUntil(async () => (await get(room.requests)).data.length === 0, 10000).catch(() => {})
   t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
   await waitUntil(async () => !(await again.local.store.get('handle-keypairs', room.id)).data)
-  t.pass('and its writer goes once the room holds it')
+  t.absent(
+    (await get(again.team, room.id)).data,
+    'and its row and writer go once the room holds it'
+  )
 })
 
-test('join: a cancel held after the app asked again under another invite leaves that join its writer', async (t) => {
+test('join: asked again under another invite before the room holds a cancel, a launch takes the first request back and the join under the other invite lands', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
   const room = await open(host.me.team, { name: 'clinic' })
@@ -2654,21 +2734,32 @@ test('join: a cancel held after the app asked again under another invite leaves 
   const second = await cero.invite(room, { confirm: true })
   const { me, dir } = await ceroOpen(t, { testnet })
   const joining = open(me.team, first).catch((e) => e)
-  const request = await nextRequest(room)
-  await cero.suspend(host.me)
+  await nextRequest(room)
+  // no peer takes the cancel while the app runs
+  const { cancel } = Pairing
+  Pairing.cancel = () => new Promise(() => {})
+  t.teardown(() => void (Pairing.cancel = cancel))
   t.ok(await cero.cancel(me, first))
   t.is((await joining).code, 'CANCELLED')
   open(me.team, second).catch(() => {})
-  const asked = async () => (await me.local.store.get('handle-keypairs', room.id)).data
-  await waitUntil(async () => (await asked())?.invite === second)
-  await cero.resume(host.me)
-  const next = await nextRequest(room, request)
-  await waitUntil(async () => !(await get(room.requests)).data.some((r) => r.id === request.id))
-  t.is((await asked())?.invite, second, 'the writer of the join under the other invite stays')
+  const asked = async (root) => (await root.local.store.get('handle-keypairs', room.id)).data
+  await waitUntil(async () => (await asked(me))?.invite === second)
+  await cero.suspend(host.me)
   await me.close()
+  Pairing.cancel = cancel
   const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
-  await accept(room, next)
+  await cero.resume(host.me)
+  const under = b4a.toHex(Invite.parse(second).id)
+  const pending = async () => (await get(room.requests, { admitted: false })).data
+  await waitUntil(async () => {
+    const data = await pending()
+    return data.length === 1 && data[0].invite === under
+  })
+  t.pass('one request waits, under the other invite')
+  await accept(room, (await pending())[0])
   await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'in')
-  t.pass('and it lands after a launch')
+  t.pass('and the join under it lands')
+  await waitUntil(async () => (await again.local.store.get('cancels')).data.length === 0)
+  t.pass('the cancel owed goes once the room holds it')
 })

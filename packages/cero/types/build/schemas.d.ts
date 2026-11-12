@@ -236,6 +236,14 @@ export declare const local: {
         standing: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
     };
+    cancel: {
+        id: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        publicKey: import("@cero-base/core").Prim;
+        secretKey: import("@cero-base/core").Prim;
+        createdAt: import("@cero-base/core").Prim;
+    };
 };
 export declare const contract: {
     version: number;
