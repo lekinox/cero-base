@@ -39,6 +39,10 @@ export class Rotation {
     /** @private */
     this._aside = new Map() // writer:stamp → a row set aside, opened once a block of its signer under it is met
     /** @private */
+    this._open = new Map() // writer:stamp → a key set aside, opened: never in the keyring
+    /** @private */
+    this._stamps = new Set() // the stamps a row set aside holds
+    /** @private */
     this._met = new Set() // writer:stamp of blocks met before their row landed
   }
 
@@ -82,13 +86,10 @@ export class Rotation {
    * @param {{ epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }} row
    */
   async learn(row) {
+    if (row.aside) return this._setAside(row)
     const { keyring } = this.db
     const known = this.held(row)
-    const met = !!row.writer && this._met.delete(spot(row.writer, row.stamp))
-    if (row.aside && !known && !met) {
-      if (row.writer) this._aside.set(spot(row.writer, row.stamp), row)
-      return
-    }
+    for (const at of this._met) if (at.endsWith(`:${row.stamp}`)) this._met.delete(at)
     const entropy = known || this._unseal(row) || this._handed(row)
     if (known) {
       keyring.add(row.stamp, known, row.epoch) // re-applied, the sequence may be news
@@ -108,8 +109,32 @@ export class Rotation {
     this.heal()
   }
 
+  // a row set aside reads its writer's blocks under its stamp, and nobody else's: opened now when
+  // one was met, else when one is
+  /** @private */
+  _setAside(row) {
+    if (!row.writer) return
+    const at = spot(row.writer, row.stamp)
+    this._stamps.add(row.stamp)
+    if (this._open.has(at)) return
+    const known = this.held(row)
+    if (known) {
+      // applied as one that counts before a reorder set it aside: out of the keyring, where it
+      // would read every writer's blocks under its stamp
+      this.db.keyring.remove(row.stamp)
+      this._aside.delete(at)
+      this._open.set(at, known)
+    } else if (this._met.delete(at)) {
+      this._aside.delete(at)
+      if (this._opens(at, row)) this.db.keyring.onchange?.()
+    } else {
+      this._aside.set(at, row)
+    }
+  }
+
   /**
-   * A block met under a key this device does not hold: a rotation its writer set aside is opened now.
+   * The key a block of `writer` under `stamp` is read with when that writer set one aside under
+   * it; a block met under a key this device does not hold is remembered until its row lands.
    *
    * @param {number} stamp
    * @param {Uint8Array} [writer]  The writer of the block.
@@ -117,18 +142,29 @@ export class Rotation {
    */
   meet(stamp, writer) {
     if (!writer) return null
-    const at = spot(writer, stamp)
-    const row = this._aside.get(at)
-    if (!row) {
-      this._met.delete(at)
-      this._met.add(at)
-      if (this._met.size > MET) this._met.delete(this._met.values().next().value)
-      return null
+    if (this._stamps.has(stamp)) {
+      const at = spot(writer, stamp)
+      const row = this._aside.get(at)
+      if (row) this._aside.delete(at)
+      const entropy = this._open.get(at) ?? (row && this._opens(at, row))
+      if (entropy) return entropy
     }
-    this._aside.delete(at)
+    if (!this.db.keyring.entropy(stamp)) this._remember(spot(writer, stamp))
+    return null
+  }
+
+  /** @private */
+  _opens(at, row) {
     const entropy = this._unseal(row)
-    if (entropy) this.db.keyring.add(row.stamp, entropy, row.epoch)
+    if (entropy) this._open.set(at, entropy)
     return entropy
+  }
+
+  /** @private */
+  _remember(at) {
+    this._met.delete(at)
+    this._met.add(at)
+    if (this._met.size > MET) this._met.delete(this._met.values().next().value)
   }
 
   /**
@@ -181,7 +217,7 @@ export class Rotation {
   async hydrate() {
     try {
       for (const row of await this._epochs()) {
-        if (!this.held(row)) await this.learn(row)
+        if (row.aside || !this.held(row)) await this.learn(row)
       }
     } catch {
       // rows past our newest epoch hydrate via apply
@@ -206,11 +242,16 @@ export class Rotation {
    * @param {object} [view]
    */
   async pick(view = this.db.view) {
+    const rows = await view.find(`@${this.db.ns}/epochs`, {}).toArray()
+    // a stamp this device set aside under reads its blocks with that key, so it never writes under
+    // a counted one sharing it
+    const me = this.db.writerKey
+    const mine = (r) => r.aside && r.writer && b4a.equals(r.writer, me)
+    const taken = new Set(rows.filter(mine).map((r) => r.stamp))
     let top = null
-    for await (const row of view.find(`@${this.db.ns}/epochs`, {}, { reverse: true })) {
-      if (row.aside || !this.held(row)) continue
-      top = row
-      break
+    for (const row of rows) {
+      if (row.aside || taken.has(row.stamp) || !this.held(row)) continue
+      if (!top || row.epoch > top.epoch) top = row
     }
     this.db.keyring.current = top ? top.stamp : 0
     this.db.keyring.seq = top ? top.epoch : 0
