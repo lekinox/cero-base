@@ -80,6 +80,28 @@ export type HandleStub = {
     name: string | null;
 };
 export type Context = (Client | Handle) & Record<string, Ref>;
+export type ClientOpts = {
+    /**
+     * Where the worker's background errors go, the console without one.
+     */
+    onerror?: (err: Error) => void;
+    /**
+     * The platform's messaging service, to follow the handles' push topics.
+     */
+    push?: import('./push.js').Messaging;
+    /**
+     * On a worker whose store is new, it recovers the identity of this phrase, as `cero(dir, spec, { phrase })`.
+     */
+    phrase?: string;
+    /**
+     * On a worker whose store is new, it links to the identity of this device invite, as `cero(dir, spec, { invite })`.
+     */
+    invite?: string;
+    /**
+     * With `invite`: the request's id as it is sent.
+     */
+    onrequest?: (id: string) => void;
+};
 /**
  * Switch the app to the identity of a recovery phrase, as `cero.restore` does in the worker: the
  * client is then that identity.
@@ -128,6 +150,8 @@ declare class LocalRefs {
  */
 export declare class Client extends RPCClient {
     /** @private */
+    _how;
+    /** @private */
     _push;
     /** @private */
     _onerror;
@@ -148,12 +172,9 @@ export declare class Client extends RPCClient {
     /**
      * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-     * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]  Where the worker's background errors go, the console without one; `push`: the platform's messaging service, to follow the handles' push topics.
+     * @param {ClientOpts} [opts]
      */
-    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror, push }?: {
-        onerror?: (err: Error) => void;
-        push?: import('./push.js').Messaging;
-    });
+    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror, push, phrase, invite, onrequest }?: ClientOpts);
     /** @private */
     private _pumpErrors;
     /** @private */
@@ -218,26 +239,20 @@ declare class Handle {
  *
  * @param {import('streamx').Duplex} ipc
  * @param {Spec} spec
- * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Client>}
  */
-export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?: {
-    onerror?: (err: Error) => void;
-    push?: import('./push.js').Messaging;
-}): Promise<Client>;
+export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?: ClientOpts): Promise<Client>;
 /**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
  * server (via `connect`) instead of opening a local store.
  *
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
- * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Context>}
  */
-declare function start(ipc: import('streamx').Duplex, spec: Spec, opts?: {
-    onerror?: (err: Error) => void;
-    push?: import('./push.js').Messaging;
-}): Promise<Context>;
+declare function start(ipc: import('streamx').Duplex, spec: Spec, opts?: ClientOpts): Promise<Context>;
 /** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, link: typeof link, t: typeof t, schema: typeof schema }} */
 export declare const cero: typeof start & typeof remote & {
     connect: typeof connect;

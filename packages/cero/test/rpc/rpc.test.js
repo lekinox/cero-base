@@ -28,7 +28,7 @@ import {
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect, restore, link, supports } from '../../src/rpc/client.js'
+import { Client, connect, restore, link, supports } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -1132,16 +1132,89 @@ test('rpc: invite carries ttl and data over the wire', async (t) => {
   t.is(Invite.parse(forever).data, null, 'no data unless given')
 })
 
-test('rpc: the server boots cero before the first init, so the network is up early', async (t) => {
+test('rpc: a store with an identity boots before the first init, so the network is up early', async (t) => {
   const testnet = await makeTestnet(t)
+  const storage = await t.tmp()
+  await (await cero(storage, spec, { bootstrap: testnet.bootstrap })).close()
   const [serverStream] = pair()
-  const server = await serve(serverStream, spec, {
-    storage: await t.tmp(),
-    bootstrap: testnet.bootstrap
-  })
+  const server = await serve(serverStream, spec, { storage, bootstrap: testnet.bootstrap })
   t.teardown(() => server.close().catch(() => {}))
   const me = await waitUntil(() => server.me || null)
   t.ok(me.network.opened, 'booted with no client attached')
+})
+
+// a worker on a new store, and the client that says how it opens
+async function fresh(t, testnet, opts = {}) {
+  const [serverStream, clientStream] = pair()
+  const server = await serve(serverStream, spec, {
+    storage: await t.tmp(),
+    bootstrap: testnet.bootstrap,
+    ...opts
+  })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  const open = (how) => {
+    const client = new Client(clientStream, spec, how)
+    t.teardown(() => client.close().catch(() => {}), { order: 4 })
+    return client.ready().then(() => client)
+  }
+  return { server, storage: server.storage, open, ipc: clientStream }
+}
+
+test('rpc: a new store opens nothing until the client says how, and a wrong phrase leaves no profile', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { storage, open } = await fresh(t, testnet)
+  t.is(await cero.peek(storage, spec), null, 'nothing before the client')
+  const phrase = Identity.toPhrase(Identity.randomBytes(32)).split(' ').slice(1).join(' ')
+  await t.exception(open({ phrase }), /BIP-39/)
+  t.is(await cero.peek(storage, spec), null, 'no profile')
+})
+
+test('rpc: on a new store the client recovers with a phrase, links with an invite, or creates', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 6 })
+
+  const recovered = await (await fresh(t, testnet)).open({ phrase: await cero.phrase(owner) })
+  t.is(recovered.id, owner.id, 'recovered')
+
+  let request = null
+  const invite = await cero.invite(owner)
+  const linking = (await fresh(t, testnet)).open({ invite, onrequest: (id) => (request = id) })
+  await accept(owner, await nextRequest(owner))
+  t.is((await linking).id, owner.id, 'linked')
+  t.ok(request, 'the request id reached the client')
+
+  const created = await (await fresh(t, testnet)).open()
+  t.not(created.id, owner.id, 'a new identity')
+})
+
+test('rpc: a recovery the worker closes on goes on at its next open and ends once a device of it is online', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const ownerDir = await t.tmp()
+  const owner = await cero(ownerDir, spec, opts)
+  const { id } = owner
+  const phrase = await cero.phrase(owner)
+  await owner.close()
+
+  const first = await fresh(t, testnet, { recoveryTimeout: 0 })
+  first.open({ phrase }).catch(() => {})
+  await waitUntil(() => first.server._booting !== null)
+  await first.server.close()
+  // the worker gone: its pipe goes with it
+  first.ipc.destroy()
+  t.is(await cero.peek(first.storage, spec), 'recovering', 'the recovery is kept')
+
+  const [serverStream, clientStream] = pair()
+  const storage = first.storage
+  const server = await serve(serverStream, spec, { storage, ...opts, recoveryTimeout: 0 })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  const resumed = connect(clientStream, spec)
+  const again = await cero(ownerDir, spec, opts)
+  t.teardown(() => again.close().catch(() => {}), { order: 6 })
+  const client = await resumed
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  t.is(client.id, id, 'the identity of the phrase')
 })
 
 test('rpc: a join that lands after the caller stopped waiting shows up in handles', async (t) => {

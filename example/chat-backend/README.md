@@ -41,9 +41,9 @@ const me = await serve(ipc, { storage: './data', name: 'alice' })
 
 `serve` forwards any extra options straight to `cero()`; cero — not `serve` — owns the identity, persisting it in the on-disk `local` store under `${storage}`:
 
-- First launch: cero generates a fresh identity and stores its seed in the local `master` row.
+- First launch: the worker opens nothing until the UI connects. `connect(ipc, { name })` creates a fresh identity and stores its seed in the local `master` row.
 - Subsequent launches: re-opening the same `${storage}` dir loads that stored identity back — no phrase needed.
-- Recovery: the UI's `connect(ipc, { phrase })` restores from a phrase; in process, `cero(dir, spec, { phrase })`.
+- Recovery: the UI's `connect(ipc, { phrase })` recovers from a phrase, `connect(ipc, { invite })` links; in process, `cero(dir, spec, { phrase })`. A recovery or a link waits for a device of the profile, across restarts: `isInitialized(storage)` reads `'recovering'` or `'linking'` until it ends.
 
 ## Connect a client
 
