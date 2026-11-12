@@ -139,7 +139,10 @@ export class Server extends RPCServer {
   /** @private */
   async _open() {
     await super._open()
-    if (await peek(this.storage, this.spec, this.opts)) this._start()
+    // no request waits on this start: its error is the app's, unless the close stopped it
+    if (await peek(this.storage, this.spec, this.opts)) {
+      this._start().catch((err) => this.closing || this._onerror(err))
+    }
   }
 
   /**
@@ -168,8 +171,9 @@ export class Server extends RPCServer {
       this._wireVerbs()
     } catch (err) {
       // the next start opens the same store, whose lock a root left open here still holds
-      await this.me.close().catch(safetyCatch)
+      const me = this.me
       this.me = null
+      await me.close().catch(this.opts.onerror)
       throw err
     }
     this.handles.set(this.me.id, this.me)

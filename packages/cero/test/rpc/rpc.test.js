@@ -1167,14 +1167,16 @@ test('rpc: a store with an identity boots before the first init, so the network 
   t.ok(me.network.opened, 'booted with no client attached')
 })
 
-test('rpc: a start that fails closes the root it opened, and the next init opens it again', async (t) => {
+test('rpc: a start at boot that fails reaches onerror, closes the root it opened, and the next init opens it again', async (t) => {
   const testnet = await makeTestnet(t)
   const storage = await t.tmp()
   const made = await cero(storage, spec, { bootstrap: testnet.bootstrap })
   const { id } = made
   await made.close()
   const [serverStream, clientStream] = pair()
-  const server = new Server(serverStream, spec, { storage, bootstrap: testnet.bootstrap })
+  const errors = []
+  const onerror = (err) => errors.push(err.message)
+  const server = new Server(serverStream, spec, { storage, bootstrap: testnet.bootstrap, onerror })
   t.teardown(() => server.close().catch(() => {}), { order: 5 })
   let first = null
   server._wireVerbs = function () {
@@ -1185,9 +1187,45 @@ test('rpc: a start that fails closes the root it opened, and the next init opens
   await server.ready()
   await waitUntil(() => first && server._booting === null)
   t.ok(first.closed, 'the root of the failed start is closed')
+  await waitUntil(() => errors.length > 0)
+  t.alike(errors, ['wiring failed'], 'its error reaches onerror')
   const client = await connect(clientStream, spec)
   t.teardown(() => client.close().catch(() => {}), { order: 4 })
   t.is(client.id, id, 'the next init opens the same identity')
+})
+
+test('rpc: a start whose root fails to close rejects with its own error and keeps no root', async (t) => {
+  const testnet = await makeTestnet(t)
+  const errors = []
+  const { server, open } = await fresh(t, testnet, { onerror: (err) => errors.push(err.message) })
+  server._wireVerbs = function () {
+    delete this._wireVerbs
+    const close = this.me.close.bind(this.me)
+    this.me.close = async () => {
+      await close()
+      throw new TypeError('close failed')
+    }
+    throw new Error('wiring failed')
+  }
+  await t.exception(open(), /wiring failed/)
+  t.is(server.me, null, 'no root kept')
+  t.alike(errors.sort(), ['close failed', 'wiring failed'], 'both reach onerror')
+  t.ok((await open()).id, 'the next init opens a root')
+})
+
+test('rpc: a start at boot the worker closes under stays out of onerror', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const storage = await t.tmp()
+  const phrase = Identity.toPhrase(Identity.randomBytes(32))
+  await t.exception(cero(storage, spec, { ...opts, phrase, recoveryTimeout: 500 }), /TIMEOUT/)
+  const errors = []
+  const [serverStream] = pair()
+  const onerror = (err) => errors.push(err)
+  const server = await serve(serverStream, spec, { storage, ...opts, recoveryTimeout: 0, onerror })
+  t.ok(server._booting, 'the recovery goes on at boot')
+  await server.close()
+  t.alike(errors, [], 'nothing reached onerror')
 })
 
 // a worker on a new store, and the client that says how it opens
