@@ -551,12 +551,14 @@ export class Pairing extends ReadyResource {
       fail = rej
     })
     let settling = false
+    let expired = false
     const settle = async (answer, done) => {
       settling = true
       try {
         await keep(answer)
       } catch (err) {
         settling = false
+        if (expired) stop(CeroError.EXPIRED())
         throw err
       }
       done(answer)
@@ -605,10 +607,14 @@ export class Pairing extends ReadyResource {
     signal?.addEventListener('abort', onabort)
     mailbox.once('close', onabort)
     const timer = timeout > 0 ? setTimeout(() => stop(CeroError.TIMEOUT('join')), timeout) : null
+    // a reply being kept as the invite runs out settles the join: the device it answers is let in
+    const expire = () => {
+      expired = true
+      if (!settling) stop(CeroError.EXPIRED())
+    }
     const left = parsed.expires - Date.now()
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
-    const expiry =
-      parsed.expires && left < MAX_DELAY ? setTimeout(() => stop(CeroError.EXPIRED()), left) : null
+    const expiry = parsed.expires && left < MAX_DELAY ? setTimeout(expire, left) : null
     write(core, spec, stamp, parsed, identity, writer)
       .then(() => post.ready())
       .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))
