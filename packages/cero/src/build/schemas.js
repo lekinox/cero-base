@@ -165,7 +165,9 @@ export const main = {
     // the invite it joined with, whose secret proves the answer
     invite: string,
     // turned away by a spent invite, which keeps one: its next join takes this one's place
-    spent: bool
+    spent: bool,
+    // who joined, turned away as removed by a live invite, which keeps one for each of them
+    identity: bytes
   },
   // an invite spent or revoked, kept until it expires so a join with it hears why
   spent: {

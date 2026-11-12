@@ -300,7 +300,7 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
 - Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
 - `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
-- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. An invite that is spent or revoked answers the newest join made with it: an earlier one nobody had answered yet ends at its timeout. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
+- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. An invite that is spent or revoked answers the newest join made with it: an earlier one nobody had answered yet ends at its timeout. A live invite answers a removed identity the same way, the newest of her joins. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
 
 ## Push
