@@ -7,7 +7,8 @@ import { Avatar } from './avatar'
 
 export function Rooms({ onOpen, onSettings }) {
   const me = useCero()
-  const { data: rooms } = useQuery(me.room)
+  // the rooms you are in: a join on its way, or one that ended, has its row too
+  const { data: rooms } = useQuery(me.room, { state: 'in' })
   const { data: profile } = useQuery(me.profile)
   const userName = profile?.name || me.id?.slice(0, 8)
   const [name, setName] = useState('')

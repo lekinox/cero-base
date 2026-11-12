@@ -164,7 +164,7 @@ async function main() {
 
 // a recovered identity already has rooms: reopen the first, otherwise create one
 async function ownRoom(me, name) {
-  const { data: rooms } = await cero.get(me.room)
+  const { data: rooms } = await cero.get(me.room, { state: 'in' })
   if (rooms.length) return cero.open(me.room, { id: rooms[0].id })
   return cero.open(me.room, { name: `${name}'s room` })
 }

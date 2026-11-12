@@ -544,9 +544,9 @@ test('phrase: recovery yields that identity on a fresh dir', async (t) => {
   t.is(await cero.phrase(b), phrase, 'phrase round-trips')
 })
 
-// ─── handle leave() — drops the room from the joiner's handles list ──────
+// ─── handle leave() — the room leaves the list of the rooms the joiner is in ──
 
-test("handle leave() removes the room from the joiner's handles, others untouched", async (t) => {
+test("handle leave() takes the room out of the joiner's rooms, others untouched", async (t) => {
   const net = await makeTestnet(t)
   const host = await makeChat(t, { bootstrap: net.bootstrap })
   const guest = await makeChat(t, { bootstrap: net.bootstrap })
@@ -564,8 +564,8 @@ test("handle leave() removes the room from the joiner's handles, others untouche
 
   await cero.leave(joinedLeave)
 
-  rooms = (await get(guest.room)).data
-  t.is(rooms.length, 1, "leave() dropped one row from the guest's handles")
+  rooms = (await get(guest.room, { state: 'in' })).data
+  t.is(rooms.length, 1, "leave() took one room out of the guest's rooms")
   t.is(rooms[0].id, joinedStay.id, 'the other room is still there')
 })
 
