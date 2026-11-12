@@ -161,11 +161,18 @@ export class Server extends RPCServer {
     // a close stops a recovery or a link still waiting for a device: the next open goes on with it
     const opts = { ...this.opts, ...how, signal: this._stop.signal }
     this.me = await cero(this.storage, this.spec, opts)
+    try {
+      await this.me.fileServer.listen()
+      this._wireData()
+      this._wireHandles()
+      this._wireVerbs()
+    } catch (err) {
+      // the next start opens the same store, whose lock a root left open here still holds
+      await this.me.close().catch(safetyCatch)
+      this.me = null
+      throw err
+    }
     this.handles.set(this.me.id, this.me)
-    await this.me.fileServer.listen()
-    this._wireData()
-    this._wireHandles()
-    this._wireVerbs()
   }
 
   /** @private */

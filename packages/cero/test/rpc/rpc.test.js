@@ -27,7 +27,7 @@ import {
   inbox
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { serve } from '../../src/rpc/server.js'
+import { serve, Server } from '../../src/rpc/server.js'
 import { Client, connect, restore, link, supports } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
@@ -1158,6 +1158,29 @@ test('rpc: a store with an identity boots before the first init, so the network 
   t.teardown(() => server.close().catch(() => {}))
   const me = await waitUntil(() => server.me || null)
   t.ok(me.network.opened, 'booted with no client attached')
+})
+
+test('rpc: a start that fails closes the root it opened, and the next init opens it again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const storage = await t.tmp()
+  const made = await cero(storage, spec, { bootstrap: testnet.bootstrap })
+  const { id } = made
+  await made.close()
+  const [serverStream, clientStream] = pair()
+  const server = new Server(serverStream, spec, { storage, bootstrap: testnet.bootstrap })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  let first = null
+  server._wireVerbs = function () {
+    delete this._wireVerbs
+    first = this.me
+    throw new Error('wiring failed')
+  }
+  await server.ready()
+  await waitUntil(() => first && server._booting === null)
+  t.ok(first.closed, 'the root of the failed start is closed')
+  const client = await connect(clientStream, spec)
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  t.is(client.id, id, 'the next init opens the same identity')
 })
 
 // a worker on a new store, and the client that says how it opens
