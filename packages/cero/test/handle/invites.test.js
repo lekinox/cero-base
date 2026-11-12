@@ -166,6 +166,7 @@ test('invites: a removed member comes back only through an invite minted after i
   t.is(err.code, 'DENIED', 'the old invite admits nobody')
   t.is(err.reason, 'removed', 'and says why')
   t.alike((await get(b.me.joins)).data, [], 'the join is over')
+  t.is((await get(b.me.team, room.id)).data.state, 'removed', 'and its row reads removed')
   t.absent((await get(room.members, b.identity.id)).data)
 
   const back = await open(b.me.team, await cero.invite(room))

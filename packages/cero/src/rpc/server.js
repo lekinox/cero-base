@@ -376,7 +376,7 @@ export class Server extends RPCServer {
     this._on('onOpenHandle', async ({ parent, row, type }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       const { data } = await this.me.store.get('handles', row)
-      if (!data) throw CeroError.UNKNOWN('handle', row)
+      if (!data?.encryptionKey) throw CeroError.UNKNOWN('handle', row)
       const child = await this.me._load(type, row)
       this._hold(row, child)
       return { id: row, type: data.type, name: data.name || '' }

@@ -168,7 +168,7 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 | `cero.leave(room)`                            | `undefined`                   | Remove yourself from its members, drop it from your list on every device and close it here. `INVALID` on the root, and for the last owner of a handle others are in. `BEHIND` while the root is behind.                             |
 | `cero.removed(room, id)`                      | `'removed'`, `'left'`, `null` | Whether a member is out for good, as this device has seen it: taken out, or left on her own. `null` for a member, someone let in again, a stranger, or a going that has not reached this device yet. [Handles](handles.md#removed). |
 | `cero.close(ctx)`                             | `undefined`                   | Close a handle, or `me` and everything under it. The data stays.                                                                                                                                                                    |
-| `cero.cancel(me, invite)`                     | `true` if a join was waiting  | Give up a join for good. Its waiting `open` rejects with `CLOSED`.                                                                                                                                                                  |
+| `cero.cancel(me, invite)`                     | `true` if a join was waiting  | Give up a join for good: its row reads `cancelled`. Its waiting `open` rejects with `CANCELLED`.                                                                                                                                    |
 
 `accept` and `deny` need the invite permission (`REFUSED`) and throw `UNKNOWN` for a request already settled or not seen yet.
 
@@ -177,6 +177,7 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 `cero.open(me.room, invite)` resolves the handle once a member's device lets you in and hands over its keys. A handle already in your list resolves at once.
 
 - After 30 s it rejects with `TIMEOUT` and the join goes on: it is listed in `me.joins`, resumes after a restart, and the handle joins `me.room` when you are let in. `open` again with the same invite waits on the same join; `cero.cancel(me, invite)` ends it.
+- The join is a row of `me.room` from the start, read like any other: `state` is `asking` until it is answered (no key yet, so it opens no handle), `joining` once the keys arrive, `in` once this device is seated. One that ends reads `denied` with its `reason`, `expired` or `cancelled`, and `open` with the same invite rejects with that code again.
 - It rejects with `DENIED`, their reason in `err.reason`, when a member turned you away, `EXPIRED` when the invite is past its `ttl`, `INVALID_INVITE` when the string is not an invite, and `NETWORK_ERROR` when the join could not be sent: `open` again.
 - The handle turns a join away by itself, `DENIED` once a member who can invite is online, with `err.reason` `'revoked'`, `'spent'` (a single-use invite already used) or `'removed'` (an invite minted before your removal, or spent by one). Either way the join ends and leaves `me.joins`.
 

@@ -37,7 +37,10 @@ async function counted(act) {
   const { get: local, put: write } = Storage.prototype
   const ready = Handle.prototype._open
   Database.prototype.get = function (name, query) {
-    if (name === 'handles') typeof query === 'string' ? seen.rows.add(query) : seen.lists++
+    // the rows of one state are read through their index: no list of the handles
+    if (name === 'handles' && !query?.state) {
+      typeof query === 'string' ? seen.rows.add(query) : seen.lists++
+    }
     return main.call(this, name, query)
   }
   Database.prototype.since = async function (name, mark) {
