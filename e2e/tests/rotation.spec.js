@@ -38,9 +38,17 @@ async function back(page) {
   await expect(page.getByPlaceholder('Room name')).toBeVisible()
 }
 
+// the rooms on the list, apart from the joins that ended
+function rooms(page) {
+  return page.getByRole('region', { name: 'Rooms' })
+}
+
+// the member rows of the room's people panel, opened from its "N members" button once
 async function members(page) {
-  await page.getByRole('button', { name: /members$/ }).click()
-  return page.getByRole('listitem')
+  const panel = page.getByRole('region', { name: 'Members' })
+  if (!(await panel.count())) await page.getByRole('button', { name: /members$/ }).click()
+  await expect(panel).toBeVisible()
+  return panel.getByRole('listitem')
 }
 
 // fails as soon as the text shows on the page, passes once it has stayed away for five seconds
@@ -95,7 +103,7 @@ test('a member the owner removes no longer finds the room in his list', async ({
 
   await bob.page.getByRole('button', { name: '←' }).click()
   await expect(bob.page.getByText('notes', { exact: true })).toBeVisible()
-  await expect(bob.page.getByText('clinic', { exact: true })).toHaveCount(0)
+  await expect(rooms(bob.page).getByText('clinic', { exact: true })).toHaveCount(0)
 })
 
 test('what is written after a removal reaches the members left and not the removed one, who keeps what came before', async ({
@@ -127,7 +135,7 @@ test('a removed member who joins again with a new invite reads everything and hi
   await send(carol.page, 'from carol')
   await expect(alice.page.getByText('from carol', { exact: true })).toBeVisible()
   await back(bob.page)
-  await expect(bob.page.getByText('clinic', { exact: true })).toHaveCount(0)
+  await expect(rooms(bob.page).getByText('clinic', { exact: true })).toHaveCount(0)
 
   await back(alice.page)
   await alice.page.getByText('clinic', { exact: true }).click()

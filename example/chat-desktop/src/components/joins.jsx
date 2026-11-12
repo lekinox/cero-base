@@ -27,7 +27,7 @@ function JoinCard({ row, label, action, onAction }) {
   )
 }
 
-export function Joins() {
+export function Joins({ seated, onError }) {
   const me = useCero()
   const { data: asking } = useQuery(me.room, { state: 'asking' })
   const { data: joining } = useQuery(me.room, { state: 'joining' })
@@ -47,8 +47,8 @@ export function Joins() {
                 key={r.id}
                 row={r}
                 label={r.state === 'asking' ? 'Waiting for a member to let you in' : 'Joining'}
-                action={r.state === 'asking' && 'Cancel'}
-                onAction={() => cero.cancel(me, r.invite)}
+                action={seated && r.state === 'asking' && 'Cancel'}
+                onAction={() => cero.cancel(me, r.invite).catch(onError)}
               />
             ))}
           </Section>
@@ -62,8 +62,8 @@ export function Joins() {
                 key={r.id}
                 row={r}
                 label={ENDED[r.state](r)}
-                action='Dismiss'
-                onAction={() => cero.del(me.room, r.id)}
+                action={seated && 'Dismiss'}
+                onAction={() => cero.del(me.room, r.id).catch(onError)}
               />
             ))}
           </Section>

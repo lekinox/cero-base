@@ -5,6 +5,9 @@ import { useQuery } from '../hooks/use-query'
 import { Button, Input, Section, Card, Page } from './ui'
 import { Avatar } from './avatar'
 import { Joins } from './joins'
+import { Toast } from './toast'
+import { useToast } from '../hooks/use-toast'
+import { useSeated } from '../hooks/use-seated'
 
 export function Rooms({ onOpen, onSettings }) {
   const me = useCero()
@@ -15,6 +18,9 @@ export function Rooms({ onOpen, onSettings }) {
   const [invite, setInvite] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const toast = useToast()
+  const seated = useSeated()
+  const fail = (err) => toast.show(err.message)
 
   const create = async () => {
     setBusy(true)
@@ -22,6 +28,8 @@ export function Rooms({ onOpen, onSettings }) {
       const room = await cero.open(me.room, { name: name.trim() })
       setName('')
       onOpen(room.id)
+    } catch (err) {
+      fail(err)
     } finally {
       setBusy(false)
     }
@@ -74,7 +82,7 @@ export function Rooms({ onOpen, onSettings }) {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <Button onClick={create} disabled={!name.trim() || busy}>
+        <Button onClick={create} disabled={!seated || !name.trim() || busy}>
           {busy ? 'Creating...' : 'New'}
         </Button>
       </div>
@@ -86,23 +94,28 @@ export function Rooms({ onOpen, onSettings }) {
           value={invite}
           onChange={(e) => setInvite(e.target.value)}
         />
-        <Button onClick={join} disabled={!invite || busy}>
+        <Button onClick={join} disabled={!seated || !invite || busy}>
           {busy ? 'Joining...' : 'Join'}
         </Button>
       </div>
 
-      <Joins />
+      <Joins seated={seated} onError={fail} />
 
       {rooms.length > 0 && (
-        <Section title='Rooms'>
-          {rooms.map((r) => (
-            <Card key={r.id} onClick={() => onOpen(r.id)} className='text-left'>
-              <div className='font-medium text-sm text-card-foreground'>{r.name || 'Unnamed'}</div>
-              <div className='text-xs text-muted font-mono'>{r.id.slice(0, 12)}...</div>
-            </Card>
-          ))}
-        </Section>
+        <section aria-label='Rooms'>
+          <Section title='Rooms'>
+            {rooms.map((r) => (
+              <Card key={r.id} onClick={() => onOpen(r.id)} className='text-left'>
+                <div className='font-medium text-sm text-card-foreground'>
+                  {r.name || 'Unnamed'}
+                </div>
+                <div className='text-xs text-muted font-mono'>{r.id.slice(0, 12)}...</div>
+              </Card>
+            ))}
+          </Section>
+        </section>
       )}
+      <Toast message={toast.message} />
     </Page>
   )
 }

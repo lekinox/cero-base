@@ -149,8 +149,8 @@ test('after the laptop removes the lost phone it links a tablet, which reads bot
   await expect(tablet.page.getByText('lab from the phone', { exact: true })).toBeVisible()
 })
 
-// the phone still lists the laptop with Remove: pressing it is refused, NOT_WRITABLE, and nothing changes
-test('the removed phone shows it was removed and its Remove of the laptop is refused', async ({
+// the phone still lists the laptop, with no Remove or anything else that needs a seat on the profile
+test('the removed phone shows it was removed and offers nothing that needs a seat', async ({
   launch
 }) => {
   const { phone, laptop } = await lost(launch)
@@ -161,9 +161,14 @@ test('the removed phone shows it was removed and its Remove of the laptop is ref
   await expect(phone.page.getByText('This device was removed from your profile')).toBeVisible()
   await expect(phone.page.getByText('(current)')).toHaveCount(0)
 
-  await phone.page.getByRole('button', { name: 'Remove' }).click()
-  await expect.poll(() => errors).toContainEqual(expect.stringMatching(/^NOT_WRITABLE/))
-  await expect(phone.page.getByRole('button', { name: 'Remove' })).toHaveCount(1)
+  await expect(phone.page.getByPlaceholder('Device name')).toHaveCount(1)
+  await expect(phone.page.getByRole('button', { name: 'Remove' })).toHaveCount(0)
+  await expect(phone.page.getByRole('button', { name: 'Show Device Invite' })).toHaveCount(0)
+  await expect(phone.page.getByPlaceholder('Device name')).toBeDisabled()
+  await back(phone.page)
+  await phone.page.getByPlaceholder('Room name').fill('after the removal')
+  await expect(phone.page.getByRole('button', { name: 'New' })).toBeDisabled()
+  expect(errors).toEqual([])
   await expect(laptop.page.getByText('(current)')).toBeVisible()
   await back(laptop.page)
   await open(laptop.page, 'clinic')
