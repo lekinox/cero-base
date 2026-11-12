@@ -14,6 +14,8 @@ import { CeroError } from '../lib/errors.js'
 // the secrets one sender handed over for a stamp before its row landed, and its stamps waiting
 const CANDIDATES = 4
 const STAMPS = 16
+// the blocks met under a key no row holds yet: any writer can append under any stamp
+const MET = 64
 
 /**
  * Epoch key rotation for a database: mint a secret, seal it to every device, announce it
@@ -118,7 +120,9 @@ export class Rotation {
     const at = spot(writer, stamp)
     const row = this._aside.get(at)
     if (!row) {
+      this._met.delete(at)
       this._met.add(at)
+      if (this._met.size > MET) this._met.delete(this._met.values().next().value)
       return null
     }
     this._aside.delete(at)

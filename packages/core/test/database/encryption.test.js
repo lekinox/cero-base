@@ -1943,6 +1943,32 @@ test('rotate: a rotation set aside opens only for a block its own signer wrote u
   t.alike(rotation.meet(555, b.db.writerKey), entropy, 'one its signer wrote opens it')
 })
 
+test('rotate: blocks met under a thousand stamps no row holds leave at most the cap remembered, and a stamp goes once its row lands', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
+  const { rotation } = a.db
+  rotation.meet(666, b.db.writerKey)
+  for (let stamp = 10000; stamp < 11000; stamp++) rotation.meet(stamp, b.db.writerKey)
+  t.ok(rotation._met.size <= 64, `${rotation._met.size} remembered`)
+  rotation.meet(666, b.db.writerKey)
+  t.is(rotation._met.size, 64, 'the oldest goes first')
+
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 666,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  await waitFor(() => a.db.keyring.entropy(666))
+  t.alike(a.db.keyring.entropy(666), entropy, 'met before its row, opened once it lands')
+  t.is(rotation._met.size, 63, 'and no longer remembered')
+})
+
 test('rotate: a remover demoted while away removes and rotates: the removal is refused, her key is set aside, and every device reads what she wrote, the same rows everywhere and once applied again', async (t) => {
   const {
     a,
