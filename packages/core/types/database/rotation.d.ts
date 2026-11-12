@@ -19,6 +19,10 @@ export declare class Rotation {
     _healedFor;
     /** @private */
     _kept;
+    /** @private */
+    _aside;
+    /** @private */
+    _met;
     /** @param {import('./index.js').Database} db */
     constructor(db: import('./index.js').Database);
     close(): void;
@@ -53,6 +57,13 @@ export declare class Rotation {
         wrapped: Uint8Array;
         commit: Uint8Array;
     }): Promise<void>;
+    /**
+     * A block met under a key this device does not hold: a rotation set aside is opened now.
+     *
+     * @param {number} stamp
+     * @returns {Uint8Array | null}
+     */
+    meet(stamp: number): Uint8Array | null;
     /**
      * A secret handed over before its announcement landed here: kept, and checked against the
      * commitment when it does.

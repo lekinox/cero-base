@@ -865,9 +865,9 @@ test('rotate: a rotation a reorder drops is no longer the write key', async (t) 
   )
   await waitFor(async () => (await texts(back)).includes('a-post'), { timeout: 20000 })
   await waitFor(() => back.keyring.current === 0, { timeout: 5000 }).catch(() => {})
-  t.absent(
-    await back.view.findOne('@cero/epochs', {}),
-    'the demotion sorts first: the rotation never lands'
+  t.ok(
+    (await back.view.findOne('@cero/epochs', {}))?.aside,
+    'the demotion sorts first: the rotation is set aside'
   )
   t.is(back.keyring.current, 0, 'B writes under the key every member holds')
 })
@@ -1882,6 +1882,107 @@ test('rotate: a removal a reorder refuses after its key was sealed leaves the me
     'admin',
     'the promotion sorts first: the removal is refused'
   )
+})
+
+const epochRows = (db) => db.view.find('@cero/epochs', {}).toArray()
+
+test('rotate: a rotation by a member who may not remove is set aside: the key stays, and a block written under it is read by the devices it was sealed to', async (t) => {
+  const {
+    a,
+    members: [b, other]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 444,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  for (const { db } of [a, b, other]) {
+    await waitFor(async () => (await epochRows(db)).some((r) => r.stamp === 444))
+  }
+  const [row] = await epochRows(a.db)
+  t.ok(row.aside, 'set aside')
+  t.is(a.db.keyring.current, 0, 'the key stays')
+  t.absent(a.db.keyring.entropy(444), 'unopened until a block needs it')
+
+  const { pick } = b.db.rotation
+  b.db.rotation.pick = async () => {}
+  b.db.keyring.add(444, entropy, row.epoch)
+  b.db.keyring.current = 444
+  await b.db.put('messages', { text: 'aside' })
+  await waitFor(async () => (await texts(a.db)).includes('aside'))
+  t.alike(a.db.keyring.entropy(444), entropy, 'opened once a block under it was met')
+  b.db.rotation.pick = pick
+  await b.db.rotation.pick()
+  t.is(b.db.keyring.current, 0, 'and its own device writes under the key that counts')
+  t.is(other.db.keyring.current, 0)
+  t.absent(other.db.keyring.entropy(444), 'a device it was not sealed to holds no key')
+})
+
+test('rotate: a remover demoted while away removes and rotates: the removal is refused, her key is set aside, and every device reads what she wrote, the same rows everywhere and once applied again', async (t) => {
+  const {
+    a,
+    members: [b, kept],
+    testnet,
+    topic,
+    encryptionKey
+  } = await makeRoom(t, ['admin', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  await waitFor(async () => (await kept.db.get('devices')).data.length === 3)
+
+  const { keyPair } = b.db
+  await b.db.close()
+  await b.network.close().catch(() => {})
+
+  await a.db.set('members', { id: b.identity.id, role: 'member' })
+  const opts = {
+    store: b.store,
+    identity: b.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey,
+    onerror() {}
+  }
+  const off = new Database(opts)
+  await off.ready()
+  await off.del('members', kept.identity.id)
+  t.is(off.keyring.seq, 1, 'the removal carried its key')
+  await off.put('messages', { text: 'hers' })
+  await off.close()
+
+  const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
+  await net.ready()
+  const disc = net.join(topic)
+  await disc.flush()
+  const back = new Database({ ...opts, network: net })
+  await back.ready()
+  t.teardown(
+    async () => {
+      await back.close().catch(() => {})
+      await disc.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 4 }
+  )
+
+  for (const db of [a.db, back]) {
+    await waitFor(async () => (await texts(db)).includes('hers'), { timeout: 30000 })
+  }
+  t.pass('every device she sealed it to reads what she wrote under it')
+  t.is((await a.db.get('members', b.identity.id)).data?.role, 'member', 'the demotion sorts first')
+  t.ok((await a.db.get('members', kept.identity.id)).data, 'her removal is refused')
+  const rows = await epochRows(a.db)
+  t.ok(rows.length === 1 && rows[0].aside, 'her rotation is set aside')
+  t.alike(await epochRows(kept.db), rows, 'the same rows on every device')
+  await waitFor(async () => (await epochRows(back)).every((r) => r.aside))
+  t.alike(await epochRows(back), rows)
+  await a.db._rebuild()
+  await waitFor(async () => (await epochRows(a.db)).length === 1)
+  t.alike(await epochRows(a.db), rows, 'and once the view is applied again')
 })
 
 // what the log keeps: 1 while a rotation is owed, 0 once one cleared it, null when none ever was

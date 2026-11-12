@@ -34,6 +34,10 @@ export class Rotation {
     this._healedFor = null
     /** @private */
     this._kept = new Map() // stamp → the secrets handed over before its row landed
+    /** @private */
+    this._aside = new Map() // stamp → a row set aside, opened once a block under it is met
+    /** @private */
+    this._met = new Set() // stamps of blocks met before their row landed
   }
 
   close() {
@@ -78,6 +82,11 @@ export class Rotation {
   async learn(row) {
     const { keyring } = this.db
     const known = this.held(row)
+    const met = this._met.delete(row.stamp)
+    if (row.aside && !known && !met) {
+      this._aside.set(row.stamp, row)
+      return
+    }
     const entropy = known || this._unseal(row) || this._handed(row)
     if (known) {
       keyring.add(row.stamp, known, row.epoch) // re-applied, the sequence may be news
@@ -95,6 +104,24 @@ export class Rotation {
       }
     }
     this.heal()
+  }
+
+  /**
+   * A block met under a key this device does not hold: a rotation set aside is opened now.
+   *
+   * @param {number} stamp
+   * @returns {Uint8Array | null}
+   */
+  meet(stamp) {
+    const row = this._aside.get(stamp)
+    if (!row) {
+      this._met.add(stamp)
+      return null
+    }
+    this._aside.delete(stamp)
+    const entropy = this._unseal(row)
+    if (entropy) this.db.keyring.add(row.stamp, entropy, row.epoch)
+    return entropy
   }
 
   /**
@@ -166,7 +193,7 @@ export class Rotation {
   async pick(view = this.db.view) {
     let top = null
     for await (const row of view.find(`@${this.db.ns}/epochs`, {}, { reverse: true })) {
-      if (!this.held(row)) continue
+      if (row.aside || !this.held(row)) continue
       top = row
       break
     }
@@ -235,6 +262,12 @@ export class Rotation {
     // manifest v1 blocks carry no key id, rotating there is a silent downgrade
     if (db.bee.local.manifest?.version < 2) {
       throw CeroError.INVALID('rotation requires manifest v2 cores')
+    }
+    // apply sets one aside, never the key: only a reorder may make one
+    const { data: me } = await db.get('devices', hid.encode(db.writerKey))
+    const member = me?.memberId ? (await db.get('members', me.memberId)).data : null
+    if (!can(member?.role, REMOVE)) {
+      throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
     }
     // claimed synchronously; the keyring learns the secret only after the announcement flushed
     const entropy = Identity.randomBytes(32)
@@ -437,7 +470,8 @@ export function removes(ops) {
 }
 
 function newest(rows) {
-  return rows.length ? rows.reduce((a, b) => (b.epoch > a.epoch ? b : a)) : null
+  const counted = rows.filter((r) => !r.aside)
+  return counted.length ? counted.reduce((a, b) => (b.epoch > a.epoch ? b : a)) : null
 }
 
 // the epoch stamp autobee's encryption writes into every block header
