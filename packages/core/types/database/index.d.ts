@@ -285,6 +285,7 @@ export declare class Database extends ReadyResource {
         cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>;
         dispatch: (value: Buffer, ctx: object) => Promise<void>;
         role: (view: object, writer: Uint8Array) => Promise<string | null>;
+        stands: (view: object, chain: Uint8Array[]) => Promise<boolean>;
         version: (view: object) => Promise<number>;
         built: (view: object) => Promise<Array<number | null> | null>;
         apply: (nodes: Array<{
@@ -474,6 +475,23 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<'removed' | 'left' | null>}
      */
     removed(memberId: string): Promise<'removed' | 'left' | null>;
+    /**
+     * What a member's devices told this database of her device keys, 32 bytes each: those removed, and those that
+     * stand.
+     *
+     * @param {string} memberId
+     * @returns {Promise<{ removed: Uint8Array[], standing: Uint8Array[] }>}
+     */
+    told(memberId: string): Promise<{
+        removed: Uint8Array[];
+        standing: Uint8Array[];
+    }>;
+    /**
+     * The keys this database holds as removed, 32 bytes each: a device's own, and a removed member's identity.
+     *
+     * @returns {Promise<Uint8Array[]>}
+     */
+    removals(): Promise<Uint8Array[]>;
     /** @private */
     private _read;
     /**

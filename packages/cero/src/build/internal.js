@@ -194,7 +194,10 @@ export function dispatches(ns) {
 // routes cero added once apps shipped: numbered after the app's, so a new spec gives the app's
 // routes the ids an older release gave them
 export function appended(ns) {
-  return [{ name: 'upgrade', requestType: `@${ns}/upgrade` }]
+  return [
+    { name: 'upgrade', requestType: `@${ns}/upgrade` },
+    { name: 'revoke', requestType: `@${ns}/revoke` }
+  ]
 }
 
 /**

@@ -161,6 +161,9 @@ export class Handle extends ReadyResource {
     // last one leaves it idle
     /** @private */
     this._refs = 0
+    // a child's compare with the root's device keys, the next one behind it
+    /** @private */
+    this._pruning = null
     // the children nobody holds, the least recently used first
     /** @private */
     this._idle = parent ? null : new Set()
@@ -1245,7 +1248,11 @@ export class Handle extends ReadyResource {
     child._refs = 1
     this._serve(child)
     this._carry(child)
-    this._prune(child).catch(this._onerror)
+    // it tells a handle nothing before it has a seat there
+    const prune = () => this._prune(child).catch(this._onerror)
+    child.store.on('writable', prune)
+    child.once('close', () => child.store.off('writable', prune))
+    prune()
     this._seats(child)
     // what a listener ties to the handle as it runs is no holder's: it stays through their last close
     child._arriving = true
@@ -1270,15 +1277,47 @@ export class Handle extends ReadyResource {
     this._index(child).catch(this._onerror)
   }
 
-  // a device removed from the root loses its seats in every handle: its chain is static, so the
-  // handles are told by whichever device of the identity has them open
+  // a device removed from the root is out of every handle: its chain is static, so a handle is
+  // told the identity's keys the root removed and those it seats, by a device that stands there,
+  // when that is not what it was told. One compare at a time: two would tell it twice
   /** @private */
-  async _prune(child) {
+  _prune(child) {
+    const run = () => this._compare(child)
+    const pruning = child._pruning ? child._pruning.then(run) : run()
+    child._pruning = pruning.catch(safetyCatch)
+    return pruning
+  }
+
+  /** @private */
+  async _compare(child) {
+    if (child.closing || child.closed) return
+    const removed = await this.store.removals()
+    if (removed.length === 0) return
+    const { store } = child
+    const at = Math.min(store.version, await store.dispatcher.version(store.view))
+    if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
+      return this._unseat(child, removed)
+    }
+    const { data: rows } = await this.store.get('devices')
+    const standing = rows.filter((row) => row.key).map((row) => row.key)
+    if (!store.writable || !has(standing, this.identity.device.publicKey)) return
+    // a root that lags has fewer removed than the handle was told: those add up, and stay
+    const told = await store.told(this.identity.id)
+    const same =
+      removed.every((key) => has(told.removed, key)) &&
+      standing.length === told.standing.length &&
+      standing.every((key) => has(told.standing, key))
+    if (same || child.closing || child.closed) return
+    await store.call('revoke', { removed: b4a.concat(removed), standing: b4a.concat(standing) })
+  }
+
+  // a handle that has no route to be told by loses the removed device's seats one by one
+  /** @private */
+  async _unseat(child, removed) {
     const { data: rows } = await child.store.get('devices')
     for (const row of rows) {
-      if (row.memberId !== this.identity.id || !row.key) continue
       // a sibling this root has not heard of yet is no removal: only its record is
-      if ((await this.store.removed(hid.encode(row.key))) !== 'removed') continue
+      if (row.memberId !== this.identity.id || !row.key || !has(removed, row.key)) continue
       if (child.closing || child.closed) return
       await child.store.del('devices', row.id)
     }
@@ -1494,6 +1533,10 @@ async function writersOf(db) {
 function unread(err) {
   safetyCatch(err)
   return null
+}
+
+function has(keys, key) {
+  return keys.some((k) => b4a.equals(k, key))
 }
 
 function sameBytes(a, b) {

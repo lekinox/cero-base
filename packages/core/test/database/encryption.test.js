@@ -1376,6 +1376,17 @@ test('rotate: a device linked through a device that is then removed is not seale
   const own = { ...row, proof: null, key: device.publicKey }
   t.absent(await rotation._stands(own), 'nor one to a removed key itself')
   t.ok(await rotation._stands({ ...row, proof: host.identity.link(phone.publicKey) }))
+
+  // a promise through a device its identity then tells the room is removed, as apply left it
+  const lost = Identity.randomKeyPair()
+  const link = host.identity.link(lost.publicKey)
+  const through = Identity.from({ ...host.identity, device: lost, proof: link })
+  const told = { ...row, proof: through.link(phone.publicKey) }
+  t.ok(await rotation._stands(told), 'a promise through a device nobody removed stands')
+  await host.db.call('revoke', { removed: lost.publicKey, standing: phone.publicKey })
+  t.ok(await rotation._stands(told), 'as it does told as standing')
+  await host.db.call('revoke', { removed: lost.publicKey, standing: b4a.alloc(0) })
+  t.absent(await rotation._stands(told), 'told removed, no rotation is sealed to it')
 })
 
 function batch(db, ops) {

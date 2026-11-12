@@ -36,7 +36,7 @@ import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
 import { Rotation, removes } from './rotation.js'
 import { makeChanges } from './changes.js'
-import { makeDispatcher, BESPOKE, leftId } from './dispatch.js'
+import { makeDispatcher, BESPOKE, leftId, toldId, keysOf } from './dispatch.js'
 import { keyPair } from '../mailbox/inbox.js'
 
 // autobee remaps an older store once a recovery peer, a mirror, serves it; unset, it closes the store
@@ -635,6 +635,30 @@ export class Database extends ReadyResource {
     if (await this.view.get(col, { id: memberId })) return 'removed'
     if (await this.view.get(col, { id: leftId(memberId) })) return 'left'
     return null
+  }
+
+  /**
+   * What a member's devices told this database of her device keys, 32 bytes each: those removed, and those that
+   * stand.
+   *
+   * @param {string} memberId
+   * @returns {Promise<{ removed: Uint8Array[], standing: Uint8Array[] }>}
+   */
+  async told(memberId) {
+    this.guard()
+    const row = await this.view.get(`@${this.ns}/${REMOVALS}`, { id: toldId(memberId) })
+    return { removed: keysOf(row?.removed), standing: keysOf(row?.standing) }
+  }
+
+  /**
+   * The keys this database holds as removed, 32 bytes each: a device's own, and a removed member's identity.
+   *
+   * @returns {Promise<Uint8Array[]>}
+   */
+  async removals() {
+    this.guard()
+    const rows = await this.view.find(`@${this.ns}/${REMOVALS}`, {}).toArray()
+    return rows.filter((row) => !row.id.includes(':')).map((row) => hid.decode(row.id))
   }
 
   // the same read against any view: hooks read the transaction they run in
