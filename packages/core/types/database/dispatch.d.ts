@@ -13,6 +13,7 @@ export declare const toldId: (memberId: any) => string;
  * @returns {Uint8Array[]}
  */
 export declare function keysOf(buf?: Uint8Array | null): Uint8Array[];
+export declare const seatChain: (device: any) => any[];
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
@@ -31,7 +32,7 @@ export declare function keysOf(buf?: Uint8Array | null): Uint8Array[];
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[]) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[], telling?: { removed?: Uint8Array, standing?: Uint8Array }) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export declare function makeDispatcher({ spec, ns, start, contract, onskip, build, onerror, key, onepoch, room, hooks, touch, read }: {
     spec: {
@@ -78,7 +79,10 @@ export declare function makeDispatcher({ spec, ns, start, contract, onskip, buil
     cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>;
     dispatch: (value: Buffer, ctx: object) => Promise<void>;
     role: (view: object, writer: Uint8Array) => Promise<string | null>;
-    stands: (view: object, chain: Uint8Array[]) => Promise<boolean>;
+    stands: (view: object, chain: Uint8Array[], telling?: {
+        removed?: Uint8Array;
+        standing?: Uint8Array;
+    }) => Promise<boolean>;
     version: (view: object) => Promise<number>;
     built: (view: object) => Promise<Array<number | null> | null>;
     apply: (nodes: Array<{

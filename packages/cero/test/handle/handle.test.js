@@ -1545,6 +1545,31 @@ test('devices: a removed device that never sat in a room takes no seat there onc
   t.absent(await sits(room, phone), 'it has no seat')
 })
 
+test('devices: a device removed in the root is cut from the rooms open there as the removal resolves, and reads nothing written next', async (t) => {
+  const laptop = await ceroOpen(t)
+  const room = await open(laptop.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, laptop)
+  const mine = await open(phone.me.team, { id: room.id })
+  await waitUntil(() => mine.store.writable)
+  await waitUntil(() => sits(room, phone))
+  await put(room.messages, { text: 'pre' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+
+  await del(phone.me.devices, laptop.me.device.id)
+  t.is(mine.store.keyring.seq, 1, 'the room holds its new key as the removal resolves')
+  await put(mine.messages, { text: 'post' })
+  const texts = (await get(mine.messages)).data.map((row) => row.text)
+  t.alike(texts.sort(), ['post', 'pre'], 'the phone reads it')
+  const key = mine.store.keyring.current
+  t.absent(room.store.keyring.entropy(key), 'under a key the laptop does not hold')
+  const { data } = await get(room.messages)
+  t.alike(
+    data.map((row) => row.text),
+    ['pre'],
+    'and the laptop reads nothing written after'
+  )
+})
+
 test('devices: a room below the version that brings revoke loses the seats of a removed device as before, and is told nothing', async (t) => {
   const team = spec.handles.team
   const { since } = team.meta

@@ -12,6 +12,8 @@ const executablePath = createRequire(path.join(app, 'package.json'))('electron')
 
 export const test = base.extend({
   // one local network per test: its apps find each other there, never on the public one
+  // Playwright reads what a fixture depends on from this pattern, so it stays an object
+  // lunte-disable-next-line no-empty-pattern
   testnet: async ({}, use) => {
     const testnet = await createTestnet(3)
     await use(testnet)

@@ -126,6 +126,13 @@ export function keysOf(buf) {
 }
 const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
 
+// the chain a seat stands on, its identity first
+export const seatChain = (device) => [
+  hid.decode(device.memberId),
+  ...keysOf(device.chain),
+  device.key
+]
+
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
@@ -144,7 +151,7 @@ const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[]) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[], telling?: { removed?: Uint8Array, standing?: Uint8Array }) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -637,21 +644,21 @@ export function makeDispatcher({
   }
   // a chain, its identity first, stands unless it passes a removed device key. A key its identity
   // removed, told or taken out by a device of hers, is passed by a key after it that she told
-  // stands; one another member removed, or whose record says not who, cuts whatever she told
-  async function stands(view, [identity, ...keys]) {
+  // stands; one another member removed, or whose record says not who, cuts whatever she told.
+  // With `telling`, as it will once she tells those lists too
+  async function stands(view, [identity, ...keys], telling) {
     const memberId = hid.encode(identity)
     const told = await view.get(removals, { id: toldId(memberId) })
-    const removed = keysOf(told?.removed)
+    const removed = [...keysOf(told?.removed), ...keysOf(telling?.removed)]
     let cut = -1
     for (const [i, key] of keys.entries()) {
       const removal = await view.get(removals, { id: hid.encode(key) })
       if (removal && removal.by !== memberId) return false
       if (removal || has(removed, key)) cut = i
     }
-    const standing = keysOf(told?.standing)
+    const standing = keysOf(telling ? telling.standing : told?.standing)
     return cut < 0 || keys.slice(cut + 1).some((key) => has(standing, key))
   }
-  const seatChain = (device) => [hid.decode(device.memberId), ...keysOf(device.chain), device.key]
 
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats

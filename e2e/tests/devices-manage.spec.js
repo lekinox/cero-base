@@ -121,8 +121,6 @@ test('removing the other device takes it out of the list on both devices', async
 })
 
 test('a removed device does not receive what Alice writes in a room after', async ({ launch }) => {
-  // fails today: a room hears of the removal after the root applies it, so a write right away still reaches the device
-  test.fail()
   const { phone, laptop } = await linked(launch)
   await phone.page.getByRole('button', { name: '←' }).click()
   await phone.page.getByPlaceholder('Room name').fill('clinic')
@@ -144,8 +142,8 @@ test('a removed device does not receive what Alice writes in a room after', asyn
   await expect
     .poll(
       async () => {
-        if (await laptop.page.getByText('after the removal', { exact: true }).count())
-          return 'shown'
+        const seen = await laptop.page.getByText('after the removal', { exact: true }).count()
+        if (seen) return 'shown'
         return Date.now() - shown > 10_000 ? 'absent' : 'waiting'
       },
       { timeout: 20_000 }
