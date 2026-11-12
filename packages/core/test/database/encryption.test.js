@@ -2663,3 +2663,31 @@ test('rotate: a key set aside, opened on meeting a block, is saved: after a rest
     'so it would hand it to a device that asks'
   )
 })
+
+test('rotate: a revoke its database closes under while it reads the seats rejects CLOSED', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makePeer(t, testnet)
+  await host.db.bootstrap({ name: 'host' })
+  const device = Identity.randomKeyPair()
+  const proof = host.identity.link(device.publicKey)
+  const linker = Identity.from({ ...host.identity, device, proof })
+  const { key, encryptionKey } = host.db
+  const b = await makePeer(t, testnet, { topic: host.topic, identity: linker, key, encryptionKey })
+  await b.db.claim()
+  const seated = async () => (await host.db.get('devices')).data.filter((d) => d.key).length === 2
+  await waitFor(seated)
+
+  const { stands } = host.db.dispatcher
+  host.db.dispatcher.stands = async (...args) => {
+    const out = await stands(...args)
+    await host.db.close()
+    return out
+  }
+  const lost = Identity.randomKeyPair()
+  const standing = b4a.concat([host.identity.device.publicKey, device.publicKey])
+  const err = await host.db.call('revoke', { removed: lost.publicKey, standing }).then(
+    () => null,
+    (e) => e
+  )
+  t.is(err?.code, 'CLOSED', `rejects CLOSED, got ${err?.message}`)
+})

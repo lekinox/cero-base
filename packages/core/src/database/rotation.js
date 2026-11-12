@@ -6,7 +6,7 @@ import hid from 'hypercore-id-encoding'
 import { REMOVE, COUNTERS, OWED } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
 import { wraps, epochEntries, seal, opened } from './encryption.js'
-import { chainOf, seatChain } from './dispatch.js'
+import { chainOf, seatChain, keysOf } from './dispatch.js'
 import { Identity } from '../identity/index.js'
 import { keyPair } from '../mailbox/inbox.js'
 import { CeroError } from '../lib/errors.js'
@@ -270,6 +270,9 @@ export class Rotation {
         this.heal()
       }
       return stamp
+    } catch (err) {
+      if (db.closing || db.closed) throw CeroError.CLOSED('Database')
+      throw err
     } finally {
       this.carrying = null
       done()
@@ -286,8 +289,9 @@ export class Rotation {
     const seats = ops.map(([op, data]) => SEATS.get(op)?.(data, devices, db, me) ?? [])
     const gone = new Set((await Promise.all(seats)).flat())
     if (!me || gone.has(me.id)) return null
-    // a revoke that cuts no seat leaves every key where it was
-    if (gone.size === 0 && ops.every(([op]) => op === 'revoke')) return null
+    // a removed key told for the first time rotates, seat or none: the root hands every device the key
+    const revokes = ops.every(([op]) => op === 'revoke')
+    if (gone.size === 0 && revokes && !(await untold(ops, db, me))) return null
     const { data: member } = await db.get('members', me.memberId)
     if (!can(member?.role, REMOVE)) return null
     return devices.filter((d) => d.key && !gone.has(d.id))
@@ -506,6 +510,12 @@ async function cuts(op, devices, db, me) {
     if (!(await db.dispatcher.stands(db.view, seatChain(d), op))) gone.push(d.id)
   }
   return gone
+}
+
+async function untold(ops, db, me) {
+  const { removed } = await db.told(me.memberId)
+  const keys = ops.flatMap(([, op]) => keysOf(op.removed))
+  return keys.some((key) => !removed.some((k) => b4a.equals(k, key)))
 }
 
 /**

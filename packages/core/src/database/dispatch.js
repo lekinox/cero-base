@@ -696,6 +696,8 @@ export function makeDispatcher({
     const spent = spends || !uncovered
     const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing, spent }
     await ctx.view.insert(removals, row)
+    // a removed device that never sat here may hold the key through its identity's root
+    if (added.length) await owe(ctx.view)
     for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (seated.memberId !== memberId || !seated.key) continue
       if (await stands(ctx.view, seatChain(seated))) continue

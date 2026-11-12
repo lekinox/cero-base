@@ -1515,11 +1515,11 @@ test('devices: a phone removed in the root is told to each open room once, with 
     t.alike(told.standing, [deviceKey(a)], 'and the one that stands')
   }
   await a.me._pruneAll()
-  const once = before.map((length) => length + 1)
+  const once = before.map((length) => length + 2)
   t.alike(
     rooms.map((room) => room.store.length),
     once,
-    'one append in each'
+    'one revoke in each, and the rotation it carries'
   )
 
   const ids = rooms.map((room) => room.id)
@@ -1567,6 +1567,71 @@ test('devices: a removed device that never sat in a room takes no seat there onc
   await toldOf(room, phone)
   await t.exception(open(phone.me.team, { id: room.id }))
   t.absent(await sits(room, phone), 'it has no seat')
+})
+
+test('devices: a removed device that never sat in a room holds no key the room writes under once it is told, and a device linked after rotates nothing', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  const row = () => phone.me.store.get('handles', room.id).then((res) => res.data)
+  await waitUntil(async () => (await row())?.encryptionKey)
+  const held = (await row()).encryptionKey
+  t.alike(held, room.store.encryptionKey, 'the root handed the phone the room key')
+
+  await del(a.me.devices, phone.me.device.id)
+  await toldOf(room, phone)
+  await put(room.messages, { text: 'post' })
+  t.is(room.store.keyring.seq, 1, 'the room writes under a key minted after the removal')
+
+  const tablet = await linkTo(t, a)
+  const told = () => room.store.told(room.identity.id)
+  await waitUntil(async () => names((await told()).standing, deviceKey(tablet)))
+  await put(room.messages, { text: 'later' })
+  t.is(room.store.keyring.seq, 1, 'a room told only of a new device keeps its key')
+})
+
+test('devices: a removed device that never sat in a room, of a member who may not remove, is rotated out by one who may', async (t) => {
+  const { room, join, testnet } = await hosted(t, 'clinic')
+  const b = await join(await cero.invite(room))
+  const phone = await linkTo(t, { me: b.me, testnet })
+  const row = () => phone.me.store.get('handles', room.id).then((res) => res.data)
+  await waitUntil(async () => (await row())?.encryptionKey)
+
+  await del(b.me.devices, phone.me.device.id)
+  await toldOf(b.room, phone)
+  await waitUntil(() => room.store.keyring.seq === 1)
+  t.pass('the host rotates')
+})
+
+test('devices: a room its root closes under as it is told is left untold, with no error', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  const call = room.store.call.bind(room.store)
+  let calls = 0
+  room.store.call = async (...args) => {
+    calls++
+    a.me.close()
+    await waitUntil(() => room.store.closed)
+    return call(...args)
+  }
+  const prune = a.me._prune.bind(a.me)
+  const tells = []
+  a.me._prune = (...args) => {
+    tells.push(prune(...args))
+    return tells.at(-1)
+  }
+
+  await del(a.me.devices, phone.me.device.id)
+  await a.me.close()
+  t.is(calls, 1, 'the revoke was on its way')
+  const results = await Promise.allSettled(tells)
+  t.alike(
+    results.map((r) => r.value),
+    tells.map(() => false),
+    'and each tell settles untold'
+  )
 })
 
 test('devices: a device removed in the root is cut from the rooms open there as the removal resolves, and reads nothing written next', async (t) => {
@@ -1633,7 +1698,7 @@ test('devices: a root update tells the rooms a device has open', async (t) => {
   const told = await toldOf(room, phone)
   t.is(told.standing.length, 2, 'both devices that stand')
   await b.me._pruneAll()
-  t.is(room.store.length, before + 1, 'told once, by the device that has it open')
+  t.is(room.store.length, before + 2, 'told once, by the device that has it open, and rotated')
 })
 
 test('devices: two devices of the identity that tell a room at once leave the same row', async (t) => {
