@@ -142,6 +142,8 @@ export class Handle extends ReadyResource {
     /** @private */
     this._departing = parent ? null : new Map()
     /** @private */
+    this._leaving = parent ? null : new Map()
+    /** @private */
     this._fileServer = null
     /** @private */
     this._blobs = null
@@ -491,7 +493,17 @@ export class Handle extends ReadyResource {
     if (owner && others.length && !others.some((m) => m.role === 'owner')) {
       throw CeroError.INVALID('the last owner cannot leave: make another member an owner first')
     }
-    await this.root.store.set('handles', { id: this.id, state: 'leaving' })
+    const root = this.root
+    // her removal is on the room's log before the call resolves: the row carries the rest
+    const out = root.store
+      .set('handles', { id: this.id, state: 'leaving' })
+      .then(() => this.store.del('members', this.identity.id))
+    root._leaving.set(this.id, out)
+    try {
+      await out
+    } finally {
+      root._leaving.delete(this.id)
+    }
   }
 
   // a leaving row is carried by every device of the identity seated in its room: its removal of
@@ -501,9 +513,11 @@ export class Handle extends ReadyResource {
     if (this._departing.has(id)) return
     const run = async () => {
       if (!(await this._loadKeyPair(id))) return
+      await this._leaving.get(id)?.catch(safetyCatch)
       const child = await this._load(type, id)
       try {
         const out = await child.store.removed(this.identity.id)
+        // a launch finds a leave the app closed under before her removal was appended
         if (!out) await child.store.del('members', this.identity.id)
         await child.store.held()
         if (out === 'removed') return
@@ -1059,15 +1073,42 @@ export class Handle extends ReadyResource {
     if (known) return known
 
     const id = hid.encode(key)
-    const { data: row } = await this.store.get('handles', id)
+    const start = Date.now()
+    let { data: row } = await this.store.get('handles', id)
+    // a room being left is asked again once it is left
+    if (row?.state === 'leaving') {
+      await wait(null, this._left(id), timeout)
+      row = (await this.store.get('handles', id)).data
+    }
     // a join another device of this identity asks with is waited on here, not asked again
     const theirs =
       row?.state === 'asking' && row.invite === invite && !(await this._asked(id, invite))
     const join = theirs ? null : this._start(invite, type)
     // a row in a room this identity lost its seat in is not the join landing: it lands once it moved on
     const stale = !!row && (row.state || 'in') === 'in'
-    await wait(join, this._landed(id, invite, join, stale), timeout)
+    const left = timeout && Math.max(1, timeout - (Date.now() - start))
+    await wait(join, this._landed(id, invite, join, stale), left)
     return this._load(type, id)
+  }
+
+  /** @private */
+  _left(id) {
+    return new Promise((resolve, reject) => {
+      const done = (err) => {
+        off()
+        this.off('close', onclose)
+        if (err) reject(err)
+        else resolve()
+      }
+      const check = async () => {
+        const { data: row } = await this.store.get('handles', id)
+        if (row?.state !== 'leaving') done(null)
+      }
+      const off = this.store.onUpdate('handles', () => check().catch(done))
+      const onclose = () => done(CeroError.CLOSED('Handle'))
+      this.once('close', onclose)
+      check().catch(done)
+    })
   }
 
   // what an open waits on: the row, wherever the join is carried, or an error here its row has no state for
@@ -1082,8 +1123,9 @@ export class Handle extends ReadyResource {
       }
       const check = async () => {
         const { data: row } = await this.store.get('handles', id)
-        // the row of another invite is a join this one takes over
-        const state = row?.invite === invite && (row.state || 'in')
+        // the row of another invite is a join this one takes over, unless it took this one over
+        const ours = row?.invite === invite || (!!join && row?.invite === join.invite)
+        const state = ours && (row.state || 'in')
         if (state && state !== 'in') stale = false
         if (state === 'in' && !stale && row.encryptionKey) done(null)
         else if (OVER[state && state.toUpperCase()]) done(ENDS[state](row.reason))
@@ -1199,6 +1241,8 @@ export class Handle extends ReadyResource {
     await this._saveKeyPair(id, mine ? kept : Identity.randomKeyPair(), invite)
     // a room another device of this identity already has the keys of is joined with them
     if (state === 'joining') return id
+    // a room she left is asked again under any invite, the one she came in with too
+    if (state === 'left' && row.invite === invite) await this.store.call('del-handle', { id })
     const ts = Date.now()
     await this.store.call('add-handle', {
       id,
@@ -1243,9 +1287,6 @@ export class Handle extends ReadyResource {
     if (existing.type !== type) {
       throw CeroError.INVALID(`handle ${existing.id} is type ${existing.type}, not ${type}`)
     }
-    // a room this identity lost its seat in stays open on its old writer: it ends before the join opens it again
-    const open = [...this.children].find((c) => c.id === existing.id)
-    if (open && existing.state === 'removed') await open._end().catch(safetyCatch)
     // a join on its way, or one that is over, is its row's to tell
     if (!existing.encryptionKey || (existing.state || 'in') !== 'in') return null
     const known = await this._load(type, existing.id)
@@ -1269,6 +1310,11 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _enter(type, reply, invite) {
+    const id = hid.encode(reply.key)
+    // a room this identity lost its seat in stays open on its old writer: it ends before the new seat opens it
+    const stale = [...this.children].find((c) => c.id === id && !c.closing)
+    if (stale && (await stale.store.removed(this.identity.id)))
+      await stale._end().catch(safetyCatch)
     const child = /** @type {Child} */ (
       this._room({
         spec: pickHandle(this.spec, type),
@@ -1276,7 +1322,6 @@ export class Handle extends ReadyResource {
         ...delivered(reply)
       })
     )
-    const id = hid.encode(reply.key)
     // its row is listed while it joins: an open by id shares this child, a second on the same core deadlocks
     let publish = null
     let abort = null
