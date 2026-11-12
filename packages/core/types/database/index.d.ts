@@ -703,6 +703,8 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _raise;
     /** @private */
+    private _raises;
+    /** @private */
     private _stamp;
     /** @private */
     private _seatless;
