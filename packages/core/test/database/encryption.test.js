@@ -1235,6 +1235,35 @@ test('rotate: the first device removal rotates by itself, sealing the removed on
   t.alike(await texts(dev.db), ['pre'], 'the removed device reads nothing written after')
 })
 
+test('rotate: a revoke by an owner that cuts a seat carries its rotation, sealed to the devices that stay', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  const phone = Identity.randomKeyPair()
+  const proof = a.identity.link(phone.publicKey)
+  const dev = await makePeer(t, testnet, {
+    topic,
+    identity: Identity.from({ ...a.identity, seed: null, device: phone, proof }),
+    encryptionKey,
+    key: a.db.key
+  })
+  await waitFor(async () => (await dev.db.get('members', a.identity.id)).data)
+  await dev.db.claim()
+  await waitFor(async () => (await a.db.get('devices')).data.length === 2)
+
+  const removed = phone.publicKey
+  const standing = a.identity.device.publicKey
+  await a.db.call('revoke', { removed, standing })
+  t.is(a.db.keyring.seq, 1, 'the rotation is in when the revoke resolves')
+  const ids = await named(a.db)
+  t.ok(ids.includes(hid.encode(a.db.writerKey)), 'sealed to the device that stays')
+  t.absent(ids.includes(hid.encode(dev.db.writerKey)), 'and not to the one cut')
+
+  await a.db.put('messages', { text: 'post' })
+  const raw = await a.db.bee.local.get(a.db.bee.local.length - 1, { raw: true })
+  const stamp = b4a.readUInt32LE(raw, 4)
+  t.is(stamp, a.db.keyring.current, 'the next block is under the new key')
+  t.absent(dev.db.keyring.entropy(stamp), 'which the removed device does not hold')
+})
+
 // an admin's own batch: what apply reads, without the dry run an honest write goes through
 // a host answering joins, and a joiner let in through its invite: promised a seat, holding the
 // keys, with `open` to open the database on her device

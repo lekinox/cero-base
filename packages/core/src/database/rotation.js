@@ -6,7 +6,7 @@ import hid from 'hypercore-id-encoding'
 import { REMOVE, COUNTERS, OWED } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
 import { wraps, epochEntries, seal, opened } from './encryption.js'
-import { chainOf } from './dispatch.js'
+import { chainOf, seatChain } from './dispatch.js'
 import { Identity } from '../identity/index.js'
 import { keyPair } from '../mailbox/inbox.js'
 import { CeroError } from '../lib/errors.js'
@@ -282,9 +282,12 @@ export class Rotation {
   async _staying(ops) {
     const db = this.db
     const { data: devices } = await db.get('devices')
-    const gone = new Set(ops.flatMap(([op, data]) => SEATS.get(op)?.(data, devices) ?? []))
     const me = devices.find((d) => d.id === hid.encode(db.writerKey))
+    const seats = ops.map(([op, data]) => SEATS.get(op)?.(data, devices, db, me) ?? [])
+    const gone = new Set((await Promise.all(seats)).flat())
     if (!me || gone.has(me.id)) return null
+    // a revoke that cuts no seat leaves every key where it was
+    if (gone.size === 0 && ops.every(([op]) => op === 'revoke')) return null
     const { data: member } = await db.get('members', me.memberId)
     if (!can(member?.role, REMOVE)) return null
     return devices.filter((d) => d.key && !gone.has(d.id))
@@ -487,12 +490,23 @@ export class Rotation {
   }
 }
 
-// the seats an op takes out: a device by its row or by its writer, a member's every device
+// the seats an op takes out: a device by its row or by its writer, a member's every device, and
+// those of the teller's member a revoke leaves standing on no chain
 const SEATS = new Map([
   ['del-device', (op) => [op.id]],
   ['del-writer', (op) => [hid.encode(op.writer)]],
-  ['del-member', (op, devices) => devices.filter((d) => d.memberId === op.id).map((d) => d.id)]
+  ['del-member', (op, devices) => devices.filter((d) => d.memberId === op.id).map((d) => d.id)],
+  ['revoke', cuts]
 ])
+
+async function cuts(op, devices, db, me) {
+  const gone = []
+  for (const d of devices) {
+    if (!me || d.memberId !== me.memberId || !d.key) continue
+    if (!(await db.dispatcher.stands(db.view, seatChain(d), op))) gone.push(d.id)
+  }
+  return gone
+}
 
 /**
  * @param {Array<[string, unknown]>} ops
