@@ -24,7 +24,7 @@ export declare class Rotation {
     /** @private */
     _open;
     /** @private */
-    _spots;
+    _stamps;
     /** @private */
     _met;
     /** @param {import('./index.js').Database} db */
@@ -64,32 +64,14 @@ export declare class Rotation {
     /** @private */
     private _setAside;
     /**
-     * The key a block of `writer` under `stamp` is read with: the one that writer set aside under
-     * it, and no other, when she set one aside, else the counted one. A block met under a key this
-     * device does not hold is remembered until its row lands.
+     * The key a block of `writer` under `stamp` is read with when that writer set one aside under
+     * it; a block met under a key this device does not hold is remembered until its row lands.
      *
      * @param {number} stamp
      * @param {Uint8Array} [writer]  The writer of the block.
      * @returns {Uint8Array | null}
      */
     meet(stamp: number, writer?: Uint8Array): Uint8Array | null;
-    /**
-     * A key set aside handed over: it opens each row set aside under its stamp whose commitment it
-     * meets, never a counted one.
-     *
-     * @param {{ stamp: number, entropy: Uint8Array }} e
-     * @param {Array<{ stamp: number, commit: Uint8Array, aside?: boolean, writer?: Uint8Array }>} rows
-     * @returns {boolean}  Whether it opened one.
-     */
-    hand(e: {
-        stamp: number;
-        entropy: Uint8Array;
-    }, rows: Array<{
-        stamp: number;
-        commit: Uint8Array;
-        aside?: boolean;
-        writer?: Uint8Array;
-    }>): boolean;
     /** @private */
     private _opens;
     /** @private */

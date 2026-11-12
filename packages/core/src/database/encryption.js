@@ -160,7 +160,7 @@ export class Keyring {
     this.seq = 0
     /** @type {(() => void) | null} called when an epoch is learned or dropped */
     this.onchange = null
-    /** @type {((stamp: number, writer?: Uint8Array) => Uint8Array | null) | null} the key a block of a writer is read with, in place of the keyring's own */
+    /** @type {((stamp: number, writer?: Uint8Array) => Uint8Array | null) | null} asked first for the key a block of a writer is read with: one that writer set aside */
     this.onread = null
   }
 
@@ -244,8 +244,8 @@ export class EpochAutobee extends Autobee {
   // learning an epoch wakes it
   /** @param {number} id @param {{ key?: Uint8Array }} [ctx] @returns {Promise<Uint8Array>} */
   async getEntropy(id, ctx) {
-    const { keyring } = this
-    const entropy = keyring && (keyring.onread ? keyring.onread(id, ctx?.key) : keyring.entropy(id))
+    const entropy =
+      this.keyring && (this.keyring.onread?.(id, ctx?.key) || this.keyring.entropy(id))
     if (entropy) return entropy
     if (ctx?.key) this._epochStalled.add(b4a.toHex(ctx.key))
     throw CeroError.UNKNOWN_EPOCH(id)
