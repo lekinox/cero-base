@@ -1,34 +1,45 @@
 import { useEffect, useState } from 'react'
 import { connect } from 'chat-backend/client'
-import { getIPC } from '../lib/ipc'
+import { getIPC, peek } from '../lib/ipc'
+
+// a store a quit left waiting for another device of the profile: the screen it waits on
+const WAITING = { recovering: 'restoring', linking: 'linking' }
 
 export function useChat() {
-  const [state, setState] = useState({ status: 'connecting' })
+  const [state, setState] = useState({ status: 'checking' })
 
   useEffect(() => {
-    let ipc
     let gone = false
+    const ipc = getIPC()
+    const fail = (err) => !gone && setState({ status: 'error', error: err.message || String(err) })
 
-    const cleanup = () => {
-      gone = true
+    // a phrase is recovered from another device of the profile, however long until one is online
+    const boot = async (opts = {}, waiting = opts.phrase && 'restoring') => {
+      setState({ status: waiting || 'connecting' })
       try {
-        ipc?.destroy()
-      } catch {}
-    }
-
-    const boot = async () => {
-      ipc = getIPC()
-      try {
-        const me = await connect(ipc)
+        const me = await connect(ipc, {
+          ...opts,
+          // the id the other device shows in its requests: the user compares them before approving
+          onrequest: (request) => !gone && setState({ status: 'linking', request })
+        })
         if (!gone) setState({ status: 'ready', me })
       } catch (err) {
-        if (!gone) setState({ status: 'error', error: err.message || String(err) })
+        fail(err)
       }
     }
 
-    boot()
+    peek(ipc).then((held) => {
+      if (gone) return
+      if (held) boot({}, WAITING[held])
+      else setState({ status: 'setup', init: boot })
+    }, fail)
 
-    return cleanup
+    return () => {
+      gone = true
+      try {
+        ipc.destroy()
+      } catch {}
+    }
   }, [])
 
   return state
