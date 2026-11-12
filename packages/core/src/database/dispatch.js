@@ -861,6 +861,9 @@ export function makeDispatcher({
   const bounded = async (view) => since?.types[`@${ns}/invite`]?.secret <= (await versionOf(view))
   // from the version whose requests say a member accepted them
   const marked = async (view) => since?.types[`@${ns}/request`]?.accepted <= (await versionOf(view))
+  // from the version whose refusals record who joined
+  const recorded = async (view) =>
+    since?.types[`@${ns}/refusal`]?.identity <= (await versionOf(view))
 
   // the member, when new, and its device, seated when the member writes; its request stays until
   // a member delivered the keys. The invite is spent unless it is reusable
@@ -989,7 +992,7 @@ export function makeDispatcher({
       (removal && (invite.index ?? 0) <= removal.index) || (await revoked(ctx.view, join.proof))
     if (out) {
       const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
-      const last = await bounded(ctx.view)
+      const last = await recorded(ctx.view)
       return refuse(ctx, { ...turned, identity: last ? join.identity : null }, 'removed', last)
     }
     await ctx.view.delete(refusals, { id })
@@ -1019,7 +1022,7 @@ export function makeDispatcher({
     if (!waiting || waiting.admitted) return
     const live = await ctx.view.get(invites, { id: waiting.invite })
     // spent by this, it says a member let the join in, whatever it asked for itself
-    const invite = live && { ...live, confirm: true }
+    const invite = live && (await marked(ctx.view)) ? { ...live, confirm: true } : live
     const r = await getSignerRole(ctx.view, ctx.key)
     const role = op.role || invite?.role
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {
