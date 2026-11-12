@@ -526,7 +526,8 @@ export class Handle extends ReadyResource {
     const removal = await child.store.removal(this.identity.id)
     if (!removal) return
     const { data: row } = await this.store.get('handles', child.id)
-    if (!row || row.state === 'removed' || OVER[row.state?.toUpperCase()]) return
+    // only a seat held is lost: a row asking or joining is a rejoin under way, one ended is over
+    if (!row || !['in', 'leaving'].includes(row.state || 'in')) return
     const fields = { by: removal.by, reason: null, encryptionKey: null, epochs: null }
     await this.store.set('handles', { id: child.id, state: 'removed', ...fields })
   }
@@ -1242,6 +1243,9 @@ export class Handle extends ReadyResource {
     if (existing.type !== type) {
       throw CeroError.INVALID(`handle ${existing.id} is type ${existing.type}, not ${type}`)
     }
+    // a room this identity lost its seat in stays open on its old writer: it ends before the join opens it again
+    const open = [...this.children].find((c) => c.id === existing.id)
+    if (open && existing.state === 'removed') await open._end().catch(safetyCatch)
     // a join on its way, or one that is over, is its row's to tell
     if (!existing.encryptionKey || (existing.state || 'in') !== 'in') return null
     const known = await this._load(type, existing.id)
