@@ -203,15 +203,16 @@ test('invites: a join that lands as its caller times out gives back the open it 
   const invite = await cero.invite(room)
   const { me: joiner } = await ceroOpen(t, { testnet, keepOpen: 0 })
 
-  // the room opens in time, and the join lands from inside the timeout's own callback
+  // the room opens in time, and the caller's open of it lands from inside the timeout's own callback
   let land
   const landing = new Promise((resolve) => (land = resolve))
   let entered = null
   const enter = joiner._enter.bind(joiner)
-  joiner._enter = async (...args) => {
-    entered = await enter(...args)
+  joiner._enter = async (...args) => (entered = await enter(...args))
+  const landed = joiner._landed.bind(joiner)
+  joiner._landed = async (...args) => {
+    await landed(...args)
     await landing
-    return entered
   }
   const timeout = CeroError.TIMEOUT
   CeroError.TIMEOUT = (...args) => (land(), timeout(...args))

@@ -191,6 +191,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _coreKeys;
     /** @private */
+    _offJoins;
+    /** @private */
     _fileServer;
     /** @private */
     _blobs;
@@ -414,11 +416,17 @@ export declare class Handle extends ReadyResource {
      */
     private _join;
     /** @private */
+    private _landed;
+    /** @private */
+    private _asked;
+    /** @private */
     private _start;
     /** @private */
     private _run;
     /** @private */
     private _cancel;
+    /** @private */
+    private _stop;
     /** @private */
     private _ask;
     /** @private */

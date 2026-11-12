@@ -138,6 +138,8 @@ export class Handle extends ReadyResource {
     /** @private */
     this._coreKeys = parent ? null : new Map()
     /** @private */
+    this._offJoins = null
+    /** @private */
     this._fileServer = null
     /** @private */
     this._blobs = null
@@ -300,6 +302,8 @@ export class Handle extends ReadyResource {
         this.once('close', off)
         await this._tell()
       }
+      // the joins on their way, at launch and as their rows move
+      this._offJoins = this.store.onUpdate('handles', () => this._carryOn().catch(this._onerror))
       await this._carryOn().catch(this._onerror)
       this._reserve().catch(this._onerror)
       // the handles rows, keyed by push topic, for a cold push process that cannot read the root
@@ -325,6 +329,7 @@ export class Handle extends ReadyResource {
     if (this._discovery) this._discovery.destroy().catch(safetyCatch)
 
     const root = !this.parent
+    this._offJoins?.()
     const steps = [
       ...[...(this._joining?.values() || [])].map((join) => () => join.running?.abort()),
       // mirroring stops before any database closes, once the mailbox is done with it: blind peering reads
@@ -989,15 +994,53 @@ export class Handle extends ReadyResource {
    * @private
    */
   async _join(invite, type, { timeout = TIMEOUT } = {}) {
-    const known = await this._joined(type, Invite.parse(invite).key)
+    const { key } = Invite.parse(invite)
+    const known = await this._joined(type, key)
     if (known) return known
 
-    const join = this._start(invite, type)
-    const child = await wait(join, timeout)
-    // every caller holds the room: the first takes the open the join made, each other one its own
-    if (join.claimed) child._hold()
-    join.claimed = true
-    return child
+    const id = hid.encode(key)
+    const { data: row } = await this.store.get('handles', id)
+    // a join another device of this identity asks with is waited on here, not asked again
+    const theirs =
+      row?.state === 'asking' && row.invite === invite && !(await this._asked(id, invite))
+    const join = theirs ? null : this._start(invite, type)
+    // a row in a room this identity lost its seat in is not the join landing: it lands once it moved on
+    const stale = !!row && (row.state || 'in') === 'in'
+    await wait(join, this._landed(id, invite, join, stale), timeout)
+    return this._load(type, id)
+  }
+
+  // what an open waits on: the row, wherever the join is carried, or an error here its row has no state for
+  /** @private */
+  _landed(id, invite, join, stale) {
+    return new Promise((resolve, reject) => {
+      const done = (err) => {
+        off()
+        this.off('close', onclose)
+        if (err) reject(err)
+        else resolve()
+      }
+      const check = async () => {
+        const { data: row } = await this.store.get('handles', id)
+        // the row of another invite is a join this one takes over
+        const state = row?.invite === invite && (row.state || 'in')
+        if (state && state !== 'in') stale = false
+        if (state === 'in' && !stale && row.encryptionKey) done(null)
+        else if (OVER[state && state.toUpperCase()]) done(ENDS[state](row.reason))
+      }
+      const off = this.store.onUpdate('handles', () => check().catch(done))
+      const onclose = () => done(CeroError.CLOSED('Handle'))
+      this.once('close', onclose)
+      join?.done.catch(done)
+      check().catch(done)
+    })
+  }
+
+  // the device that asked holds the writer the answer is sealed to
+  /** @private */
+  async _asked(id, invite) {
+    const { data: kept } = await this.local.store.get('handle-keypairs', id)
+    return kept?.invite === invite
   }
 
   // one join a handle, whoever waits on it: it goes on until its row says how it ended, and a close only pauses it
@@ -1006,7 +1049,7 @@ export class Handle extends ReadyResource {
     const id = hid.encode(Invite.parse(invite).key)
     let join = this._joining.get(id)
     if (!join) {
-      join = { id, type, invite: null, waiting: 0, cancelled: false, claimed: false, running: null }
+      join = { id, type, invite: null, waiting: 0, end: null, running: null }
       join.done = new Promise((resolve, reject) => {
         join.resolve = resolve
         join.reject = reject
@@ -1044,28 +1087,41 @@ export class Handle extends ReadyResource {
         : await Pairing.join(mailbox, invite, opts)
       await this._stand(id, 'joining', keys(reply))
       const child = await this._enter(join.type, reply, invite)
-      // the hold the open took is a waiter's: with none it is let go, idle until the app opens it
-      if (!join.waiting) child.close().catch(this._onerror)
+      // every waiter takes its own hold once the row reads in: this one is let go, idle until the app opens it
+      child.close().catch(this._onerror)
       settle(join.resolve, child)
     } catch (err) {
       if (running !== join.running) return
-      const end = join.cancelled ? CeroError.CANCELLED() : err
+      const end = join.end || err
+      // counted before its row says how it ended: a waiter hears that row
+      const alone = !join.waiting
       // a close pauses the join, anything else ends it, and its row says how
       if (end.code !== 'CLOSED') await this._over(invite, end).catch(this._onerror)
-      if (err.code !== 'CLOSED' && !join.waiting) this._onerror(err)
+      if (err.code !== 'CLOSED' && alone) this._onerror(err)
       settle(join.reject, end)
     }
   }
 
-  // ends it for good: its row reads cancelled, so no restart resumes it
+  // ends it for good from any device: its row reads cancelled, so no device and no restart carries it on
   /** @private */
   async _cancel(invite) {
-    const join = this.root._joining.get(hid.encode(Invite.parse(invite).key))
-    if (!join) return false
-    join.cancelled = true
-    join.running?.abort()
-    await join.done.catch(safetyCatch)
+    const root = this.root
+    const id = hid.encode(Invite.parse(invite).key)
+    const { data: row } = await root.store.get('handles', id)
+    if (row?.state !== 'asking') return false
+    await root._over(invite, CeroError.CANCELLED())
+    const join = root._joining.get(id)
+    if (join) {
+      root._stop(join, CeroError.CANCELLED())
+      await join.done.catch(safetyCatch)
+    }
     return true
+  }
+
+  /** @private */
+  _stop(join, end) {
+    join.end = end
+    join.running?.abort()
   }
 
   // a join's row: `asking` with its invite and no keys. A room this identity was let go from reads `removed` first,
@@ -1203,16 +1259,22 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // joins not answered at the last close go on, with nobody waiting; the mailbox sends what its
-  // outbox kept
+  // the joins on their way go on, with nobody waiting; the mailbox sends what its outbox kept
   /** @private */
   async _carryOn() {
     // the rows not settled, through their index: never every handle
     for (const state of ['asking', 'joining']) {
-      for (const { id, type, invite } of (await this.store.get('handles', { state })).data) {
-        // a join is its device's to carry: this one holds the writer it asked with
-        const { data: kept } = await this.local.store.get('handle-keypairs', id)
-        if (kept?.invite === invite) this._start(invite, type)
+      for (const { id, type, invite, encryptionKey } of (await this.store.get('handles', { state }))
+        .data) {
+        // an answer is heard by the device that asked, and the keys on a row seat any device
+        if (encryptionKey || (await this._asked(id, invite))) this._start(invite, type)
+      }
+    }
+    // a join another device ended stops here
+    for (const join of [...this._joining.values()]) {
+      const { data: row } = await this.store.get('handles', join.id)
+      if (row?.invite === join.invite && OVER[row.state?.toUpperCase()]) {
+        this._stop(join, ENDS[row.state](row.reason))
       }
     }
   }
@@ -1515,28 +1577,23 @@ const keys = ({ encryptionKey, epochs }) => ({
 /**
  * Wait for a join as one of its waiters, but stop waiting after `ms`; the join itself goes on.
  *
- * @param {{ waiting: number, done: Promise<Handle> }} join
+ * @param {{ waiting: number } | null} join  The join carried here, which reports its errors to the app with none waiting.
+ * @param {Promise<void>} landed
  * @param {number} ms  `0` waits as long as the join takes.
- * @returns {Promise<Handle>}
+ * @returns {Promise<void>}
  */
-async function wait(join, ms) {
-  join.waiting++
-  let counted = true
+async function wait(join, landed, ms) {
+  if (join) join.waiting++
   let timer = null
   const timeout = new Promise((resolve, reject) => {
     if (!ms) return
-    timer = setTimeout(() => {
-      // uncounted at once: a join landing in this same turn gives its open back itself
-      counted = false
-      join.waiting--
-      reject(CeroError.TIMEOUT('join'))
-    }, ms)
+    timer = setTimeout(() => reject(CeroError.TIMEOUT('join')), ms)
   })
   try {
-    return await Promise.race([join.done, timeout])
+    return await Promise.race([landed, timeout])
   } finally {
     clearTimeout(timer)
-    if (counted) join.waiting--
+    if (join) join.waiting--
   }
 }
 

@@ -342,6 +342,80 @@ test('open: a second device stopped once its claim landed reopens on that writer
   t.alike(b4a.from(reopened.store.writerKey), claimed, 'the retry is the writer on the log')
 })
 
+// a confirm invite to a host's room, and two devices of one identity
+async function twins(t) {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const a = await openHandle(t, { testnet })
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  const states = []
+  const off = b.me.store.onUpdate('handles', async () => {
+    const state = (await get(b.me.team, room.id)).data?.state
+    if (state && states.at(-1) !== state) states.push(state)
+  })
+  t.teardown(off)
+  return { testnet, room, invite, a, b, states }
+}
+
+test('join: a second device reads asking, joining and in, and carries the join to in once the asking device closes after joining', async (t) => {
+  const { room, invite, a, b, states } = await twins(t)
+  // the asking device stops once the keys are on its row
+  a.me._enter = async () => {
+    throw new Error('stopped')
+  }
+  const joining = open(a.me.team, invite).catch((e) => e)
+  await waitUntil(() => states.includes('asking'))
+  await accept(room, await nextRequest(room))
+  t.is((await joining).message, 'stopped')
+  await waitUntil(() => states.includes('joining'))
+  await a.me.close()
+  await waitUntil(() => states.includes('in'))
+  t.alike(states, ['asking', 'joining', 'in'], 'the second device read every step')
+  const seated = await open(b.me.team, { id: room.id })
+  t.teardown(() => seated.close().catch(() => {}))
+  t.ok(seated.store.writable, 'and took its seat')
+})
+
+test('join: a cancel from a second device ends the join on the first with CANCELLED', async (t) => {
+  const { invite, a, b, states } = await twins(t)
+  const joining = open(a.me.team, invite).catch((e) => e)
+  await waitUntil(() => states.includes('asking'))
+  t.ok(await cero.cancel(b.me, invite), 'no join of its own, the second device cancels it')
+  t.is((await joining).code, 'CANCELLED')
+  await waitUntil(() => a.me._joining.size === 0)
+  t.pass('the first device stopped carrying it')
+})
+
+test('join: an open that timed out completes later, and its row reaches in', async (t) => {
+  const { room, invite, a } = await twins(t)
+  const err = await a.me._join(invite, 'team', { timeout: 300 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT')
+  await accept(room, await nextRequest(room))
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'in')
+  t.pass('in once answered')
+})
+
+test('join: an app closed at asking and launched again completes the join', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const { me, dir } = await ceroOpen(t, { testnet })
+  const joining = open(me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await me.close()
+  t.is((await joining).code, 'CLOSED')
+  await accept(room, request)
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'in')
+  const joined = await open(again.team, invite)
+  t.is(joined.id, room.id, 'the launch carried it in')
+})
+
 test('Handle: second device claims and syncs', async (t) => {
   const testnet = await makeTestnet(t)
   const identity = await Identity.create()
