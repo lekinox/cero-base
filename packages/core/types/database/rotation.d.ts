@@ -17,6 +17,12 @@ export declare class Rotation {
     _timer;
     /** @private */
     _healedFor;
+    /** @private */
+    _kept;
+    /** @private */
+    _aside;
+    /** @private */
+    _met;
     /** @param {import('./index.js').Database} db */
     constructor(db: import('./index.js').Database);
     close(): void;
@@ -51,6 +57,32 @@ export declare class Rotation {
         wrapped: Uint8Array;
         commit: Uint8Array;
     }): Promise<void>;
+    /**
+     * A block met under a key this device does not hold: a rotation its writer set aside is opened now.
+     *
+     * @param {number} stamp
+     * @param {Uint8Array} [writer]  The writer of the block.
+     * @returns {Uint8Array | null}
+     */
+    meet(stamp: number, writer?: Uint8Array): Uint8Array | null;
+    /**
+     * A secret handed over before its announcement landed here: kept, and checked against the
+     * commitment when it does.
+     *
+     * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
+     * @param {string} [from]  The device that sent it: each sender has slots of its own.
+     */
+    keep(e: {
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }, from?: string): void;
+    /** @private */
+    private _handed;
+    /**
+     * @returns {Promise<boolean>} Whether the log's newest key is one this device cannot open.
+     */
+    lacks(): Promise<boolean>;
     /**
      * Safety net after boot: an epoch applied but never saved, e.g. a crash between a
      * rotation's append and its save, is learned from the epochs collection.
@@ -105,6 +137,8 @@ export declare class Rotation {
     private _due;
     /** @private */
     private _drift;
+    /** @private */
+    private _ask;
     /** @private */
     private _unnamed;
 }

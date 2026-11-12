@@ -800,11 +800,17 @@ export function makeDispatcher({
     if (!Number.isInteger(op.stamp) || op.stamp <= 0 || op.stamp > 0xffffffff) return
     // envelopes that do not decode would stop every later audit
     if (!sealed(op.wrapped)) return
-    if (!can(await getSignerRole(ctx.view, ctx.key), REMOVE)) {
+    const role = await getSignerRole(ctx.view, ctx.key)
+    const aside = !can(role, REMOVE)
+    // a reorder can take her rank after she wrote under her key: kept, what she wrote reads
+    if (aside && !(role && (await asides(ctx.view)))) {
       throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
     }
     const rows = await ctx.view.find(`@${ns}/${EPOCHS}`, {}).toArray()
-    if (rows.some((r) => r.stamp === op.stamp)) return
+    const taken = rows.find((r) => r.stamp === op.stamp)
+    // one set aside never claims a stamp from a rotation that counts
+    if (taken && (aside || !taken.aside)) return
+    if (taken) await ctx.view.delete(`@${ns}/${EPOCHS}`, { epoch: taken.epoch })
     // sequence numbers order epochs; concurrent rotations get consecutive sequences, both readable
     const epoch = await bump(ctx.view, EPOCHS)
     const row = {
@@ -812,15 +818,19 @@ export function makeDispatcher({
       stamp: op.stamp,
       wrapped: op.wrapped,
       createdAt: op.createdAt || 0,
-      commit: op.commit
+      commit: op.commit,
+      aside,
+      writer: ctx.key
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
     // sealed before a removal it crossed, it names a device taken out since: one more is owed
-    await owe(ctx.view, (await outsider(ctx.view, op.wrapped)) ? 1 : 0)
+    if (!aside) await owe(ctx.view, (await outsider(ctx.view, op.wrapped)) ? 1 : 0)
     ctx.touched?.push(EPOCHS)
     // learned once its batch commits: a refused batch teaches no epoch, and a dry run commits nothing
     ctx.epochs?.push(row)
   })
+
+  const asides = async (view) => since?.types[`@${ns}/epoch`]?.aside <= (await versionOf(view))
 
   // whether a rotation names a device with no seat and no promise where it lands. A promise row
   // is one that stands: a removal takes those on its key, and past its invite a member withdraws it
@@ -885,10 +895,12 @@ export function makeDispatcher({
     selfOnly(op, ctx)
     if (!isKey(op.reply)) return
     await bind(ctx)
+    ctx.touched?.push(ASKS)
     await ctx.view.insert(asks, { id: op.id, reply: op.reply })
   })
   add('del-owed', async (op, ctx) => {
     selfOnly(op, ctx)
+    ctx.touched?.push(ASKS)
     await ctx.view.delete(asks, op)
   })
 

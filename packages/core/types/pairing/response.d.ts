@@ -32,3 +32,33 @@ export declare function tag(answer: Uint8Array, secretKey: Uint8Array, publicKey
  * @returns {Uint8Array | null}
  */
 export declare function proven(message: Uint8Array, secretKey: Uint8Array, publicKey: Uint8Array): Uint8Array | null;
+/**
+ * Keys sent to a device that asked, as they are sent: the sender's writer key, then its device's
+ * signature over the room, the writer they go to and the answer, then the answer.
+ *
+ * @param {Uint8Array} answer
+ * @param {{ room: Uint8Array, to: Uint8Array, writer: Uint8Array, secretKey: Uint8Array }} opts
+ * @returns {Uint8Array}
+ */
+export declare function signed(answer: Uint8Array, { room, to, writer, secretKey }: {
+    room: Uint8Array;
+    to: Uint8Array;
+    writer: Uint8Array;
+    secretKey: Uint8Array;
+}): Uint8Array;
+/**
+ * The sender and the answer of signed keys, null unless the device key `keyOf` gives for the
+ * sender's writer signed them for this room and this writer.
+ *
+ * @param {Uint8Array} message
+ * @param {{ room: Uint8Array, to: Uint8Array }} opts
+ * @param {(writer: Uint8Array) => Uint8Array | null | undefined} keyOf
+ * @returns {{ writer: Uint8Array, answer: Uint8Array } | null}
+ */
+export declare function signer(message: Uint8Array, { room, to }: {
+    room: Uint8Array;
+    to: Uint8Array;
+}, keyOf: (writer: Uint8Array) => Uint8Array | null | undefined): {
+    writer: Uint8Array;
+    answer: Uint8Array;
+} | null;

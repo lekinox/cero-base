@@ -77,6 +77,8 @@ export declare const main: {
         createdAt: import("@cero-base/core").Prim;
         commit: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+        aside: import("@cero-base/core").Prim;
+        writer: import("@cero-base/core").Prim;
     };
     join: {
         box: import("@cero-base/core").Prim;
@@ -117,6 +119,7 @@ export declare const main: {
         behind: import("@cero-base/core").Prim;
         version: import("@cero-base/core").Prim;
         nearby: import("@cero-base/core").Prim;
+        owed: import("@cero-base/core").Prim;
     };
     peer: {
         id: import("@cero-base/core").Prim;

@@ -599,7 +599,8 @@ export class Handle extends ReadyResource {
       suspended: this.root._sus.suspended,
       behind: this.store.behind || 0,
       version: await this.store.dispatcher.version(this.store.view),
-      nearby: this.root._bluetooth?.state ?? null
+      nearby: this.root._bluetooth?.state ?? null,
+      owed: await this.store.owed()
     }
     if (this.parent) data.topic = b4a.toHex(this.store.discoveryKey)
     return { data }

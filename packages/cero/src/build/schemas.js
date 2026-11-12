@@ -93,7 +93,11 @@ export const main = {
     wrapped: required(bytes),
     createdAt: int,
     commit: bytes,
-    stamp: uint
+    stamp: uint,
+    // by a signer who may not remove: kept so what was written under it reads, never the key
+    aside: bool,
+    // the writer that signed it: one set aside opens only for a block of that writer
+    writer: bytes
   },
   // appended by the joiner's own writer core, sealed to the database's address, or to its
   // invite's own, which it then names
@@ -154,7 +158,9 @@ export const main = {
     // the app version the context's data is at, what `supports` answers from
     version: uint,
     // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
-    nearby: string
+    nearby: string,
+    // this device asked for keys it lacks, and waits for them
+    owed: bool
   },
   // a person linked over Bluetooth, by the identity that signed their device's key, with the name
   // and device type that device told

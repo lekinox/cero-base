@@ -865,9 +865,9 @@ test('rotate: a rotation a reorder drops is no longer the write key', async (t) 
   )
   await waitFor(async () => (await texts(back)).includes('a-post'), { timeout: 20000 })
   await waitFor(() => back.keyring.current === 0, { timeout: 5000 }).catch(() => {})
-  t.absent(
-    await back.view.findOne('@cero/epochs', {}),
-    'the demotion sorts first: the rotation never lands'
+  t.ok(
+    (await back.view.findOne('@cero/epochs', {}))?.aside,
+    'the demotion sorts first: the rotation is set aside'
   )
   t.is(back.keyring.current, 0, 'B writes under the key every member holds')
 })
@@ -1895,6 +1895,174 @@ test('rotate: a removal a reorder refuses after its key was sealed leaves the me
   )
 })
 
+const epochRows = (db) => db.view.find('@cero/epochs', {}).toArray()
+
+test('rotate: a rotation by a member who may not remove is set aside: the key stays, and a block written under it is read by the devices it was sealed to', async (t) => {
+  const {
+    a,
+    members: [b, other]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 444,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  for (const { db } of [a, b, other]) {
+    await waitFor(async () => (await epochRows(db)).some((r) => r.stamp === 444))
+  }
+  const [row] = await epochRows(a.db)
+  t.ok(row.aside, 'set aside')
+  t.is(a.db.keyring.current, 0, 'the key stays')
+  t.absent(a.db.keyring.entropy(444), 'unopened until a block needs it')
+
+  const { pick } = b.db.rotation
+  b.db.rotation.pick = async () => {}
+  b.db.keyring.add(444, entropy, row.epoch)
+  b.db.keyring.current = 444
+  await b.db.put('messages', { text: 'aside' })
+  await waitFor(async () => (await texts(a.db)).includes('aside'))
+  t.alike(a.db.keyring.entropy(444), entropy, 'opened once a block under it was met')
+  b.db.rotation.pick = pick
+  await b.db.rotation.pick()
+  t.is(b.db.keyring.current, 0, 'and its own device writes under the key that counts')
+  t.is(other.db.keyring.current, 0)
+  t.absent(other.db.keyring.entropy(444), 'a device it was not sealed to holds no key')
+})
+
+test('rotate: a rotation set aside is never the newest key: a device it was not sealed to lacks nothing and asks for nothing', async (t) => {
+  const {
+    a,
+    members: [b, other]
+  } = await makeRoom(t, ['member', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 888,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  await waitFor(async () => (await epochRows(other.db)).some((r) => r.stamp === 888))
+  t.is(await other.db.rotation.lacks(), false)
+  await other.db.rotation._audit()
+  t.is(await other.db.owed(), false, 'no ask')
+})
+
+test('rotate: a rotation set aside opens only for a block its own signer wrote under it', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 555,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  await waitFor(async () => (await epochRows(a.db)).some((r) => r.stamp === 555))
+  const { rotation } = a.db
+  t.is(rotation.meet(555, a.db.writerKey), null, 'a block of another writer under its stamp')
+  t.absent(a.db.keyring.entropy(555), 'opens nothing')
+  t.alike(rotation.meet(555, b.db.writerKey), entropy, 'one its signer wrote opens it')
+})
+
+test('rotate: blocks met under a thousand stamps no row holds leave at most the cap remembered, and a stamp goes once its row lands', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 2)
+  const { rotation } = a.db
+  rotation.meet(666, b.db.writerKey)
+  for (let stamp = 10000; stamp < 11000; stamp++) rotation.meet(stamp, b.db.writerKey)
+  t.ok(rotation._met.size <= 64, `${rotation._met.size} remembered`)
+  rotation.meet(666, b.db.writerKey)
+  t.is(rotation._met.size, 64, 'the oldest goes first')
+
+  const entropy = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 666,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], entropy)),
+    createdAt: Date.now(),
+    commit: crypto.hash(entropy)
+  })
+  await waitFor(() => a.db.keyring.entropy(666))
+  t.alike(a.db.keyring.entropy(666), entropy, 'met before its row, opened once it lands')
+  t.is(rotation._met.size, 63, 'and no longer remembered')
+})
+
+test('rotate: a remover demoted while away removes and rotates: the removal is refused, her key is set aside, and every device reads what she wrote, the same rows everywhere and once applied again', async (t) => {
+  const {
+    a,
+    members: [b, kept],
+    testnet,
+    topic,
+    encryptionKey
+  } = await makeRoom(t, ['admin', 'member'])
+  await waitFor(async () => b.db.writable && (await b.db.get('devices')).data.length === 3)
+  await waitFor(async () => (await kept.db.get('devices')).data.length === 3)
+
+  const { keyPair } = b.db
+  await b.db.close()
+  await b.network.close().catch(() => {})
+
+  await a.db.set('members', { id: b.identity.id, role: 'member' })
+  const opts = {
+    store: b.store,
+    identity: b.identity,
+    spec,
+    key: a.db.key,
+    keyPair,
+    encryptionKey,
+    onerror() {}
+  }
+  const off = new Database(opts)
+  await off.ready()
+  await off.del('members', kept.identity.id)
+  t.is(off.keyring.seq, 1, 'the removal carried its key')
+  await off.put('messages', { text: 'hers' })
+  await off.close()
+
+  const net = new Network({ bootstrap: testnet.bootstrap, store: b.store })
+  await net.ready()
+  const disc = net.join(topic)
+  await disc.flush()
+  const back = new Database({ ...opts, network: net })
+  await back.ready()
+  t.teardown(
+    async () => {
+      await back.close().catch(() => {})
+      await disc.destroy().catch(() => {})
+      await net.close().catch(() => {})
+    },
+    { order: 4 }
+  )
+
+  for (const db of [a.db, back]) {
+    await waitFor(async () => (await texts(db)).includes('hers'), { timeout: 30000 })
+  }
+  t.pass('every device she sealed it to reads what she wrote under it')
+  t.is((await a.db.get('members', b.identity.id)).data?.role, 'member', 'the demotion sorts first')
+  t.ok((await a.db.get('members', kept.identity.id)).data, 'her removal is refused')
+  const rows = await epochRows(a.db)
+  t.ok(rows.length === 1 && rows[0].aside, 'her rotation is set aside')
+  t.alike(await epochRows(kept.db), rows, 'the same rows on every device')
+  await waitFor(async () => (await epochRows(back)).every((r) => r.aside))
+  t.alike(await epochRows(back), rows)
+  await a.db._rebuild()
+  await waitFor(async () => (await epochRows(a.db)).length === 1)
+  t.alike(await epochRows(a.db), rows, 'and once the view is applied again')
+})
+
 // what the log keeps: 1 while a rotation is owed, 0 once one cleared it, null when none ever was
 const owed = async (db) =>
   (await db.view.get(`@${db.ns}/counters`, { name: '_owed' }))?.value ?? null
@@ -2106,4 +2274,198 @@ test('rotate: a seated device of a plain member that the newest key does not nam
   t.pass('she reads what is written under it')
   await a.db.rotation._audit()
   t.is((await a.db.rotation._epochs()).length, 2, 'one rotation named her, and no more follow')
+})
+
+// ─── keys asked for ───────────────────────────────────────────────────────
+
+const asks = (db) => db.view.find('@cero/owed', {}).toArray()
+const own = async ({ db }) => (await db.get('devices', hid.encode(db.writerKey))).data
+
+// the next key sealed to the owner's device alone, and a write under it: the others read up to there
+async function leftOut(a) {
+  await a.db.rotation._rotate(false, [await own(a)])
+  await a.db.put('messages', { text: 'under' })
+}
+
+test('ask: a device of a plain member left out of the newest key asks once, from its own core at the address its writer owns, and writes on under the newest key it holds', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  await a.db.rotate()
+  await waitFor(() => b.db.keyring.seq === 1)
+  await b.db.rotation._audit()
+  await a.db.rotation._audit()
+  t.alike(await asks(a.db), [], 'a device that opens the newest key asks for nothing')
+  t.is(await b.db.owed(), false)
+
+  await leftOut(a)
+  await waitFor(async () => (await asks(a.db)).length === 1)
+  const [row] = await asks(a.db)
+  t.is(row.id, hid.encode(b.db.writerKey), 'its own device')
+  t.alike(row.reply, Mailbox.getAddress(b.db.keyPair.secretKey), 'where its writer receives')
+  await waitFor(() => b.db.owed())
+  const { length } = b.db
+  await b.db.rotation._audit()
+  await b.db.rotation._audit()
+  t.is(b.db.length, length, 'asked once while its row stands')
+
+  await b.db.put('messages', { text: 'mine' })
+  await waitFor(async () => (await texts(a.db)).includes('mine'))
+  t.is(b.db.keyring.seq, 1, 'it writes on, under the newest key it holds')
+  t.absent((await texts(b.db)).includes('under'), 'and reads nothing under the one it lacks')
+})
+
+test('ask: a device that only reads asks the same way, with no seat', async (t) => {
+  const { a, testnet, topic, encryptionKey } = await makeRoom(t, [])
+  const r = await makePeer(t, testnet, { topic, encryptionKey, key: a.db.key })
+  await admit(a.db, r.db, 'reader')
+  await waitFor(async () => await own(r))
+  await leftOut(a)
+  await waitFor(async () => (await asks(a.db)).length === 1)
+  t.is((await asks(a.db))[0].id, hid.encode(r.db.writerKey))
+  t.absent(r.db.writable, 'it took no seat to ask')
+  await waitFor(() => r.db.owed())
+  t.pass('and is owed its keys')
+})
+
+test('ask: a device of nobody asks nothing, nor does a member below the version that brings the ask', async (t) => {
+  const { since } = spec.meta
+  const routes = { ...since.routes, '@cero/ask-key': 2, '@cero/del-owed': 2 }
+  const old = { ...spec, meta: { ...spec.meta, since: { ...since, routes } } }
+  const testnet = await makeTestnet(t)
+  const room = { topic: randomTopic(), encryptionKey: Identity.randomBytes(32), spec: old }
+  const a = await makePeer(t, testnet, room)
+  await a.db.bootstrap({ name: 'owner' })
+  const b = await makePeer(t, testnet, { ...room, key: a.db.key })
+  await admit(a.db, b.db, 'member')
+  await waitFor(() => b.db.writable)
+  const nobody = await makePeer(t, testnet, { ...room, key: a.db.key, spec })
+  await leftOut(a)
+  for (const { db } of [b, nobody]) {
+    await waitFor(async () => (await db.rotation._epochs()).length === 1)
+    await db.rotation._audit()
+  }
+  t.alike(await asks(a.db), [])
+  t.alike([...b.errors, ...nobody.errors], [], 'and neither reports a write refused')
+})
+
+test('learn: a secret handed over before its rotation landed is kept, and held to the commitment when it does', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const [good, bad] = [Identity.randomBytes(32), Identity.randomBytes(32)]
+  await b.db.learn([
+    { epoch: 1, stamp: 111, entropy: good },
+    { epoch: 2, stamp: 222, entropy: bad }
+  ])
+  t.absent(b.db.keyring.entropy(111), 'not held before its row')
+
+  // no envelope opens to the commitment: one the owner opened would switch it to the key before
+  // its announcement flushed, and the member could not read that block
+  const device = await own(a)
+  const announce = (stamp, entropy) =>
+    a.db.call('rotate-key', {
+      epoch: 0,
+      stamp,
+      wrapped: c.encode(wraps, seal([device], Identity.randomBytes(32))),
+      createdAt: Date.now(),
+      commit: crypto.hash(entropy)
+    })
+  await announce(111, good)
+  await waitFor(() => b.db.keyring.entropy(111))
+  t.alike(b.db.keyring.entropy(111), good, 'held once its row landed and it met the commitment')
+  await announce(222, Identity.randomBytes(32))
+  await waitFor(() => !waiting(b.db, 222))
+  t.absent(b.db.keyring.entropy(222), 'one that fails its commitment is dropped')
+})
+
+// whether any sender's secret for a stamp waits for its row
+const waiting = (db, stamp) => [...db.rotation._kept.values()].some((kept) => kept.has(stamp))
+
+test('learn: a forged secret handed over around the real one, before its row lands, does not stop the real one from being kept', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const real = Identity.randomBytes(32)
+  const forged = () => ({ epoch: 1, stamp: 333, entropy: Identity.randomBytes(32) })
+  await b.db.learn([forged()])
+  await b.db.learn([{ epoch: 1, stamp: 333, entropy: real }])
+  await b.db.learn([forged()])
+
+  const device = await own(a)
+  await a.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 333,
+    wrapped: c.encode(wraps, seal([device], Identity.randomBytes(32))),
+    createdAt: Date.now(),
+    commit: crypto.hash(real)
+  })
+  await waitFor(() => b.db.keyring.entropy(333))
+  t.alike(b.db.keyring.entropy(333), real)
+  t.absent(waiting(b.db, 333), 'its candidates go once its row lands')
+})
+
+test('learn: secrets one sender hands over take no slot of another, nor push its stamps out, and none but 32 bytes is kept', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  const real = Identity.randomBytes(32)
+  await b.db.learn([{ epoch: 1, stamp: 444, entropy: real }], 'honest')
+  for (let i = 0; i < 8; i++) {
+    await b.db.learn([{ epoch: 1, stamp: 444, entropy: Identity.randomBytes(32) }], 'forger')
+  }
+  for (let stamp = 3000; stamp < 3100; stamp++) {
+    await b.db.learn([{ epoch: 1, stamp, entropy: Identity.randomBytes(32) }], 'forger')
+  }
+  await b.db.learn([{ epoch: 1, stamp: 555, entropy: Identity.randomBytes(16) }], 'honest')
+  t.alike(b.db.rotation._kept.get('honest'), new Map([[444, [real]]]), 'the honest one stays')
+  t.ok(b.db.rotation._kept.get('forger').size <= 16, 'the forger fills its own')
+
+  const device = await own(a)
+  await a.db.call('rotate-key', {
+    epoch: 0,
+    stamp: 444,
+    wrapped: c.encode(wraps, seal([device], Identity.randomBytes(32))),
+    createdAt: Date.now(),
+    commit: crypto.hash(real)
+  })
+  await waitFor(() => b.db.keyring.entropy(444))
+  t.alike(b.db.keyring.entropy(444), real)
+})
+
+test('learn: a thousand handed-over stamps leave at most the cap held', async (t) => {
+  const {
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  await waitFor(() => b.db.writable)
+  for (let stamp = 1000; stamp < 2000; stamp++) {
+    await b.db.learn([
+      { epoch: 1, stamp, entropy: Identity.randomBytes(32) },
+      { epoch: 1, stamp, entropy: Identity.randomBytes(32) }
+    ])
+  }
+  for (let i = 0; i < 10; i++) {
+    await b.db.learn([{ epoch: 1, stamp: 1999, entropy: Identity.randomBytes(32) }])
+  }
+  const kept = b.db.rotation._kept.get('')
+  t.ok(kept.size <= 16, `${kept.size} stamps held`)
+  t.ok(kept.has(1999), 'the newest handed over stays')
+  t.ok(
+    [...kept.values()].every((list) => list.length <= 4),
+    'at most four candidates a stamp'
+  )
+
+  b.db.keyring.add(1999, Identity.randomBytes(32))
+  await b.db.learn([{ epoch: 1, stamp: 2500, entropy: Identity.randomBytes(32) }])
+  t.absent(kept.has(1999), 'a stamp held since keeps no candidates')
+  await b.db.learn([{ epoch: 1, stamp: 1999, entropy: Identity.randomBytes(32) }])
+  t.absent(kept.has(1999), 'nor takes new ones')
 })

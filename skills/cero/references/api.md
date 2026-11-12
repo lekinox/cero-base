@@ -100,16 +100,17 @@ Each row of your own collections carries `id`, `memberId` (its author), `index` 
 
 ### status
 
-| Field       | Value                                                                                                                                 |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `role`      | Your role here, `null` when you are not a member.                                                                                     |
-| `writable`  | `true` once this device can write here: its admission is in the view, so its own row reads back.                                      |
-| `epoch`     | The key in use, by number: `0` before the first rotation.                                                                             |
-| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                                              |
-| `behind`    | `0`, or the version of a newer app this handle or the root is at: this device reads, and its writes throw `BEHIND`, until it updates. |
-| `version`   | The version of the app this handle is at, which `cero.supports` answers from. An owner's device on a newer app moves it forward.      |
-| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                                           |
-| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it.                         |
+| Field       | Value                                                                                                                                                       |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`      | Your role here, `null` when you are not a member.                                                                                                           |
+| `writable`  | `true` once this device can write here: its admission is in the view, so its own row reads back.                                                            |
+| `epoch`     | The key in use, by number: `0` before the first rotation.                                                                                                   |
+| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                                                                    |
+| `behind`    | `0`, or the version of a newer app this handle or the root is at: this device reads, and its writes throw `BEHIND`, until it updates.                       |
+| `version`   | The version of the app this handle is at, which `cero.supports` answers from. An owner's device on a newer app moves it forward.                            |
+| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                                                                 |
+| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it.                                               |
+| `owed`      | `true` while this device waits for keys it asked the other devices for: it reads and writes on with the keys it holds, and reads the rest once they arrive. |
 
 ## Data
 

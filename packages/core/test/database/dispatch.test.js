@@ -3204,6 +3204,88 @@ test('rotate-key: an announcement whose commitment is not 32 bytes is no epoch',
   t.is((await epochs()).length, 1, 'a 32-byte one does')
 })
 
+test('rotate-key: a rotation by a signer who may not remove lands aside, owes nothing and clears nothing, and the key stays', async (t) => {
+  const b = await second('member')
+  const left = await second('member')
+  const { db } = await owing(t, { members: [b.row, left.row] })
+  t.is(await seat(db, b), null)
+  t.is(await seat(db, left), null)
+  const keyed = (key, ids) => {
+    const entropy = crypto.randomBytes(32)
+    return { op: { ...rotation(ids), commit: crypto.hash(entropy) }, key, entropy }
+  }
+  const learned = async ({ op, key, entropy }) => {
+    t.is(await apply(db, key, 'rotate-key', op), null)
+    const row = await db.view.findOne(`@${db.ns}/epochs`, {}, { reverse: true })
+    db.keyring.add(op.stamp, entropy, row.epoch)
+    return row
+  }
+  const ids = [db.writerKey, b.writer.publicKey, left.writer.publicKey].map((k) => hid.encode(k))
+  const counted = await learned(keyed(db.writerKey, ids))
+  t.absent(counted.aside)
+
+  const plain = keyed(b.writer.publicKey, ids)
+  const row = await learned(plain)
+  t.is(row.stamp, plain.op.stamp, 'kept')
+  t.ok(row.aside, 'aside')
+  t.is(await owed(db), 0, 'owes nothing')
+  await db.rotation.pick()
+  t.is(db.keyring.current, counted.stamp, 'the key to write under is the one that counts')
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id: left.id }), null)
+  t.is(await owed(db), 1)
+  t.is(await apply(db, b.writer.publicKey, 'rotate-key', rotation([ids[0], ids[1]])), null)
+  t.is(await owed(db), 1, 'and clears nothing')
+  const stranger = Identity.randomKeyPair().publicKey
+  t.is((await apply(db, stranger, 'rotate-key', rotation([])))?.code, 'REFUSED', 'no seat, none')
+})
+
+test('rotate-key: a counted rotation takes a stamp a rotation set aside claimed first, and a rotation of either kind after a counted one takes nothing', async (t) => {
+  const b = await second('member')
+  const { db } = await owing(t, { members: [b.row] })
+  t.is(await seat(db, b), null)
+  const epochs = () => db.view.find(`@${db.ns}/epochs`, {}).toArray()
+  const ids = [db.writerKey, b.writer.publicKey].map((k) => hid.encode(k))
+  const claimed = rotation(ids)
+  const same = (commit) => ({ ...rotation(ids), stamp: claimed.stamp, commit })
+  t.is(await apply(db, b.writer.publicKey, 'rotate-key', claimed), null)
+  t.ok((await epochs())[0].aside)
+  t.alike((await epochs())[0].writer, b.writer.publicKey, 'kept with its signer')
+
+  t.is(await apply(db, db.writerKey, 'rotate-key', same(b4a.alloc(32, 2))), null)
+  const rows = await epochs()
+  t.is(rows.length, 1, 'one row for the stamp')
+  t.absent(rows[0].aside, 'the counted one')
+  t.alike(rows[0].commit, b4a.alloc(32, 2))
+  t.alike(rows[0].writer, db.writerKey)
+
+  t.is(await apply(db, b.writer.publicKey, 'rotate-key', same(b4a.alloc(32, 3))), null)
+  t.alike(await epochs(), rows, 'one set aside after it takes nothing')
+  t.is(await apply(db, db.writerKey, 'rotate-key', same(b4a.alloc(32, 4))), null)
+  t.alike(await epochs(), rows, 'nor a second counted one')
+})
+
+test('rotate-key: a database below the version that sets a rotation aside refuses one by a signer who may not remove, and at it keeps it', async (t) => {
+  const { since } = spec.meta
+  const epoch = { ...since.types['@cero/epoch'], aside: 2 }
+  const meta = {
+    ...spec.meta,
+    since: { ...since, types: { ...since.types, '@cero/epoch': epoch } }
+  }
+  const b = await second('member')
+  const { db } = await withRole(t, 'owner', { spec: { ...spec, meta }, members: [b.row] })
+  t.is(await seat(db, b), null)
+  const epochs = () => db.view.find(`@${db.ns}/epochs`, {}).toArray()
+
+  const refused = await apply(db, b.writer.publicKey, 'rotate-key', rotation([]))
+  t.is(refused?.code, 'REFUSED', 'below it: refused as before')
+  t.is((await epochs()).length, 0)
+
+  t.is(await apply(db, db.writerKey, 'upgrade', { version: 2 }), null)
+  t.is(await apply(db, b.writer.publicKey, 'rotate-key', rotation([])), null)
+  t.ok((await epochs())[0]?.aside, 'at it: kept aside')
+})
+
 // ─── a rotation owed ──────────────────────────────────────────────────────
 
 // what the log keeps: 1 while a rotation is owed, 0 once one cleared it, null when none ever was

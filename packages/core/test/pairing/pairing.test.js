@@ -18,7 +18,8 @@ import {
   STATUS_ACCEPTED,
   STATUS_DENIED,
   tag,
-  proven
+  proven,
+  signed
 } from '../../src/pairing/response.js'
 import { Mailbox } from '../../src/mailbox/index.js'
 import { unwrap } from '../../src/database/envelope.js'
@@ -2234,4 +2235,208 @@ test('confirm: a second join of the same writer that waits over its promise owes
   await host.pairing.deny(id, 'no')
   t.is((await second).code, 'DENIED', 'the joiner is turned away')
   t.absent(await member(host.db, joiner.identity), 'no member')
+})
+
+// ─── keys asked for ────────────────────────────────────────────────────────
+
+const asks = (db) => db.view.find(`@${db.ns}/owed`, {}).toArray()
+const texts = async (db) => (await db.get('messages')).data.map((row) => row.text)
+const writerId = ({ db }) => hid.encode(db.writerKey)
+const device = async (peer) => (await peer.db.get('devices', writerId(peer))).data
+
+// the host's next key, sealed to its device and those of `peers` alone, and a write under it: a
+// device left out reads up to there
+async function leftOut(host, ...peers) {
+  const devices = []
+  for (const peer of [host, ...peers]) devices.push(await device(peer))
+  await host.db.rotation._rotate(false, devices)
+  await host.db.put('messages', { text: 'under' })
+}
+
+// a room every device holds the first key of
+async function keyed(t, ...roles) {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: built })
+  const peers = []
+  for (const role of roles) peers.push(await seated(t, testnet, host, role))
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  await host.db.rotate()
+  for (const { db } of peers) await waitFor(() => db.keyring.seq === 1)
+  return { testnet, host, peers }
+}
+
+async function reopened(t, { mailbox, db }) {
+  const pairing = new Pairing({ mailbox, db })
+  t.teardown(() => pairing.close().catch(() => {}), { order: 0 })
+  await pairing.ready()
+  return pairing
+}
+
+for (const role of ['member', 'reader']) {
+  test(`keys asked for: a device of a ${role} left out of the newest key is sent them, reads what was written under it, and closes its row`, async (t) => {
+    const { host, peers } = await keyed(t, role)
+    const [{ db }] = peers
+    const owed = []
+    const note = (is) => owed.push(is)
+    db.on('update', () => db.owed().then(note, () => {}))
+    await leftOut(host)
+    await waitFor(async () => (await texts(db)).includes('under'), { timeout: 30000 })
+    t.pass('it reads what was written under the key it was left out of')
+    t.ok(owed.includes(true), 'owed while its row stood')
+    await waitFor(async () => (await asks(host.db)).length === 0 && !(await db.owed()))
+    t.pass('and its own device closed its row, the keys saved')
+    await waitFor(() => host.pairing._keys.size === 0)
+    t.pass('nothing is sent once it closed')
+  })
+}
+
+test('keys asked for: two devices that hold the keys both send them, and the one that asked ends with one copy', async (t) => {
+  const { host, peers } = await keyed(t, 'member', 'member')
+  const [holds, asked] = peers
+  const id = writerId(asked)
+  const { mailbox } = asked.pairing
+  await asked.pairing.close()
+  await leftOut(host, holds)
+  await waitFor(() => host.pairing._keys.has(id) && holds.pairing._keys.has(id))
+  t.pass('the owner sends them, and so does a plain member who may not remove')
+  const first = host.pairing._keys.get(id)
+  await host.db.rotate()
+  await waitFor(() => host.pairing._keys.has(id) && host.pairing._keys.get(id) !== first)
+  t.pass('and again once the sender learns one more key')
+
+  await reopened(t, { mailbox, db: asked.db })
+  await waitFor(async () => (await texts(asked.db)).includes('under'), { timeout: 30000 })
+  await waitFor(async () => (await asks(host.db)).length === 0)
+  const rows = await asked.db.rotation._epochs()
+  const stamps = asked.db.keyring.all().map((e) => e.stamp)
+  t.alike(stamps.sort(), rows.map((row) => row.stamp).sort(), 'one copy of each key in the log')
+  await waitFor(() => host.pairing._keys.size === 0 && holds.pairing._keys.size === 0)
+  t.pass('and both stop once its row closed')
+})
+
+test('keys asked for: a secret that fails its commitment is refused and the row stays, until the right one comes', async (t) => {
+  const { host, peers } = await keyed(t, 'member')
+  const [{ db, pairing }] = peers
+  await host.pairing.close()
+  await leftOut(host)
+  await waitFor(async () => (await asks(db)).length === 1)
+  const [row] = await asks(db)
+  const top = (await db.rotation._epochs()).reduce((a, b) => (b.epoch > a.epoch ? b : a))
+  const reads = []
+  const onkeys = pairing._onkeys.bind(pairing)
+  pairing._onkeys = async (message) => {
+    const out = await onkeys(message)
+    reads.push(out)
+    return out
+  }
+  const none = { status: STATUS_DENIED, reason: 'no', key: null, encryptionKey: null, epochs: null }
+  await host.mailbox.send(row.reply, c.encode(Response, none), { keep: false })
+  await waitFor(() => reads.length === 1)
+  t.is(reads[0], false, 'an answer with no keys is turned away')
+  const epochs = [{ epoch: top.epoch, stamp: top.stamp, entropy: crypto.randomBytes(32) }]
+  const forged = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
+  await host.mailbox.send(row.reply, c.encode(Response, forged), { keep: false })
+  await waitFor(() => reads.length === 2)
+  t.absent(db.keyring.entropy(top.stamp), 'not learned')
+  t.is(await db.owed(), true, 'and its row stands')
+  t.is(pairing._keys.size, 0, 'a device that holds keys sends its own row none')
+
+  const answer = pairing._answer.bind(pairing)
+  pairing._answer = async (...args) => {
+    await answer(...args)
+    await pairing.close()
+  }
+  await pairing._sync()
+  t.is(pairing._inbox, null, 'a sync its pairing closed under receives at no address')
+  await reopened(t, { mailbox: pairing.mailbox, db })
+  await reopened(t, host)
+  await waitFor(async () => (await texts(db)).includes('under'), { timeout: 30000 })
+  await waitFor(async () => !(await db.owed()))
+  t.pass('the one that meets it is learned, and closes the row')
+})
+
+test('keys asked for: keys signed by a key no seated device holds keep nothing, those a seated device signs are kept, and a stranger sending first does not stop them', async (t) => {
+  const { host, peers } = await keyed(t, 'member')
+  const [{ db, pairing }] = peers
+  await host.pairing.close()
+  await leftOut(host)
+  await waitFor(async () => (await asks(db)).length === 1)
+  const [row] = await asks(db)
+  const reads = []
+  const onkeys = pairing._onkeys.bind(pairing)
+  pairing._onkeys = async (message) => {
+    const out = await onkeys(message)
+    reads.push(out)
+    return out
+  }
+  const send = (by, writer, stamp, entropy = crypto.randomBytes(32)) => {
+    const epochs = [{ epoch: 9, stamp, entropy }]
+    const keys = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
+    const message = signed(c.encode(Response, keys), {
+      room: db.key,
+      to: db.writerKey,
+      writer,
+      secretKey: by.secretKey
+    })
+    return host.mailbox.send(row.reply, message, { keep: false })
+  }
+  const stranger = crypto.keyPair()
+  for (let stamp = 700; stamp < 704; stamp++) await send(stranger, stranger.publicKey, stamp)
+  await send(stranger, host.db.writerKey, 777)
+  await waitFor(() => reads.length === 5)
+  t.is(db.rotation._kept.size, 0, 'nothing kept from a key no device row holds')
+
+  const real = crypto.randomBytes(32)
+  await send(host.db.identity.device, host.db.writerKey, 777, real)
+  await waitFor(() => reads.length === 6)
+  t.alike(
+    db.rotation._kept.get(writerId(host)),
+    new Map([[777, [real]]]),
+    'a seated device is kept'
+  )
+})
+
+test('keys asked for: a device removed after it asked is sent nothing, nor is any by a device with no key, with no seat, or behind', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet, { spec: built })
+  const member = await seated(t, testnet, host, 'member')
+  await waitFor(async () => (await promises(host.db)).length === 0)
+  const row = (peer) => ({ id: writerId(peer), reply: crypto.randomBytes(32) })
+  await host.pairing._deliver([row(member)])
+  t.is(host.pairing._keys.size, 0, 'a device that holds no key sends none')
+  await host.db.rotate()
+  await waitFor(() => member.db.keyring.seq === 1)
+  await host.pairing._deliver([row(member)])
+  t.is(host.pairing._keys.size, 1, 'one that holds keys sends them to a device that stands')
+  host.db.emit('update', new Set(['devices']))
+  await waitFor(() => host.pairing._keys.size === 0)
+  t.pass('until a change of devices shows no row of it')
+
+  await host.pairing.close()
+  await leftOut(host)
+  await waitFor(async () => (await asks(host.db)).length === 1)
+  const [asked] = await asks(host.db)
+  await host.db.del('members', member.db.identity.id)
+  t.alike(await asks(host.db), [], 'the removal takes its row')
+  const pairing = await reopened(t, host)
+  t.is(pairing._keys.size, 0, 'and it is sent nothing')
+  await pairing._deliver([asked])
+  t.is(pairing._keys.size, 0, 'nor would a row left of a device that no longer stands be')
+
+  const joiner = await makeJoiner(t, testnet)
+  const db = await opened(t, joiner, await joiner.join(await pairing.invite()))
+  await waitFor(async () => (await db.get('devices', writerId(host))).data)
+  t.ok(db.keyring.all().length > 0, 'a device handed its keys')
+  const idle = await reopened(t, { mailbox: joiner.mailbox, db })
+  await idle._deliver([row(host)])
+  t.is(idle._keys.size, 0, 'sends none before it took its seat')
+
+  await db.claim()
+  await waitFor(async () => (await host.db.get('devices', writerId({ db }))).data)
+  await pairing._deliver([row({ db })])
+  t.is(pairing._keys.size, 1)
+  await host.db.write([['upgrade', { version: host.db.version + 1 }]])
+  await waitFor(() => host.db.behind !== null)
+  await pairing._deliver([row({ db })])
+  t.is(pairing._keys.size, 0, 'and a device that is behind sends none')
 })

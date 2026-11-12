@@ -120,7 +120,7 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 ```js
 const { data, total } = await cero.get(me.notes, { title: 'first', reverse: true, limit: 20 })
 cero.watch(me.notes, {}).on('data', ({ data }) => console.log(data))
-const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, version, nearby }
+const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, version, nearby, owed }
 ```
 
 - `get(ref)` lists, `get(ref, id)` fetches one, `get(ref, { field })` filters. Queries: equality on
