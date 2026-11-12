@@ -3282,6 +3282,23 @@ test('devices: another device of the member renames a device, and changes nothin
   )
 })
 
+test('devices: a sibling renames a device only while it stands, and a removed one still names itself', async (t) => {
+  const { db, phone } = await lost(t)
+  await seat(db, phone)
+  const id = phone.writer.id
+  t.is(await apply(db, db.writerKey, 'set-device', { id, name: 'phone', updatedAt: 2 }), null)
+
+  // the removal recorded and the seat still there, as a reorder leaves them
+  const key = hid.encode(phone.identity.device.publicKey)
+  await db.view.insert(`@${db.ns}/removals`, { id: key, index: 0 })
+  const renamed = await apply(db, db.writerKey, 'set-device', { id, name: 'gone', updatedAt: 3 })
+  t.is(renamed?.rule, 'removed', 'a sibling renames a removed device not')
+  t.is((await seated(db, phone)).name, 'phone')
+  const mine = { id, name: 'mine', updatedAt: 4 }
+  t.is(await apply(db, phone.writer.publicKey, 'set-device', mine), null)
+  t.is((await seated(db, phone)).name, 'mine', 'its own row it still writes')
+})
+
 test('singles: wiping one needs write', async (t) => {
   const { db, as } = await withMember(t, 'reader')
   await db.set('profile', { name: 'owner' })

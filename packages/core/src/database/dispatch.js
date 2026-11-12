@@ -911,13 +911,16 @@ export function makeDispatcher({
     const kept = { key: existing?.key, chain: existing?.chain }
     await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), ...kept })
   })
-  // another device of its member renames it, and changes nothing else of the row
+  // another device of its member renames it while it stands, and changes nothing else of the row
   add('set-device', async (op, ctx) => {
     const existing = await getDevice(ctx.view, op.id)
     const ts = op.updatedAt || 0
     if (ctx.key && existing && op.id !== hid.encode(ctx.key)) {
       const by = await getDevice(ctx.view, hid.encode(ctx.key))
       if (!by?.memberId || by.memberId !== existing.memberId) throw CeroError.REFUSED('device')
+      if (existing.key && !(await stands(ctx.view, seatChain(existing)))) {
+        throw CeroError.REFUSED('removed')
+      }
       await save(ctx, 'set', 'devices', { ...existing, name: op.name, updatedAt: ts })
       return
     }
