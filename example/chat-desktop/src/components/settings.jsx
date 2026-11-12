@@ -7,6 +7,7 @@ import { useToast } from '../hooks/use-toast'
 import { Button, Input, Section, Card } from './ui'
 import { Avatar } from './avatar'
 import { Toast } from './toast'
+import { Removed } from './removed'
 
 export function Settings() {
   const me = useCero()
@@ -127,6 +128,7 @@ export function Settings() {
       </Section>
 
       <Section title='Devices'>
+        <Removed />
         {devices.map((d) => {
           const current = d.id === me.device?.id
           return (
