@@ -1025,6 +1025,8 @@ export class Handle extends ReadyResource {
       const { meta, ns, target } = child.store
       const lists =
         (meta.since?.routes[`@${ns}/revoke`] ?? 0) <= target ? await this._lists() : null
+      // its key goes in a root row the removed device reads until the root rotates
+      const owed = lists && !(await this.store.rotated())
       // one batch, so a handle's first ops land together
       await child.store.tx(async (tx) => {
         // first, so the rest is written at the version
@@ -1044,8 +1046,13 @@ export class Handle extends ReadyResource {
           updatedAt: ts
         })
         // the removals the root holds are in the room from its start: told later, they would rotate it
-        if (lists) await tx.call('revoke', { removed: lists.removed, standing: lists.standing })
+        if (lists && !owed) {
+          await tx.call('revoke', { removed: lists.removed, standing: lists.standing })
+        }
       })
+      if (owed) {
+        await child.store.call('revoke', { removed: lists.removed, standing: lists.standing })
+      }
       await this.store.call('add-handle', {
         id,
         type,
@@ -1739,7 +1746,7 @@ export class Handle extends ReadyResource {
     const tell = async () => {
       while (next < rooms.length && !this.closing) {
         const { id } = rooms[next++]
-        const done = await this._tellOne(id, stamp).catch((err) => {
+        const done = await this._tellOne(id, stamp, lists?.marked).catch((err) => {
           if (!this.closing) this._onerror(err)
           return false
         })
@@ -1774,9 +1781,10 @@ export class Handle extends ReadyResource {
   }
 
   // a closed room opened only to be told: nothing handed to the app. One open here runs the same
-  // compare, behind its own
+  // compare, behind its own. One that waits for a peer to serve it is untold for now, and holds
+  // no other room: it goes on apart until it is told, or reports its wait once per removal
   /** @private */
-  async _tellOne(id, stamp) {
+  async _tellOne(id, stamp, marked) {
     const open = [...this.children].find((c) => c.id === id)
     if (open) return this._prune(open, stamp)
     const loading = this._loading.get(id)
@@ -1784,20 +1792,17 @@ export class Handle extends ReadyResource {
       const child = await loading.catch(() => null)
       return child ? this._prune(child, stamp) : false
     }
-    const telling = this._tellRoom(id, stamp)
-    this._tellings.set(
-      id,
-      telling.catch(() => {})
-    )
-    try {
-      return await telling
-    } finally {
-      this._tellings.delete(id)
-    }
+    if (this._tellings.has(id)) return false
+    let park = () => {}
+    const parked = new Promise((resolve) => (park = () => resolve(false)))
+    const telling = this._tellRoom(id, stamp, marked, park)
+    const done = () => this._tellings.delete(id)
+    this._tellings.set(id, telling.then(done, done))
+    return Promise.race([telling, parked])
   }
 
   /** @private */
-  async _tellRoom(id, stamp) {
+  async _tellRoom(id, stamp, marked, park) {
     const { data: row } = await this.store.get('handles', id)
     // a room left on another device has no row; one still being joined is told by its own open
     if (!row?.encryptionKey) return true
@@ -1820,7 +1825,23 @@ export class Handle extends ReadyResource {
     try {
       await child.ready()
       if (!child.store.writable && child.store.length === 0) {
-        await child.store.claim({ timeout: TIMEOUT })
+        park()
+        try {
+          await child.store.claim({ timeout: TIMEOUT })
+          // told after its pass ended: the next one records the rooms covered
+          const told = await this._prune(child, stamp)
+          if (told) this._tellClosed()
+          return told
+        } catch (err) {
+          if (this.closing || child.closing || child.closed) return false
+          if (err.code === 'TIMEOUT') {
+            const { data } = await this.local.store.get('handle-keypairs', id)
+            if (!marked || sameBytes(data?.waited, marked)) return false
+            await this._mark(id, { waited: marked })
+          }
+          this._onerror(err)
+          return false
+        }
       }
       return await this._prune(child, stamp)
     } finally {

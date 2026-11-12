@@ -191,6 +191,7 @@ export declare const local: {
         used: import("@cero-base/core").Prim;
         told: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+        waited: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;

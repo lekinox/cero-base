@@ -19,7 +19,9 @@ import {
   WRITE,
   REMOVALS,
   REFUSALS,
-  ASKS
+  ASKS,
+  COUNTERS,
+  OWED
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
@@ -949,6 +951,16 @@ export class Database extends ReadyResource {
   async owed() {
     this.guard()
     return !!(await this.view.get(`@${this.ns}/${ASKS}`, { id: hid.encode(this.writerKey) }))
+  }
+
+  /**
+   * @returns {Promise<boolean>} Whether every device this database removed is out of the key this
+   * device writes under: no rotation is owed, and this device holds the newest key.
+   */
+  async rotated() {
+    this.guard()
+    const owed = await this.view.get(`@${this.ns}/${COUNTERS}`, { name: OWED })
+    return !owed?.value && !(await this.rotation.lacks())
   }
 
   /**

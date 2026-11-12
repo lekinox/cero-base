@@ -253,7 +253,9 @@ export const local = {
     // a digest of the device keys last told to the room, removed and standing
     told: bytes,
     // the extensions' stamp last told to the room
-    stamp: bytes
+    stamp: bytes,
+    // the device keys the room waits to be told, once its wait for a peer was reported
+    waited: bytes
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {

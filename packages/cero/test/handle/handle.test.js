@@ -1718,6 +1718,21 @@ test('devices: a room made after a removal holds it from its first batch, and ro
   t.is(room.store.keyring.seq, 0, 'and no key rotated')
 })
 
+test('devices: a room made while the root still owes the rotation of a removal rotates before the app has it', async (t) => {
+  const errors = []
+  const a = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  a.me.store.rotation._rotate = () => Promise.reject(new Error('lost'))
+  await del(a.me.devices, phone.me.device.id)
+  t.absent(await a.me.store.rotated(), 'the root owes its rotation')
+
+  const room = await open(a.me.team, { name: 'clinic' })
+  t.ok(names((await room.store.told(a.me.id)).removed, deviceKey(phone)), 'the removal is in')
+  t.is(room.store.keyring.seq, 1, 'and the room writes under a key minted after it')
+  t.ok(errors.length > 0, 'the failed rotation reported')
+})
+
 test('devices: a room only the removed device and a closed one had opened is told by a device that never opened it', async (t) => {
   const laptop = await ceroOpen(t)
   const phone = await linkTo(t, laptop)
@@ -2433,6 +2448,32 @@ test('devices: a room where the identity only reads is told by the device of her
   t.pass('the removed device held the key through the root: the host rotates')
 })
 
+test('devices: a room the identity reads only from the removed device is told by a device of hers that never opened it, and the host rotates', async (t) => {
+  const host = await ceroOpen(t)
+  const news = await open(host.me.team, { name: 'news' })
+  const laptop = await ceroOpen(t, { testnet: host.testnet })
+  const phone = await linkTo(t, laptop)
+  await seats(laptop.me, 2)
+  await laptop.me.close()
+  const seen = await open(phone.me.team, await cero.invite(news, { role: 'reader' }))
+  await waitUntil(() => sits(news, phone))
+  const me = await relaunch(t, laptop)
+  const row = () => me.store.get('handles', seen.id).then((res) => res.data)
+  await waitUntil(async () => (await row())?.state === 'in')
+  t.absent(await me._loadKeyPair(seen.id), 'the laptop never opened it')
+
+  await del(me.devices, phone.me.device.id)
+  const told = await waitUntil(async () => {
+    const told = await news.store.told(me.id)
+    return names(told.removed, deviceKey(phone)) ? told : null
+  })
+  t.alike(told.standing, [deviceKey(laptop)], 'told by the laptop')
+  await waitUntil(async () => !(await sits(news, phone)))
+  t.pass('the phone has no row there')
+  await waitUntil(() => news.store.keyring.seq === 1)
+  t.pass('and the host rotates')
+})
+
 test('devices: a room below the version that brings revoke, where the identity only reads, is told nothing and hears no error', async (t) => {
   const team = spec.handles.team
   const { since } = team.meta
@@ -2707,6 +2748,45 @@ test('devices: a device linked after a removal was told takes no seat in a room 
   await passed(desk.me)
   t.absent(await desk.me._loadKeyPair(room.id), 'the new device opened it not')
   t.absent(await sits(room, desk), 'and holds no seat there')
+})
+
+test('devices: rooms no peer serves hold no other room of the pass while they wait, are reported once each, and stay untold', async (t) => {
+  const errors = []
+  const laptop = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const phone = await linkTo(t, laptop)
+  const lab = await open(phone.me.team, { name: 'lab' })
+  await waitUntil(async () => (await laptop.me.store.get('handles', lab.id)).data?.encryptionKey)
+  // opened only to be told before: each holds a writer here, used more recently than the lab
+  const lost = await addHandles(laptop.me, 5)
+  for (const id of lost) await laptop.me._saveKeyPair(id, Identity.randomKeyPair())
+  const { claim } = Database.prototype
+  let release = () => {}
+  const gate = new Promise((resolve) => (release = resolve))
+  Database.prototype.claim = async function (opts) {
+    if (!lost.includes(hid.encode(this.key))) return claim.call(this, opts)
+    await gate
+    throw Object.assign(new Error('nobody serves it'), { code: 'TIMEOUT' })
+  }
+  t.teardown(() => {
+    release()
+    Database.prototype.claim = claim
+  })
+  const timeouts = () => errors.filter((err) => err.code === 'TIMEOUT').length
+
+  await del(laptop.me.devices, phone.me.device.id)
+  const told = await toldOf(lab, phone)
+  t.ok(names(told.standing, deviceKey(laptop)), 'a room a peer serves is told while they wait')
+  release()
+  await waitUntil(() => timeouts() === lost.length && laptop.me._tellings.size === 0)
+  t.pass('each reported')
+
+  await laptop.me._tellClosed()
+  await waitUntil(() => laptop.me._tellings.size === 0)
+  t.is(timeouts(), lost.length, 'the next pass retries them quietly')
+  for (const id of lost) {
+    const { data } = await laptop.me.local.store.get('handle-keypairs', id)
+    t.absent(data.told, 'and none is marked told')
+  }
 })
 
 test('devices: a room whose telling throws is told at the next pass, and only it', async (t) => {

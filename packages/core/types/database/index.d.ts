@@ -615,6 +615,11 @@ export declare class Database extends ReadyResource {
      */
     owed(): Promise<boolean>;
     /**
+     * @returns {Promise<boolean>} Whether every device this database removed is out of the key this
+     * device writes under: no rotation is owed, and this device holds the newest key.
+     */
+    rotated(): Promise<boolean>;
+    /**
      * Remove a peer's writer key from the indexer set.
      *
      * @param {Uint8Array} publicKey
