@@ -36,7 +36,8 @@ const cmd = command(
 
 // the app's own folder, and the switches Chromium and Node read themselves (a test driver passes them first), are not its flags
 const own = (arg) =>
-  !/^--(remote-debugging-port|inspect)/.test(arg) && path.resolve(arg) !== app.getAppPath()
+  !/^--(remote-debugging-port|inspect|no-sandbox)/.test(arg) &&
+  path.resolve(arg) !== app.getAppPath()
 cmd.parse(process.argv.slice(1).filter(own))
 
 if (cmd.flags.remoteDebug !== undefined) {

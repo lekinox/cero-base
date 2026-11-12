@@ -29,7 +29,17 @@ export const test = base.extend({
       const electronApp = await electron.launch({
         executablePath,
         cwd: app,
-        args: [app, '--no-updates', '--no-devtools', '--storage', dir, '--bootstrap', bootstrap]
+        args: [
+          // a Linux runner has no setuid sandbox helper
+          ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+          app,
+          '--no-updates',
+          '--no-devtools',
+          '--storage',
+          dir,
+          '--bootstrap',
+          bootstrap
+        ]
       })
       opened.push(electronApp)
       const page = await electronApp.firstWindow()
