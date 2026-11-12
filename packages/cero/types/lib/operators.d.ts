@@ -198,7 +198,7 @@ export declare function deny(ctx: Context, request: {
  */
 export declare function removed(ctx: Context, id: string): Promise<'removed' | 'left' | null>;
 /**
- * Quit a handle for good: it leaves your list and closes on this device.
+ * Quit a handle for good: its row reads `leaving`, then `left` once the handle holds it, and it closes.
  *
  * @param {Context} ctx
  * @returns {Promise<void>}

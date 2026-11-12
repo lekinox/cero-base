@@ -25,7 +25,8 @@ export const defs = {
     outbox: { type: 'mail' },
     environment: { type: 'environment', kind: 'single' },
     serving: { type: 'serving' },
-    topics: { type: 'subscription' }
+    topics: { type: 'subscription' },
+    told: { type: 'told', kind: 'single' }
   }
 }
 

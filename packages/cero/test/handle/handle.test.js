@@ -11,6 +11,7 @@ import { encode, createNotification } from 'blind-push'
 
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
+import { Database } from '@cero-base/core/database'
 import { encodeId, decodeId } from '@cero-base/core/blobs/codec'
 
 import { Handle, Ref } from '../../src/handle/index.js'
@@ -2028,6 +2029,28 @@ test('removed: a removal by an admin reads removed with her id in by, and the ro
   }
 })
 
+test('removed: a device removed from a room opens it with a new invite: the open is refused, and its identity stays in', async (t) => {
+  const { room, a, b, onA, onB, states } = await seatedTwins(t)
+  const seen = states(a.me)
+  await del(room.devices, hid.encode(onB.store.writerKey))
+  await waitUntil(() => !onB.store.writable || null)
+
+  const err = await open(b.me.team, await cero.invite(room)).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'the open is refused')
+  t.is(err?.reason, 'removed')
+  t.is((await get(a.me.team, room.id)).data.state, 'in', 'the row stays in on her other device')
+  t.ok(
+    seen.every((state) => state === 'in'),
+    'and never moved'
+  )
+  await put(onA.messages, { text: 'still here' })
+  await waitUntil(async () => (await get(room.messages)).data.some((m) => m.text === 'still here'))
+  t.pass('her other device still writes in the room')
+  const wrong = await a.me._join(await cero.invite(room), 'ward').catch((e) => e)
+  t.is(wrong?.code, 'INVALID', 'an open as another type is refused')
+  t.is((await get(a.me.team, room.id)).data.state, 'in', 'and writes no state')
+})
+
 test('leave: a row at left is joined again with a new invite, and one at removed is deleted by the app', async (t) => {
   const { room, a, onA } = await seatedTwins(t)
   await cero.leave(onA)
@@ -2060,4 +2083,266 @@ test('status: owed is true while this device waits for the keys it asked for, an
   await waitUntil(async () => (await get(joined.room.messages)).data.length === 1 || null)
   await waitUntil(async () => (await get(joined.room.status)).data.owed === false || null)
   t.pass('and not once it was sent them, and reads what was written under them')
+})
+
+test('devices: a reader in a room hears no error when its root removes a device, and the room is told nothing by it', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const errors = []
+  const b = await ceroOpen(t, { testnet: a.testnet, onerror: (err) => errors.push(err) })
+  const seen = await open(b.me.team, await cero.invite(room, { role: 'reader' }))
+  const phone = await linkTo(t, b)
+  await seats(b.me, 2)
+
+  await del(b.me.devices, phone.me.device.id)
+  await b.me._pruneAll()
+  t.absent(seen.store.writable, 'a reader has no seat')
+  t.alike(errors, [], 'its compare writes nothing')
+  t.alike(await room.store.told(b.me.id), { removed: [], standing: [] })
+})
+
+test('devices: a room told what the root holds is not written to again at the next open', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  await del(a.me.devices, phone.me.device.id)
+  await toldOf(room, phone)
+  await a.me._pruneAll()
+
+  const { id } = room
+  await a.me.close()
+  const again = await cero(a.dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 1 })
+  const { call } = Database.prototype
+  let tellings = 0
+  Database.prototype.call = function (op, data) {
+    if (op === 'revoke') tellings++
+    return call.call(this, op, data)
+  }
+  try {
+    await open(again.team, { id })
+    await again._pruneAll()
+  } finally {
+    Database.prototype.call = call
+  }
+  t.is(tellings, 0, 'the compare finds it told')
+})
+
+test('devices: a device its own root does not seat tells no room', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  const mine = await open(phone.me.team, { id: room.id })
+  await waitUntil(() => mine.store.writable)
+  await waitUntil(() => sits(room, phone))
+
+  // its root as a removal of it reaches the device before the rooms were told
+  const root = phone.me.store
+  const read = root.get.bind(root)
+  const out = (row) => row.key && b4a.equals(row.key, deviceKey(phone))
+  root.removals = async () => [deviceKey(phone)]
+  root.get = async (name, query) => {
+    const res = await read(name, query)
+    return name === 'devices' ? { ...res, data: res.data.filter((row) => !out(row)) } : res
+  }
+  await phone.me._prune(mine)
+  t.alike(await mine.store.told(phone.me.id), { removed: [], standing: [] }, 'it tells nothing')
+  t.ok(await sits(mine, phone), 'and keeps its seat until a device that stands tells')
+})
+
+// ─── devices: the rooms nobody has open are told too ──────
+
+async function relaunch(t, peer, opts = {}) {
+  const me = await cero(peer.dir, spec, { bootstrap: peer.testnet.bootstrap, ...opts })
+  t.teardown(() => me.close().catch(() => {}), { order: 1 })
+  return me
+}
+
+// the root's pass over its closed rooms finished
+const passed = (me) => waitUntil(async () => (await me.local.store.get('told')).data)
+
+// the tellings written, the lists of the handles read and the rooms opened while `act` runs
+async function tally(act, onrevoke = () => {}) {
+  const seen = { tellings: 0, lists: 0, opened: 0, rooms: [] }
+  const { call, get: read } = Database.prototype
+  const ready = Handle.prototype._open
+  Database.prototype.call = function (op, data) {
+    if (op === 'revoke') {
+      seen.tellings++
+      onrevoke(this)
+    }
+    return call.call(this, op, data)
+  }
+  Database.prototype.get = function (name, query) {
+    // the joins and leaves are read through the index by state, never as a list of every handle
+    if (name === 'handles' && typeof query !== 'string' && query?.state === undefined) seen.lists++
+    return read.call(this, name, query)
+  }
+  Handle.prototype._open = function () {
+    if (this.parent) {
+      seen.opened++
+      seen.rooms.push(this)
+    }
+    return ready.call(this)
+  }
+  try {
+    await act()
+  } finally {
+    Object.assign(Database.prototype, { call, get: read })
+    Handle.prototype._open = ready
+  }
+  return seen
+}
+
+// three rooms a device made, closed, and its phone linked
+async function closedRooms(t) {
+  const a = await ceroOpen(t)
+  const ids = []
+  for (const name of ['clinic', 'lab', 'ward']) ids.push((await open(a.me.team, { name })).id)
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  await a.me.close()
+  return { a, ids, phone }
+}
+
+// each room, opened at a fresh launch, was told the phone is out: its open tells nothing
+async function toldAtOpen(t, a, ids, phone) {
+  const again = await relaunch(t, a)
+  const seen = await tally(async () => {
+    for (const id of ids) {
+      const room = await open(again.team, { id })
+      t.ok(names((await room.store.told(again.id)).removed, deviceKey(phone)), 'the room was told')
+    }
+    await again._pruneAll()
+  })
+  t.is(seen.tellings, 0, 'and its open tells nothing again')
+}
+
+test('devices: a device removed in the root while three rooms are closed is told to each, none of them handed to the app', async (t) => {
+  const { a, ids, phone } = await closedRooms(t)
+  const me = await relaunch(t, a)
+  const handed = []
+  me.on('handle', (h) => handed.push(h))
+  const seen = await tally(async () => {
+    await del(me.devices, phone.me.device.id)
+    await passed(me)
+  })
+  t.is(seen.tellings, 3, 'each room told once')
+  t.is(seen.lists, 0, 'and reads no list of the handles')
+  t.alike(handed, [], 'none handed to the app')
+  t.is(me.children.size + me._pending.size, 0, 'and none left open')
+  await me.close()
+  await toldAtOpen(t, a, ids, phone)
+})
+
+test('devices: a close while the pass tells rooms resolves with every room it opened closed, and the next launch goes on', async (t) => {
+  const { a, ids, phone } = await closedRooms(t)
+  const errors = []
+  const me = await relaunch(t, a, { onerror: (err) => errors.push(err) })
+  let closing = null
+  const first = await tally(
+    async () => {
+      await del(me.devices, phone.me.device.id)
+      await waitUntil(() => closing !== null)
+      await closing
+    },
+    () => (closing ??= me.close())
+  )
+  t.ok(first.rooms.length > 0, 'the pass had rooms open')
+  t.ok(
+    first.rooms.every((room) => room.closed && room.store.closed),
+    'every one closed, its store too, when the close resolves'
+  )
+  t.alike(errors, [], 'nothing reported')
+
+  const seen = await tally(async () => {
+    const again = await relaunch(t, a)
+    await passed(again)
+    await again.close()
+  })
+  t.ok(seen.opened > 0, 'the next launch goes on with nothing changed')
+  await toldAtOpen(t, a, ids, phone)
+})
+
+test('devices: a launch with nothing changed since its rooms were told reads no list of the handles and opens none', async (t) => {
+  const { a, phone } = await closedRooms(t)
+  const me = await relaunch(t, a)
+  await del(me.devices, phone.me.device.id)
+  await passed(me)
+  await me.close()
+
+  const seen = await tally(async () => {
+    const again = await relaunch(t, a)
+    await again._telling
+  })
+  t.is(seen.lists, 0, 'no list of the handles')
+  t.is(seen.opened, 0, 'no room opened')
+})
+
+test('devices: a room this device holds no writer in is skipped by its pass', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
+  const phone = await linkTo(t, a)
+  await seats(b.me, 3)
+  await waitUntil(async () => (await b.me.store.get('handles', room.id)).data)
+
+  const seen = await tally(async () => {
+    await del(a.me.devices, phone.me.device.id)
+    await passed(b.me)
+    await toldOf(room, phone)
+  })
+  t.is(seen.opened, 0, 'the device without a writer there opens it not')
+})
+
+test('devices: a room whose telling throws is told at the next pass, and only it', async (t) => {
+  const { a, phone } = await closedRooms(t)
+  const errors = []
+  const me = await relaunch(t, a, { onerror: (err) => errors.push(err) })
+  let attempts = 0
+  let failing = null
+  await tally(
+    async () => {
+      await del(me.devices, phone.me.device.id)
+      await waitUntil(() => attempts >= 3)
+      await me._telling
+    },
+    (store) => {
+      attempts++
+      failing ??= store.key
+      if (b4a.equals(store.key, failing)) throw new Error('lost')
+    }
+  )
+  t.ok(errors.length > 0, 'the failure reported')
+  await me.close()
+
+  const seen = await tally(async () => {
+    const again = await relaunch(t, a)
+    await again._telling
+    await passed(again)
+  })
+  t.is(seen.opened, 1, 'the next pass opens the room it failed')
+  t.is(seen.tellings, 1, 'and tells it')
+})
+
+test('devices: a room open when the pass runs is told by its open and not again by the pass', async (t) => {
+  const { a, ids, phone } = await closedRooms(t)
+  const me = await relaunch(t, a)
+  const room = await open(me.team, { id: ids[0] })
+  await waitUntil(() => room.store.writable)
+  const seen = await tally(async () => {
+    await del(me.devices, phone.me.device.id)
+    await passed(me)
+    await me._pruneAll()
+  })
+  t.is(seen.tellings, 3, 'each room told once')
+  t.is(seen.opened, 2, 'the pass opens the closed ones')
+  await me.close()
+
+  const again = await tally(async () => {
+    const next = await relaunch(t, a)
+    await next._telling
+  })
+  t.is(again.opened, 0, 'and the next launch opens none')
 })

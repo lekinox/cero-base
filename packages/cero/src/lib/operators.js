@@ -484,7 +484,7 @@ export function removed(ctx, id) {
 }
 
 /**
- * Quit a handle for good: it leaves your list and closes on this device.
+ * Quit a handle for good: its row reads `leaving`, then `left` once the handle holds it, and it closes.
  *
  * @param {Context} ctx
  * @returns {Promise<void>}

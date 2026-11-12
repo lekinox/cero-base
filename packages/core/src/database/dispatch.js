@@ -578,7 +578,7 @@ export function makeDispatcher({
     }
     const may = can(await getSignerRole(ctx.view, ctx.key), REMOVE)
     await ctx.host.removeWriter(hid.decode(id))
-    await revoke(ctx, device, by)
+    await revoke(ctx, device, by, may)
     await drop(ctx, 'devices', id)
     await ctx.view.delete(asks, { id })
     if (device) await owe(ctx.view)
@@ -629,11 +629,11 @@ export function makeDispatcher({
   })
 
   // a removed device's key, and any device it attests after, stays out: its chain is static, so
-  // the removal is kept here, beside the members'
-  async function revoke(ctx, device, by) {
+  // the removal is kept here, beside the members', with whether it spent the open invites
+  async function revoke(ctx, device, by, spent) {
     if (!device?.key) return
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by })
+    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by, spent })
   }
   // a chain, its identity first, stands unless it passes a removed device key. A key its identity
   // removed, told or taken out by a device of hers, is passed by a key after it that she told
@@ -656,17 +656,26 @@ export function makeDispatcher({
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats
   // of the identity whose chain no longer stands go, with the joins that wait or were promised
-  // through one. Told by someone who may remove, it is a removal by her
+  // through one. Told by someone who may remove, a key no removal that spent the open invites
+  // covers is a removal by her
   add('revoke', async (op, ctx) => {
     const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
     if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
     if (!(await stands(ctx.view, seatChain(device)))) throw CeroError.REFUSED('removed')
     const { memberId } = device
     const id = toldId(memberId)
-    const before = keysOf((await ctx.view.get(removals, { id }))?.removed)
-    const removed = [...before, ...keysOf(op.removed).filter((key) => !has(before, key))]
+    const told = await ctx.view.get(removals, { id })
+    const before = keysOf(told?.removed)
+    const added = keysOf(op.removed).filter((key) => !has(before, key))
+    const removed = [...before, ...added]
+    let uncovered = false
+    for (const key of told?.spent ? added : removed) {
+      if (!(await ctx.view.get(removals, { id: hid.encode(key) }))?.spent) uncovered = true
+    }
+    const spends = uncovered && can(await getSignerRole(ctx.view, ctx.key), REMOVE)
     const standing = b4a.concat(keysOf(op.standing))
-    const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing }
+    const spent = spends || !uncovered
+    const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing, spent }
     await ctx.view.insert(removals, row)
     for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (seated.memberId !== memberId || !seated.key) continue
@@ -681,7 +690,7 @@ export function makeDispatcher({
       if (row.admitted && !row.promised) continue
       if (!(await stands(ctx.view, [row.identity, ...chainOf(row)]))) await withdraw(ctx, row)
     }
-    if (can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
+    if (spends) await shut(ctx)
   })
 
   // the genesis batch names the creator; everyone after comes in through a signed join

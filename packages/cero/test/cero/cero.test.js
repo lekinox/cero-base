@@ -1930,6 +1930,7 @@ test('status: a room reports its role, writability, epoch and suspension, live',
     epoch: 0,
     suspended: false,
     behind: 0,
+    owed: false,
     version: spec.meta.target,
     nearby: 'off',
     topic: b4a.toHex(room.store.discoveryKey)
@@ -2191,7 +2192,8 @@ test('leave: you are no longer a member of the room you left', async (t) => {
   await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
 
   await cero.leave(joined)
-  t.is((await get(joiner.me.team)).data.length, 0, 'the room left the list')
+  await waitUntil(async () => (await get(joiner.me.team, room.id)).data?.state === 'left')
+  t.is((await get(joiner.me.team, { state: 'in' })).data.length, 0, 'the room left the list')
   await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
   t.pass('the owner sees the member gone')
 })
@@ -2210,11 +2212,18 @@ test('leave: the last owner cannot leave members behind', async (t) => {
 })
 
 test('leave: a room can be left, the root cannot', async (t) => {
-  const { me } = await ceroOpen(t)
-  const room = await open(me.team, { name: 'clinic' })
+  const testnet = await makeTestnet(t)
+  const owner = await ceroOpen(t, { testnet })
+  const room = await open(owner.me.team, { name: 'clinic' })
+  const joiner = await ceroOpen(t, { testnet })
+  await open(joiner.me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
+  await set(room.members, { id: joiner.me.id, role: 'owner' })
+
   await cero.leave(room)
-  t.is((await get(me.team)).data.length, 0, 'the room left the list')
-  await t.exception(cero.leave(me), /the root cannot be left/)
+  await waitUntil(async () => (await get(owner.me.team, room.id)).data?.state === 'left')
+  t.is((await get(owner.me.team, { state: 'in' })).data.length, 0, 'the room left the list')
+  await t.exception(cero.leave(owner.me), /the root cannot be left/)
 })
 
 test('extensions: setup runs before the root opens, and what it reads waits for the open', async (t) => {
@@ -2362,7 +2371,7 @@ test('status: a room whose root is behind prunes no device from it', async (t) =
   await me.store.write([['upgrade', { version: me.store.version + 1 }]])
   await waitUntil(() => room.store.behind !== null || null)
   // the root, past this build, reads this device as removed
-  me.store.removed = async () => 'removed'
+  me.store.removals = async () => [me.identity.device.publicKey]
   await t.exception(me._prune(room), /BEHIND/, 'the room does not write')
   t.alike((await get(room.devices)).data, rows, 'a removal it cannot follow is not taken')
 })
@@ -2443,7 +2452,8 @@ test('status: behind, invite, rotate and tx wait for the update, and a member ca
   }
 
   await cero.leave(joined)
-  t.is((await get(joiner.me.team)).data.length, 0, 'the member left while behind')
+  await waitUntil(async () => (await get(joiner.me.team, room.id)).data?.state === 'left')
+  t.is((await get(joiner.me.team, { state: 'in' })).data.length, 0, 'the member left while behind')
   await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
   t.pass('and the owner, behind too, applied it')
 })
