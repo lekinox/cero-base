@@ -47,9 +47,9 @@ const invite = await cero.invite(room, { role: 'reader', ttl: '1d' })
 | `confirm` | `false`    | `true` makes each join wait for a member to accept it.              |
 | `data`    | `null`     | Bytes the joiner reads before joining. Unsigned: a hint, not proof. |
 
-A role that is not a rank, a `ttl` that is not a duration, or `reuse` above `member` throws
-`INVALID`; a role above your own throws `DENIED`. Only handles have invites: `cero.invite(me)` throws
-`INVALID`.
+Options that are not a plain object, a role that is not a rank, a `ttl` that is not a duration, or
+`reuse` above `member` throw `INVALID`; a role above your own throws `DENIED`. On `me`, `cero.invite(me)`
+mints a device invite: see [Link a device](identity.md#link-a-device).
 
 ```js
 import b4a from 'b4a'
@@ -88,7 +88,11 @@ try {
 
 `cero.open` waits a fixed 30 s, then rejects `TIMEOUT`. The join goes on, across restarts: once a
 member answers, the handle appears in `me.room`, so watch that list. An expired invite rejects
-`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
+`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`. The latest ask stands: a join
+with another invite on another device of yours asks again, and the device that asked first takes
+its request back once it is online, its waiting `open` rejecting `CANCELLED`. A cancel, with any
+invite to the room, or a row the app deletes, takes the request back the same way, and so does a
+new ask under the same invite after either.
 
 ```js
 const { data: waiting } = await cero.get(me.room, { state: 'asking' }) // still waiting for an answer
@@ -164,7 +168,9 @@ The ranks run owner, admin, member, reader. Changing a role needs assign, a new 
 and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invite')` from
 `@cero-base/core/utils` checks a rank in your UI; it knows the four names in the table, and any
 other is `INVALID`. Every member sets the `name` and `avatar` of her own row in `room.members`, a
-reader too, which is how `profileSync` shows her profile; a reader sets nothing else of it.
+reader too, which is how `profileSync` shows her profile; a reader sets nothing else of it. In a
+handle at a version from before readers wrote, a reader's write to her row is `REFUSED`, and
+`profileSync` leaves her row as it is.
 
 ## Remove a member
 
@@ -220,7 +226,7 @@ carries it: it takes you out of the handle's members, at any role, waits until a
 mirror holds that, then deletes the row, keeps none of the handle's keys and closes it. An app
 closed on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with
 the remover's id in `by`. A removal, and a join that ended `denied` or `expired`, stays 30 days so
-the app can show why, then goes at a launch; a cancelled join goes at the next launch, and a leave
+the app can show why, then goes at a launch; a cancelled join goes at a launch of the device that asked once the room holds the cancel, 30 days at most, and a leave
 leaves no row. The app deletes an ended row whenever it likes, with `cero.del(me.room, id)`, and a
 new code joins again; a row still `in`, `leaving`, `asking` or `joining` is `REFUSED`. The last
 owner of a handle others are in gets `INVALID` from `cero.leave`, and nothing is written: make

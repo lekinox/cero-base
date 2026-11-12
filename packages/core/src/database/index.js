@@ -19,7 +19,9 @@ import {
   WRITE,
   REMOVALS,
   REFUSALS,
-  ASKS
+  ASKS,
+  COUNTERS,
+  OWED
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
@@ -533,10 +535,15 @@ export class Database extends ReadyResource {
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
     await this.bee.updated()
+    // an owner's device raises first, in the same batch, as at genesis: its write may name what
+    // only the version its build asks for has
+    const raise = !ops.some(([op]) => op === 'upgrade') && (await this._raises())
+    const batch = raise ? [['upgrade', { version: this.target }], ...ops] : ops
     // the dry run refuses what apply would; a no-op never reaches the log, an action always does
     const action = ops.some(([op]) => this.refs[op]?.kind === ACTION)
     try {
-      const { wrapped, changed, stamp } = await this._dryRun(ops)
+      if (raise && !action && !(await this._changes(ops))) return
+      const { wrapped, changed, stamp } = await this._dryRun(batch)
       if (!changed && !action) return
       // a newer op may have applied while this write awaited
       if (this._frozen(ops)) throw CeroError.BEHIND(this.behind)
@@ -705,6 +712,93 @@ export class Database extends ReadyResource {
       core.on('close', check)
       check()
     })
+  }
+
+  /**
+   * Whether a device seated here, other than this one and those whose keys are `removed`, wrote a
+   * node this view applied with every block this device wrote in its causal past, within `timeout`.
+   * A peer that only holds those blocks may be a removed device, which passes them on to no one.
+   *
+   * @param {Uint8Array[]} removed
+   * @param {number} timeout
+   * @returns {Promise<boolean>}
+   */
+  async heard(removed, timeout) {
+    this.guard()
+    const length = this.length
+    if (length === 0) return true
+    return new Promise((resolve, reject) => {
+      let busy = false
+      let again = false
+      const check = async () => {
+        if (busy) return (again = true)
+        busy = true
+        try {
+          do {
+            again = false
+            if (this.closing || this.closed) return done(CeroError.CLOSED('Database'))
+            if (await this._heard(removed, length)) return done(null, true)
+          } while (again)
+        } catch (err) {
+          done(err)
+        } finally {
+          busy = false
+        }
+      }
+      const timer = setTimeout(() => done(null, false), timeout)
+      const done = (err, yes) => {
+        clearTimeout(timer)
+        this.off('update', check)
+        this.off('close', check)
+        if (err) reject(err)
+        else resolve(yes)
+      }
+      this.on('update', check)
+      this.on('close', check)
+      check()
+    })
+  }
+
+  // a walk back from the last node of each other device that stands here, through what it links,
+  // to this device's block at `length`: a node stamped before that block cannot link it
+  /** @private */
+  async _heard(removed, length) {
+    const local = this.bee.local
+    const floor = (await this.bee.readOplog(local, length)).op.timestamp
+    const own = hid.encode(local.key)
+    const { data: devices } = await this.get('devices')
+    const stack = []
+    for (const row of devices) {
+      if (row.id === own || !row.key || removed.some((key) => b4a.equals(key, row.key))) continue
+      const key = hid.decode(row.id)
+      const info = await this.bee.system.get(key)
+      if (info) stack.push({ key, length: info.length })
+    }
+    const cores = new Map()
+    const seen = new Set()
+    try {
+      while (stack.length) {
+        const link = stack.pop()
+        if (b4a.equals(link.key, local.key)) {
+          if (link.length >= length) return true
+          continue
+        }
+        const hex = b4a.toHex(link.key)
+        if (link.length === 0 || seen.has(`${hex}/${link.length}`)) continue
+        seen.add(`${hex}/${link.length}`)
+        let core = cores.get(hex)
+        if (!core) cores.set(hex, (core = this.bee.openCore(link.key)))
+        await core.ready()
+        if (!(await core.has(link.length - 1))) continue
+        const { op } = await this.bee.readOplog(core, link.length)
+        if (op.timestamp < floor) continue
+        stack.push(...op.links, { key: link.key, length: link.length - 1 })
+        if (op.witness) stack.push(op.witness.link)
+      }
+      return false
+    } finally {
+      for (const core of cores.values()) await core.close()
+    }
   }
 
   // the same read against any view: hooks read the transaction they run in
@@ -949,6 +1043,16 @@ export class Database extends ReadyResource {
   async owed() {
     this.guard()
     return !!(await this.view.get(`@${this.ns}/${ASKS}`, { id: hid.encode(this.writerKey) }))
+  }
+
+  /**
+   * @returns {Promise<boolean>} Whether every device this database removed is out of the key this
+   * device writes under: no rotation is owed, and this device holds the newest key.
+   */
+  async rotated() {
+    this.guard()
+    const owed = await this.view.get(`@${this.ns}/${COUNTERS}`, { name: OWED })
+    return !owed?.value && !(await this.rotation.lacks())
   }
 
   /**
@@ -1375,17 +1479,40 @@ export class Database extends ReadyResource {
   // an owner's device moves the database to the version its build asks for, a batch of its own
   /** @private */
   async _raise() {
-    if (this.closing || this.closed || !this.writable || this.behind !== null) return
-    if (this.target <= (await this.dispatcher.version(this.view))) return
-    const { data: me } = await this.get('members', this.identity.id)
-    if (me?.role !== OWNER) return
+    if (this.closing || this.closed || !(await this._raises())) return
     await this.write([['upgrade', { version: this.target }]])
+  }
+
+  // read off the view, not through get: a write in flight would wait on a rebuild that waits on it
+  /** @private */
+  async _raises() {
+    if (!this.writable || this.behind !== null) return false
+    if (this.target <= (await this.dispatcher.version(this.view))) return false
+    const me = await this.view.get(`@${this.ns}/members`, { id: this.identity.id })
+    return me?.role === OWNER
+  }
+
+  // a write that changes nothing appends no raise in front of it; one the view refuses may need the raise
+  /** @private */
+  async _changes(ops) {
+    try {
+      return (await this._dryRun(ops)).changed
+    } catch {
+      return true
+    }
   }
 
   // a device writes as the version, its own contract while it is behind
   /** @private */
   async _stamp(view) {
     return Math.min(this.version, await this.dispatcher.version(view))
+  }
+
+  // whether a device with no seat writes its own member row at the version this room is at
+  /** @private */
+  async _seatless() {
+    const since = this.meta.since?.routes[`@${this.ns}/ask-key`] ?? 0
+    return since <= (await this._stamp(this.view))
   }
 
   // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the
@@ -1652,15 +1779,15 @@ function leaving(ops, id) {
   return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
 }
 
-// what a device without a writer seat may append: its leave, its own member row, its ask for keys
-// and the close of it
+// what a device without a writer seat may append: its leave, its own member row, what its
+// identity's devices are, its ask for keys and the close of it
 function seatless(ops, id) {
   if (ops.length !== 1) return false
   const [name, value] = ops[0]
   return (
     leaving(ops, id) ||
     (name === 'set-member' && value?.id === id) ||
-    ['ask-key', 'del-owed'].includes(name)
+    ['revoke', 'ask-key', 'del-owed'].includes(name)
   )
 }
 

@@ -136,6 +136,8 @@ export class Handle extends ReadyResource {
     /** @private */
     this._joining = parent ? null : new Map() // handle id → its join in flight
     /** @private */
+    this._taking = parent ? null : new Set() // the requests being taken back, by writer
+    /** @private */
     this._coreKeys = parent ? null : new Map()
     /** @private */
     this._offJoins = null
@@ -175,6 +177,11 @@ export class Handle extends ReadyResource {
     // the closed rooms a pass is telling, by id: an open of one waits for it to close
     /** @private */
     this._tellings = parent ? null : new Map()
+    // the closed rooms no peer served when a pass reached them, by id, and the turns telling them
+    /** @private */
+    this._waiting = parent ? null : new Map()
+    /** @private */
+    this._waiters = 0
     /** @private */
     this._telling = null
     // what an extension tells the rooms closed here, through the same pass: `stamp` names it,
@@ -325,8 +332,9 @@ export class Handle extends ReadyResource {
         await this._tell()
       }
       // the joins on their way, at launch and as their rows move
-      this._offJoins = this.store.onUpdate('handles', () => this._carryOn().catch(this._onerror))
-      await this._carryOn().catch(this._onerror)
+      const report = (err) => this.closing || this._onerror(err)
+      this._offJoins = this.store.onUpdate('handles', () => this._carryOn().catch(report))
+      await this._carryOn().catch(report)
       await this._sweep().catch(this._onerror)
       this._reserve().catch(this._onerror)
       this._tellClosed()
@@ -1022,6 +1030,11 @@ export class Handle extends ReadyResource {
 
       const ts = Date.now()
       const writerKey = child.store.writerKey
+      const { meta, ns, target } = child.store
+      const lists =
+        (meta.since?.routes[`@${ns}/revoke`] ?? 0) <= target ? await this._lists() : null
+      // its key goes in a root row the removed device reads until the root rotates
+      const owed = lists && !(await this.store.rotated())
       // one batch, so a handle's first ops land together
       await child.store.tx(async (tx) => {
         // first, so the rest is written at the version
@@ -1040,7 +1053,14 @@ export class Handle extends ReadyResource {
           createdAt: ts,
           updatedAt: ts
         })
+        // the removals the root holds are in the room from its start: told later, they would rotate it
+        if (lists && !owed) {
+          await tx.call('revoke', { removed: lists.removed, standing: lists.standing })
+        }
       })
+      if (owed) {
+        await child.store.call('revoke', { removed: lists.removed, standing: lists.standing })
+      }
       await this.store.call('add-handle', {
         id,
         type,
@@ -1091,7 +1111,9 @@ export class Handle extends ReadyResource {
     }
     // a join another device of this identity asks with is waited on here, not asked again
     const theirs =
-      row?.state === 'asking' && row.invite === invite && !(await this._asked(id, invite))
+      row?.state === 'asking' &&
+      row.invite === invite &&
+      !(await this._asked(id, invite, row.writer))
     const join = theirs ? null : this._start(invite, type)
     // a row in a room this identity lost its seat in is not the join landing: it lands once it moved on
     const stale = !!row && (row.state || 'in') === 'in'
@@ -1149,9 +1171,10 @@ export class Handle extends ReadyResource {
 
   // the device that asked holds the writer the answer is sealed to
   /** @private */
-  async _asked(id, invite) {
+  async _asked(id, invite, writer) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    return kept?.invite === invite
+    // a row from before rows named their writer is the ask of the device that kept its invite
+    return kept?.invite === invite && (!writer || hid.encode(kept.publicKey) === writer)
   }
 
   // one join a handle, whoever waits on it: it goes on until its row says how it ended, and a close only pauses it
@@ -1160,7 +1183,7 @@ export class Handle extends ReadyResource {
     const id = hid.encode(Invite.parse(invite).key)
     let join = this._joining.get(id)
     if (!join) {
-      join = { id, type, invite: null, waiting: 0, end: null, running: null }
+      join = { id, type, invite: null, writer: null, waiting: 0, end: null, running: null }
       join.done = new Promise((resolve, reject) => {
         join.resolve = resolve
         join.reject = reject
@@ -1176,6 +1199,7 @@ export class Handle extends ReadyResource {
   /** @private */
   async _run(join, invite) {
     join.invite = invite
+    join.writer = null
     join.running?.abort()
     const running = (join.running = new AbortController())
     const settle = (end, value) => {
@@ -1184,7 +1208,7 @@ export class Handle extends ReadyResource {
     }
     try {
       const id = await this._ask(join.type, invite)
-      const writer = await this._loadKeyPair(id)
+      const writer = (join.writer = await this._loadKeyPair(id))
       const { data: row } = await this.store.get('handles', id)
       // the keys are on the row before the reply is let go: a restart opens the handle without joining again
       const keep = async (answer) => {
@@ -1207,8 +1231,10 @@ export class Handle extends ReadyResource {
       // counted before its row says how it ended: a waiter hears that row
       const alone = !join.waiting
       // a close pauses the join, anything else ends it, and its row says how
-      if (end.code !== 'CLOSED') await this._over(invite, end).catch(this._onerror)
-      if (join.end?.code === 'CANCELLED') await this._retract(join).catch(this._onerror)
+      const report = (err) => this.closing || this._onerror(err)
+      if (end.code !== 'CLOSED') {
+        await this._over(join.id, end, { invite, writer: join.writer }).catch(report)
+      }
       if (err.code !== 'CLOSED' && alone) this._onerror(err)
       settle(join.reject, end)
     }
@@ -1219,36 +1245,77 @@ export class Handle extends ReadyResource {
   async _cancel(invite) {
     const root = this.root
     const id = hid.encode(Invite.parse(invite).key)
-    const { data: row } = await root.store.get('handles', id)
-    if (row?.state !== 'asking') return false
-    await root._over(invite, CeroError.CANCELLED())
+    if (!(await root._over(id, CeroError.CANCELLED()))) return false
     const join = root._joining.get(id)
     if (join) {
       root._stop(join, CeroError.CANCELLED())
       await join.done.catch(safetyCatch)
-    } else await root._retract(row)
+    }
     return true
   }
 
-  // only the device that asked holds the writer its request is under: its keypair row stays, and a
-  // launch announces the cancel again, until a peer or a mirror holds it
+  // the latest ask stands: a request of this device's writer its row no longer carries, cancelled,
+  // deleted or asked again under another invite on any device, is taken back. One whose row ended
+  // otherwise is let go
+  /** @private */
+  async _check(ask) {
+    const { data: row } = await this.store.get('handles', ask.handle)
+    const { data: kept } = await this.local.store.get('handle-keypairs', ask.handle)
+    const state = row && (row.state || 'in')
+    const mine = !!kept && b4a.equals(kept.publicKey, ask.publicKey)
+    const asks = state === 'asking' || state === 'joining'
+    if (mine && asks && row.writer === ask.id) return
+    // a seated row names no writer
+    const ended = row && !asks && state !== 'cancelled' && (!row.writer || row.writer === ask.id)
+    if (ended && row.invite === ask.invite) return this.local.store.del('asks', ask.id)
+    // only the join that asks with this writer stops: one still choosing its writer may ask anew
+    const join = this._joining.get(ask.handle)
+    if (join?.writer && b4a.equals(join.writer.publicKey, ask.publicKey)) {
+      this._stop(join, CeroError.CANCELLED())
+    }
+    if (this._taking.has(ask.id)) return
+    this._taking.add(ask.id)
+    this._takeBack(ask)
+      .catch((err) => this.closing || this._onerror(err))
+      .finally(() => this._taking.delete(ask.id))
+  }
+
+  // announced until a peer or a mirror holds it, `KEPT` at most; its writer goes with it, unless its
+  // cancelled row tells a launch this device asked
+  /** @private */
+  async _takeBack(ask) {
+    if (ask.createdAt >= Date.now() - KEPT) await this._announce(ask.type, ask)
+    await this.local.store.del('asks', ask.id)
+    const { data: row } = await this.store.get('handles', ask.handle)
+    if (row?.state !== 'cancelled' || row.writer !== ask.id) await this._forget(ask.handle, ask)
+  }
+
+  // a launch of the device that asked announces the cancel again, and once a peer or a mirror holds
+  // it, the writer and the cancelled row go
   /** @private */
   async _retract({ id, type }) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    if (!kept?.invite) return false
-    const writer = { publicKey: kept.publicKey, secretKey: kept.secretKey }
-    Pairing.cancel(this.mailbox, kept.invite, { spec: pickHandle(this.spec, type), writer })
-      .then(() => this._forget(id, writer.publicKey))
+    if (!kept?.invite) return
+    this._announce(type, kept)
+      .then(() => this._forget(id, kept))
       .catch((err) => this.closing || this._onerror(err))
-    return true
   }
 
-  // a keypair row goes with nothing owed on it, unless a join since took it over
   /** @private */
-  async _forget(id, publicKey) {
+  _announce(type, { invite, publicKey, secretKey }) {
+    const spec = pickHandle(this.spec, type)
+    return Pairing.cancel(this.mailbox, invite, { spec, writer: { publicKey, secretKey } })
+  }
+
+  // a held cancel takes its writer, and the row it ended, unless a join since took them over
+  /** @private */
+  async _forget(id, { publicKey, invite }) {
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    if (kept && b4a.equals(kept.publicKey, publicKey)) {
-      await this.local.store.del('handle-keypairs', id)
+    if (kept?.invite !== invite || !b4a.equals(kept.publicKey, publicKey)) return
+    await this.local.store.del('handle-keypairs', id)
+    const { data: row } = await this.store.get('handles', id)
+    if (row?.state === 'cancelled' && row.writer === hid.encode(publicKey)) {
+      await this.store.del('handles', id)
     }
   }
 
@@ -1267,15 +1334,22 @@ export class Handle extends ReadyResource {
     const state = row && (row.state || 'in')
     // the writer this device asks with: fixed before the join is written, so a resumed one hears the reply to it
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    const mine = !!kept?.invite && (state === 'asking' || state === 'joining')
+    // an ask another device made since is the one that stands: this device asks anew in its place
+    const latest =
+      state === 'asking' &&
+      !!kept &&
+      (row.writer ? row.writer === hid.encode(kept.publicKey) : kept.invite === row.invite)
+    const mine = !!kept?.invite && (state === 'joining' || latest)
     if (mine && (state === 'joining' || row.invite === invite)) return id
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
-    await this._saveKeyPair(id, mine ? kept : Identity.randomKeyPair(), invite)
+    const writer = mine ? kept : Identity.randomKeyPair()
+    await this._saveKeyPair(id, writer, invite)
     // a room another device of this identity already has the keys of is joined with them
     if (state === 'joining') return id
     // a room she left is asked again under any invite, the one she came in with too
     if (state === 'left' && row.invite === invite) await this.store.call('del-handle', { id })
     const ts = Date.now()
+    const { publicKey, secretKey } = writer
     await this.store.call('add-handle', {
       id,
       type,
@@ -1284,8 +1358,11 @@ export class Handle extends ReadyResource {
       createdAt: ts,
       updatedAt: ts,
       state: 'asking',
-      invite
+      invite,
+      writer: hid.encode(publicKey)
     })
+    const ask = { id: hid.encode(publicKey), handle: id, type, invite, publicKey, secretKey }
+    await this.local.store.put('asks', ask)
     return id
   }
 
@@ -1297,17 +1374,26 @@ export class Handle extends ReadyResource {
     await this.store.set('handles', { id, state, ...fields })
   }
 
-  // how a join ended, on its row, which keeps none of the keys it was handed
+  // how a join ended, on its row, which keeps none of the keys it was handed, and whether it did. A
+  // join ends only its own ask, a cancel the one that stands under any invite of the room
   /** @private */
-  async _over(invite, err) {
+  async _over(id, err, join) {
     const state = OVER[err.code]
-    const id = hid.encode(Invite.parse(invite).key)
     const { data: row } = await this.store.get('handles', id)
-    // a join on its way ends, one seated or over stays as it reads
-    const ends = row?.state === 'asking' || (row?.state === 'joining' && state === 'denied')
-    if (!state || !ends) return
+    // a join ends its own request once it chose its writer, one seated or over stays as it reads
+    const own = !join || (!!join.writer && row?.writer === hid.encode(join.writer.publicKey))
+    const ends =
+      (row?.state === 'asking' && own) || (row?.state === 'joining' && state === 'denied')
+    if (!state || !ends || (join && row.invite !== join.invite)) return false
     const reason = err.reason ?? null
-    await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
+    try {
+      await this.store.set('handles', { id, state, reason, encryptionKey: null, epochs: null })
+    } catch (err) {
+      // an answer that landed since the read moved the row on
+      if (err.code === 'REFUSED') return false
+      throw err
+    }
+    return true
   }
 
   // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
@@ -1400,17 +1486,16 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // the rows that ended go, with their keypairs: a cancel once no peer is owed it, the others once
-  // the app had `KEPT` to show why
+  // the rows that ended go, with their keypairs, once the app had `KEPT` to show why; a cancel sooner,
+  // at a launch of the device that asked once a peer holds it: another device may yet owe it
   /** @private */
   async _sweep() {
     const old = Date.now() - KEPT
     const gone = []
     for (const state of SWEPT) {
       for (const row of (await this.store.get('handles', { state })).data) {
-        if (state === 'cancelled' ? !(await this._retract(row)) : row.updatedAt < old) {
-          gone.push(row.id)
-        }
+        if (row.updatedAt < old) gone.push(row.id)
+        else if (state === 'cancelled') await this._retract(row)
       }
     }
     if (!gone.length) return
@@ -1425,10 +1510,11 @@ export class Handle extends ReadyResource {
   async _carryOn() {
     // the rows not settled, through their index: never every handle
     for (const state of ['asking', 'joining']) {
-      for (const { id, type, invite, encryptionKey } of (await this.store.get('handles', { state }))
-        .data) {
+      for (const { id, type, invite, writer, encryptionKey } of (
+        await this.store.get('handles', { state })
+      ).data) {
         // an answer is heard by the device that asked, and the keys on a row seat any device
-        if (encryptionKey || (await this._asked(id, invite))) this._start(invite, type)
+        if (encryptionKey || (await this._asked(id, invite, writer))) this._start(invite, type)
       }
     }
     for (const { id, type } of (await this.store.get('handles', { state: 'leaving' })).data) {
@@ -1441,6 +1527,7 @@ export class Handle extends ReadyResource {
         this._stop(join, ENDS[row.state](row.reason))
       }
     }
+    for (const ask of (await this.local.store.get('asks')).data) await this._check(ask)
   }
 
   /**
@@ -1587,13 +1674,14 @@ export class Handle extends ReadyResource {
 
   // a device removed from the root is out of every handle: its chain is static, so a handle is
   // told the identity's keys the root removed and those it seats, by a device that stands there,
-  // when that is not what it was told. One compare at a time: two would tell it twice
+  // when that is not what it was told. One compare at a time: two would tell it twice. It is
+  // marked told only once a peer holds what was written within `timeout`: null till then
   /** @private */
-  _prune(child, stamp) {
+  _prune(child, stamp, timeout = SERVED) {
     const run = async () => {
       try {
-        const told = await this._compare(child)
-        return told && (stamp === undefined || (await this._teach(child, stamp)))
+        const told = await this._compare(child, timeout)
+        return told && (stamp === undefined || (await this._teach(child, stamp, timeout)))
       } catch (err) {
         // one that closes as it is told is told again, at its next open or pass
         if (this.closing || child.closing || child.closed) return false
@@ -1605,9 +1693,11 @@ export class Handle extends ReadyResource {
     return pruning
   }
 
-  // covered once it holds what the root holds, or this device has no seat there to tell it from
+  // covered once it holds what the root holds, or this device has nothing to tell it by: a reader
+  // tells from her own core, a seatless write, in a room at the version that brings it. One below
+  // it is marked for this build, so a pass opens it again only for a build that may bring it there
   /** @private */
-  async _compare(child) {
+  async _compare(child, timeout) {
     if (child.closing || child.closed) return false
     const removed = await this.store.removals()
     if (removed.length === 0) return true
@@ -1616,32 +1706,51 @@ export class Handle extends ReadyResource {
     const { store } = child
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
     if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
-      await this._unseat(child, removed)
-    } else {
-      if (!store.writable) return true
-      if (!has(standing, this.identity.device.publicKey)) return false
-      // a root that lags has fewer removed than the handle was told: those add up, and stay
-      const told = await store.told(this.identity.id)
-      const same =
-        removed.every((key) => has(told.removed, key)) &&
-        standing.length === told.standing.length &&
-        standing.every((key) => has(told.standing, key))
-      if (child.closing || child.closed) return false
-      if (!same) {
-        await store.call('revoke', { removed: b4a.concat(removed), standing: b4a.concat(standing) })
-      }
+      if (store.writable) await this._unseat(child, removed)
+      return this._record(child, { told: below(digest(removed, standing), store.meta) }, timeout)
     }
+    if (!has(standing, this.identity.device.publicKey)) return false
+    // a root that lags has fewer removed than the handle was told: those add up, and stay
+    const told = await store.told(this.identity.id)
+    const same =
+      removed.every((key) => has(told.removed, key)) &&
+      standing.length === told.standing.length &&
+      standing.every((key) => has(told.standing, key))
     if (child.closing || child.closed) return false
-    await this._mark(child.id, { told: digest(removed, standing) })
-    return true
+    if (!same) {
+      // a row with no key, or no member, tells nothing by: the proof does
+      const { data: seat } = await store.get('devices', hid.encode(store.writerKey))
+      const proof =
+        seat?.key && seat.memberId
+          ? null
+          : this.identity.sign(admission(store.key, store.writerKey, store.writerKey))
+      await store.call('revoke', {
+        removed: b4a.concat(removed),
+        standing: b4a.concat(standing),
+        proof
+      })
+    }
+    return this._record(child, { told: digest(removed, standing) }, timeout)
   }
 
   // what the extensions tell a room this device may write in, stamped once it is told
   /** @private */
-  async _teach(child, stamp) {
+  async _teach(child, stamp, timeout) {
     if (child.store.writable) for (const { tell } of this._tellers) await tell(child)
+    return this._record(child, { stamp }, timeout)
+  }
+
+  // an open room too: the app may close it before a peer holds what it was told
+  /** @private */
+  async _record(child, marks, timeout) {
+    const { data } = await this.local.store.get('handle-keypairs', child.id)
+    if (data && Object.keys(marks).every((k) => sameBytes(data[k], marks[k]))) return true
+    // a removal counts once a device that stands has it: a peer that holds it may be the removed one
+    const removed = marks.told ? await this.store.removals() : null
+    const holds = await reached(child.store, this.identity.id, removed, timeout)
     if (child.closing || child.closed) return false
-    await this._mark(child.id, { stamp })
+    if (!holds) return null
+    await this._mark(child.id, marks)
     return true
   }
 
@@ -1670,9 +1779,10 @@ export class Handle extends ReadyResource {
     for (const child of this.children) await this._prune(child)
   }
 
-  // the closed rooms are told too, by a pass over those this device has a writer in, when the root's
-  // device lists or the extensions' stamp are not the ones last told to all of them. One pass at a
-  // time: a call while one waits to start joins it
+  // the closed rooms are told too, by a pass over those this device has a writer in, and every room
+  // the identity is in for a removal since this device stood, when the root's device lists or the
+  // extensions' stamp are not the ones last told to all of them. One pass at a time: a call while
+  // one waits to start joins it
   /** @private */
   _tellClosed() {
     if (this._retell) return this._telling
@@ -1690,22 +1800,34 @@ export class Handle extends ReadyResource {
     if (this.closing) return
     const lists = await this._lists()
     const stamp = await this._stamp()
+    // the build too: one that may bring revoke to a room found below it opens that room again
+    const seen = hash([stamp ?? b4a.alloc(0), built(this.spec)])
     const { data: told } = await this.local.store.get('told')
     const listed =
-      !lists ||
-      (told && sameBytes(told.removed, lists.removed) && sameBytes(told.standing, lists.standing))
-    if (listed && sameBytes(told?.stamp, stamp)) return
+      told &&
+      (!lists ||
+        (sameBytes(told.removed, lists.removed) && sameBytes(told.standing, lists.standing)))
+    if (listed && sameBytes(told.stamp, seen)) return
     // a writer in a room is the writer keypair this device keeps for it
     const rooms = []
+    const held = new Set()
     for (let after; ;) {
       const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
       for (const row of data) {
-        if ((lists && !sameBytes(row.told, lists.marked)) || !sameBytes(row.stamp, stamp)) {
+        held.add(row.id)
+        if ((lists && !(await this._marked(row, lists))) || !sameBytes(row.stamp, stamp)) {
           rooms.push({ id: row.id, used: row.used ?? 0 })
         }
       }
       if (data.length < PAGE) break
       after = data[data.length - 1].id
+    }
+    // a room no device that stands may have opened is told a removal too: this device takes a seat.
+    // One the root held when this device first stood is told by the devices that stood then
+    if (lists && told && keysIn(lists.removed).some((key) => !has(keysIn(told.removed), key))) {
+      for (const { id } of (await this.store.get('handles', { state: 'in' })).data) {
+        if (!held.has(id)) rooms.push({ id, used: 0 })
+      }
     }
     rooms.sort((a, b) => b.used - a.used)
     let next = 0
@@ -1713,7 +1835,7 @@ export class Handle extends ReadyResource {
     const tell = async () => {
       while (next < rooms.length && !this.closing) {
         const { id } = rooms[next++]
-        const done = await this._tellOne(id, stamp).catch((err) => {
+        const done = await this._tellOne(id, stamp, lists?.marked).catch((err) => {
           if (!this.closing) this._onerror(err)
           return false
         })
@@ -1723,7 +1845,17 @@ export class Handle extends ReadyResource {
     await Promise.all(Array.from({ length: TELLING }, tell))
     if (!covered || this.closing) return
     const { removed, standing } = lists ?? told ?? {}
-    await this.local.store.set('told', { removed, standing, stamp })
+    await this.local.store.set('told', { removed, standing, stamp: seen })
+  }
+
+  // a room told what the root holds, or found below the version that brings revoke by this build
+  /** @private */
+  async _marked(row, lists) {
+    if (sameBytes(row.told, lists.marked)) return true
+    if (!row.told) return false
+    const { data: handle } = await this.store.get('handles', row.id)
+    const spec = handle && this.spec.handles?.[handle.type]
+    return Boolean(spec) && sameBytes(row.told, below(lists.marked, spec.meta))
   }
 
   // the root's device lists, 32-byte keys back to back, when there is a removal to tell and this
@@ -1747,10 +1879,11 @@ export class Handle extends ReadyResource {
     return hash(b4a.from(JSON.stringify(stamps)))
   }
 
-  // a closed room opened only to be told: no seat claimed, nothing handed to the app. One open
-  // here runs the same compare, behind its own
+  // a closed room opened only to be told: nothing handed to the app. One open here runs the same
+  // compare, behind its own. One no peer serves yet is untold for now and holds no other room:
+  // it waits closed for its turn, a few at a time, and reports its wait once per removal
   /** @private */
-  async _tellOne(id, stamp) {
+  async _tellOne(id, stamp, marked, turn = false) {
     const open = [...this.children].find((c) => c.id === id)
     if (open) return this._prune(open, stamp)
     const loading = this._loading.get(id)
@@ -1758,25 +1891,58 @@ export class Handle extends ReadyResource {
       const child = await loading.catch(() => null)
       return child ? this._prune(child, stamp) : false
     }
-    const telling = this._tellRoom(id, stamp)
-    this._tellings.set(
-      id,
-      telling.catch(() => {})
-    )
-    try {
-      return await telling
-    } finally {
-      this._tellings.delete(id)
+    if (this._tellings.has(id)) return false
+    if (!turn && this._waiting.has(id)) {
+      this._waiting.set(id, { stamp, marked })
+      return false
     }
+    const telling = this._tellRoom(id, stamp, marked, turn)
+    const done = () => this._tellings.delete(id)
+    this._tellings.set(id, telling.then(done, done))
+    // set aside once it is closed, so its turn opens it again
+    const told = await telling
+    if (told !== null) return told
+    this._wait(id, stamp, marked)
+    return false
   }
 
   /** @private */
-  async _tellRoom(id, stamp) {
+  _wait(id, stamp, marked) {
+    this._waiting.set(id, { stamp, marked })
+    if (this._waiters >= TELLING) return
+    this._waiters++
+    this._turns()
+  }
+
+  /** @private */
+  async _turns() {
+    try {
+      while (this._waiting.size && !this.closing) {
+        const [[id, { stamp, marked }]] = this._waiting
+        this._waiting.delete(id)
+        await this._tellOne(id, stamp, marked, true).catch((err) => {
+          if (!this.closing) this._onerror(err)
+        })
+      }
+    } finally {
+      this._waiters--
+    }
+  }
+
+  // null when no peer serves it yet, or holds what it was told: set aside for a turn
+  /** @private */
+  async _tellRoom(id, stamp, marked, turn) {
     const { data: row } = await this.store.get('handles', id)
     // a room left on another device has no row; one still being joined is told by its own open
     if (!row?.encryptionKey) return true
     const { type, key, encryptionKey, epochs } = row
-    const keyPair = await this._loadKeyPair(id)
+    const kept = await this._loadKeyPair(id)
+    const keyPair = kept || Identity.randomKeyPair()
+    // stored before its claim is on the log: a retry claims with it, never with another
+    if (!kept) {
+      const { publicKey, secretKey } = keyPair
+      await this.local.store.put('handle-keypairs', { id, publicKey, secretKey })
+    }
     const child = this._room({
       spec: pickHandle(this.spec, type),
       namespace: `${NS}/handle/${type}/${id}`,
@@ -1787,20 +1953,41 @@ export class Handle extends ReadyResource {
     })
     try {
       await child.ready()
-      return await this._prune(child, stamp)
+      if (!child.store.writable && child.store.length === 0) {
+        if (!turn && !(await served(child.store, SERVED))) return null
+        try {
+          await child.store.claim({ timeout: TIMEOUT })
+        } catch (err) {
+          if (this.closing || child.closing || child.closed) return false
+          if (err.code === 'TIMEOUT') {
+            const { data } = await this.local.store.get('handle-keypairs', id)
+            if (!marked || sameBytes(data?.waited, marked)) return false
+            await this._mark(id, { waited: marked })
+          }
+          this._onerror(err)
+          return false
+        }
+      }
+      const told = await this._prune(child, stamp, turn ? TIMEOUT : SERVED)
+      // told after its pass ended: the next one records the rooms covered
+      if (told && turn) this._tellClosed()
+      // one no peer held on its turn waits for the next pass, not another turn
+      return turn ? Boolean(told) : told
     } finally {
       await child._end().catch(safetyCatch)
     }
   }
 
   // a handle's epochs ride in its root row, which only the identity's devices read: one that
-  // opens the handle later reads history with them, since envelopes in the log address a device
+  // opens the handle later reads history with them, since envelopes in the log address a device.
+  // Written once the root holds no device it removed, which would read them there
   /** @private */
   _carry(child) {
     const save = async () => {
       const epochs = c.encode(epochEntries, child.store.keyring.all())
       const { data: row } = await this.store.get('handles', child.id)
       if (!row || b4a.equals(row.epochs || b4a.alloc(0), epochs)) return
+      if (!(await this.store.rotated())) return
       await this.store.set('handles', { id: row.id, epochs })
     }
     // read when the row changes, and when an announcement applies: it is learned only after that
@@ -1815,11 +2002,15 @@ export class Handle extends ReadyResource {
     child.store.on('epoch', onepoch)
     child.store.on('update', onchild)
     this.store.on('update', onroot)
+    this.store.on('epoch', onepoch)
     child.once('close', () => {
       child.store.off('epoch', onepoch)
       child.store.off('update', onchild)
       this.store.off('update', onroot)
+      this.store.off('epoch', onepoch)
     })
+    // one that rotated before it is carried, as a room made while the root owes a rotation
+    if (child.store.keyring.seq > 0) read().then(save).catch(this._onerror)
   }
 
   // before(me.room.notes, fn): on every handle open now and every one opened later
@@ -1985,9 +2176,62 @@ function digest(removed, standing) {
   return hash([hash(b4a.concat(removed)), hash(b4a.concat(standing))])
 }
 
-// the closed rooms a pass tells at once, and the keypairs it reads at a time
+// the mark of a room below the version that brings revoke, for the build that found it there
+function below(marked, meta = {}) {
+  return hash([marked, b4a.from(JSON.stringify([meta.version, meta.since?.routes]))])
+}
+
+function built(spec) {
+  const handles = Object.values(spec.handles ?? {})
+  return hash(b4a.from(JSON.stringify(handles.map(({ meta = {} }) => [meta.version, meta.since]))))
+}
+
+// the closed rooms a pass tells at once, and those that wait for a peer at once; the keypairs it
+// reads at a time; how long a pass waits for a peer to serve a room, or to hold what it wrote
+// there, before it sets it aside
 const TELLING = 4
 const PAGE = 1000
+const SERVED = 2000
+
+// whether a peer serves a room within `timeout`: its members reach the view
+function served(store, timeout) {
+  return new Promise((resolve) => {
+    const done = (found) => {
+      clearTimeout(timer)
+      store.off('update', check)
+      store.off('close', done)
+      resolve(!!found)
+    }
+    const check = () =>
+      store.get('members', { limit: 1 }).then(
+        (res) => res.data.length > 0 && done(true),
+        () => done(false)
+      )
+    const timer = setTimeout(done, timeout)
+    store.on('update', check)
+    store.once('close', done)
+    check()
+  })
+}
+
+// whether a peer holds every block this device wrote to a room within `timeout`, or with `removed`
+// a device there that is neither this one nor a removed one applied them: one where only the
+// identity's own devices write has no other member to hear it
+async function reached(store, id, removed, timeout) {
+  const { data: devices } = await store.get('devices')
+  // an empty view has not shown yet who else writes there
+  if (devices.length > 0 && devices.every((row) => row.memberId === id)) return true
+  if (removed) return store.heard(removed, timeout).catch(() => false)
+  let timer = null
+  const late = new Promise((resolve) => (timer = setTimeout(resolve, timeout, false)))
+  try {
+    return await Promise.race([store.held().then(() => true), late])
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 // a file as its url names it to the file server
 function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {
@@ -2066,6 +2310,12 @@ function unread(err) {
 
 function has(keys, key) {
   return keys.some((k) => b4a.equals(k, key))
+}
+
+function keysIn(bytes) {
+  const keys = []
+  for (let i = 0; i < (bytes?.byteLength || 0); i += 32) keys.push(bytes.subarray(i, i + 32))
+  return keys
 }
 
 function sameBytes(a, b) {

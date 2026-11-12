@@ -2339,6 +2339,34 @@ test('replication: claim() — same identity, second device, admitted by A’s m
   t.ok(seen, 'a saw b row after claim')
 })
 
+test('replication: heard once another device writes over what this one wrote, not once a peer holds it, and never by a removed device', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await waitForConnection(a.network)
+  await waitForConnection(b.network)
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+  const seat = await waitFor(
+    async () => (await a.db.get('devices', hid.encode(b.db.writerKey))).data
+  )
+
+  const { data: row } = await a.db.put('messages', { text: 'from-a' })
+  const removed = a.db.heard([seat.key], 30000)
+  await a.db.held()
+  await waitFor(async () => (await b.db.get('messages', row.id)).data)
+  t.absent(await a.db.heard([], 500), 'a peer that holds it has not heard it')
+
+  const heard = a.db.heard([], 15000)
+  await b.db.put('messages', { text: 'from-b' })
+  t.ok(await heard, 'heard once the other device writes over it')
+  t.absent(await a.db.heard([seat.key], 1000), 'never by a removed device')
+  await a.db.close()
+  t.absent(await removed.catch(() => false), 'and a wait cut short by a close hears nothing')
+})
+
 test('replication: after("put") on A fires for B-originated writes', async (t) => {
   // hooks run at apply, so every peer runs them on every op, whoever wrote it
   const testnet = await makeTestnet(t)
@@ -4039,7 +4067,8 @@ test('version: a raise that did not hold, as one a reorder voids, is written aga
   await waitFor(() => raises === 1)
   t.is(await versionRow(again), null, 'the first raise did not hold')
 
-  await again.put('messages', { text: 'the next apply' })
+  // a write here would carry the raise in its own batch
+  await stamped(again, db.version, 'add-messages', { id: genId(), text: 'the next apply' })
   await waitFor(async () => (await versionRow(again)) === next)
   t.is(raises, 2, 'the owner raised again')
 })
@@ -4378,6 +4407,61 @@ test("version: a member's device linking on a newer release writes its device ro
   t.ok(device, 'its row is written')
   t.is(device.name, null, 'without the name its version has no field for')
   t.is(await versionRow(phone.db), null, 'a member does not raise')
+})
+
+// a database the build before wrote, opened on a build that asks for the version adding a message's attachment
+async function upgraded(t) {
+  const { db, store, identity } = await bootstrapped(t)
+  const { key, keyPair, encryptionKey } = db
+  await db.close()
+  const s = dated(
+    { version: 2, start: 1, target: 2 },
+    { types: { '@cero/messages': { attachment: 2 } } }
+  )
+  const again = new Database({ store, identity, spec: s, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  return again
+}
+
+test("version: an owner's write on a newer build raises the version in its own batch, so it names what that version adds", async (t) => {
+  const db = await upgraded(t)
+  // the raise the open schedules held back: the write alone raises it
+  db._raise = async () => {}
+  const nodes = appended(db)
+  const attachment = b4a.from('a')
+  const { data: row } = await db.put('messages', { text: 'x', attachment })
+  t.alike((await db.get('messages', row.id)).data.attachment, attachment, 'it keeps the field')
+  t.is(await versionRow(db), 2, 'raised')
+  t.alike(
+    nodes.map(({ version, body }) => [spec.dispatch.decode(body).name, version]),
+    [
+      ['@cero/upgrade', 1],
+      ['@cero/add-messages', 2]
+    ],
+    'the upgrade first, and the write at the version it raised'
+  )
+})
+
+test("version: an owner's removal of what is already gone appends nothing on a newer build, and rotates no key", async (t) => {
+  const db = await upgraded(t)
+  db._raise = async () => {}
+  const nodes = appended(db)
+  const seq = db.keyring.seq
+  await db.del('devices', genId())
+  t.is(nodes.length, 0, 'no raise in front of it')
+  t.is(db.keyring.seq, seq, 'and no rotation')
+})
+
+test("version: an owner's raise on its own is one upgrade", async (t) => {
+  const db = await upgraded(t)
+  const nodes = appended(db)
+  await waitFor(async () => (await versionRow(db)) === 2)
+  t.alike(
+    nodes.map(({ body }) => spec.dispatch.decode(body).name),
+    ['@cero/upgrade'],
+    'it carries no second one'
+  )
 })
 
 test('version: a write naming what the version does not have yet is refused with UNSUPPORTED, and nothing is appended', async (t) => {

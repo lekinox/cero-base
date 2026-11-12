@@ -75,7 +75,9 @@ export const main = {
     state: string,
     reason: string,
     by: string,
-    invite: string
+    invite: string,
+    // the writer of the latest ask, the one request of the identity that stands
+    writer: string
   },
   file: {
     id: required(string),
@@ -215,10 +217,11 @@ export const main = {
     version: required(uint)
   },
   // a device tells the room of its identity's device keys, 32 bytes each, back to back: those
-  // removed, and those that stand
+  // removed, and those that stand. One with no row there signs `proof` over its core
   revoke: {
     removed: bytes,
-    standing: bytes
+    standing: bytes,
+    proof: bytes
   }
 }
 
@@ -252,7 +255,9 @@ export const local = {
     // a digest of the device keys last told to the room, removed and standing
     told: bytes,
     // the extensions' stamp last told to the room
-    stamp: bytes
+    stamp: bytes,
+    // the device keys the room waits to be told, once its wait for a peer was reported
+    waited: bytes
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {
@@ -308,12 +313,23 @@ export const local = {
     epochs: bytes,
     writers: bytes
   },
-  // the root's device lists, 32-byte keys back to back, and the extensions' stamp, last told to
-  // every room this device has a writer in: a launch with the same opens none of them
+  // the root's device lists, 32-byte keys back to back, and a digest of the extensions' stamp and
+  // the build, last told to the rooms: a launch with the same opens none of them
   told: {
     removed: bytes,
     standing: bytes,
     stamp: bytes
+  },
+  // a request this device's writer made: it stays until its row says how it ended, or the room
+  // holds it taken back
+  ask: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    invite: required(string),
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    createdAt: int
   }
 }
 

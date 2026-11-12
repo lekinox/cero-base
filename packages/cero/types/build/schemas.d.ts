@@ -60,6 +60,7 @@ export declare const main: {
         reason: import("@cero-base/core").Prim;
         by: import("@cero-base/core").Prim;
         invite: import("@cero-base/core").Prim;
+        writer: import("@cero-base/core").Prim;
     };
     file: {
         id: import("@cero-base/core").Prim;
@@ -163,6 +164,7 @@ export declare const main: {
     revoke: {
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {
@@ -190,6 +192,7 @@ export declare const local: {
         used: import("@cero-base/core").Prim;
         told: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+        waited: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;
@@ -235,6 +238,15 @@ export declare const local: {
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+    };
+    ask: {
+        id: import("@cero-base/core").Prim;
+        handle: import("@cero-base/core").Prim;
+        type: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        publicKey: import("@cero-base/core").Prim;
+        secretKey: import("@cero-base/core").Prim;
+        createdAt: import("@cero-base/core").Prim;
     };
 };
 export declare const contract: {
