@@ -27,7 +27,7 @@ export const defs = {
     serving: { type: 'serving' },
     topics: { type: 'subscription' },
     told: { type: 'told', kind: 'single' },
-    cancels: { type: 'cancel' }
+    asks: { type: 'ask' }
   }
 }
 

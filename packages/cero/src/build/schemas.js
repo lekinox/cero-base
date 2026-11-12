@@ -315,9 +315,11 @@ export const local = {
     standing: bytes,
     stamp: bytes
   },
-  // a cancel this device owes a room, from a writer a join under another invite took the place of
-  cancel: {
+  // a request this device's writer made: it stays until its row says how it ended, or the room
+  // holds it taken back
+  ask: {
     id: required(string),
+    handle: required(string),
     type: required(string),
     invite: required(string),
     publicKey: required(bytes),

@@ -435,6 +435,8 @@ test('join: a cancel from a second device that then asks under another invite, w
   t.is(ended?.code, 'CANCELLED', 'the join under the first invite ends')
   const left = async () => !(await get(room.requests)).data.some((r) => r.id === request.id)
   t.ok(await waitUntil(left, 5000).catch(() => false), 'its request leaves the room')
+  const row = (await get(a.me.team, room.id)).data
+  t.alike([row?.state, row?.invite], ['asking', second], 'and the join under the other one goes on')
 })
 
 test('join: a cancelled row the app deletes on a second device, while the asking one is offline, still takes the request back once it is online', async (t) => {
@@ -491,6 +493,13 @@ test('join: a cancel takes the request back from the room, and an approve after 
   await waitUntil(async () => (await get(room.requests)).data.length === 0)
   t.pass('the room no longer lists it')
   t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
+  await waitUntil(async () => (await a.me.local.store.get('asks')).data.length === 0)
+  t.is(
+    (await get(a.me.team, room.id)).data?.state,
+    'cancelled',
+    'its row reads cancelled to a launch'
+  )
+  t.is((await open(a.me.team, invite).catch((e) => e))?.code, 'CANCELLED', 'and refuses its invite')
 })
 
 test('join: an open that timed out completes later, and its row reaches in', async (t) => {
@@ -2139,7 +2148,7 @@ test('handles: a held cancel leaves the writer and the row of a join under anoth
   t.is((await get(me.handles, 'room')).data?.state, 'asking', 'and so does its row')
 })
 
-test('handles: a cancel no peer took goes at a launch once it is over 30 days old', async (t) => {
+test('handles: a cancel no peer took goes at a launch once it is over 30 days old, and so does a request no peer took back', async (t) => {
   const { me, dir, testnet } = await ceroOpen(t)
   const retract = Handle.prototype._retract
   Handle.prototype._retract = async () => true
@@ -2147,33 +2156,61 @@ test('handles: a cancel no peer took goes at a launch once it is over 30 days ol
     Handle.prototype._retract = retract
   })
   const { cancel } = Pairing
-  Pairing.cancel = () => new Promise(() => {})
+  const announced = []
+  Pairing.cancel = (mailbox, invite) => {
+    announced.push(invite)
+    return new Promise(() => {})
+  }
   t.teardown(() => void (Pairing.cancel = cancel))
   const at = Date.now() - 31 * 24 * 60 * 60 * 1000
   await me.store.set('handles', standing('young', 'cancelled'))
   await me.store.set('handles', standing('old', 'cancelled'))
   const { data: row } = await me.store.get('handles', 'old')
   await me.store.call('add-handle', { ...row, updatedAt: at })
-  // the cancels a join under another invite left owed, on rows of their own
-  const writer = {
-    publicKey: b4a.alloc(32),
-    secretKey: b4a.alloc(64),
+  // requests whose rows are gone: each is taken back
+  const ask = (id) => ({
+    id,
+    handle: `asked-${id}`,
     type: 'team',
-    invite: 'first'
-  }
-  await me.local.store.put('cancels', { ...writer, id: 'young' })
+    invite: id,
+    publicKey: b4a.alloc(32),
+    secretKey: b4a.alloc(64)
+  })
+  await me.local.store.put('asks', ask('young'))
   const { now } = Date
   Date.now = () => at
-  await me.local.store.put('cancels', { ...writer, id: 'old' }).finally(() => (Date.now = now))
+  await me.local.store.put('asks', ask('old')).finally(() => (Date.now = now))
   await me.close()
 
   const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => again.close().catch(() => {}), { order: 5 })
   t.ok((await get(again.handles, 'young')).data, 'a cancel still owed stays')
   t.absent((await get(again.handles, 'old')).data, 'and goes over 30 days old')
-  const owed = async (id) => (await again.local.store.get('cancels', id)).data
-  await waitUntil(async () => !(await owed('old')))
-  t.ok(await owed('young'), 'so does one a join under another invite left')
+  const asked = async (id) => (await again.local.store.get('asks', id)).data
+  await waitUntil(async () => !(await asked('old')))
+  t.ok(await asked('young'), 'a request still announced stays')
+  t.absent(announced.includes('old'), 'and one over 30 days old goes unannounced')
+})
+
+test('handles: a request taken back is announced once, however often the rows move', async (t) => {
+  const { me } = await ceroOpen(t)
+  const { cancel } = Pairing
+  let announced = 0
+  Pairing.cancel = () => {
+    announced++
+    return new Promise(() => {})
+  }
+  t.teardown(() => void (Pairing.cancel = cancel))
+  const writer = { publicKey: b4a.alloc(32), secretKey: b4a.alloc(64) }
+  await me.local.store.put('asks', {
+    ...writer,
+    id: 'gone',
+    handle: 'gone',
+    type: 'team',
+    invite: 'first'
+  })
+  await Promise.all([me._carryOn(), me._carryOn(), me._carryOn()])
+  t.is(announced, 1)
 })
 
 test('Handle: a page of one type reads through its index the rows, in the order, that filtering every handle gives', async (t) => {
@@ -2792,6 +2829,6 @@ test('join: asked again under another invite before the room holds a cancel, a l
   await accept(room, (await pending())[0])
   await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'in')
   t.pass('and the join under it lands')
-  await waitUntil(async () => (await again.local.store.get('cancels')).data.length === 0)
-  t.pass('the cancel owed goes once the room holds it')
+  await waitUntil(async () => (await again.local.store.get('asks')).data.length === 0)
+  t.pass('and no request of this device is left to take back')
 })

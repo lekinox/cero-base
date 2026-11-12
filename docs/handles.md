@@ -90,7 +90,10 @@ try {
 
 `cero.open` waits a fixed 30 s, then rejects `TIMEOUT`. The join goes on, across restarts: once a
 member answers, the handle appears in `me.room`, so watch that list. An expired invite rejects
-`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
+`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`. The latest ask stands: a join
+with another invite on another device of yours asks again, and the device that asked first takes
+its request back once it is online, its waiting `open` rejecting `CANCELLED`. A cancel, or a row
+the app deletes, takes the request back the same way.
 
 ```js
 const { data: waiting } = await cero.get(me.room, { state: 'asking' }) // still waiting for an answer

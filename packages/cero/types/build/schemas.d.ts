@@ -236,8 +236,9 @@ export declare const local: {
         standing: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
     };
-    cancel: {
+    ask: {
         id: import("@cero-base/core").Prim;
+        handle: import("@cero-base/core").Prim;
         type: import("@cero-base/core").Prim;
         invite: import("@cero-base/core").Prim;
         publicKey: import("@cero-base/core").Prim;
