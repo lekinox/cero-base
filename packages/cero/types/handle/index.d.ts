@@ -521,6 +521,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _teach;
     /** @private */
+    private _record;
+    /** @private */
     private _mark;
     /** @private */
     private _unseat;
