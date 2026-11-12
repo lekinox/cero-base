@@ -223,6 +223,8 @@ export declare class Pairing extends ReadyResource {
     /** @private */
     private _deliver;
     /** @private */
+    private _seat;
+    /** @private */
     private _seats;
     /** @private */
     private _onkeys;

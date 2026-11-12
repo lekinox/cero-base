@@ -407,6 +407,15 @@ export class Pairing extends ReadyResource {
     }
   }
 
+  // the device key of a writer seated here, of a member who stands, or null
+  /** @private */
+  async _seat(writer) {
+    const { data: device } = await this.db.get('devices', hid.encode(writer))
+    if (!device?.memberId) return null
+    const { data: member } = await this.db.get('members', device.memberId)
+    return member ? device.key : null
+  }
+
   // the devices of the members who stand, by id, to the device key each was admitted with
   /** @private */
   async _seats() {
@@ -422,9 +431,9 @@ export class Pairing extends ReadyResource {
   /** @private */
   async _onkeys(message) {
     const { db } = this
-    const seats = await this._seats()
-    const keyOf = (writer) => seats.get(hid.encode(writer))
-    const sent = signer(message, { room: db.key, to: db.writerKey }, keyOf)
+    // one row, the sender's own: a stranger who sends to the address costs no read of every seat
+    const seated = message.byteLength > 32 ? await this._seat(message.subarray(0, 32)) : null
+    const sent = signer(message, { room: db.key, to: db.writerKey }, () => seated)
     const answer = sent && decode(Response, sent.answer)
     if (!answer?.epochs) return false
     await db.learn(answer.epochs, hid.encode(sent.writer))
