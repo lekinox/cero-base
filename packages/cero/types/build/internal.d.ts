@@ -57,6 +57,10 @@ export declare const defs: {
         topics: {
             type: string;
         };
+        told: {
+            type: string;
+            kind: string;
+        };
     };
 };
 export declare const base: {

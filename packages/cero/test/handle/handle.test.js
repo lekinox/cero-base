@@ -1580,3 +1580,84 @@ test('devices: a device its own root does not seat tells no room', async (t) => 
   t.alike(await mine.store.told(phone.me.id), { removed: [], standing: [] }, 'it tells nothing')
   t.ok(await sits(mine, phone), 'and keeps its seat until a device that stands tells')
 })
+
+// ─── devices: the rooms nobody has open are told too ──────
+
+async function relaunch(t, peer, opts = {}) {
+  const me = await cero(peer.dir, spec, { bootstrap: peer.testnet.bootstrap, ...opts })
+  t.teardown(() => me.close().catch(() => {}), { order: 1 })
+  return me
+}
+
+// the root's pass over its closed rooms finished
+const passed = (me) => waitUntil(async () => (await me.local.store.get('told')).data)
+
+// the tellings written, the lists of the handles read and the rooms opened while `act` runs
+async function tally(act, onrevoke = () => {}) {
+  const seen = { tellings: 0, lists: 0, opened: 0 }
+  const { call, get: read } = Database.prototype
+  const ready = Handle.prototype._open
+  Database.prototype.call = function (op, data) {
+    if (op === 'revoke') {
+      seen.tellings++
+      onrevoke()
+    }
+    return call.call(this, op, data)
+  }
+  Database.prototype.get = function (name, query) {
+    if (name === 'handles' && typeof query !== 'string') seen.lists++
+    return read.call(this, name, query)
+  }
+  Handle.prototype._open = function () {
+    if (this.parent) seen.opened++
+    return ready.call(this)
+  }
+  try {
+    await act()
+  } finally {
+    Object.assign(Database.prototype, { call, get: read })
+    Handle.prototype._open = ready
+  }
+  return seen
+}
+
+// three rooms a device made, closed, and its phone linked
+async function closedRooms(t) {
+  const a = await ceroOpen(t)
+  const ids = []
+  for (const name of ['clinic', 'lab', 'ward']) ids.push((await open(a.me.team, { name })).id)
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  await a.me.close()
+  return { a, ids, phone }
+}
+
+// each room, opened at a fresh launch, was told the phone is out: its open tells nothing
+async function toldAtOpen(t, a, ids, phone) {
+  const again = await relaunch(t, a)
+  const seen = await tally(async () => {
+    for (const id of ids) {
+      const room = await open(again.team, { id })
+      t.ok(names((await room.store.told(again.id)).removed, deviceKey(phone)), 'the room was told')
+    }
+    await again._pruneAll()
+  })
+  t.is(seen.tellings, 0, 'and its open tells nothing again')
+}
+
+test('devices: a device removed in the root while three rooms are closed is told to each, none of them handed to the app', async (t) => {
+  const { a, ids, phone } = await closedRooms(t)
+  const me = await relaunch(t, a)
+  const handed = []
+  me.on('handle', (h) => handed.push(h))
+  const seen = await tally(async () => {
+    await del(me.devices, phone.me.device.id)
+    await passed(me)
+  })
+  t.is(seen.tellings, 3, 'each room told once')
+  t.is(seen.lists, 1, 'from one list of the handles')
+  t.alike(handed, [], 'none handed to the app')
+  t.is(me.children.size + me._pending.size, 0, 'and none left open')
+  await me.close()
+  await toldAtOpen(t, a, ids, phone)
+})

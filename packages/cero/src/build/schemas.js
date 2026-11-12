@@ -230,7 +230,9 @@ export const local = {
     id: required(string),
     publicKey: required(bytes),
     secretKey: required(bytes),
-    encryptionKey: bytes
+    encryptionKey: bytes,
+    // when an open last took it: the closed rooms are told the most recently used first
+    used: int
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {
@@ -285,6 +287,12 @@ export const local = {
     encryptionKey: bytes,
     epochs: bytes,
     writers: bytes
+  },
+  // the root's device lists, 32-byte keys back to back, last told to every room this device has a
+  // writer in: a launch with the same lists opens none of them
+  told: {
+    removed: bytes,
+    standing: bytes
   }
 }
 

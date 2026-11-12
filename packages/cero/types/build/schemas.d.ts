@@ -179,6 +179,7 @@ export declare const local: {
         publicKey: import("@cero-base/core").Prim;
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
+        used: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;
@@ -219,6 +220,10 @@ export declare const local: {
         encryptionKey: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
         writers: import("@cero-base/core").Prim;
+    };
+    told: {
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
     };
 };
 export declare const contract: {
