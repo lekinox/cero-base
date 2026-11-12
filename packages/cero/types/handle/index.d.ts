@@ -195,6 +195,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _departing;
     /** @private */
+    _leaving;
+    /** @private */
     _fileServer;
     /** @private */
     _blobs;
@@ -429,6 +431,8 @@ export declare class Handle extends ReadyResource {
      * @private
      */
     private _join;
+    /** @private */
+    private _left;
     /** @private */
     private _landed;
     /** @private */
