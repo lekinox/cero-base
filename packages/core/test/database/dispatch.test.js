@@ -1150,6 +1150,27 @@ test('set-member: a member may still rename itself', async (t) => {
   t.is((await db.get('members', identity.id)).data.name, 'renamed')
 })
 
+test('set-member: a reader sets her own name and nothing else, and nobody else does', async (t) => {
+  const b = await second('member')
+  const c = await second('member')
+  const { db } = await withRole(t, 'owner', { members: [b.row, c.row] })
+  await seat(db, b)
+  await seat(db, c)
+  // her device keeps its row as a reader's does
+  await apply(db, db.writerKey, 'set-member', { ...b.row, role: 'reader', updatedAt: 1 })
+  const row = { ...b.row, role: 'reader', name: 'reader' }
+  const as = (key, change) => apply(db, key, 'set-member', { ...row, ...change })
+  const stored = async () => (await db.get('members', b.id)).data
+
+  t.is(await as(b.writer.publicKey, { updatedAt: 2 }), null)
+  t.is((await stored()).name, 'reader', 'her name lands')
+  await as(b.writer.publicKey, { alias: 'other', updatedAt: 3 })
+  t.absent((await stored()).alias, 'nothing else of her row moves')
+  t.is((await as(b.writer.publicKey, { role: 'owner' }))?.code, 'REFUSED', 'nor her rank')
+  await as(c.writer.publicKey, { name: 'other', updatedAt: 5 })
+  t.is((await stored()).name, 'reader', 'another member renames her not')
+})
+
 test('set-member: a member renaming itself keeps the key it was admitted with', async (t) => {
   const { db, identity } = await withRole(t, 'owner')
   const { data: me } = await db.get('members', identity.id)

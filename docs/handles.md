@@ -165,7 +165,8 @@ await cero.set(room.members, { id: memberId, role: 'admin' })
 The ranks run owner, admin, member, reader. Changing a role needs assign, a new role within your own
 and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invite')` from
 `@cero-base/core/utils` checks a rank in your UI; it knows the four names in the table, and any
-other is `INVALID`.
+other is `INVALID`. Every member sets the `name` and `avatar` of her own row in `room.members`, a
+reader too, which is how `profileSync` shows her profile; a reader sets nothing else of it.
 
 ## Remove a member
 

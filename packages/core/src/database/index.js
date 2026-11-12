@@ -524,8 +524,8 @@ export class Database extends ReadyResource {
 
   /** @private */
   async _commit(ops) {
-    // leaving takes no seat, nor does asking for keys: a reader's own goes in optimistically, apply
-    // admits it
+    // leaving takes no seat, nor does her profile or asking for keys: a reader's own goes in
+    // optimistically, apply admits it
     const optimistic = !this.bee.writable && seatless(ops, this.identity.id)
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
@@ -1640,9 +1640,16 @@ function leaving(ops, id) {
   return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
 }
 
-// what a device without a writer seat may append: its leave, its ask for keys and the close of it
+// what a device without a writer seat may append: its leave, its own member row, its ask for keys
+// and the close of it
 function seatless(ops, id) {
-  return leaving(ops, id) || (ops.length === 1 && ['ask-key', 'del-owed'].includes(ops[0][0]))
+  if (ops.length !== 1) return false
+  const [name, value] = ops[0]
+  return (
+    leaving(ops, id) ||
+    (name === 'set-member' && value?.id === id) ||
+    ['ask-key', 'del-owed'].includes(name)
+  )
 }
 
 const RANGE = new Set(['gt', 'gte', 'lt', 'lte'])

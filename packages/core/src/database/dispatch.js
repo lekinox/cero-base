@@ -59,6 +59,13 @@ function sealed(wrapped) {
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
 
+// what a member who may not write sets on her own row, as profileSync mirrors it
+const PROFILE = ['name', 'avatar']
+const profile = (row, op) => ({
+  ...row,
+  ...Object.fromEntries(PROFILE.filter((f) => f in op).map((f) => [f, op[f]]))
+})
+
 // the request type of each of Cero's routes that writes no ref's row
 const REQUESTS = {
   'add-writer': 'writer',
@@ -720,7 +727,11 @@ export function makeDispatcher({
     const isSelf = op.id === (await getSignerMember(ctx.view, ctx.key))
     const ranks = Boolean(op.role) && op.role !== existing.role
     if (!isSelf && !ranks) return
-    const next = isSelf ? { ...op } : { ...existing }
+    const next = !isSelf
+      ? { ...existing }
+      : can(existing.role, WRITE)
+        ? { ...op }
+        : profile(existing, op)
     next.key = existing.key
     next.role = existing.role
     next.createdAt = existing.createdAt

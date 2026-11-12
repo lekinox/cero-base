@@ -793,6 +793,29 @@ test('profileSync: a joiner profile is visible on the host member list', async (
   t.is(m.avatar, 'g.png', 'joiner avatar visible to host')
 })
 
+test("profileSync: a reader's name and avatar reach the room, though she writes nothing else", async (t) => {
+  const exts = [profileSync()]
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'ps-reader', appExtendSchema, exts))
+
+  const room = await open(host.room)
+  const invite = await cero.invite(room, { role: 'reader', ttl: 60_000 })
+
+  const joined = await open(joiner.room, invite)
+  await waitForConnection(host.network)
+  await waitForConnection(joiner.network)
+  t.absent(joined.store.writable, 'a reader has no seat')
+  await set(joined.members, { id: joiner.identity.id, tag: 'mine' })
+  await set(joiner.profile, { name: 'reader', avatar: 'r.png' })
+
+  const m = await waitUntil(async () => {
+    const { data } = await get(room.members, joiner.identity.id)
+    return data?.avatar === 'r.png' ? data : null
+  })
+  t.is(m.name, 'reader', 'her name reaches the host')
+  t.is(m.role, 'reader', 'at her rank')
+  t.absent(m.tag, 'and nothing else of her row')
+})
+
 test('profileSync: a room opened before the profile syncs once it is set', async (t) => {
   const exts = [profileSync()]
   const me = await openCero(t, await buildSpec(t, 'ps-late', base, exts))
