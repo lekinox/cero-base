@@ -170,6 +170,13 @@ export class Handle extends ReadyResource {
     // the children nobody holds, the least recently used first
     /** @private */
     this._idle = parent ? null : new Set()
+    // the closed rooms a pass is telling, by id: an open of one waits for it to close
+    /** @private */
+    this._tellings = parent ? null : new Map()
+    /** @private */
+    this._telling = null
+    /** @private */
+    this._retell = false
 
     this.store = new Database({
       store: store,
@@ -300,7 +307,10 @@ export class Handle extends ReadyResource {
     if (!this.parent) {
       await this.fileServer.listen()
       await this.mailbox.ready()
-      const prune = this.store.onUpdate('devices', () => this._pruneAll().catch(this._onerror))
+      const prune = this.store.onUpdate('devices', () => {
+        this._pruneAll().catch(this._onerror)
+        this._tellClosed()
+      })
       this.once('close', prune)
       if (this._bluetooth) {
         const off = this.store.onUpdate('profile', () => this._tell().catch(this._onerror))
@@ -311,6 +321,7 @@ export class Handle extends ReadyResource {
       this._offJoins = this.store.onUpdate('handles', () => this._carryOn().catch(this._onerror))
       await this._carryOn().catch(this._onerror)
       this._reserve().catch(this._onerror)
+      this._tellClosed()
       // the handles rows, keyed by push topic, for a cold push process that cannot read the root
       const off = this.store.onUpdate('handles', () => this._index().catch(this._onerror))
       this.once('close', off)
@@ -345,6 +356,8 @@ export class Handle extends ReadyResource {
       ...[...(this.children || [])].map((c) => () => c._end()),
       ...[...(this._pending || [])].map((c) => () => c._end()),
       ...[...(this._ending || [])].map((c) => () => c.closing),
+      // the pass opens no room once the close began: it ends with the rooms it had open
+      () => this._telling,
       () => this._pair?.close()
     ]
     this._epochBlobs = null
@@ -1370,12 +1383,10 @@ export class Handle extends ReadyResource {
       if (data.type !== type) {
         throw CeroError.INVALID(`handle ${id} is type ${data.type}, not ${type}`)
       }
-      let writer = await this._loadKeyPair(id)
-      if (!writer) {
-        writer = Identity.randomKeyPair()
-        // stored before its claim is on the log: a retry claims with it, never with another
-        await this._saveKeyPair(id, writer)
-      }
+      await this._tellings.get(id)
+      // stored before its claim is on the log: a retry claims with it, never with another
+      const writer = (await this._loadKeyPair(id)) || Identity.randomKeyPair()
+      await this._saveKeyPair(id, writer)
       child = this._room({
         spec: pickHandle(this.spec, type),
         namespace: `${NS}/handle/${type}/${id}`,
@@ -1518,6 +1529,98 @@ export class Handle extends ReadyResource {
     for (const child of this.children) await this._prune(child)
   }
 
+  // the closed rooms are told too, by a pass over those this device has a writer in, when the root's
+  // device lists are not the ones last told to all of them. One pass at a time: a call while one
+  // waits to start joins it
+  /** @private */
+  _tellClosed() {
+    if (this._retell) return this._telling
+    this._retell = true
+    const run = () => {
+      this._retell = false
+      return this._pass().catch((err) => this.closing || this._onerror(err))
+    }
+    this._telling = (this._telling ?? Promise.resolve()).then(run)
+    return this._telling
+  }
+
+  /** @private */
+  async _pass() {
+    if (this.closing) return
+    const removed = await this.store.removals()
+    if (removed.length === 0) return
+    const { data: devices } = await this.store.get('devices')
+    const standing = devices.filter((row) => row.key).map((row) => row.key)
+    if (!has(standing, this.identity.device.publicKey)) return
+    const lists = { removed: b4a.concat(removed), standing: b4a.concat(standing) }
+    const { data: told } = await this.local.store.get('told')
+    if (
+      told &&
+      sameBytes(told.removed, lists.removed) &&
+      sameBytes(told.standing, lists.standing)
+    ) {
+      return
+    }
+    // a writer in a room is the writer keypair this device keeps for it
+    const rooms = []
+    for (let after; ;) {
+      const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
+      for (const { id, used } of data) rooms.push({ id, used: used ?? 0 })
+      if (data.length < PAGE) break
+      after = data[data.length - 1].id
+    }
+    rooms.sort((a, b) => b.used - a.used)
+    let next = 0
+    const tell = async () => {
+      while (next < rooms.length && !this.closing) {
+        const { id } = rooms[next++]
+        await this._tellOne(id).catch((err) => this.closing || this._onerror(err))
+      }
+    }
+    await Promise.all(Array.from({ length: TELLING }, tell))
+    if (!this.closing) await this.local.store.set('told', lists)
+  }
+
+  // a closed room opened only to be told: no seat claimed, nothing handed to the app. One open
+  // here is told by its own compare
+  /** @private */
+  async _tellOne(id) {
+    if (this._loading.has(id) || [...this.children].some((c) => c.id === id)) return
+    const telling = this._tellRoom(id)
+    this._tellings.set(
+      id,
+      telling.catch(() => {})
+    )
+    try {
+      await telling
+    } finally {
+      this._tellings.delete(id)
+    }
+  }
+
+  /** @private */
+  async _tellRoom(id) {
+    const { data: row } = await this.store.get('handles', id)
+    // a room left on another device has no row
+    if (!row) return
+    const { type, key, encryptionKey, epochs } = row
+    const keyPair = await this._loadKeyPair(id)
+    const child = this._room({
+      spec: pickHandle(this.spec, type),
+      namespace: `${NS}/handle/${type}/${id}`,
+      key,
+      encryptionKey,
+      epochs: epochs ? c.decode(epochEntries, epochs) : undefined,
+      keyPair: /** @type {KeyPair} */ (keyPair)
+    })
+    try {
+      await child.ready()
+      await this._prune(child)
+    } finally {
+      await child._end().catch(safetyCatch)
+    }
+  }
+
   // a handle's epochs ride in its root row, which only the identity's devices read: one that
   // opens the handle later reads history with them, since envelopes in the log address a device
   /** @private */
@@ -1609,11 +1712,15 @@ export class Handle extends ReadyResource {
    */
   async _saveKeyPair(id, keyPair, invite) {
     if (!keyPair) return
+    // a reopen stamps the row: what a join keeps on it stays
+    const { data: was } = await this.local.store.get('handle-keypairs', id)
     await this.local.store.put('handle-keypairs', {
+      ...was,
       id,
       publicKey: keyPair.publicKey,
       secretKey: keyPair.secretKey,
-      invite
+      ...(invite !== undefined && { invite }),
+      used: Date.now()
     })
   }
 
@@ -1696,6 +1803,10 @@ function reserved(child) {
 
 // the entry type of a row whose type no header carries: no file server url builds it
 const UNSERVED = '\n'
+
+// the closed rooms a pass tells at once, and the keypairs it reads at a time
+const TELLING = 4
+const PAGE = 1000
 
 // a file as its url names it to the file server
 function fileEntry(coreKey, { blockOffset, blockLength, byteOffset, byteLength }, type) {

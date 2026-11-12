@@ -769,6 +769,69 @@ test('revoke: a telling by one who may remove spends the invites that let in on 
   t.ok(await live(db, asks), 'and one that waits for an accept stays')
 })
 
+// an invite with an address of its own, minted straight into the view as a telling is
+async function written(db) {
+  const secret = crypto.randomBytes(32)
+  const invite = Invite.create({ key: db.key, address: Mailbox.getAddress(secret) })
+  await apply(
+    db,
+    db.writerKey,
+    'add-invite',
+    inviteRow(b4a.toHex(invite.id), { secret, reuse: true })
+  )
+  return invite
+}
+
+test('revoke: a telling spends the invites only when it removes a key the room did not hold as removed', async (t) => {
+  const { db, identity, phone, tablet } = await lost(t)
+  const mint = () => written(db)
+  await seat(db, phone)
+  t.is(await tell(db, db.writerKey, [phone], []), null)
+  const invite = await mint()
+  t.is(await tell(db, db.writerKey, [phone], [tablet]), null)
+  t.ok(await live(db, invite), 'a telling that only adds a standing key spends nothing')
+
+  const old = linked(identity)
+  t.is(await seat(db, old), null)
+  t.is(await apply(db, db.writerKey, 'del-device', { id: old.writer.id }), null)
+  const kept = await mint()
+  t.is(await tell(db, db.writerKey, [old], [tablet]), null)
+  t.ok(await live(db, kept), 'nor one that tells a key a removal already took')
+
+  t.is(await tell(db, db.writerKey, [linked(identity)], [tablet]), null)
+  t.absent(await live(db, kept), 'one that adds a removed key spends them')
+  t.is((await spent(db, b4a.toHex(kept.id)))?.reason, 'removed')
+})
+
+test('revoke: a key its member removed without the right to remove is new to a telling by one who may, which spends the invites once', async (t) => {
+  const { db, member, writer, as } = await withMember(t, 'member')
+  await seat(db, { identity: member, writer })
+  const phone = linked(member)
+  await seat(db, phone)
+  const invite = await written(db)
+  t.is(await as('del-device', { id: phone.writer.id }), null)
+  t.ok(await live(db, invite), 'her removal spends nothing')
+  t.is(await tell(db, db.writerKey, [phone], []), null)
+  t.absent(await live(db, invite), "the owner's telling of that key spends it")
+  const kept = await written(db)
+  t.is(await tell(db, db.writerKey, [phone], []), null)
+  t.ok(await live(db, kept), 'and a second telling spends nothing more')
+})
+
+test('revoke: a key her identity told while she might not remove is new to her next telling once she may', async (t) => {
+  const b = await second('member', { createdAt: 1, updatedAt: 1 })
+  const { db } = await withRole(t, 'owner', { members: [b.row] })
+  await seat(db, b)
+  const phone = linked(b.identity)
+  const invite = await written(db)
+  t.is(await tell(db, b.writer.publicKey, [phone], []), null)
+  t.ok(await live(db, invite), 'told by a member, nothing is spent')
+  const admin = { ...b.row, role: 'admin', updatedAt: 2 }
+  t.is(await apply(db, db.writerKey, 'set-member', admin), null)
+  t.is(await tell(db, b.writer.publicKey, [phone], []), null)
+  t.absent(await live(db, invite), 'told again by an admin, the same key spends them')
+})
+
 test('revoke: what a room was told is the same on every device, and after the view is applied again', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()

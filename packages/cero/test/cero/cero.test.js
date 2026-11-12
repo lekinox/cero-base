@@ -2362,7 +2362,7 @@ test('status: a room whose root is behind prunes no device from it', async (t) =
   await me.store.write([['upgrade', { version: me.store.version + 1 }]])
   await waitUntil(() => room.store.behind !== null || null)
   // the root, past this build, reads this device as removed
-  me.store.removed = async () => 'removed'
+  me.store.removals = async () => [me.identity.device.publicKey]
   await t.exception(me._prune(room), /BEHIND/, 'the room does not write')
   t.alike((await get(room.devices)).data, rows, 'a removal it cannot follow is not taken')
 })

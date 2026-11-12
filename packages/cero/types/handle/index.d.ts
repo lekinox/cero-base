@@ -214,6 +214,12 @@ export declare class Handle extends ReadyResource {
     _pruning;
     /** @private */
     _idle;
+    /** @private */
+    _tellings;
+    /** @private */
+    _telling;
+    /** @private */
+    _retell;
     store: Database;
     /** @private */
     _pair;
@@ -492,6 +498,14 @@ export declare class Handle extends ReadyResource {
     private _unseat;
     /** @private */
     private _pruneAll;
+    /** @private */
+    private _tellClosed;
+    /** @private */
+    private _pass;
+    /** @private */
+    private _tellOne;
+    /** @private */
+    private _tellRoom;
     /** @private */
     private _carry;
     /** @private */

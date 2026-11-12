@@ -145,7 +145,9 @@ export const main = {
     // what an identity's devices told of its device keys, 32 bytes each, back to back: those
     // removed, and those that stand whatever linked them
     removed: bytes,
-    standing: bytes
+    standing: bytes,
+    // the open invites were spent when it was written
+    spent: bool
   },
   // this device's live view of a context: computed on read, never stored
   status: {
@@ -246,7 +248,9 @@ export const local = {
     secretKey: required(bytes),
     encryptionKey: bytes,
     // the invite this writer asks with, while its join is this device's to carry
-    invite: string
+    invite: string,
+    // when an open last took it: the closed rooms are told the most recently used first
+    used: int
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {
@@ -301,6 +305,12 @@ export const local = {
     encryptionKey: bytes,
     epochs: bytes,
     writers: bytes
+  },
+  // the root's device lists, 32-byte keys back to back, last told to every room this device has a
+  // writer in: a launch with the same lists opens none of them
+  told: {
+    removed: bytes,
+    standing: bytes
   }
 }
 

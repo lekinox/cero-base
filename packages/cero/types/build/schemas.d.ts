@@ -110,6 +110,7 @@ export declare const main: {
         by: import("@cero-base/core").Prim;
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
+        spent: import("@cero-base/core").Prim;
     };
     status: {
         role: import("@cero-base/core").Prim;
@@ -187,6 +188,7 @@ export declare const local: {
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
         invite: import("@cero-base/core").Prim;
+        used: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;
@@ -227,6 +229,10 @@ export declare const local: {
         encryptionKey: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
         writers: import("@cero-base/core").Prim;
+    };
+    told: {
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
     };
 };
 export declare const contract: {
