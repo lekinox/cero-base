@@ -78,7 +78,6 @@ export declare const main: {
         commit: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
         aside: import("@cero-base/core").Prim;
-        writer: import("@cero-base/core").Prim;
     };
     join: {
         box: import("@cero-base/core").Prim;

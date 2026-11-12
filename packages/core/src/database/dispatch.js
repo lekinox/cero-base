@@ -803,12 +803,12 @@ export function makeDispatcher({
     const role = await getSignerRole(ctx.view, ctx.key)
     const aside = !can(role, REMOVE)
     // a reorder can take her rank after she wrote under her key: kept, what she wrote reads
-    if (aside && !(role && (await asides(ctx.view)))) {
+    if (aside && !(can(role, WRITE) && (await asides(ctx.view)))) {
       throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
     }
     const rows = await ctx.view.find(`@${ns}/${EPOCHS}`, {}).toArray()
     const taken = rows.find((r) => r.stamp === op.stamp)
-    // one set aside never claims a stamp from a rotation that counts
+    // one key per stamp: a counted rotation always lands, and takes it from one set aside
     if (taken && (aside || !taken.aside)) return
     if (taken) await ctx.view.delete(`@${ns}/${EPOCHS}`, { epoch: taken.epoch })
     // sequence numbers order epochs; concurrent rotations get consecutive sequences, both readable
@@ -819,8 +819,7 @@ export function makeDispatcher({
       wrapped: op.wrapped,
       createdAt: op.createdAt || 0,
       commit: op.commit,
-      aside,
-      writer: ctx.key
+      aside
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
     // sealed before a removal it crossed, it names a device taken out since: one more is owed

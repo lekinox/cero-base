@@ -58,13 +58,12 @@ export declare class Rotation {
         commit: Uint8Array;
     }): Promise<void>;
     /**
-     * A block met under a key this device does not hold: a rotation its writer set aside is opened now.
+     * A block met under a key this device does not hold: a rotation set aside is opened now.
      *
      * @param {number} stamp
-     * @param {Uint8Array} [writer]  The writer of the block.
      * @returns {Uint8Array | null}
      */
-    meet(stamp: number, writer?: Uint8Array): Uint8Array | null;
+    meet(stamp: number): Uint8Array | null;
     /**
      * A secret handed over before its announcement landed here: kept, and checked against the
      * commitment when it does.
@@ -80,9 +79,12 @@ export declare class Rotation {
     /** @private */
     private _handed;
     /**
-     * @returns {Promise<boolean>} Whether the log's newest key is one this device cannot open.
+     * @returns {Promise<boolean>} Whether this device cannot open the log's newest key, or one set
+     * aside that a block it met was written under.
      */
     lacks(): Promise<boolean>;
+    /** @private */
+    private _lacking;
     /**
      * Safety net after boot: an epoch applied but never saved, e.g. a crash between a
      * rotation's append and its save, is learned from the epochs collection.
