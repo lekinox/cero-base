@@ -169,7 +169,7 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 | `cero.leave(room)`                            | `undefined`                   | Remove yourself from its members, drop it from your list on every device and close it here. `INVALID` on the root, and for the last owner of a handle others are in. `BEHIND` while the root is behind.                             |
 | `cero.removed(room, id)`                      | `'removed'`, `'left'`, `null` | Whether a member is out for good, as this device has seen it: taken out, or left on her own. `null` for a member, someone let in again, a stranger, or a going that has not reached this device yet. [Handles](handles.md#removed). |
 | `cero.close(ctx)`                             | `undefined`                   | Close a handle, or `me` and everything under it. The data stays.                                                                                                                                                                    |
-| `cero.cancel(me, invite)`                     | `true` if a join was asking   | Give up a join for good, from any device: its row reads `cancelled` until the next launch deletes it. Its waiting `open` rejects with `CANCELLED`.                                                                                  |
+| `cero.cancel(me, invite)`                     | `true` if a join was asking   | Give up a join for good, from any device: its row reads `cancelled` until the next launch deletes it, its waiting `open` rejects with `CANCELLED`, and its request leaves the handle's `requests` unless a member let it in first.  |
 
 `accept` and `deny` need the invite permission (`REFUSED`) and throw `UNKNOWN` for a request already settled or not seen yet.
 

@@ -1097,7 +1097,10 @@ export class Database extends ReadyResource {
       const plain = this.bee.plain.has(plainId(node.key, node.length - 1))
       if (plain && !this._joins(op.body)) {
         this._onerror(
-          CeroError.REFUSED('key', 'a block written without the key carries a join only')
+          CeroError.REFUSED(
+            'key',
+            'a block written without the key carries a join or its cancel only'
+          )
         )
         continue
       }
@@ -1199,7 +1202,8 @@ export class Database extends ReadyResource {
   /** @private */
   _joins(body) {
     try {
-      return this.spec.dispatch.decode(body).name === `@${this.ns}/join`
+      const { name } = this.spec.dispatch.decode(body)
+      return name === `@${this.ns}/join` || name === `@${this.ns}/cancel-join`
     } catch {
       return false
     }

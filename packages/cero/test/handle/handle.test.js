@@ -388,14 +388,28 @@ test('join: a second device reads asking, joining and in, and carries the join t
   t.ok(seated.store.writable, 'and took its seat')
 })
 
-test('join: a cancel from a second device ends the join on the first with CANCELLED', async (t) => {
-  const { invite, a, b, states } = await twins(t)
+test('join: a cancel from a second device ends the join on the first with CANCELLED, and its request goes from the room', async (t) => {
+  const { room, invite, a, b, states } = await twins(t)
   const joining = open(a.me.team, invite).catch((e) => e)
   await waitUntil(() => states.includes('asking'))
+  await nextRequest(room)
   t.ok(await cero.cancel(b.me, invite), 'no join of its own, the second device cancels it')
   t.is((await joining).code, 'CANCELLED')
   await waitUntil(() => a.me._joining.size === 0)
   t.pass('the first device stopped carrying it')
+  await waitUntil(async () => (await get(room.requests)).data.length === 0)
+  t.pass('the room no longer lists it')
+})
+
+test('join: a cancel takes the request back from the room, and an approve after it lets nobody in', async (t) => {
+  const { room, invite, a } = await twins(t)
+  const joining = open(a.me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  t.ok(await cero.cancel(a.me, invite))
+  t.is((await joining).code, 'CANCELLED')
+  await waitUntil(async () => (await get(room.requests)).data.length === 0)
+  t.pass('the room no longer lists it')
+  t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
 })
 
 test('join: an open that timed out completes later, and its row reaches in', async (t) => {

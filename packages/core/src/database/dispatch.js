@@ -1218,6 +1218,12 @@ export function makeDispatcher({
     await forget(ctx, row)
     await refuse(ctx, row, op.reason || '')
   })
+  // the joiner's own core takes back its join while it waits: an accept that landed first stands
+  add('cancel-join', async (op, ctx) => {
+    selfOnly(op, ctx)
+    const row = await ctx.view.get(requests, { id: op.id })
+    if (row && !row.admitted) await drop(ctx, 'requests', row.id)
+  })
   // only a join writes a request
   const joinsOnly = async () => {
     throw CeroError.REFUSED('request')

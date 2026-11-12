@@ -130,7 +130,6 @@ test('a join its joiner cancels leaves Waiting', async ({ launch }) => {
 })
 
 test('the request of a join its joiner cancels goes from the room', async ({ launch }) => {
-  test.fail(true, 'cero.cancel ends the join on the joiner side only: the room keeps its request')
   const { alice, bob } = await asked(launch)
   await expect(requests(alice.page)).toHaveCount(1)
 
