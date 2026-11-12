@@ -22,6 +22,7 @@ const fixtures = join(here, '..', 'fixtures')
 const define = ({ schema, t }) =>
   schema({
     profile: t.single({ name: t.string }),
+    members: t.extend({ alias: t.string }),
     notes: t.collection({ text: t.string }),
     room: { messages: t.collection({ text: t.string }) }
   })
@@ -296,5 +297,56 @@ test('compat: a join cancelled in a room the previous release hosts leaves every
     ids(await get(mine.members)),
     ids(await old.get(theirs.members)),
     'both releases list the same members'
+  )
+})
+
+test('compat: a reader on this release writes no row of hers in a room the previous release hosts, and both releases hold the same member row', async (t) => {
+  const { old, before } = await previous()
+  // the app as it shipped and upgraded: the room stays at the version the previous release hosts
+  const shipped = await shippedSpec()
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const owner = await old.cero(await t.tmp(), before, opts)
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const me = await cero(await t.tmp(), shipped, opts)
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+
+  const theirs = await old.open(owner.room, { name: 'shared' })
+  const mine = await open(me.room, await old.invite(theirs, { role: 'reader' }))
+  const { length } = mine.store
+  const err = await set(mine.members, { id: me.id, name: 'Ana', alias: 'A' }).catch((e) => e)
+  t.is(err?.code, 'REFUSED', 'the previous release would take every field of it')
+  t.is(mine.store.length, length, 'nothing goes in the log')
+  await old.put(theirs.messages, { text: 'after' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  t.alike(
+    (await get(mine.members, me.id)).data,
+    (await old.get(theirs.members, me.id)).data,
+    'the same row on both'
+  )
+})
+
+test('compat: a reader on this release with a profile opens a room the previous release hosts and the app hears no error of it', async (t) => {
+  const { old, before } = await previous()
+  const shipped = await shippedSpec()
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const owner = await old.cero(await t.tmp(), before, opts)
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const errors = []
+  const me = await cero(await t.tmp(), shipped, { ...opts, onerror: (err) => errors.push(err) })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  await set(me.profile, { name: 'Ana' })
+
+  const theirs = await old.open(owner.room, { name: 'shared' })
+  const mine = await open(me.room, await old.invite(theirs, { role: 'reader' }))
+  await old.put(theirs.messages, { text: 'after' })
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1)
+  await set(me.profile, { name: 'Ana B' })
+  await waitUntil(() => errors.length > 0, 3000).catch(() => {})
+  t.alike(
+    errors.map((err) => err.code),
+    [],
+    'the profile the bundled sync mirrors raises nothing'
   )
 })

@@ -1388,6 +1388,13 @@ export class Database extends ReadyResource {
     return Math.min(this.version, await this.dispatcher.version(view))
   }
 
+  // whether a device with no seat writes its own member row at the version this room is at
+  /** @private */
+  async _seatless() {
+    const since = this.meta.since?.routes[`@${this.ns}/ask-key`] ?? 0
+    return since <= (await this._stamp(this.view))
+  }
+
   // every op runs in a throwaway transaction with host effects stubbed; a throwing handler rejects the
   // write. Each is encoded and stamped as of the version it meets, an upgrade earlier in the batch
   // included, as apply will run it
@@ -1652,15 +1659,15 @@ function leaving(ops, id) {
   return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
 }
 
-// what a device without a writer seat may append: its leave, its own member row, its ask for keys
-// and the close of it
+// what a device without a writer seat may append: its leave, its own member row, what its
+// identity's devices are, its ask for keys and the close of it
 function seatless(ops, id) {
   if (ops.length !== 1) return false
   const [name, value] = ops[0]
   return (
     leaving(ops, id) ||
     (name === 'set-member' && value?.id === id) ||
-    ['ask-key', 'del-owed'].includes(name)
+    ['revoke', 'ask-key', 'del-owed'].includes(name)
   )
 }
 

@@ -1482,9 +1482,9 @@ const asked = (me) =>
   waitUntil(async () => (await get(me.requests)).data.find((r) => !r.admitted) || null)
 
 // a new device linked from `from`, accepted there
-async function linkTo(t, from) {
+async function linkTo(t, from, opts) {
   const invite = await cero.invite(from.me)
-  const linking = ceroOpen(t, { testnet: from.testnet, invite })
+  const linking = ceroOpen(t, { testnet: from.testnet, invite, ...opts })
   await cero.accept(from.me, await asked(from.me))
   return linking
 }
@@ -2387,11 +2387,36 @@ test('status: owed is true while this device waits for the keys it asked for, an
   t.pass('and not once it was sent them, and reads what was written under them')
 })
 
-test('devices: a reader in a room hears no error when its root removes a device, and the room is told nothing by it', async (t) => {
+test('devices: a room where the identity only reads is told by a device of hers with no row there, the removed device loses its row, and one who may remove rotates', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'pre' })
   const errors = []
-  const b = await ceroOpen(t, { testnet: a.testnet, onerror: (err) => errors.push(err) })
+  const b = await ceroOpen(t, { testnet: a.testnet })
+  const phone = await linkTo(t, b, { onerror: (err) => errors.push(err) })
+  const seen = await open(b.me.team, await cero.invite(room, { role: 'reader' }))
+  await waitUntil(() => sits(room, b))
+  const theirs = await open(phone.me.team, { id: seen.id })
+  await waitUntil(async () => (await get(theirs.messages)).data.length === 1)
+  t.absent(await sits(room, phone), 'her other device holds no row there')
+
+  await del(phone.me.devices, b.me.device.id)
+  const told = await waitUntil(async () => {
+    const told = await room.store.told(b.me.id)
+    return names(told.removed, deviceKey(b)) ? told : null
+  })
+  t.alike(told.standing, [deviceKey(phone)], 'told the key that stands')
+  await waitUntil(async () => !(await sits(room, b)))
+  t.pass('the removed device has no row there')
+  await waitUntil(() => room.store.keyring.seq === 1)
+  t.pass('and the host rotates')
+  t.alike(errors, [], 'with no error')
+})
+
+test('devices: a room where the identity only reads is told by the device of hers that sat there', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await ceroOpen(t, { testnet: a.testnet })
   const seen = await open(b.me.team, await cero.invite(room, { role: 'reader' }))
   const phone = await linkTo(t, b)
   await seats(b.me, 2)
@@ -2399,8 +2424,44 @@ test('devices: a reader in a room hears no error when its root removes a device,
   await del(b.me.devices, phone.me.device.id)
   await b.me._pruneAll()
   t.absent(seen.store.writable, 'a reader has no seat')
-  t.alike(errors, [], 'its compare writes nothing')
-  t.alike(await room.store.told(b.me.id), { removed: [], standing: [] })
+  const told = await waitUntil(async () => {
+    const told = await room.store.told(b.me.id)
+    return names(told.removed, deviceKey(phone)) ? told : null
+  })
+  t.alike(told.standing, [deviceKey(b)], 'told the key that stands')
+  await waitUntil(() => room.store.keyring.seq === 1)
+  t.pass('the removed device held the key through the root: the host rotates')
+})
+
+test('devices: a room below the version that brings revoke, where the identity only reads, is told nothing and hears no error', async (t) => {
+  const team = spec.handles.team
+  const { since } = team.meta
+  const routes = { ...since.routes, '@cero/revoke': team.meta.version + 1 }
+  const meta = { ...team.meta, since: { ...since, routes } }
+  const older = { ...spec, handles: { ...spec.handles, team: { ...team, meta } } }
+  const testnet = await makeTestnet(t)
+  const errors = []
+  const launch = async (opts) => {
+    const onerror = (err) => errors.push(err)
+    const me = await cero(await t.tmp(), older, { bootstrap: testnet.bootstrap, onerror, ...opts })
+    t.teardown(() => me.close().catch(() => {}), { order: 5 })
+    return { me }
+  }
+  const a = await launch()
+  const room = await open(a.me.team, { name: 'clinic' })
+  const b = await launch()
+  const linking = launch({ invite: await cero.invite(b.me) })
+  await cero.accept(b.me, await asked(b.me))
+  const phone = await linking
+  const seen = await open(b.me.team, await cero.invite(room, { role: 'reader' }))
+  await waitUntil(() => sits(room, b))
+  const theirs = await open(phone.me.team, { id: seen.id })
+  await waitUntil(() => theirs.store.opened)
+
+  await del(phone.me.devices, b.me.device.id)
+  await phone.me._pruneAll()
+  t.alike(errors, [], 'a reader there has nothing to tell it by')
+  t.alike(await room.store.told(b.me.id), { removed: [], standing: [] }, 'and tells nothing')
 })
 
 test('devices: a room told what the root holds is not written to again at the next open', async (t) => {

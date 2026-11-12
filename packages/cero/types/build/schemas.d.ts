@@ -163,6 +163,7 @@ export declare const main: {
     revoke: {
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {

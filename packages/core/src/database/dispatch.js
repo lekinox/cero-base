@@ -675,20 +675,38 @@ export function makeDispatcher({
     return keys.slice(cut + 1).some((key) => has(standing, key))
   }
 
+  // the chain of the device that tells, and whether it sits here: its seat's, or for a member's
+  // device with none here, a reader's other one, the chain of the proof its identity signs over
+  // the core it tells from
+  async function teller(op, ctx) {
+    if (!ctx.key) return {}
+    const device = await getDevice(ctx.view, hid.encode(ctx.key))
+    if (device) return { chain: device.memberId && device.key && seatChain(device), sits: true }
+    const chain = Identity.chain(op.proof)
+    if (!Identity.verify(op.proof, admission(ctx.dbKey, ctx.key, ctx.key), chain[0])) return {}
+    return { chain: (await getMember(ctx.view, hid.encode(chain[0]))) && chain, sits: false }
+  }
+
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats
   // of the identity whose chain no longer stands go, with the joins that wait or were promised
   // through one. Told by someone who may remove, a key no removal that spent the open invites
   // covers is a removal by her
   add('revoke', async (op, ctx) => {
-    const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
-    if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
-    if (!(await stands(ctx.view, seatChain(device)))) throw CeroError.REFUSED('removed')
-    const { memberId } = device
+    const { chain, sits } = await teller(op, ctx)
+    if (!chain) throw CeroError.REFUSED('device')
+    if (!(await stands(ctx.view, chain))) throw CeroError.REFUSED('removed')
+    const memberId = hid.encode(chain[0])
     const id = toldId(memberId)
     const told = await ctx.view.get(removals, { id })
     const before = keysOf(told?.removed)
-    const added = keysOf(op.removed).filter((key) => !has(before, key))
+    const named = keysOf(op.removed).filter((key) => !has(before, key))
+    // one with no row here takes out only a device that has one, or the removed one, telling
+    // first, would shut out a sibling that never sat here
+    const rowed = (await ctx.view.find(`@${ns}/devices`, {}).toArray())
+      .filter((d) => d.memberId === memberId && d.key)
+      .map((d) => d.key)
+    const added = sits ? named : named.filter((key) => has(rowed, key))
     const removed = [...before, ...added]
     let uncovered = false
     for (const key of told?.spent ? added : removed) {
@@ -701,7 +719,7 @@ export function makeDispatcher({
     await ctx.view.insert(removals, row)
     // a removed device that never sat here may hold the key through its identity's root, unless
     // the room was made after the removal
-    if (added.length && !ctx.host.genesis) await owe(ctx.view)
+    if (named.length && !ctx.host.genesis) await owe(ctx.view)
     for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (seated.memberId !== memberId || !seated.key) continue
       if (await stands(ctx.view, seatChain(seated))) continue
@@ -738,6 +756,14 @@ export function makeDispatcher({
     const isSelf = op.id === (await getSignerMember(ctx.view, ctx.key))
     const ranks = Boolean(op.role) && op.role !== existing.role
     if (!isSelf && !ranks) return
+    // a release before seatless writes takes every field of a reader's row: below it, none goes in
+    if (
+      isSelf &&
+      !can(existing.role, WRITE) &&
+      (since?.routes[`@${ns}/ask-key`] ?? 0) > ctx.stamp
+    ) {
+      throw CeroError.REFUSED('route', 'a reader writes her row in a room at a newer version')
+    }
     const next = !isSelf
       ? { ...existing }
       : can(existing.role, WRITE)
@@ -912,13 +938,16 @@ export function makeDispatcher({
     const kept = { key: existing?.key, chain: existing?.chain }
     await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), ...kept })
   })
-  // another device of its member renames it, and changes nothing else of the row
+  // another device of its member renames it while it stands, and changes nothing else of the row
   add('set-device', async (op, ctx) => {
     const existing = await getDevice(ctx.view, op.id)
     const ts = op.updatedAt || 0
     if (ctx.key && existing && op.id !== hid.encode(ctx.key)) {
       const by = await getDevice(ctx.view, hid.encode(ctx.key))
       if (!by?.memberId || by.memberId !== existing.memberId) throw CeroError.REFUSED('device')
+      if (existing.key && !(await stands(ctx.view, seatChain(existing)))) {
+        throw CeroError.REFUSED('removed')
+      }
       await save(ctx, 'set', 'devices', { ...existing, name: op.name, updatedAt: ts })
       return
     }

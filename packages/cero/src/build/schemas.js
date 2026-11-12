@@ -215,10 +215,11 @@ export const main = {
     version: required(uint)
   },
   // a device tells the room of its identity's device keys, 32 bytes each, back to back: those
-  // removed, and those that stand
+  // removed, and those that stand. One with no row there signs `proof` over its core
   revoke: {
     removed: bytes,
-    standing: bytes
+    standing: bytes,
+    proof: bytes
   }
 }
 
