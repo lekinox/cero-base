@@ -3061,3 +3061,27 @@ test('removal: a promise that goes with its device or its member leaves a refusa
   t.absent(await promise(db, other))
   t.is((await refusal(db, hid.encode(other)))?.reason, 'removed', 'made to a member removed')
 })
+
+test('removal: one who left, let back in by an accept on a single-use invite older than her leaving, keeps her promise through it', async (t) => {
+  const { db, id } = await withMember(t, 'member')
+  const first = await addressed(db, { reuse: true })
+  const once = await addressed(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, first, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  t.is(await apply(db, writer, 'del-member', { id: identity.id }), null, 'she leaves')
+
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, again, 'join', named(db, once, { identity, writer: again }))
+  t.absent((await promise(db, again))?.admitted, 'she waits, though the invite asks for no accept')
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(again) }), null)
+  t.ok((await promise(db, again))?.promised)
+  t.is((await spent(db, b4a.toHex(once.id)))?.confirm, true, 'the invite is spent by an accept')
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.ok((await promise(db, again))?.promised, 'so the promise a member made stays')
+  t.absent(await refusal(db, hid.encode(again)))
+  t.is(await claimed(db, identity, again), null, 'and her device claims after')
+  t.is((await db.get('devices', hid.encode(again))).data?.memberId, identity.id)
+})

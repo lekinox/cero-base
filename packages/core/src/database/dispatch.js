@@ -1000,7 +1000,9 @@ export function makeDispatcher({
   add('accept', async (op, ctx) => {
     const waiting = await ctx.view.get(requests, { id: op.id })
     if (!waiting || waiting.admitted) return
-    const invite = await ctx.view.get(invites, { id: waiting.invite })
+    const live = await ctx.view.get(invites, { id: waiting.invite })
+    // spent by this, it says a member let the join in, whatever it asked for itself
+    const invite = live && { ...live, confirm: true }
     const r = await getSignerRole(ctx.view, ctx.key)
     const role = op.role || invite?.role
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {
