@@ -309,7 +309,7 @@ export const local = {
     writers: bytes
   },
   // the root's device lists, 32-byte keys back to back, and the extensions' stamp, last told to
-  // every room this device has a writer in: a launch with the same opens none of them
+  // the rooms: a launch with the same opens none of them
   told: {
     removed: bytes,
     standing: bytes,

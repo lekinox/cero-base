@@ -1022,6 +1022,9 @@ export class Handle extends ReadyResource {
 
       const ts = Date.now()
       const writerKey = child.store.writerKey
+      const { meta, ns, target } = child.store
+      const lists =
+        (meta.since?.routes[`@${ns}/revoke`] ?? 0) <= target ? await this._lists() : null
       // one batch, so a handle's first ops land together
       await child.store.tx(async (tx) => {
         // first, so the rest is written at the version
@@ -1040,6 +1043,8 @@ export class Handle extends ReadyResource {
           createdAt: ts,
           updatedAt: ts
         })
+        // the removals the root holds are in the room from its start: told later, they would rotate it
+        if (lists) await tx.call('revoke', { removed: lists.removed, standing: lists.standing })
       })
       await this.store.call('add-handle', {
         id,
@@ -1671,9 +1676,9 @@ export class Handle extends ReadyResource {
     for (const child of this.children) await this._prune(child)
   }
 
-  // the closed rooms are told too, by a pass over those this device has a writer in, when the root's
-  // device lists or the extensions' stamp are not the ones last told to all of them. One pass at a
-  // time: a call while one waits to start joins it
+  // the closed rooms are told too, by a pass over those this device has a writer in, and every room
+  // the identity is in for a removal, when the root's device lists or the extensions' stamp are not
+  // the ones last told to all of them. One pass at a time: a call while one waits to start joins it
   /** @private */
   _tellClosed() {
     if (this._retell) return this._telling
@@ -1698,15 +1703,23 @@ export class Handle extends ReadyResource {
     if (listed && sameBytes(told?.stamp, stamp)) return
     // a writer in a room is the writer keypair this device keeps for it
     const rooms = []
+    const held = new Set()
     for (let after; ;) {
       const { data } = await this.local.store.get('handle-keypairs', { gt: after, limit: PAGE })
       for (const row of data) {
+        held.add(row.id)
         if ((lists && !sameBytes(row.told, lists.marked)) || !sameBytes(row.stamp, stamp)) {
           rooms.push({ id: row.id, used: row.used ?? 0 })
         }
       }
       if (data.length < PAGE) break
       after = data[data.length - 1].id
+    }
+    // a room no device that stands may have opened is told a removal too: this device takes a seat
+    if (!listed) {
+      for (const { id } of (await this.store.get('handles', { state: 'in' })).data) {
+        if (!held.has(id)) rooms.push({ id, used: 0 })
+      }
     }
     rooms.sort((a, b) => b.used - a.used)
     let next = 0
@@ -1748,8 +1761,8 @@ export class Handle extends ReadyResource {
     return hash(b4a.from(JSON.stringify(stamps)))
   }
 
-  // a closed room opened only to be told: no seat claimed, nothing handed to the app. One open
-  // here runs the same compare, behind its own
+  // a closed room opened only to be told: nothing handed to the app. One open here runs the same
+  // compare, behind its own
   /** @private */
   async _tellOne(id, stamp) {
     const open = [...this.children].find((c) => c.id === id)
@@ -1777,7 +1790,13 @@ export class Handle extends ReadyResource {
     // a room left on another device has no row; one still being joined is told by its own open
     if (!row?.encryptionKey) return true
     const { type, key, encryptionKey, epochs } = row
-    const keyPair = await this._loadKeyPair(id)
+    const kept = await this._loadKeyPair(id)
+    const keyPair = kept || Identity.randomKeyPair()
+    // stored before its claim is on the log: a retry claims with it, never with another
+    if (!kept) {
+      const { publicKey, secretKey } = keyPair
+      await this.local.store.put('handle-keypairs', { id, publicKey, secretKey })
+    }
     const child = this._room({
       spec: pickHandle(this.spec, type),
       namespace: `${NS}/handle/${type}/${id}`,
@@ -1788,6 +1807,9 @@ export class Handle extends ReadyResource {
     })
     try {
       await child.ready()
+      if (!child.store.writable && child.store.length === 0) {
+        await child.store.claim({ timeout: TIMEOUT })
+      }
       return await this._prune(child, stamp)
     } finally {
       await child._end().catch(safetyCatch)

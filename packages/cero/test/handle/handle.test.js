@@ -1701,6 +1701,39 @@ test('devices: a root update tells the rooms a device has open', async (t) => {
   t.is(room.store.length, before + 2, 'told once, by the device that has it open, and rotated')
 })
 
+test('devices: a room made after a removal holds it from its first batch, and rotates nothing when it is told', async (t) => {
+  const a = await ceroOpen(t)
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  await del(a.me.devices, phone.me.device.id)
+  await passed(a.me)
+
+  const room = await open(a.me.team, { name: 'clinic' })
+  const told = await room.store.told(a.me.id)
+  t.ok(names(told.removed, deviceKey(phone)), 'the removal is in the room')
+  t.ok(names(told.standing, deviceKey(a)), 'with the device that stands')
+  await a.me._pruneAll()
+  await a.me._tellClosed()
+  await room.store.rotation._audit()
+  t.is(room.store.keyring.seq, 0, 'and no key rotated')
+})
+
+test('devices: a room only the removed device and a closed one had opened is told by a device that never opened it', async (t) => {
+  const laptop = await ceroOpen(t)
+  const phone = await linkTo(t, laptop)
+  const lab = await open(phone.me.team, { name: 'lab' })
+  await waitUntil(async () => (await laptop.me.store.get('handles', lab.id)).data?.encryptionKey)
+  t.absent(await laptop.me._loadKeyPair(lab.id), 'the laptop never opened it')
+
+  await del(laptop.me.devices, phone.me.device.id)
+  await passed(laptop.me)
+  const told = await toldOf(lab, phone)
+  t.ok(names(told.standing, deviceKey(laptop)), 'the room is told, by the laptop')
+  await waitUntil(() => !lab.store.writable)
+  t.pass('and the phone holds no seat there')
+  t.is(laptop.me.children.size + laptop.me._pending.size, 0, 'the laptop left it closed')
+})
+
 test('devices: two devices of the identity that tell a room at once leave the same row', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
@@ -2513,7 +2546,7 @@ test('devices: a launch with nothing changed since its rooms were told reads no 
   t.is(seen.opened, 0, 'no room opened')
 })
 
-test('devices: a room this device holds no writer in is skipped by its pass', async (t) => {
+test('devices: a room this device holds no writer in is opened by its pass, which seats it there, and not again at the next pass', async (t) => {
   const a = await ceroOpen(t)
   const room = await open(a.me.team, { name: 'clinic' })
   const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
@@ -2526,7 +2559,33 @@ test('devices: a room this device holds no writer in is skipped by its pass', as
     await passed(b.me)
     await toldOf(room, phone)
   })
-  t.is(seen.opened, 0, 'the device without a writer there opens it not')
+  t.is(seen.opened, 1, 'the device without a writer there opens it')
+  t.is(seen.lists, 0, 'through the index by state')
+  t.ok(await sits(room, b), 'and takes a seat')
+  await b.me.close()
+  const again = await tally(async () => {
+    const next = await relaunch(t, b)
+    await next._telling
+  })
+  t.is(again.opened, 0, 'the next launch opens none')
+})
+
+test('devices: a rename after a removal was told opens no room this device holds no writer in', async (t) => {
+  const a = await ceroOpen(t)
+  const b = await ceroOpen(t, { testnet: a.testnet, phrase: await cero.phrase(a.me) })
+  const phone = await linkTo(t, a)
+  await seats(b.me, 3)
+  await del(a.me.devices, phone.me.device.id)
+  await passed(b.me)
+  const room = await open(a.me.team, { name: 'clinic' })
+  await waitUntil(async () => (await b.me.store.get('handles', room.id)).data)
+
+  const seen = await tally(async () => {
+    await set(b.me.profile, { name: 'bo' })
+    await waitUntil(async () => (await get(room.members, a.me.id)).data?.name === 'bo')
+    await b.me._telling
+  })
+  t.is(seen.opened, 0, 'the room made after the removal stays closed there')
 })
 
 test('devices: a room whose telling throws is told at the next pass, and only it', async (t) => {
