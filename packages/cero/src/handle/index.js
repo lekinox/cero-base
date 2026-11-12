@@ -1571,8 +1571,14 @@ export class Handle extends ReadyResource {
   /** @private */
   _prune(child, stamp) {
     const run = async () => {
-      const told = await this._compare(child)
-      return told && (stamp === undefined || (await this._teach(child, stamp)))
+      try {
+        const told = await this._compare(child)
+        return told && (stamp === undefined || (await this._teach(child, stamp)))
+      } catch (err) {
+        // one that closes as it is told is told again, at its next open or pass
+        if (this.closing || child.closing || child.closed) return false
+        throw err
+      }
     }
     const pruning = child._pruning ? child._pruning.then(run) : run()
     child._pruning = pruning.catch(safetyCatch)

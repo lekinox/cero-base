@@ -1603,6 +1603,37 @@ test('devices: a removed device that never sat in a room, of a member who may no
   t.pass('the host rotates')
 })
 
+test('devices: a room its root closes under as it is told is left untold, with no error', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  const call = room.store.call.bind(room.store)
+  let calls = 0
+  room.store.call = async (...args) => {
+    calls++
+    a.me.close()
+    await waitUntil(() => room.store.closed)
+    return call(...args)
+  }
+  const prune = a.me._prune.bind(a.me)
+  const tells = []
+  a.me._prune = (...args) => {
+    tells.push(prune(...args))
+    return tells.at(-1)
+  }
+
+  await del(a.me.devices, phone.me.device.id)
+  await a.me.close()
+  t.is(calls, 1, 'the revoke was on its way')
+  const results = await Promise.allSettled(tells)
+  t.alike(
+    results.map((r) => r.value),
+    tells.map(() => false),
+    'and each tell settles untold'
+  )
+})
+
 test('devices: a device removed in the root is cut from the rooms open there as the removal resolves, and reads nothing written next', async (t) => {
   const laptop = await ceroOpen(t)
   const room = await open(laptop.me.team, { name: 'clinic' })

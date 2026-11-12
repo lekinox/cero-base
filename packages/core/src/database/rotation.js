@@ -270,6 +270,9 @@ export class Rotation {
         this.heal()
       }
       return stamp
+    } catch (err) {
+      if (db.closing || db.closed) throw CeroError.CLOSED('Database')
+      throw err
     } finally {
       this.carrying = null
       done()
