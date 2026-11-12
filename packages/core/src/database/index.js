@@ -1420,9 +1420,11 @@ export class Database extends ReadyResource {
       if (!read || read.length < this.length) return null
     }
     const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
-    const first = requests.find(mine)
-    // a member's device keeps what she was promised once: its row is the promise kept
-    if (member) return { role: member.role, promised: !!first && !device }
+    const made = requests.filter(mine)
+    const [first] = made
+    // a member's device keeps what it was promised itself, once: its row is the promise kept
+    const own = made.some((row) => b4a.equals(row.key, this.identity.device.publicKey))
+    if (member) return { role: member.role, promised: own && !device }
     return first ? { role: first.role, promised: true } : null
   }
 

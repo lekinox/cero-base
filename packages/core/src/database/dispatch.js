@@ -493,7 +493,11 @@ export function makeDispatcher({
     const ts = op.ts || 0
     const known = await getMember(ctx.view, memberId)
     const made = genesis ? [] : await promised(ctx.view, op.master)
-    if (!genesis && !can(known?.role, INVITE) && !made.length) throw CeroError.REFUSED('invite')
+    // a member stands on what this device was promised, or every device she links would take a
+    // row on one promise; who is no member yet, on any made to her
+    const mine = made.find((row) => b4a.equals(row.key, signed.device))
+    const owed = known ? mine : made[0]
+    if (!genesis && !can(known?.role, INVITE) && !owed) throw CeroError.REFUSED('invite')
     // only a device of the signer's own identity: another member's device seats itself through
     // its join, or any key the signer holds would act as them.
     // Always an indexer: autobee gc's caught-up non-indexer sessions and they miss later appends
@@ -509,7 +513,6 @@ export function makeDispatcher({
     if (genesis || can(role, WRITE)) await ctx.host.addWriter(op.writer, { isIndexer: true })
     // a linked device's seat keeps the chain its promise carries. The promises stay: a member
     // who may invite settles one once it sees it kept
-    const mine = made.find((row) => b4a.equals(row.key, signed.device))
     await seat(ctx, op.writer, memberId, ts, signed.device, linkOf(mine?.proof))
   })
 
