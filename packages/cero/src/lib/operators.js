@@ -79,6 +79,7 @@ export async function set(ref, row, opts) {
  */
 export async function del(ref, id) {
   if (ref.handle.opened === false) await ref.handle.ready()
+  if (ref.kind === 'handle') return parentStore(ref).del('handles', id)
   await ref.handle.store.del(ref.name, id)
   // a device removed is cut from every room open here, with its new key, before this resolves
   if (ref.name === 'devices' && ref.handle.children) await ref.handle._pruneAll()
@@ -389,7 +390,7 @@ export function invite(ctx, opts) {
  * Kill an invite, for every member.
  *
  * @param {Context} ctx
- * @param {string} code
+ * @param {string} code  The code `invite` returned, or the id its `invites` row holds.
  * @returns {Promise<boolean>}  Whether it was live.
  */
 export function revoke(ctx, code) {

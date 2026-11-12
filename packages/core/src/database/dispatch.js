@@ -59,6 +59,13 @@ function sealed(wrapped) {
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
 
+// what a member who may not write sets on her own row, as profileSync mirrors it
+const PROFILE = ['name', 'avatar']
+const profile = (row, op) => ({
+  ...row,
+  ...Object.fromEntries(PROFILE.filter((f) => f in op).map((f) => [f, op[f]]))
+})
+
 // the request type of each of Cero's routes that writes no ref's row
 const REQUESTS = {
   'add-writer': 'writer',
@@ -148,6 +155,7 @@ export const seatChain = (device) => [
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
  * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins that name no invite are sealed to.
+ * @param {boolean} [opts.root]  The identity's own database, where a device key past a removed one stands while seated.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
@@ -164,6 +172,7 @@ export function makeDispatcher({
   key,
   onepoch,
   room,
+  root = false,
   hooks,
   touch,
   read
@@ -643,9 +652,10 @@ export function makeDispatcher({
     await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by, spent })
   }
   // a chain, its identity first, stands unless it passes a removed device key. A key its identity
-  // removed, told or taken out by a device of hers, is passed by a key after it that she told
-  // stands; one another member removed, or whose record says not who, cuts whatever she told.
-  // With `telling`, as it will once she tells those lists too
+  // removed, told or taken out by a device of hers, is passed by a key after it that stands: in
+  // the root one seated, in a room one she told stands; one another member removed, or whose
+  // record says not who, cuts whatever she told. With `telling`, as it will once she tells those
+  // lists too
   async function stands(view, [identity, ...keys], telling) {
     const memberId = hid.encode(identity)
     const told = await view.get(removals, { id: toldId(memberId) })
@@ -656,8 +666,13 @@ export function makeDispatcher({
       if (removal && removal.by !== memberId) return false
       if (removal || has(removed, key)) cut = i
     }
-    const standing = keysOf(telling ? telling.standing : told?.standing)
-    return cut < 0 || keys.slice(cut + 1).some((key) => has(standing, key))
+    if (cut < 0) return true
+    const standing = root
+      ? (await view.find(`@${ns}/devices`, {}).toArray())
+          .filter((d) => d.memberId === memberId && d.key)
+          .map((d) => d.key)
+      : keysOf(telling ? telling.standing : told?.standing)
+    return keys.slice(cut + 1).some((key) => has(standing, key))
   }
 
   // a device tells the room which device keys of its identity are removed and which stand. For
@@ -720,7 +735,11 @@ export function makeDispatcher({
     const isSelf = op.id === (await getSignerMember(ctx.view, ctx.key))
     const ranks = Boolean(op.role) && op.role !== existing.role
     if (!isSelf && !ranks) return
-    const next = isSelf ? { ...op } : { ...existing }
+    const next = !isSelf
+      ? { ...existing }
+      : can(existing.role, WRITE)
+        ? { ...op }
+        : profile(existing, op)
     next.key = existing.key
     next.role = existing.role
     next.createdAt = existing.createdAt

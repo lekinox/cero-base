@@ -1089,6 +1089,15 @@ test('Handle: revoke makes the invite un-joinable', async (t) => {
   await t.exception.all(join(inviteStr), /DENIED/)
 })
 
+test('Handle: revoke takes the id a room.invites row holds as well as the code', async (t) => {
+  const { room, join } = await hosted(t, 'revoked')
+  const code = await cero.invite(room, { role: 'member', ttl: 60_000 })
+  const { data: rows } = await get(room.invites)
+  t.is(await cero.revoke(room, rows[0].id), true, 'revoked by its id')
+  t.is(await cero.revoke(room, code), false, 'and the code finds nothing left')
+  await t.exception.all(join(code), /DENIED/)
+})
+
 // ─── Phase 4: root getter + coreKey→handle registry ──────────────────────────
 
 test('Handle: root getter — root returns self, child returns the root', async (t) => {
@@ -1722,6 +1731,18 @@ test('handles: a row changes state as its table allows and no other way, on the 
     { ...Object.fromEntries(kept), last: 'asking' },
     'every row stands where it stood, past a cancelled one the launch deleted'
   )
+})
+
+test('handles: an ended row is deleted through its type, and one asking or joining is refused', async (t) => {
+  const { me } = await ceroOpen(t)
+  for (const state of ['asking', 'joining', 'denied']) {
+    await me.store.set('handles', standing(state, state))
+  }
+  for (const state of ['asking', 'joining']) {
+    t.ok(await refused(del(me.team, state)), `refused while ${state}`)
+  }
+  await del(me.team, 'denied')
+  t.absent((await get(me.team, 'denied')).data, 'gone once it is over')
 })
 
 test('handles: a row written with no state is stored in, and takes the changes in takes', async (t) => {

@@ -55,6 +55,7 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
  * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
+ * @property {boolean} [root]                                         The identity's own database: a device key past a removed one stands while a device of the identity is seated on it.
  * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
  * @property {Database | null} [parent]                               A database whose members this one follows: behind there, it is behind here too.
@@ -145,6 +146,7 @@ export class Database extends ReadyResource {
     this.keyring.onmiss = (stamp) => this.rotation.meet(stamp)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
+    this.root = opts.root === true
     this.push = opts.push === true
     /** @private */
     this._pushes = pushes(this.refs)
@@ -250,6 +252,7 @@ export class Database extends ReadyResource {
       key: () => this.key,
       onepoch: (row) => this.rotation.learn(row),
       room: () => this._room,
+      root: this.root,
       hooks: (phase, op) => this._hooks(phase, op),
       touch: (name) => this._touched.add(name),
       read: (view, name, query) => this._read(view, name, query)
@@ -524,8 +527,8 @@ export class Database extends ReadyResource {
 
   /** @private */
   async _commit(ops) {
-    // leaving takes no seat, nor does asking for keys: a reader's own goes in optimistically, apply
-    // admits it
+    // leaving takes no seat, nor does her profile or asking for keys: a reader's own goes in
+    // optimistically, apply admits it
     const optimistic = !this.bee.writable && seatless(ops, this.identity.id)
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
@@ -1640,9 +1643,16 @@ function leaving(ops, id) {
   return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
 }
 
-// what a device without a writer seat may append: its leave, its ask for keys and the close of it
+// what a device without a writer seat may append: its leave, its own member row, its ask for keys
+// and the close of it
 function seatless(ops, id) {
-  return leaving(ops, id) || (ops.length === 1 && ['ask-key', 'del-owed'].includes(ops[0][0]))
+  if (ops.length !== 1) return false
+  const [name, value] = ops[0]
+  return (
+    leaving(ops, id) ||
+    (name === 'set-member' && value?.id === id) ||
+    ['ask-key', 'del-owed'].includes(name)
+  )
 }
 
 const RANGE = new Set(['gt', 'gte', 'lt', 'lte'])

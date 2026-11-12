@@ -182,7 +182,7 @@ export class Pairing extends ReadyResource {
   /**
    * Revoke an invite, for every member. Needs the remove permission.
    *
-   * @param {string} invite
+   * @param {string} invite  The code, or the id its `invites` row holds.
    * @returns {Promise<boolean>}  Whether it was live.
    */
   async revoke(invite) {
@@ -193,7 +193,7 @@ export class Pairing extends ReadyResource {
     if (me && !can(me.role, REMOVE)) {
       throw CeroError.DENIED(null, 'revoking an invite needs the remove permission')
     }
-    const id = getInviteId(invite)
+    const id = (await this.db.get('invites', invite)).data ? invite : getInviteId(invite)
     if (!id || !(await this.db.get('invites', id)).data) return false
     await this.db.call('del-invite', { id })
     await this._sync()

@@ -134,6 +134,7 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 | `keyPair`       | This device's writer keypair, a fresh one by default. Never its device keypair (`INVALID`).                                                                                                       |
 | `namespace`     | The Corestore namespace, `'cero'`.                                                                                                                                                                |
 | `pinned`        | Always search and announce, outside the network's presence budget.                                                                                                                                |
+| `root`          | The identity's own database: a device key past a removed one stands while a device of the identity is seated on it. In a handle it stands once a device of the identity tells it.                 |
 | `push`          | Push a notification through the network's mirrors after a local write to a ref whose meta declares `push`, naming the ref; one in flight and the latest block once more after it. Off by default. |
 | `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                                                                        |
 | `parent`        | A database this one follows, as a handle follows its root: behind there, it is behind here too.                                                                                                   |
@@ -299,7 +300,7 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 - `pairing.accept(id, { proof })` admits the joiner as a device of your own identity, not as a member: `proof` is `identity.link(request.key)`, your device attesting theirs. Apply checks the chain ends at the request's key under your identity (`REFUSED` otherwise), seats the writer under your member with the proof on its device row, and the reply carries that `proof`. A joiner with no identity yet joins as `Identity.bare(device)` and becomes `Identity.from({ publicKey, encryptionKey, device, proof })` from the reply.
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
 - Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
-- `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
+- `pairing.revoke(invite)` takes the code or the id of its `invites` row, needs the remove permission and turns the invite's waiting requests away too.
 - A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. An invite that is spent or revoked answers the newest join made with it: an earlier one nobody had answered yet ends at its timeout. A live invite answers a removed identity the same way, the newest of her joins. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
 

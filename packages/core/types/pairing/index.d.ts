@@ -187,7 +187,7 @@ export declare class Pairing extends ReadyResource {
     /**
      * Revoke an invite, for every member. Needs the remove permission.
      *
-     * @param {string} invite
+     * @param {string} invite  The code, or the id its `invites` row holds.
      * @returns {Promise<boolean>}  Whether it was live.
      */
     revoke(invite: string): Promise<boolean>;

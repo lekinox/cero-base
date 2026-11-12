@@ -1178,6 +1178,16 @@ test('revoke: dropped from the database, a join with it is turned away', async (
   t.pass('the refusal goes once read')
 })
 
+test('revoke: by the id its row holds', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite()
+  const [row] = await invites(host.db)
+  t.is(await host.pairing.revoke(row.id), true)
+  t.is(await host.pairing.revoke(invite), false, 'the code finds nothing left')
+  t.is(await host.pairing.revoke('nothing'), false, 'nor does what is neither')
+})
+
 test('refused: a member removed after the invite was minted hears it', async (t) => {
   const testnet = await makeTestnet(t)
   const { host, joiner } = await makeHostJoiner(t, testnet)

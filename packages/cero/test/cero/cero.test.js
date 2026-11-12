@@ -1751,6 +1751,62 @@ test('link: a removed device loses its seats in every handle, and the root rotat
   t.pass('the device writes nowhere')
 })
 
+test('link: a device linked by one removed since links another, and reads the rooms', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'from the phone' })
+  const laptop = await linkTo(t, phone)
+  await devices(laptop.me, 2)
+  await del(laptop.me.devices, phone.me.device.id)
+  await devices(laptop.me, 1)
+
+  const tablet = await linkTo(t, laptop)
+  t.is(tablet.me.id, phone.me.id, 'the same identity')
+  await devices(laptop.me, 2)
+  const mine = await open(tablet.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  t.pass('and it reads the room')
+})
+
+test('link: a device removed while it holds a room open reads nothing written there after', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'before' })
+  const laptop = await linkTo(t, phone)
+  const mine = await open(laptop.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  await waitUntil(() => (mine.store.writable ? true : null))
+
+  await del(laptop.me.devices, phone.me.device.id)
+  const epoch = mine.store.keyring.seq
+  await put(mine.messages, { text: 'after' })
+  t.ok(epoch >= 1, 'the room has a new key once the removal resolves')
+  t.absent(room.store.keyring.entropy(mine.store.keyring.current), 'the phone holds none of it')
+})
+
+test('link: a room closed on the remover as it removed a device is written under a key the device lacks once reopened', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'before' })
+  const invite = await cero.invite(phone.me)
+  const linking = ceroOpen(t, { testnet: phone.testnet, invite, keepOpen: 0 })
+  await cero.accept(phone.me, await asked(phone.me))
+  const laptop = await linking
+  const mine = await open(laptop.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  await waitUntil(() => (mine.store.writable ? true : null))
+  await cero.close(mine)
+  await waitUntil(() => (mine.closed ? true : null))
+
+  await del(laptop.me.devices, phone.me.device.id)
+  const again = await open(laptop.me.team, { id: room.id })
+  await put(again.messages, { text: 'after' })
+  const { data: rows } = await again.store.get('messages')
+  t.is(rows.length, 2)
+  t.ok(again.store.keyring.seq >= 1, 'the room has a new key before the write')
+  t.absent(room.store.keyring.entropy(again.store.keyring.current), 'the phone holds none of it')
+})
+
 // a new device accepted on `a` that stops waiting before its keys: promised a seat it never takes
 async function accepted(t, a) {
   const invite = await cero.invite(a.me, { ttl: '6s' })

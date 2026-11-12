@@ -67,9 +67,9 @@ need not have the handle open.
 
 ```js
 await cero.revoke(room, code) // true the first time, false afterwards
+await cero.revoke(room, row.id) // or the id of its row in room.invites
 ```
 
-Keep the invite string: `cero.revoke` takes it, and the rows in `room.invites` keep only a hex id.
 Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and turns away the joins
 still waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired
 or spent.
@@ -163,7 +163,8 @@ await cero.set(room.members, { id: memberId, role: 'admin' })
 The ranks run owner, admin, member, reader. Changing a role needs assign, a new role within your own
 and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invite')` from
 `@cero-base/core/utils` checks a rank in your UI; it knows the four names in the table, and any
-other is `INVALID`.
+other is `INVALID`. Every member sets the `name` and `avatar` of her own row in `room.members`, a
+reader too, which is how `profileSync` shows her profile; a reader sets nothing else of it.
 
 ## Remove a member
 
