@@ -159,6 +159,8 @@ test('rejoin: after leave() then re-join with a fresh invite', async (t) => {
 
   // the app's self-kick does exactly this: forget the room locally
   await cero.leave(joined)
+  // a code minted once the room holds her leaving lets her straight back in
+  await waitUntil(async () => !(await get(clinic.members, b.me.identity.id)).data)
 
   const back = await open(b.me.team, await cero.invite(clinic))
   t.teardown(() => back.close().catch(() => {}))
