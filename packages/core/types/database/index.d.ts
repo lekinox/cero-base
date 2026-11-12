@@ -474,6 +474,22 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<'removed' | 'left' | null>}
      */
     removed(memberId: string): Promise<'removed' | 'left' | null>;
+    /**
+     * Who removed a member, from the record of her removal: null while none reached this device, and
+     * for one who left on her own.
+     *
+     * @param {string} memberId
+     * @returns {Promise<{ by: string | null } | null>}
+     */
+    removal(memberId: string): Promise<{
+        by: string | null;
+    } | null>;
+    /**
+     * Resolves once another device or a mirror holds every block this device wrote.
+     *
+     * @returns {Promise<void>}
+     */
+    held(): Promise<void>;
     /** @private */
     private _read;
     /**

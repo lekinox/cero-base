@@ -1710,3 +1710,82 @@ test('handles: a topics row is kept for a handle in or joining, and dropped once
   await waitUntil(async () => !(await me.local.store.get('topics', topic)).data)
   t.ok((await get(me.team, room.id)).data.encryptionKey, 'its row still has the key')
 })
+
+// one identity on two devices, both seated in a host's room
+async function seatedTwins(t) {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  const a = await openHandle(t, { testnet })
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  const onA = await open(a.me.team, invite)
+  await waitUntil(async () => (await get(b.me.team, room.id)).data?.encryptionKey)
+  const onB = await open(b.me.team, { id: room.id })
+  t.teardown(() => onB.close().catch(() => {}))
+  const states = (me) => {
+    const seen = []
+    const off = me.store.onUpdate('handles', async () => {
+      const state = (await get(me.team, room.id)).data?.state
+      if (state && seen.at(-1) !== state) seen.push(state)
+    })
+    t.teardown(off)
+    return seen
+  }
+  return { host, room, a, b, onA, onB, states }
+}
+
+test('leave: the row reads leaving then left on every device of the identity, once the room holds the removal', async (t) => {
+  const { room, a, b, onA, states } = await seatedTwins(t)
+  const seen = [states(a.me), states(b.me)]
+  await cero.leave(onA)
+  for (const s of seen) await waitUntil(() => s.includes('left'))
+  for (const s of seen) t.alike(s, ['leaving', 'left'], 'leaving, then left')
+  t.is(await room.store.removed(a.identity.id), 'left', 'the room holds her leaving')
+  t.absent((await get(b.me.team, room.id)).data.encryptionKey, 'the row keeps no key')
+})
+
+test('leave: an app closed while leaving goes on at the next launch', async (t) => {
+  const { me: host, testnet } = await ceroOpen(t)
+  const room = await open(host.team, { name: 'clinic' })
+  const { me, dir } = await ceroOpen(t, { testnet })
+  const joined = await open(me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data)
+  me._carryOn = async () => {}
+  await cero.leave(joined)
+  t.is((await get(me.team, room.id)).data.state, 'leaving')
+  await me.close()
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'left')
+  t.is(await room.store.removed(me.identity.id), 'left', 'the launch carried it out')
+})
+
+test('removed: a removal by an admin reads removed with her id in by, and the row keeps no key', async (t) => {
+  const { host, room, a, b } = await seatedTwins(t)
+  await del(room.members, a.identity.id)
+  for (const me of [a.me, b.me]) {
+    const row = await waitUntil(async () => {
+      const { data } = await get(me.team, room.id)
+      return data?.state === 'removed' ? data : null
+    })
+    t.is(row.by, host.identity.id, 'by the admin')
+    t.absent(row.encryptionKey, 'no key')
+  }
+})
+
+test('leave: a row at left is joined again with a new invite, and one at removed is deleted by the app', async (t) => {
+  const { room, a, onA } = await seatedTwins(t)
+  await cero.leave(onA)
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'left')
+  // a code minted after she left brings her back
+  const back = await open(a.me.team, await cero.invite(room))
+  t.teardown(() => back.close().catch(() => {}))
+  t.is((await get(a.me.team, room.id)).data.state, 'in', 'in again')
+  await waitUntil(async () => (await get(room.members, a.identity.id)).data)
+  await del(room.members, a.identity.id)
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'removed')
+  await a.me.store.del('handles', room.id)
+  t.absent((await get(a.me.team, room.id)).data, 'deleted')
+})

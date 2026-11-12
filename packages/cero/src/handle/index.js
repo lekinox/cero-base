@@ -140,6 +140,8 @@ export class Handle extends ReadyResource {
     /** @private */
     this._offJoins = null
     /** @private */
+    this._departing = parent ? null : new Map()
+    /** @private */
     this._fileServer = null
     /** @private */
     this._blobs = null
@@ -466,11 +468,46 @@ export class Handle extends ReadyResource {
   /** @private */
   async _leave() {
     if (!this.parent) throw CeroError.INVALID('the root cannot be left')
-    // leaving drops it from the root list too: behind there, nothing is done
+    // leaving is written on the root row: behind there, nothing is done
     if (this.parent.store.behind !== null) throw CeroError.BEHIND(this.parent.store.behind)
-    await this.store.del('members', this.identity.id)
-    await this.parent.store.call('del-handle', { id: hid.encode(this.store.key) })
-    await this._end()
+    await this.root.store.set('handles', { id: this.id, state: 'leaving' })
+  }
+
+  // a leaving row is carried by every device of the identity seated in its room: its removal of
+  // herself, held by another device or a mirror, then left
+  /** @private */
+  _depart(type, id) {
+    if (this._departing.has(id)) return
+    const run = async () => {
+      if (!(await this._loadKeyPair(id))) return
+      const child = await this._load(type, id)
+      try {
+        const out = await child.store.removed(this.identity.id)
+        if (!out) await child.store.del('members', this.identity.id)
+        await child.store.held()
+        if (out === 'removed') return
+        const { data: row } = await this.store.get('handles', id)
+        if (row?.state !== 'leaving') return
+        await this.store.set('handles', { id, state: 'left', encryptionKey: null, epochs: null })
+      } finally {
+        await child._end()
+      }
+    }
+    const going = run()
+      .catch((err) => err.code !== 'CLOSED' && this._onerror(err))
+      .finally(() => this._departing.delete(id))
+    this._departing.set(id, going)
+  }
+
+  // a device that applies its own identity's removal writes it on the row, with who removed her
+  /** @private */
+  async _ousted(child) {
+    const removal = await child.store.removal(this.identity.id)
+    if (!removal) return
+    const { data: row } = await this.store.get('handles', child.id)
+    if (!row || row.state === 'removed' || OVER[row.state?.toUpperCase()]) return
+    const fields = { by: removal.by, reason: null, encryptionKey: null, epochs: null }
+    await this.store.set('handles', { id: child.id, state: 'removed', ...fields })
   }
 
   /**
@@ -1270,6 +1307,9 @@ export class Handle extends ReadyResource {
         if (encryptionKey || (await this._asked(id, invite))) this._start(invite, type)
       }
     }
+    for (const { id, type } of (await this.store.get('handles', { state: 'leaving' })).data) {
+      this._depart(type, id)
+    }
     // a join another device ended stops here
     for (const join of [...this._joining.values()]) {
       const { data: row } = await this.store.get('handles', join.id)
@@ -1411,6 +1451,7 @@ export class Handle extends ReadyResource {
     const onchange = (touched) => {
       if (touched.has('*') || touched.has('devices') || touched.has('members')) {
         this._index(child).catch(this._onerror)
+        this._ousted(child).catch(this._onerror)
       }
     }
     child.store.on('update', onchange)

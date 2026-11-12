@@ -1660,3 +1660,32 @@ test("rpc: inbox is the worker's, INVALID on a client", async (t) => {
   const { client } = await openPair(t)
   t.exception(() => inbox(client, Identity.randomBytes(32), () => {}), /INVALID/)
 })
+
+// a host's room the UI's identity is in
+async function hostedRoom(t) {
+  const { me, client, testnet } = await openPair(t)
+  const host = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => host.close().catch(() => {}), { order: 5 })
+  const room = await open(host.team, { name: 'clinic' })
+  const joined = await open(client.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data)
+  return { me, client, host, room, joined }
+}
+
+test('rpc: leave reads leaving then left in the UI, once the room holds the removal', async (t) => {
+  const { me, client, room, joined } = await hostedRoom(t)
+  await cero.leave(joined)
+  t.ok(['leaving', 'left'].includes((await get(client.team, room.id)).data.state), 'leaving')
+  await waitUntil(async () => (await get(client.team, room.id)).data.state === 'left')
+  t.is(await room.store.removed(me.identity.id), 'left', 'the room holds her leaving')
+})
+
+test('rpc: a removal by an admin reads removed in the UI, with her id in by', async (t) => {
+  const { me, client, host, room } = await hostedRoom(t)
+  await del(room.members, me.identity.id)
+  const row = await waitUntil(async () => {
+    const { data } = await get(client.team, room.id)
+    return data.state === 'removed' ? data : null
+  })
+  t.is(row.by, host.identity.id, 'by the admin')
+})

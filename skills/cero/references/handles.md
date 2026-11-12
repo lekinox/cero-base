@@ -210,10 +210,15 @@ mechanism.
 ## Leave a handle
 
 ```js
-await cero.leave(room) // out of its members, out of your list on every device, closed here
+await cero.leave(room) // its row reads leaving, then left on every device
 ```
 
-`cero.leave` removes you from the handle's members, at any role, then the handle from your list. The
+`cero.leave` writes `leaving` on the handle's row. Every device of yours seated in the handle
+carries it: it takes you out of the handle's members, at any role, waits until another device or a
+mirror holds that, then writes `left`, keeps none of the handle's keys and closes it. An app closed
+on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with the
+remover's id in `by`. A row at `left`, `removed`, `denied`, `expired` or `cancelled` can be deleted,
+or joined again with a new code. The
 last owner of a handle others are in gets `INVALID`: make another member an owner first, with
 `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
 after you left brings you back; an older one, or the handle's reusable one, puts you in
