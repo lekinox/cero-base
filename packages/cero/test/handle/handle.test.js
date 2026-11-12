@@ -1569,6 +1569,21 @@ test('devices: a removed device that never sat in a room takes no seat there onc
   t.absent(await sits(room, phone), 'it has no seat')
 })
 
+test('probe: a removed device that never sat in a room holds no key the room writes under once it is told', async (t) => {
+  const a = await ceroOpen(t)
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  const row = () => phone.me.store.get('handles', room.id).then((res) => res.data)
+  await waitUntil(async () => (await row())?.encryptionKey)
+  const held = (await row()).encryptionKey
+  t.alike(held, room.store.encryptionKey, 'the root handed the phone the room key')
+
+  await del(a.me.devices, phone.me.device.id)
+  await toldOf(room, phone)
+  await put(room.messages, { text: 'post' })
+  t.ok(room.store.keyring.seq > 0, 'the room writes under a key minted after the removal')
+})
+
 test('devices: a device removed in the root is cut from the rooms open there as the removal resolves, and reads nothing written next', async (t) => {
   const laptop = await ceroOpen(t)
   const room = await open(laptop.me.team, { name: 'clinic' })
