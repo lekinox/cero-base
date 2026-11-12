@@ -127,15 +127,41 @@ export function Settings() {
       </Section>
 
       <Section title='Devices'>
-        {devices.map((d) => (
-          <Card key={d.id}>
-            <div className='flex items-center gap-2 text-xs'>
-              <span className='text-card-foreground'>{d.name || 'Unnamed'}</span>
-              <span className='text-muted font-mono'>{d.id?.slice(0, 8)}</span>
-              {d.id === me.device?.id && <span className='text-accent'>(current)</span>}
-            </div>
-          </Card>
-        ))}
+        {devices.map((d) => {
+          const current = d.id === me.device?.id
+          return (
+            <Card key={d.id}>
+              <div className='flex items-center gap-2 text-xs'>
+                {/* a device names only itself: the SDK refuses a rename of another */}
+                {current ? (
+                  <Input
+                    className='flex-1'
+                    placeholder='Device name'
+                    defaultValue={d.name}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim()
+                      if (v && v !== d.name) cero.set(me.devices, { id: d.id, name: v })
+                    }}
+                  />
+                ) : (
+                  <span className='text-card-foreground'>{d.name || 'Unnamed'}</span>
+                )}
+                <span className='text-muted font-mono'>{d.id?.slice(0, 8)}</span>
+                {current ? (
+                  <span className='text-accent'>(current)</span>
+                ) : (
+                  <Button
+                    onClick={() => cero.del(me.devices, d.id)}
+                    variant='danger'
+                    className='ml-auto'
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </Card>
+          )
+        })}
       </Section>
 
       <Toast message={toast.message} />
