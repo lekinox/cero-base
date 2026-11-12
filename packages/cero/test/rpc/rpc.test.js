@@ -27,7 +27,7 @@ import {
   inbox
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
-import { serve } from '../../src/rpc/server.js'
+import { serve, Server } from '../../src/rpc/server.js'
 import { Client, connect, restore, link, supports } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
@@ -1046,7 +1046,15 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'deny an unknown request': (root, room) => cero.deny(room, { id: 'x' }, 'no'),
     'suspend a room': (root, room) => cero.suspend(room),
     'resume a room': (root, room) => cero.resume(room),
-    'invite with null for options': (root, room) => cero.invite(room, null)
+    'invite with null for options': (root, room) => cero.invite(room, null),
+    'invite with a string for options': (root, room) => cero.invite(room, '1d'),
+    'invite with a number for options': (root, room) => cero.invite(room, 5),
+    'invite with an array for options': (root, room) => cero.invite(room, [{ role: 'reader' }]),
+    'invite with bytes for options': (root, room) => cero.invite(room, b4a.alloc(4)),
+    'invite with an ArrayBuffer for options': (root, room) => cero.invite(room, new ArrayBuffer(4)),
+    'invite with a function for options': (root, room) => cero.invite(room, () => {}),
+    'device invite with null for options': (root) => cero.invite(root, null),
+    'device invite with an array for options': (root) => cero.invite(root, [])
   }
   // a TypeError has no code, and none crosses as ''
   const outcome = (run) =>
@@ -1057,6 +1065,7 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
   for (const [name, run] of Object.entries(cases)) {
     const there = await outcome(() => run(me, served))
     t.alike(await outcome(() => run(client, room)), there, `${name}: ${JSON.stringify(there)}`)
+    if (name.includes('for options')) t.is(there.code, 'INVALID', `${name} is INVALID`)
   }
 })
 
@@ -1158,6 +1167,88 @@ test('rpc: a store with an identity boots before the first init, so the network 
   t.teardown(() => server.close().catch(() => {}))
   const me = await waitUntil(() => server.me || null)
   t.ok(me.network.opened, 'booted with no client attached')
+})
+
+test('rpc: a start at boot that fails reaches onerror, closes the root it opened, and the next init opens it again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const storage = await t.tmp()
+  const made = await cero(storage, spec, { bootstrap: testnet.bootstrap })
+  const { id } = made
+  await made.close()
+  const [serverStream, clientStream] = pair()
+  const errors = []
+  const onerror = (err) => errors.push(err.message)
+  const server = new Server(serverStream, spec, { storage, bootstrap: testnet.bootstrap, onerror })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  let first = null
+  server._wireVerbs = function () {
+    delete this._wireVerbs
+    first = this.me
+    throw new Error('wiring failed')
+  }
+  await server.ready()
+  await waitUntil(() => first && server._booting === null)
+  t.ok(first.closed, 'the root of the failed start is closed')
+  await waitUntil(() => errors.length > 0)
+  t.alike(errors, ['wiring failed'], 'its error reaches onerror')
+  const client = await connect(clientStream, spec)
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  t.is(client.id, id, 'the next init opens the same identity')
+})
+
+test('rpc: a start whose root fails to close rejects with its own error and keeps no root', async (t) => {
+  const testnet = await makeTestnet(t)
+  const errors = []
+  const { server, open } = await fresh(t, testnet, { onerror: (err) => errors.push(err.message) })
+  server._wireVerbs = function () {
+    delete this._wireVerbs
+    const close = this.me.close.bind(this.me)
+    this.me.close = async () => {
+      await close()
+      throw new TypeError('close failed')
+    }
+    throw new Error('wiring failed')
+  }
+  await t.exception(open(), /wiring failed/)
+  t.is(server.me, null, 'no root kept')
+  t.alike(errors.sort(), ['close failed', 'wiring failed'], 'both reach onerror')
+  t.ok((await open()).id, 'the next init opens a root')
+})
+
+test('rpc: a start at boot the worker closes under stays out of onerror', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const storage = await t.tmp()
+  const phrase = Identity.toPhrase(Identity.randomBytes(32))
+  await t.exception(cero(storage, spec, { ...opts, phrase, recoveryTimeout: 500 }), /TIMEOUT/)
+  const errors = []
+  const [serverStream] = pair()
+  const onerror = (err) => errors.push(err)
+  const server = await serve(serverStream, spec, { storage, ...opts, recoveryTimeout: 0, onerror })
+  t.ok(server._booting, 'the recovery goes on at boot')
+  await server.close()
+  t.alike(errors, [], 'nothing reached onerror')
+})
+
+test('rpc: a start at boot that fails while an init waits on it reaches onerror once', async (t) => {
+  const testnet = await makeTestnet(t)
+  const storage = await t.tmp()
+  await (await cero(storage, spec, { bootstrap: testnet.bootstrap })).close()
+  const [serverStream, clientStream] = pair()
+  const errors = []
+  const onerror = (err) => errors.push(err.message)
+  const server = new Server(serverStream, spec, { storage, bootstrap: testnet.bootstrap, onerror })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  server._wireVerbs = function () {
+    delete this._wireVerbs
+    throw new Error('wiring failed')
+  }
+  const client = new Client(clientStream, spec)
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  const opening = client.ready()
+  server.ready()
+  await t.exception(opening, /wiring failed/)
+  t.alike(errors, ['wiring failed'], 'one failure, one report')
 })
 
 // a worker on a new store, and the client that says how it opens

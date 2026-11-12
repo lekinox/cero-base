@@ -17,6 +17,8 @@ export declare function isRank(role: string): boolean;
 export declare function grants(a: string, b: string): boolean;
 /** @type {(a: string, b: string) => boolean} */
 export declare function outranks(a: string, b: string): boolean;
+/** @type {(value: unknown) => boolean} */
+export declare function isOptions(value: unknown): boolean;
 /**
  * Stream-of-snapshots primitive. Couples a `get` (returns the latest value) with a `watch`
  * (re-fires on change) and emits the newest snapshot every time `watch` ticks.

@@ -65,6 +65,9 @@ export declare const defs: {
             type: string;
             kind: string;
         };
+        asks: {
+            type: string;
+        };
     };
 };
 export declare const base: {

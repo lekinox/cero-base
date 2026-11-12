@@ -189,6 +189,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _joining;
     /** @private */
+    _taking;
+    /** @private */
     _coreKeys;
     /** @private */
     _offJoins;
@@ -218,6 +220,10 @@ export declare class Handle extends ReadyResource {
     _idle;
     /** @private */
     _tellings;
+    /** @private */
+    _waiting;
+    /** @private */
+    _waiters;
     /** @private */
     _telling;
     /** @private @type {Array<{ stamp: () => Promise<string | null>, tell: (child: Handle) => Promise<void> }> | null} */
@@ -446,7 +452,13 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _cancel;
     /** @private */
+    private _check;
+    /** @private */
+    private _takeBack;
+    /** @private */
     private _retract;
+    /** @private */
+    private _announce;
     /** @private */
     private _forget;
     /** @private */
@@ -509,6 +521,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _teach;
     /** @private */
+    private _record;
+    /** @private */
     private _mark;
     /** @private */
     private _unseat;
@@ -519,11 +533,17 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _pass;
     /** @private */
+    private _marked;
+    /** @private */
     private _lists;
     /** @private */
     private _stamp;
     /** @private */
     private _tellOne;
+    /** @private */
+    private _wait;
+    /** @private */
+    private _turns;
     /** @private */
     private _tellRoom;
     /** @private */

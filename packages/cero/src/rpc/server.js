@@ -99,6 +99,8 @@ export class Server extends RPCServer {
     this.opts = { ...opts, onerror: (err) => this._onerror(err) }
     /** @type {Set<object>} open error streams, one per connected client */
     this._errors = new Set()
+    /** @private */
+    this._reported = new WeakSet()
     /** @type {Context | null} */
     this.me = null
     /** @type {Map<string, Context>} */
@@ -139,7 +141,10 @@ export class Server extends RPCServer {
   /** @private */
   async _open() {
     await super._open()
-    if (await peek(this.storage, this.spec, this.opts)) this._start()
+    // its error is the app's even with no request waiting on it, unless the close stopped it
+    if (await peek(this.storage, this.spec, this.opts)) {
+      this._start().catch((err) => this.closing || this._onerror(err))
+    }
   }
 
   /**
@@ -161,11 +166,19 @@ export class Server extends RPCServer {
     // a close stops a recovery or a link still waiting for a device: the next open goes on with it
     const opts = { ...this.opts, ...how, signal: this._stop.signal }
     this.me = await cero(this.storage, this.spec, opts)
+    try {
+      await this.me.fileServer.listen()
+      this._wireData()
+      this._wireHandles()
+      this._wireVerbs()
+    } catch (err) {
+      // the next start opens the same store, whose lock a root left open here still holds
+      const me = this.me
+      this.me = null
+      await me.close().catch(this.opts.onerror)
+      throw err
+    }
     this.handles.set(this.me.id, this.me)
-    await this.me.fileServer.listen()
-    this._wireData()
-    this._wireHandles()
-    this._wireVerbs()
   }
 
   /** @private */
@@ -213,6 +226,9 @@ export class Server extends RPCServer {
 
   /** @private */
   _onerror(err) {
+    // a failed start rejects every request that waits on it, and reaches onerror once
+    if (this._reported.has(err)) return
+    if (err instanceof Error) this._reported.add(err)
     if (!this._errors.size) return this._report(err)
     const frame = {
       message: err?.message || String(err),

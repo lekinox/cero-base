@@ -26,7 +26,8 @@ export const defs = {
     environment: { type: 'environment', kind: 'single' },
     serving: { type: 'serving' },
     topics: { type: 'subscription' },
-    told: { type: 'told', kind: 'single' }
+    told: { type: 'told', kind: 'single' },
+    asks: { type: 'ask' }
   }
 }
 

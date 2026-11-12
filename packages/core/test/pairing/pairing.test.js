@@ -263,6 +263,15 @@ test('invite: a ttl is a positive whole number of ms the clock reaches, or INVAL
   t.ok(Invite.parse(await pairing.invite({ ttl: 1 })).expires > 0, 'one ms is a ttl')
 })
 
+test('invite: options that are not a plain object are INVALID and nothing is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  for (const opts of [null, '1h', 5, [], b4a.alloc(4), new ArrayBuffer(4), new Map(), () => {}]) {
+    t.is(await code(pairing.invite(opts)), 'INVALID', `options ${JSON.stringify(opts)}`)
+  }
+  t.alike(await invites(db), [], 'no invite was written')
+})
+
 test('close: a sync caught mid-way leaves no expiry timer armed', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing, db } = await makeHost(t, testnet)
@@ -830,6 +839,48 @@ test('join: a reply its keep failed on leaves the next one to settle it', async 
   t.is(tries, 2)
 })
 
+// joins with the invite's expiry handed to `take` instead of the clock
+function expiring(join, take) {
+  const { setTimeout } = globalThis
+  globalThis.setTimeout = (fn, ms, ...args) =>
+    ms > 3600000 ? take(fn) : setTimeout(fn, ms, ...args)
+  try {
+    return join()
+  } finally {
+    globalThis.setTimeout = setTimeout
+  }
+}
+
+test('expiry: an invite that runs out while its reply is kept settles the join with the keys', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true, ttl: '1d' })
+  await joiner.mailbox.ready()
+  let expire = null
+  const keep = async () => expire()
+  const join = () => joiner.join(invite, { writer: crypto.keyPair(), keep, timeout: 0 })
+  const joined = expiring(join, (fn) => (expire = fn)).catch((err) => err)
+  t.ok(expire, 'the expiry is in hand')
+  await host.pairing.accept((await asked(host.db)).id)
+  t.alike((await joined).key, host.db.key)
+})
+
+test('expiry: an invite that ran out while a reply failed to be kept ends the join EXPIRED', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true, ttl: '1d' })
+  await joiner.mailbox.ready()
+  let expire = null
+  const keep = async () => {
+    expire()
+    throw new Error('disk full')
+  }
+  const join = () => joiner.join(invite, { writer: crypto.keyPair(), keep, timeout: 0 })
+  const ended = code(expiring(join, (fn) => (expire = fn)))
+  await host.pairing.accept((await asked(host.db)).id)
+  t.is(await ended, 'EXPIRED')
+})
+
 test('offline: an old denial a mirror still announces does not settle the same writer joining again', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeBlindPeer(t, testnet)
@@ -1066,6 +1117,33 @@ test('confirm: a cancel its mailbox closes on rejects CLOSED, and one made again
   await host.net.resume()
   await Pairing.cancel(again, invite, { spec, writer })
   t.is(core.length, 2, 'written once')
+  await waitFor(async () => (await host.db.get('requests')).data.length === 0)
+  t.pass('and the room holds it')
+})
+
+test('confirm: two cancels at once from one writer write one', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite({ confirm: true })
+  const writer = crypto.keyPair()
+  const stop = new AbortController()
+  const joining = joiner.join(invite, { writer, timeout: 0, signal: stop.signal })
+  await asked(host.db)
+  stop.abort()
+  t.is(await code(joining), 'CLOSED')
+  const { store } = joiner.net
+  const core = store.get({
+    keyPair: writer,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+  })
+  t.teardown(() => core.close())
+  await core.ready()
+
+  await Promise.all([
+    Pairing.cancel(joiner.mailbox, invite, { spec, writer }),
+    Pairing.cancel(joiner.mailbox, invite, { spec, writer })
+  ])
+  t.is(core.length, 2, 'the join and one cancel')
   await waitFor(async () => (await host.db.get('requests')).data.length === 0)
   t.pass('and the room holds it')
 })

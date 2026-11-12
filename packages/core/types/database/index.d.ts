@@ -517,6 +517,18 @@ export declare class Database extends ReadyResource {
      * @returns {Promise<void>}
      */
     held(): Promise<void>;
+    /**
+     * Whether a device seated here, other than this one and those whose keys are `removed`, wrote a
+     * node this view applied with every block this device wrote in its causal past, within `timeout`.
+     * A peer that only holds those blocks may be a removed device, which passes them on to no one.
+     *
+     * @param {Uint8Array[]} removed
+     * @param {number} timeout
+     * @returns {Promise<boolean>}
+     */
+    heard(removed: Uint8Array[], timeout: number): Promise<boolean>;
+    /** @private */
+    private _heard;
     /** @private */
     private _read;
     /**
@@ -615,6 +627,11 @@ export declare class Database extends ReadyResource {
      */
     owed(): Promise<boolean>;
     /**
+     * @returns {Promise<boolean>} Whether every device this database removed is out of the key this
+     * device writes under: no rotation is owed, and this device holds the newest key.
+     */
+    rotated(): Promise<boolean>;
+    /**
      * Remove a peer's writer key from the indexer set.
      *
      * @param {Uint8Array} publicKey
@@ -698,7 +715,13 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _raise;
     /** @private */
+    private _raises;
+    /** @private */
+    private _changes;
+    /** @private */
     private _stamp;
+    /** @private */
+    private _seatless;
     /** @private */
     private _dryRun;
     /** @private */

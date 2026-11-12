@@ -82,6 +82,8 @@ export declare class Server extends RPCServer {
     };
     /** @type {Set<object>} open error streams, one per connected client */
     _errors: Set<object>;
+    /** @private */
+    _reported;
     /** @type {Context | null} */
     me: Context | null;
     /** @type {Map<string, Context>} */

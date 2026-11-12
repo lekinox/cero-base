@@ -162,7 +162,10 @@ handle, the root rotates its key so the device reads nothing written after, and 
 never comes back: not by a
 claim, a join or a link, nor through a device it links. It returns only as a new device, after a
 wipe, with the phrase or an invite you accept. A device that holds the phrase can still come back
-that way: anyone with the phrase is you.
+that way: anyone with the phrase is you. A handle where you only read hears of the removal from a
+device of yours, and a member there who may remove rotates its key. A handle at a
+version from before Cero told handles of removals hears of it once an owner moves it up, the next
+time a device of yours opens it or your devices change.
 
 ## Encrypt the seed at rest
 

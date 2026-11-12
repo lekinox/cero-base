@@ -644,6 +644,148 @@ test('revoke: only a seated device whose own chain stands tells the room, and fo
   t.absent(row.removed?.byteLength || row.standing?.byteLength, 'keys of another size are none')
 })
 
+test('revoke: a device of a member with no seat in the room tells it with a proof its identity signs over its core, and for that identity alone', async (t) => {
+  const b = await second('member')
+  const { db, identity, phone } = await lost(t)
+  await seat(db, phone)
+  const laptop = linked(identity)
+  const core = laptop.writer.publicKey
+  const proof = (who, writer = core) => who.identity.sign(admission(db.key, writer, writer))
+  const telling = (signed) => ({ removed: keys(phone), standing: keys(laptop), proof: signed })
+  const other = Identity.randomKeyPair().publicKey
+
+  t.is((await apply(db, core, 'revoke', telling(null)))?.rule, 'device', 'with no proof, nothing')
+  t.is(
+    (await apply(db, core, 'revoke', telling(proof(laptop, other))))?.rule,
+    'device',
+    'nor one over another core'
+  )
+  t.is(
+    (await apply(db, core, 'revoke', telling(proof(b))))?.rule,
+    'device',
+    'nor one of an identity that is no member'
+  )
+  t.ok(await seated(db, phone))
+
+  t.is(await apply(db, core, 'revoke', telling(proof(laptop))), null)
+  t.alike((await told(db, identity)).removed, keys(phone), 'told for her identity')
+  t.absent(await seated(db, phone), 'and the removed device loses its seat')
+  t.absent(await seated(db, laptop), 'the device that told takes none')
+})
+
+// a device with no seat tells with a proof its identity signs over the core it tells from
+const seatless = (db, who, removed, standing) => {
+  const core = who.writer.publicKey
+  const proof = who.identity.sign(admission(db.key, core, core))
+  return apply(db, core, 'revoke', {
+    removed: keys(...removed),
+    standing: keys(...standing),
+    proof
+  })
+}
+
+test('revoke: a device of the identity with no seat in the room removes a sibling with none either, which tells nothing after', async (t) => {
+  const { db, identity, phone, tablet } = await lost(t)
+  const laptop = linked(identity)
+  t.is(await seatless(db, laptop, [phone], [laptop, tablet]), null)
+  t.alike((await told(db, identity)).removed, keys(phone), 'the room keeps the removal')
+  t.is(await owed(db), 1, 'the removed one may hold the key through the root: a rotation is owed')
+  const refused = await seatless(db, phone, [laptop], [phone])
+  t.is(refused?.rule, 'removed', 'the removed one tells nothing')
+  t.alike((await told(db, identity)).standing, keys(laptop, tablet), 'and the laptop stands there')
+
+  t.is(await seatless(db, tablet, [phone], [tablet]), null, 'one the removed linked removes it')
+  t.alike((await told(db, identity)).standing, keys(tablet), 'and stands on its own')
+  t.is(await owed(db), 1, 'the rotations owed are one')
+})
+
+test('revoke: a removed device the room has not heard of tells first, with a proof, as a seated one can, and cuts the sibling it names', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  t.is(await seatless(db, phone, [laptop], [phone]), null, 'the room holds no removal of it yet')
+  t.alike((await told(db, identity)).removed, keys(laptop))
+  const refused = await seatless(db, laptop, [phone], [laptop])
+  t.is(refused?.rule, 'removed', 'the sibling it named tells nothing after')
+  t.is(await owed(db), 1)
+})
+
+test('revoke: one telling adds at most 64 removed keys of an identity, as many as it likes over many, and any number in the batch that makes the room', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const random = (n) =>
+    b4a.concat(Array.from({ length: n }, () => Identity.randomKeyPair().publicKey))
+  const first = random(64)
+  t.is(await apply(db, db.writerKey, 'revoke', { removed: first }), null)
+  t.is((await told(db, identity)).removed.byteLength, 64 * 32, 'all 64 kept')
+  const refused = await apply(db, db.writerKey, 'revoke', { removed: random(65) })
+  t.is(refused?.rule, 'revoke', '65 new in one telling are refused')
+  t.is((await told(db, identity)).removed.byteLength, 64 * 32, 'and the room keeps what it had')
+  const more = b4a.concat([first, random(1)])
+  t.is(await apply(db, db.writerKey, 'revoke', { removed: more }), null, 'one more is kept')
+  t.is((await told(db, identity)).removed.byteLength, 65 * 32, 'past 64 in all')
+
+  const made = await withRole(t, 'owner')
+  const host = { ...noHost, genesis: true }
+  t.is(await apply(made.db, made.db.writerKey, 'revoke', { removed: random(65) }, host), null)
+  t.is((await told(made.db, made.identity)).removed.byteLength, 65 * 32, 'a first batch keeps all')
+})
+
+test('revoke: a device that fills its identity removals before the room hears of its own is still taken out by a sibling that tells it', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  const core = phone.writer.publicKey
+  const proof = phone.identity.sign(admission(db.key, core, core))
+  const made = b4a.concat(Array.from({ length: 64 }, () => Identity.randomKeyPair().publicKey))
+  const filled = { removed: made, standing: keys(phone, laptop), proof }
+  t.is(await apply(db, core, 'revoke', filled), null, 'it names no sibling')
+  t.is(
+    await seatless(db, laptop, [phone], [laptop]),
+    null,
+    'the laptop that stands tells it removed'
+  )
+  const refused = await seatless(db, phone, [laptop], [phone])
+  t.is(refused?.rule, 'removed', 'and the removed one tells nothing after')
+})
+
+test('revoke: a device with no row in the room tells itself among those that stand, so a sibling can always take it out', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  const made = b4a.concat(Array.from({ length: 64 }, () => Identity.randomKeyPair().publicKey))
+  const core = phone.writer.publicKey
+  const proof = phone.identity.sign(admission(db.key, core, core))
+  const hidden = { removed: made, standing: keys(laptop), proof }
+  t.is((await apply(db, core, 'revoke', hidden))?.rule, 'revoke', 'left out, it tells nothing')
+  t.absent(await told(db, identity))
+  t.is(await apply(db, core, 'revoke', { ...hidden, standing: keys(phone, laptop) }), null)
+  t.is(await seatless(db, laptop, [phone], [laptop]), null, 'and the laptop takes it out')
+})
+
+test('revoke: a room its first batch made with more than 64 removals of an identity is still told who stands', async (t) => {
+  const { db, identity } = await lost(t)
+  const laptop = linked(identity)
+  const many = b4a.concat(Array.from({ length: 65 }, () => Identity.randomKeyPair().publicKey))
+  const host = { ...noHost, genesis: true }
+  t.is(await apply(db, db.writerKey, 'revoke', { removed: many }, host), null)
+  const again = { removed: many, standing: keys(laptop) }
+  t.is(await apply(db, db.writerKey, 'revoke', again), null, 'nothing new is removed')
+  t.alike((await told(db, identity)).standing, keys(laptop))
+})
+
+test('revoke: a device whose row keeps no key, or no member, tells with a proof as one with no row does', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  const watch = linked(identity)
+  await seat(db, laptop)
+  await seat(db, watch)
+  await db.view.insert(`@${db.ns}/devices`, { ...(await seated(db, laptop)), key: null })
+  await db.view.insert(`@${db.ns}/devices`, { ...(await seated(db, watch)), memberId: null })
+  t.is(await seatless(db, laptop, [phone], [laptop, watch]), null, 'with no key')
+  t.alike((await told(db, identity)).removed, keys(phone), 'told for her identity')
+  t.is(await seatless(db, watch, [phone], [laptop, watch]), null, 'with no member')
+  const bare = { removed: keys(phone), standing: keys(laptop, watch) }
+  const refused = await apply(db, laptop.writer.publicKey, 'revoke', bare)
+  t.is(refused?.rule, 'device', 'and with no proof, nothing')
+})
+
 test('revoke: a removed device that never sat in the room claims no seat there, and a removal with nothing told takes every chain through its key', async (t) => {
   const { db, phone, tablet } = await lost(t)
   t.is(await tell(db, db.writerKey, [phone], [tablet]), null)
@@ -3280,6 +3422,23 @@ test('devices: another device of the member renames a device, and changes nothin
     'desk',
     'a device of another member renames nothing'
   )
+})
+
+test('devices: a sibling renames a device only while it stands, and a removed one still names itself', async (t) => {
+  const { db, phone } = await lost(t)
+  await seat(db, phone)
+  const id = phone.writer.id
+  t.is(await apply(db, db.writerKey, 'set-device', { id, name: 'phone', updatedAt: 2 }), null)
+
+  // the removal recorded and the seat still there, as a reorder leaves them
+  const key = hid.encode(phone.identity.device.publicKey)
+  await db.view.insert(`@${db.ns}/removals`, { id: key, index: 0 })
+  const renamed = await apply(db, db.writerKey, 'set-device', { id, name: 'gone', updatedAt: 3 })
+  t.is(renamed?.rule, 'removed', 'a sibling renames a removed device not')
+  t.is((await seated(db, phone)).name, 'phone')
+  const mine = { id, name: 'mine', updatedAt: 4 }
+  t.is(await apply(db, phone.writer.publicKey, 'set-device', mine), null)
+  t.is((await seated(db, phone)).name, 'mine', 'its own row it still writes')
 })
 
 test('singles: wiping one needs write', async (t) => {
