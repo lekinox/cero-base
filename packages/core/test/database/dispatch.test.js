@@ -1291,9 +1291,9 @@ test('apply: an undecodable node skips alone — it must not take the batch with
 // ─── invite rows: members mint, moderators alter and revoke ─────────────
 
 // the owner, plus a second member at `role` with its own writer; `as` applies an op signed by it
-async function withMember(t, role = 'member', others = []) {
+async function withMember(t, role = 'member', others = [], opts = {}) {
   const b = await second(role)
-  const { db, identity } = await withRole(t, 'owner', { members: [b.row, ...others] })
+  const { db, identity } = await withRole(t, 'owner', { members: [b.row, ...others], ...opts })
   // seated right before each op: a write through db rebuilds the view without it, and a
   // reader has no seat to claim
   const as = async (verb, payload) => {
@@ -2527,12 +2527,12 @@ test('refusal: fifty joins of one removed identity on a live invite leave one ro
   t.ok(kept.includes(last) && !kept.includes(hers), 'the newest of each')
 })
 
-test("refusal: below the version that has an invite's secret a removed identity's joins on a live invite keep a row each", async (t) => {
+test("refusal: below the version whose refusals record who joined a removed identity's joins on a live invite keep a row each", async (t) => {
   const { since } = spec.meta
-  const invite = { ...since.types['@cero/invite'], secret: 2 }
+  const turned = { ...since.types['@cero/refusal'], identity: 2 }
   const meta = {
     ...spec.meta,
-    since: { ...since, types: { ...since.types, '@cero/invite': invite } }
+    since: { ...since, types: { ...since.types, '@cero/refusal': turned } }
   }
   const { db } = await withRole(t, 'owner', { spec: { ...spec, meta } })
   const open = await minted(db, { reuse: true })
@@ -3707,4 +3707,31 @@ test('removal: one who left, let back in by an accept on a reusable invite older
   t.absent(await refusal(db, hid.encode(back)))
   t.is(await claimed(db, identity, back), null, 'her device claims after')
   t.is((await db.get('devices', hid.encode(back))).data?.memberId, identity.id)
+})
+
+test('removal: below the version whose requests say a member accepted them, an accept spends a single-use invite as it is, and a removal withdraws the promise', async (t) => {
+  const { since } = spec.meta
+  const request = { ...since.types['@cero/request'], accepted: 2 }
+  const meta = {
+    ...spec.meta,
+    since: { ...since, types: { ...since.types, '@cero/request': request } }
+  }
+  const { db, id } = await withMember(t, 'member', [], { spec: { ...spec, meta } })
+  const first = await addressed(db, { reuse: true })
+  const once = await addressed(db)
+  const identity = await Identity.create()
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, first, { identity, writer }))
+  t.is(await claimed(db, identity, writer), null)
+  t.is(await apply(db, writer, 'del-member', { id: identity.id }), null, 'she leaves')
+
+  const again = Identity.randomKeyPair().publicKey
+  await apply(db, again, 'join', named(db, once, { identity, writer: again }))
+  t.is(await apply(db, db.writerKey, 'accept', { id: hid.encode(again) }), null)
+  t.ok((await promise(db, again))?.promised)
+  t.absent((await spent(db, b4a.toHex(once.id)))?.confirm, 'the spent invite keeps its own confirm')
+
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.absent(await promise(db, again), 'the removal withdraws the promise')
+  t.is((await refusal(db, hid.encode(again)))?.reason, 'removed')
 })
