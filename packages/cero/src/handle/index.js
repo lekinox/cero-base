@@ -1663,14 +1663,14 @@ export class Handle extends ReadyResource {
 
   // a device removed from the root is out of every handle: its chain is static, so a handle is
   // told the identity's keys the root removed and those it seats, by a device that stands there,
-  // when that is not what it was told. One compare at a time: two would tell it twice. With
-  // `held`, it is marked told only once that finds a peer holds what was written: null till then
+  // when that is not what it was told. One compare at a time: two would tell it twice. It is
+  // marked told only once a peer holds what was written within `timeout`: null till then
   /** @private */
-  _prune(child, stamp, held) {
+  _prune(child, stamp, timeout = SERVED) {
     const run = async () => {
       try {
-        const told = await this._compare(child, held)
-        return told && (stamp === undefined || (await this._teach(child, stamp, held)))
+        const told = await this._compare(child, timeout)
+        return told && (stamp === undefined || (await this._teach(child, stamp, timeout)))
       } catch (err) {
         // one that closes as it is told is told again, at its next open or pass
         if (this.closing || child.closing || child.closed) return false
@@ -1686,7 +1686,7 @@ export class Handle extends ReadyResource {
   // tells from her own core, a seatless write, in a room at the version that brings it. One below
   // it is marked for this build, so a pass opens it again only for a build that may bring it there
   /** @private */
-  async _compare(child, held) {
+  async _compare(child, timeout) {
     if (child.closing || child.closed) return false
     const removed = await this.store.removals()
     if (removed.length === 0) return true
@@ -1696,7 +1696,7 @@ export class Handle extends ReadyResource {
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
     if ((store.meta.since?.routes[`@${store.ns}/revoke`] ?? 0) > at) {
       if (store.writable) await this._unseat(child, removed)
-      return this._record(child, { told: below(digest(removed, standing), store.meta) }, held)
+      return this._record(child, { told: below(digest(removed, standing), store.meta) }, timeout)
     }
     if (!has(standing, this.identity.device.publicKey)) return false
     // a root that lags has fewer removed than the handle was told: those add up, and stay
@@ -1719,19 +1719,22 @@ export class Handle extends ReadyResource {
         proof
       })
     }
-    return this._record(child, { told: digest(removed, standing) }, held)
+    return this._record(child, { told: digest(removed, standing) }, timeout)
   }
 
   // what the extensions tell a room this device may write in, stamped once it is told
   /** @private */
-  async _teach(child, stamp, held) {
+  async _teach(child, stamp, timeout) {
     if (child.store.writable) for (const { tell } of this._tellers) await tell(child)
-    return this._record(child, { stamp }, held)
+    return this._record(child, { stamp }, timeout)
   }
 
+  // an open room too: the app may close it before a peer holds what it was told
   /** @private */
-  async _record(child, marks, held) {
-    const holds = !held || (await held())
+  async _record(child, marks, timeout) {
+    const { data } = await this.local.store.get('handle-keypairs', child.id)
+    if (data && Object.keys(marks).every((k) => sameBytes(data[k], marks[k]))) return true
+    const holds = await reached(child.store, this.identity.id, timeout)
     if (child.closing || child.closed) return false
     if (!holds) return null
     await this._mark(child.id, marks)
@@ -1952,9 +1955,7 @@ export class Handle extends ReadyResource {
           return false
         }
       }
-      // closed next, it is told only once a peer holds what it was told
-      const held = () => reached(child.store, this.identity.id, turn ? TIMEOUT : SERVED)
-      const told = await this._prune(child, stamp, held)
+      const told = await this._prune(child, stamp, turn ? TIMEOUT : SERVED)
       // told after its pass ended: the next one records the rooms covered
       if (told && turn) this._tellClosed()
       // one no peer held on its turn waits for the next pass, not another turn
@@ -2204,7 +2205,8 @@ function served(store, timeout) {
 // identity's own devices write has no other member to hear it
 async function reached(store, id, timeout) {
   const { data: devices } = await store.get('devices')
-  if (devices.every((row) => row.memberId === id)) return true
+  // an empty view has not shown yet who else writes there
+  if (devices.length > 0 && devices.every((row) => row.memberId === id)) return true
   let timer = null
   const late = new Promise((resolve) => (timer = setTimeout(resolve, timeout, false)))
   try {
