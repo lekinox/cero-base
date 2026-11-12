@@ -119,7 +119,7 @@ test('mirrors: owner and joiner are never online together, across restarts', asy
   const held = holds(mirror, Invite.parse(invite).key)
   joiner.me._join(invite, 'team', { timeout: 500 }).catch(() => {})
   await held
-  const [{ secretKey }] = (await joiner.me.local.store.get('joins')).data
+  const [{ secretKey }] = (await joiner.me.local.store.get('handle-keypairs')).data
   await joiner.me.close()
 
   // all of a device's writer core for the room is on the mirror
@@ -203,15 +203,16 @@ test('invites: a join that lands as its caller times out gives back the open it 
   const invite = await cero.invite(room)
   const { me: joiner } = await ceroOpen(t, { testnet, keepOpen: 0 })
 
-  // the room opens in time, and the join lands from inside the timeout's own callback
+  // the room opens in time, and the caller's open of it lands from inside the timeout's own callback
   let land
   const landing = new Promise((resolve) => (land = resolve))
   let entered = null
   const enter = joiner._enter.bind(joiner)
-  joiner._enter = async (...args) => {
-    entered = await enter(...args)
+  joiner._enter = async (...args) => (entered = await enter(...args))
+  const landed = joiner._landed.bind(joiner)
+  joiner._landed = async (...args) => {
+    await landed(...args)
     await landing
-    return entered
   }
   const timeout = CeroError.TIMEOUT
   CeroError.TIMEOUT = (...args) => (land(), timeout(...args))
@@ -257,16 +258,7 @@ test('invites: a join opening its room when the root closes rejects with CLOSED,
   const { identity, mailbox } = joiner.me
   const opts = { identity, spec: spec.handles.team }
   const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, opts)
-  await joiner.me.local.store.put('joins', {
-    id: b4a.toHex(Invite.parse(invite).discoveryKey),
-    type: 'team',
-    invite,
-    publicKey: writer.publicKey,
-    secretKey: writer.secretKey,
-    key,
-    encryptionKey,
-    epochs: c.encode(epochEntries, epochs)
-  })
+  await replied(joiner.me, invite, { key, encryptionKey, epochs, writer })
   await joiner.me.close()
   await cero.suspend(owner.me)
 
@@ -321,17 +313,7 @@ test('invites: a joiner restarting after the reply landed opens the room from th
   const opts = { identity, spec: spec.handles.team }
   const { key, encryptionKey, epochs, writer } = await Pairing.join(mailbox, invite, opts)
   await cero.revoke(room, invite)
-  const { discoveryKey } = Invite.parse(invite)
-  await joiner.me.local.store.put('joins', {
-    id: b4a.toHex(discoveryKey),
-    type: 'team',
-    invite,
-    publicKey: writer.publicKey,
-    secretKey: writer.secretKey,
-    key,
-    encryptionKey,
-    epochs: c.encode(epochEntries, epochs)
-  })
+  await replied(joiner.me, invite, { key, encryptionKey, epochs, writer })
   await joiner.me.close()
 
   const again = await reopen(t, joiner.dir, testnet)
@@ -375,7 +357,7 @@ test('invites: an invite nothing can be sealed to is refused before a join is wr
   const bad = new Invite({ ...fields, _str: null, address: b4a.alloc(32) }).toString()
   const err = await open(me.team, bad).catch((e) => e)
   t.is(err?.code, 'INVALID_INVITE')
-  t.alike((await get(me.joins)).data, [], 'no join waits on it')
+  t.alike(await joinsOf(me), [], 'no join waits on it')
 })
 
 test('invites: an owner back online answers its invites without opening the room', async (t) => {
@@ -545,18 +527,13 @@ test('invites: a pending join is listed, survives a restart, and a cancel ends i
   t.is(last._joining.size, 0)
 })
 
-test('invites: a join row left behind for a handle already open is dropped at boot', async (t) => {
+test('invites: a join that took its seat is not resumed at boot', async (t) => {
   const testnet = await makeTestnet(t)
   const owner = await ceroOpen(t, { testnet })
   const room = await open(owner.me.team, { name: 'clinic' })
   const invite = await cero.invite(room)
   const joiner = await ceroOpen(t, { testnet })
   await open(joiner.me.team, invite)
-
-  // stopped between opening the handle and forgetting the join
-  const id = b4a.toHex(Invite.parse(invite).discoveryKey)
-  const { publicKey, secretKey } = Identity.randomKeyPair()
-  await joiner.me.local.store.put('joins', { id, type: 'team', invite, publicKey, secretKey })
   await joiner.me.close()
 
   const again = await reopen(t, joiner.dir, testnet)
@@ -711,6 +688,21 @@ test("invites: a join that lands with nobody waiting is the app's once it opens 
   t.absent(mine.closing, 'still open for the next one')
 })
 
+// the reply landed and the joiner stopped before taking its seat: its row has the keys
+async function replied(me, invite, { key, encryptionKey, epochs, writer }) {
+  const id = hid.encode(key)
+  const ts = Date.now()
+  await me._saveKeyPair(id, writer, invite)
+  const asking = { id, type: 'team', key, name: null, createdAt: ts, updatedAt: ts, invite }
+  await me.store.call('add-handle', { ...asking, state: 'asking' })
+  await me.store.set('handles', {
+    id,
+    state: 'joining',
+    encryptionKey,
+    epochs: c.encode(epochEntries, epochs)
+  })
+}
+
 // the joiner's store hangs on one write, as a device that stops mid-write does
 function stall(store, method, when) {
   const call = store[method].bind(store)
@@ -731,7 +723,7 @@ test('invites: a reply the joiner stopped before keeping is handed over again af
   const invite = await cero.invite(room)
 
   const joiner = await ceroOpen(t, { testnet })
-  const stopped = stall(joiner.me.local.store, 'put', (name, row) => name === 'joins' && !!row.key)
+  const stopped = stall(joiner.me.store, 'set', (name, row) => row.state === 'joining')
   joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
   await stopped
   await joiner.me.close()
@@ -775,7 +767,7 @@ test('invites: a denial the joiner stopped before forgetting is handed over agai
   const invite = await cero.invite(room, { confirm: true })
 
   const joiner = await ceroOpen(t, { testnet })
-  const stopped = stall(joiner.me.local.store, 'del', (name) => name === 'joins')
+  const stopped = stall(joiner.me.store, 'set', (name, row) => row.state === 'denied')
   joiner.me._join(invite, 'team', { timeout: 0 }).catch(() => {})
   await deny(room, await nextRequest(room), 'not now')
   await stopped

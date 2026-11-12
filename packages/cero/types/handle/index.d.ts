@@ -31,7 +31,7 @@ export type HandleOpts = {
      */
     spec?: Spec;
     /**
-     * Root only, and required there: the device store for handle keypairs, joins and mail.
+     * Root only, and required there: the device store for handle keypairs and mail.
      */
     local?: Local;
     /**
@@ -123,7 +123,7 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
  * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
  * @property {Spec} [spec]                     Built cero spec.
- * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs, joins and mail.
+ * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs and mail.
  * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
  * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).
@@ -190,6 +190,10 @@ export declare class Handle extends ReadyResource {
     _joining;
     /** @private */
     _coreKeys;
+    /** @private */
+    _offJoins;
+    /** @private */
+    _departing;
     /** @private */
     _fileServer;
     /** @private */
@@ -301,6 +305,10 @@ export declare class Handle extends ReadyResource {
     private _tx;
     /** @private */
     private _leave;
+    /** @private */
+    private _depart;
+    /** @private */
+    private _ousted;
     /**
      * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
      * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
@@ -338,10 +346,6 @@ export declare class Handle extends ReadyResource {
     private _nameOf;
     /** @private */
     private _onRadio;
-    /** @private */
-    private _joins;
-    /** @private */
-    private _onLocal;
     /** @private */
     private _onTopics;
     /** @private */
@@ -420,9 +424,17 @@ export declare class Handle extends ReadyResource {
      */
     private _join;
     /** @private */
+    private _landed;
+    /** @private */
+    private _asked;
+    /** @private */
     private _start;
     /** @private */
+    private _run;
+    /** @private */
     private _cancel;
+    /** @private */
+    private _stop;
     /** @private */
     private _ask;
     /** @private */

@@ -156,12 +156,6 @@ export const main = {
     // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
     nearby: string
   },
-  // a join this device still waits on, without its keys
-  joining: {
-    id: required(string),
-    type: required(string),
-    invite: required(string)
-  },
   // a person linked over Bluetooth, by the identity that signed their device's key, with the name
   // and device type that device told
   peer: {
@@ -244,7 +238,9 @@ export const local = {
     id: required(string),
     publicKey: required(bytes),
     secretKey: required(bytes),
-    encryptionKey: bytes
+    encryptionKey: bytes,
+    // the invite this writer asks with, while its join is this device's to carry
+    invite: string
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {

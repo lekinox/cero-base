@@ -1244,6 +1244,37 @@ test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   t.is((await get(client.team, id)).data.state, 'cancelled')
 })
 
+// an invite nobody serves, so its join stays asking
+function nowhere(opts) {
+  const random = () => Identity.randomBytes(32)
+  const link = { key: random(), length: 1 }
+  return Invite.create({ key: random(), address: random(), link, ...opts }).toString()
+}
+
+test('rpc: a join whose invite expires rejects EXPIRED over the bridge, and its row reads expired', async (t) => {
+  const { client } = await openPair(t)
+  const invite = nowhere({ ttl: 1500 })
+  t.is((await open(client.team, invite).catch((e) => e)).code, 'EXPIRED')
+  const id = hid.encode(Invite.parse(invite).key)
+  t.is((await get(client.team, id)).data.state, 'expired')
+})
+
+test('rpc: a cancel from a second device ends the join the UI waits on with CANCELLED', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, {
+    bootstrap: testnet.bootstrap,
+    phrase: await cero.phrase(me)
+  })
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  const invite = nowhere()
+  const joining = open(client.team, invite).catch((e) => e)
+  const id = hid.encode(Invite.parse(invite).key)
+  await waitUntil(async () => (await get(other.team, id)).data?.state === 'asking')
+  t.ok(await cero.cancel(other, invite), 'no join of its own, the second device cancels it')
+  t.is((await joining).code, 'CANCELLED')
+  t.is((await get(client.team, id)).data.state, 'cancelled')
+})
+
 // only the files ref uploads: a user collection with its own `data` column
 // must stay a row insert over RPC
 test('rpc: put on a non-file ref with a data field stays a row insert', async (t) => {
@@ -1628,4 +1659,33 @@ test('rpc: send passes keep on to the worker', async (t) => {
 test("rpc: inbox is the worker's, INVALID on a client", async (t) => {
   const { client } = await openPair(t)
   t.exception(() => inbox(client, Identity.randomBytes(32), () => {}), /INVALID/)
+})
+
+// a host's room the UI's identity is in
+async function hostedRoom(t) {
+  const { me, client, testnet } = await openPair(t)
+  const host = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => host.close().catch(() => {}), { order: 5 })
+  const room = await open(host.team, { name: 'clinic' })
+  const joined = await open(client.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data)
+  return { me, client, host, room, joined }
+}
+
+test('rpc: leave reads leaving then left in the UI, once the room holds the removal', async (t) => {
+  const { me, client, room, joined } = await hostedRoom(t)
+  await cero.leave(joined)
+  t.ok(['leaving', 'left'].includes((await get(client.team, room.id)).data.state), 'leaving')
+  await waitUntil(async () => (await get(client.team, room.id)).data.state === 'left')
+  t.is(await room.store.removed(me.identity.id), 'left', 'the room holds her leaving')
+})
+
+test('rpc: a removal by an admin reads removed in the UI, with her id in by', async (t) => {
+  const { me, client, host, room } = await hostedRoom(t)
+  await del(room.members, me.identity.id)
+  const row = await waitUntil(async () => {
+    const { data } = await get(client.team, room.id)
+    return data.state === 'removed' ? data : null
+  })
+  t.is(row.by, host.identity.id, 'by the admin')
 })

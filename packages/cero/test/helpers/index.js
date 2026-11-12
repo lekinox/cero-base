@@ -109,10 +109,11 @@ export async function waitForConnection(net, timeout = 30000) {
   throw new Error('timeout waiting for connection')
 }
 
-// the invites of the joins a device still waits on
+// the invites of the joins not settled yet, as the rows of `me.team` list them
 export async function joinsOf(me) {
-  const { data } = await get(me.joins)
-  return data.map((join) => join.invite)
+  const rows = []
+  for (const state of ['asking', 'joining']) rows.push(...(await get(me.team, { state })).data)
+  return rows.map((row) => row.invite)
 }
 
 // a join waiting on the room's confirm invites, read the way an app reads it; `after` skips one

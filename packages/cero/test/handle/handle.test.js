@@ -6,6 +6,8 @@ import z32 from 'z32'
 import { rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
+import hid from 'hypercore-id-encoding'
+import { encode, createNotification } from 'blind-push'
 
 import { Identity } from '@cero-base/core/identity'
 import { Invite } from '@cero-base/core/invite'
@@ -15,7 +17,19 @@ import { Handle, Ref } from '../../src/handle/index.js'
 import { cero, schema, t as T } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { defs } from '../../src/build/internal.js'
-import { put, set, get, del, open, rotate, accept, watch, after } from '../../src/lib/operators.js'
+import {
+  put,
+  set,
+  get,
+  del,
+  open,
+  rotate,
+  accept,
+  deny,
+  receive,
+  watch,
+  after
+} from '../../src/lib/operators.js'
 import { Response, STATUS_ACCEPTED } from '../../../core/src/pairing/response.js'
 import { spec } from '../fixtures/spec/index.js'
 import {
@@ -27,7 +41,8 @@ import {
   fetch,
   openHandle,
   ceroOpen,
-  addHandles
+  addHandles,
+  refusedAtClaim
 } from '../helpers/index.js'
 
 // ─── Phase 4: root getter, fileServer, blobs, files ops ─────────────────────
@@ -100,16 +115,15 @@ test('invite: made-up keys a reader sends a confirm join are not kept, the accep
   await waitUntil(
     async () => read.size && !(await rows()).some((m) => read.has(m.id) && !m.handled)
   )
-  const { data: joins } = await peer.me.local.store.get('joins')
-  t.absent(
-    joins.find((row) => row.key),
-    'the made-up keys are not kept'
-  )
+  const { data: asking } = await get(peer.me.team, hid.encode(Invite.parse(invite).key))
+  t.is(asking.state, 'asking', 'the join still asks')
+  t.absent(asking.encryptionKey, 'the made-up keys are not kept')
 
   await accept(room, await nextRequest(room))
   const joined = await joining
   t.teardown(() => joined.close().catch(() => {}))
-  t.ok((await get(room.members, peer.identity.id)).data)
+  // its device seats itself: the host has the member once that claim reached it
+  t.ok(await waitUntil(async () => (await get(room.members, peer.identity.id)).data))
 })
 
 test('invite: refuses a role that is not a rank', async (t) => {
@@ -333,6 +347,80 @@ test('open: a second device stopped once its claim landed reopens on that writer
   const reopened = await open(b.me.team, { id: room.id })
   t.teardown(() => reopened.close().catch(() => {}))
   t.alike(b4a.from(reopened.store.writerKey), claimed, 'the retry is the writer on the log')
+})
+
+// a confirm invite to a host's room, and two devices of one identity
+async function twins(t) {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const a = await openHandle(t, { testnet })
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  const states = []
+  const off = b.me.store.onUpdate('handles', async () => {
+    const state = (await get(b.me.team, room.id)).data?.state
+    if (state && states.at(-1) !== state) states.push(state)
+  })
+  t.teardown(off)
+  return { testnet, room, invite, a, b, states }
+}
+
+test('join: a second device reads asking, joining and in, and carries the join to in once the asking device closes after joining', async (t) => {
+  const { room, invite, a, b, states } = await twins(t)
+  // the asking device stops once the keys are on its row
+  a.me._enter = async () => {
+    throw new Error('stopped')
+  }
+  const joining = open(a.me.team, invite).catch((e) => e)
+  await waitUntil(() => states.includes('asking'))
+  await accept(room, await nextRequest(room))
+  t.is((await joining).message, 'stopped')
+  await waitUntil(() => states.includes('joining'))
+  await a.me.close()
+  await waitUntil(() => states.includes('in'))
+  t.alike(states, ['asking', 'joining', 'in'], 'the second device read every step')
+  const seated = await open(b.me.team, { id: room.id })
+  t.teardown(() => seated.close().catch(() => {}))
+  t.ok(seated.store.writable, 'and took its seat')
+})
+
+test('join: a cancel from a second device ends the join on the first with CANCELLED', async (t) => {
+  const { invite, a, b, states } = await twins(t)
+  const joining = open(a.me.team, invite).catch((e) => e)
+  await waitUntil(() => states.includes('asking'))
+  t.ok(await cero.cancel(b.me, invite), 'no join of its own, the second device cancels it')
+  t.is((await joining).code, 'CANCELLED')
+  await waitUntil(() => a.me._joining.size === 0)
+  t.pass('the first device stopped carrying it')
+})
+
+test('join: an open that timed out completes later, and its row reaches in', async (t) => {
+  const { room, invite, a } = await twins(t)
+  const err = await a.me._join(invite, 'team', { timeout: 300 }).catch((e) => e)
+  t.is(err.code, 'TIMEOUT')
+  await accept(room, await nextRequest(room))
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'in')
+  t.pass('in once answered')
+})
+
+test('join: an app closed at asking and launched again completes the join', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room, { confirm: true })
+  const { me, dir } = await ceroOpen(t, { testnet })
+  const joining = open(me.team, invite).catch((e) => e)
+  const request = await nextRequest(room)
+  await me.close()
+  t.is((await joining).code, 'CLOSED')
+  await accept(room, request)
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'in')
+  const joined = await open(again.team, invite)
+  t.is(joined.id, room.id, 'the launch carried it in')
 })
 
 test('Handle: second device claims and syncs', async (t) => {
@@ -1149,7 +1237,7 @@ test('files: get(handle.files, id) resolves a single file row', async (t) => {
 
 // ─── Phase 4: WRITE gate ──────────────────────────────────────────────────────
 
-test('Handle: me.topics and me.joins read one row by id, as a collection does', async (t) => {
+test('Handle: me.topics reads one row by id, as a collection does', async (t) => {
   const { me } = await ceroOpen(t)
   await open(me.team, { name: 'clinic' })
   await waitUntil(async () => (await get(me.topics)).data.length === 1)
@@ -1157,7 +1245,6 @@ test('Handle: me.topics and me.joins read one row by id, as a collection does', 
   t.alike((await get(me.topics, row.id)).data, row, 'a topic by its id')
   t.alike((await get(me.topics, { name: 'clinic' })).data, [row], 'a filter still lists')
   t.is((await get(me.topics, 'unknown')).data, null, 'an unknown topic reads null')
-  t.is((await get(me.joins, 'unknown')).data, null, 'an unknown join reads null')
 })
 
 test('files: a reader cannot add a file', async (t) => {
@@ -1834,4 +1921,124 @@ test('Handle: a store written before the index of the handles by type lists its 
     (await get(me.club)).data.map((row) => row.name),
     ['club 1', 'club 2', 'club 3']
   )
+})
+
+test('handles: a join denied after its keys arrived keeps no key on its row and no topics row, and a push about it is not verified', async (t) => {
+  const { me: owner, testnet } = await ceroOpen(t)
+  const room = await open(owner.team, { name: 'clinic' })
+  await put(room.messages, { text: 'hi' })
+  const { me } = await ceroOpen(t, { testnet })
+  const topic = b4a.toHex(room.store.discoveryKey)
+  const invite = await cero.invite(room)
+  const withdraw = async () => {
+    await waitUntil(async () => (await me.local.store.get('topics', topic)).data)
+    const promised = await waitUntil(
+      async () => (await get(room.requests)).data.find((r) => r.promised) || null
+    )
+    await deny(room, promised, 'not you')
+  }
+  const err = await refusedAtClaim(t, me, me.team, invite, withdraw)
+  t.is(err.code, 'DENIED')
+  const { data: row } = await get(me.team, room.id)
+  t.is(row.state, 'denied')
+  t.absent(row.encryptionKey, 'no key on its row')
+  t.absent(row.epochs, 'nor its epochs')
+  await me._indexing
+  t.absent((await me.local.store.get('topics', topic)).data, 'no topics row')
+  const payload = encode(
+    await createNotification(room.store.bee.local, {
+      roomKey: room.store.key,
+      extra: b4a.from('messages')
+    })
+  )
+  t.is(await receive(me, payload), null, 'a push about it is not verified')
+})
+
+test('handles: a topics row is kept for a handle in or joining, and dropped once it leaves', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  const topic = b4a.toHex(room.store.discoveryKey)
+  await waitUntil(async () => (await me.local.store.get('topics', topic)).data)
+  await me.store.set('handles', { id: room.id, state: 'leaving' })
+  await waitUntil(async () => !(await me.local.store.get('topics', topic)).data)
+  t.ok((await get(me.team, room.id)).data.encryptionKey, 'its row still has the key')
+})
+
+// one identity on two devices, both seated in a host's room
+async function seatedTwins(t) {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const invite = await cero.invite(room)
+  const a = await openHandle(t, { testnet })
+  const b = await openHandle(t, { testnet, identity: a.identity, key: a.me.store.key })
+  await b.me.store.bootstrap({ recovering: true })
+  const onA = await open(a.me.team, invite)
+  await waitUntil(async () => (await get(b.me.team, room.id)).data?.encryptionKey)
+  const onB = await open(b.me.team, { id: room.id })
+  t.teardown(() => onB.close().catch(() => {}))
+  const states = (me) => {
+    const seen = []
+    const off = me.store.onUpdate('handles', async () => {
+      const state = (await get(me.team, room.id)).data?.state
+      if (state && seen.at(-1) !== state) seen.push(state)
+    })
+    t.teardown(off)
+    return seen
+  }
+  return { host, room, a, b, onA, onB, states }
+}
+
+test('leave: the row reads leaving then left on every device of the identity, once the room holds the removal', async (t) => {
+  const { room, a, b, onA, states } = await seatedTwins(t)
+  const seen = [states(a.me), states(b.me)]
+  await cero.leave(onA)
+  for (const s of seen) await waitUntil(() => s.includes('left'))
+  for (const s of seen) t.alike(s, ['leaving', 'left'], 'leaving, then left')
+  t.is(await room.store.removed(a.identity.id), 'left', 'the room holds her leaving')
+  t.absent((await get(b.me.team, room.id)).data.encryptionKey, 'the row keeps no key')
+})
+
+test('leave: an app closed while leaving goes on at the next launch', async (t) => {
+  const { me: host, testnet } = await ceroOpen(t)
+  const room = await open(host.team, { name: 'clinic' })
+  const { me, dir } = await ceroOpen(t, { testnet })
+  const joined = await open(me.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data)
+  me._carryOn = async () => {}
+  await cero.leave(joined)
+  t.is((await get(me.team, room.id)).data.state, 'leaving')
+  await me.close()
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  await waitUntil(async () => (await get(again.team, room.id)).data?.state === 'left')
+  t.is(await room.store.removed(me.identity.id), 'left', 'the launch carried it out')
+})
+
+test('removed: a removal by an admin reads removed with her id in by, and the row keeps no key', async (t) => {
+  const { host, room, a, b } = await seatedTwins(t)
+  await del(room.members, a.identity.id)
+  for (const me of [a.me, b.me]) {
+    const row = await waitUntil(async () => {
+      const { data } = await get(me.team, room.id)
+      return data?.state === 'removed' ? data : null
+    })
+    t.is(row.by, host.identity.id, 'by the admin')
+    t.absent(row.encryptionKey, 'no key')
+  }
+})
+
+test('leave: a row at left is joined again with a new invite, and one at removed is deleted by the app', async (t) => {
+  const { room, a, onA } = await seatedTwins(t)
+  await cero.leave(onA)
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'left')
+  // a code minted after she left brings her back
+  const back = await open(a.me.team, await cero.invite(room))
+  t.teardown(() => back.close().catch(() => {}))
+  t.is((await get(a.me.team, room.id)).data.state, 'in', 'in again')
+  await waitUntil(async () => (await get(room.members, a.identity.id)).data)
+  await del(room.members, a.identity.id)
+  await waitUntil(async () => (await get(a.me.team, room.id)).data?.state === 'removed')
+  await a.me.store.del('handles', room.id)
+  t.absent((await get(a.me.team, room.id)).data, 'deleted')
 })

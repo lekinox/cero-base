@@ -118,11 +118,6 @@ export declare const main: {
         version: import("@cero-base/core").Prim;
         nearby: import("@cero-base/core").Prim;
     };
-    joining: {
-        id: import("@cero-base/core").Prim;
-        type: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
-    };
     peer: {
         id: import("@cero-base/core").Prim;
         name: import("@cero-base/core").Prim;
@@ -188,6 +183,7 @@ export declare const local: {
         publicKey: import("@cero-base/core").Prim;
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;

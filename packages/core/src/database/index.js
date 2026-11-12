@@ -662,6 +662,46 @@ export class Database extends ReadyResource {
     return rows.filter((row) => !row.id.includes(':')).map((row) => hid.decode(row.id))
   }
 
+  /**
+   * Who removed a member, from the record of her removal: null while none reached this device, and
+   * for one who left on her own.
+   *
+   * @param {string} memberId
+   * @returns {Promise<{ by: string | null } | null>}
+   */
+  async removal(memberId) {
+    if ((await this.removed(memberId)) !== 'removed') return null
+    const row = await this.view.get(`@${this.ns}/${REMOVALS}`, { id: memberId })
+    return { by: row.by ?? null }
+  }
+
+  /**
+   * Resolves once another device or a mirror holds every block this device wrote.
+   *
+   * @returns {Promise<void>}
+   */
+  async held() {
+    this.guard()
+    const core = this.bee.local
+    const length = core.length
+    if (core.remoteContiguousLength >= length) return
+    await new Promise((resolve, reject) => {
+      const check = () => {
+        if (this.closing || core.closed) done(CeroError.CLOSED('Database'))
+        else if (core.remoteContiguousLength >= length) done(null)
+      }
+      const done = (err) => {
+        core.off('remote-contiguous-length', check)
+        core.off('close', check)
+        if (err) reject(err)
+        else resolve()
+      }
+      core.on('remote-contiguous-length', check)
+      core.on('close', check)
+      check()
+    })
+  }
+
   // the same read against any view: hooks read the transaction they run in
   /** @private */
   async _read(view, name, query) {

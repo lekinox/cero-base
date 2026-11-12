@@ -63,7 +63,7 @@ try {
 }
 ```
 
-A join that timed out lands on its own: the handle appears in `cero.watch(me.room)`, and `me.joins` lists it until then.
+A join that timed out lands on its own: its row in `cero.watch(me.room)` reads `in` once it does.
 
 ## Writing
 
