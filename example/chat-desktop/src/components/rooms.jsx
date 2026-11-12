@@ -4,6 +4,7 @@ import { useCero } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input, Section, Card, Page } from './ui'
 import { Avatar } from './avatar'
+import { Joins } from './joins'
 
 export function Rooms({ onOpen, onSettings }) {
   const me = useCero()
@@ -98,6 +99,7 @@ export function Rooms({ onOpen, onSettings }) {
           ))}
         </Section>
       )}
+      <Joins />
     </Page>
   )
 }

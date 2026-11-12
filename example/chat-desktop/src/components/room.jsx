@@ -4,6 +4,7 @@ import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
 import { Toast } from './toast'
+import { People } from './people'
 import { useToast } from '../hooks/use-toast'
 
 function MessageGroup({ messages, mine, sender }) {
@@ -111,6 +112,7 @@ export function Room({ onClose }) {
           Leave
         </Button>
       </div>
+      <People />
 
       <div ref={ref} className='flex-1 overflow-y-auto p-3 space-y-2'>
         {groups.map((g, i) => (
