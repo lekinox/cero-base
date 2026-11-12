@@ -41,7 +41,7 @@ export class Rotation {
     /** @private */
     this._open = new Map() // writer:stamp → a key set aside, opened: never in the keyring
     /** @private */
-    this._stamps = new Set() // the stamps a row set aside holds
+    this._spots = new Set() // writer:stamp of every row set aside: its writer's blocks under it read with its key alone
     /** @private */
     this._met = new Set() // writer:stamp of blocks met before their row landed
   }
@@ -115,7 +115,7 @@ export class Rotation {
   _setAside(row) {
     if (!row.writer) return
     const at = spot(row.writer, row.stamp)
-    this._stamps.add(row.stamp)
+    this._spots.add(at)
     if (this._open.has(at)) return
     const known = this.held(row)
     if (known) {
@@ -133,24 +133,49 @@ export class Rotation {
   }
 
   /**
-   * The key a block of `writer` under `stamp` is read with when that writer set one aside under
-   * it; a block met under a key this device does not hold is remembered until its row lands.
+   * The key a block of `writer` under `stamp` is read with: the one that writer set aside under
+   * it, and no other, when she set one aside, else the counted one. A block met under a key this
+   * device does not hold is remembered until its row lands.
    *
    * @param {number} stamp
    * @param {Uint8Array} [writer]  The writer of the block.
    * @returns {Uint8Array | null}
    */
   meet(stamp, writer) {
-    if (!writer) return null
-    if (this._stamps.has(stamp)) {
-      const at = spot(writer, stamp)
-      const row = this._aside.get(at)
-      if (row) this._aside.delete(at)
-      const entropy = this._open.get(at) ?? (row && this._opens(at, row))
-      if (entropy) return entropy
+    const { keyring } = this.db
+    if (!writer) return keyring.entropy(stamp)
+    const at = spot(writer, stamp)
+    if (!this._spots.has(at)) {
+      const entropy = keyring.entropy(stamp)
+      if (!entropy) this._remember(at)
+      return entropy
     }
-    if (!this.db.keyring.entropy(stamp)) this._remember(spot(writer, stamp))
-    return null
+    const row = this._aside.get(at)
+    if (row) this._aside.delete(at)
+    return this._open.get(at) ?? (row && this._opens(at, row)) ?? null
+  }
+
+  /**
+   * A key set aside handed over: it opens each row set aside under its stamp whose commitment it
+   * meets, never a counted one.
+   *
+   * @param {{ stamp: number, entropy: Uint8Array }} e
+   * @param {Array<{ stamp: number, commit: Uint8Array, aside?: boolean, writer?: Uint8Array }>} rows
+   * @returns {boolean}  Whether it opened one.
+   */
+  hand(e, rows) {
+    const hash = crypto.hash(e.entropy)
+    let opened = false
+    for (const row of rows) {
+      if (!row.aside || !row.writer || row.stamp !== e.stamp || !row.commit) continue
+      const at = spot(row.writer, row.stamp)
+      if (this._open.has(at) || !b4a.equals(hash, row.commit)) continue
+      this._spots.add(at)
+      this._aside.delete(at)
+      this._open.set(at, e.entropy)
+      opened = true
+    }
+    return opened
   }
 
   /** @private */

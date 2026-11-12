@@ -1988,6 +1988,52 @@ test('rotate: a rotation set aside and a counted one with the same stamp both st
   t.pass('the same once the view is applied again')
 })
 
+test('rotate: a block a writer wrote under a key she set aside reads with that key alone: a device it was not sealed to, holding the counted key with the same stamp, waits for hers and reads the block once handed it', async (t) => {
+  const {
+    a,
+    members: [b, other]
+  } = await makeRoom(t, ['member', 'member'])
+  const peers = [a, b, other]
+  for (const { db } of peers) {
+    await waitFor(async () => db.writable && (await db.get('devices')).data.length === 3)
+  }
+  const stamp = 999
+  const landed = (n) => async () => {
+    for (const { db } of peers) {
+      if ((await epochRows(db)).filter((r) => r.stamp === stamp).length !== n) return false
+    }
+    return true
+  }
+  const mine = Identity.randomBytes(32)
+  await b.db.call('rotate-key', {
+    epoch: 0,
+    stamp,
+    wrapped: c.encode(wraps, seal([await own(a), await own(b)], mine)),
+    createdAt: Date.now(),
+    commit: crypto.hash(mine)
+  })
+  await waitFor(landed(1))
+  a.db.rotation._mint = () => stamp
+  await a.db.rotate()
+  await waitFor(landed(2))
+  await waitFor(() => other.db.keyring.entropy(stamp))
+  const counted = a.db.keyring.entropy(stamp)
+
+  b.db.rotation.pick = async () => {}
+  b.db.keyring.current = stamp
+  await b.db.put('messages', { text: 'aside' })
+  await waitFor(async () => (await texts(a.db)).includes('aside'))
+  const hex = b4a.toString(b.db.writerKey, 'hex')
+  await waitFor(() => other.db.bee._epochStalled.has(hex))
+  t.absent((await texts(other.db)).includes('aside'), 'never read with the counted key: it waits')
+  t.alike(other.db.keyring.entropy(stamp), counted, 'the keyring holds the counted key alone')
+
+  await other.db.learn([{ epoch: 0, stamp, entropy: mine }])
+  await waitFor(async () => (await texts(other.db)).includes('aside'))
+  t.pass('and reads it once handed hers')
+  t.alike(other.db.keyring.entropy(stamp), counted, 'which stays out of the keyring')
+})
+
 test('rotate: a rotation set aside is never the newest key: a device it was not sealed to lacks nothing and asks for nothing', async (t) => {
   const {
     a,

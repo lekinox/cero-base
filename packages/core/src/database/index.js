@@ -854,8 +854,10 @@ export class Database extends ReadyResource {
     this.guard()
     const rows = await this.rotation._epochs()
     let added = false
+    let aside = false
     for (const e of epochs) {
       if (e.entropy?.byteLength !== 32) continue
+      if (this.rotation.hand(e, rows)) aside = true
       const row = rows.find((r) => r.stamp === e.stamp && !r.aside)
       if (!row) this.rotation.keep(e, from)
       if (!row?.commit || this.rotation.held(row)) continue
@@ -863,6 +865,8 @@ export class Database extends ReadyResource {
       this.keyring.add(e.stamp, e.entropy, e.epoch)
       added = true
     }
+    // a key set aside stays out of the keyring: what stalled on it wakes
+    if (aside && !added) this.keyring.onchange?.()
     if (!added) return
     await this.rotation.pick()
     await this.rotation._save()
