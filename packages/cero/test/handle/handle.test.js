@@ -1513,3 +1513,229 @@ test('devices: two devices of the identity that tell a room at once leave the sa
   t.alike([room.store.length, mine.store.length], lengths, 'and neither tells again')
   t.alike(await room.store.told(a.me.id), await mine.store.told(a.me.id))
 })
+
+const MOVES = {
+  asking: ['joining', 'denied', 'expired', 'cancelled'],
+  joining: ['in', 'denied'],
+  in: ['leaving', 'removed'],
+  leaving: ['left', 'removed']
+}
+const ENDED = ['left', 'removed', 'denied', 'expired', 'cancelled']
+const STATES = [...Object.keys(MOVES), ...ENDED]
+
+// a handles row as a join writes it, with no room behind it
+const standing = (id, state, invite = 'first') => ({
+  id,
+  type: 'team',
+  key: b4a.from(id.padEnd(32, '.').slice(0, 32)),
+  state,
+  invite
+})
+
+const refused = (write) =>
+  write.then(
+    () => false,
+    (err) => err.code === 'REFUSED' || Promise.reject(err)
+  )
+
+const states = async (me) =>
+  Object.fromEntries((await get(me.handles)).data.map((row) => [row.id, row.state]))
+
+// past the device's own check, as a device with an older picture appends it
+async function behind(me, row) {
+  const { wrap } = await import('../../../core/src/database/envelope.js')
+  await me.store.bee.append(wrap(me.store.version, spec.dispatch.encode('@cero/add-handle', row)))
+}
+
+test('handles: a row changes state as its table allows and no other way, on the device and once the view is applied again', async (t) => {
+  const errors = []
+  const { me, dir, testnet } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const write = (row) => me.store.set('handles', row)
+  const stale = []
+
+  for (const from of STATES) {
+    for (const to of STATES) {
+      const id = `${from}-${to}`
+      await write(standing(id, from))
+      // under the invite the row has, which lets a denied one in
+      const ok = from === to || MOVES[from]?.includes(to) || `${from}-${to}` === 'denied-joining'
+      t.is(await refused(write({ id, state: to })), !ok, `${from} to ${to}`)
+      if (!ok) stale.push(standing(id, to))
+    }
+  }
+  for (const end of ENDED) {
+    const id = `${end}-again`
+    await write(standing(id, end))
+    t.ok(await refused(write({ id, state: 'asking', invite: null })), `${end} to asking, no invite`)
+    t.absent(await refused(write({ id, state: 'asking', invite: 'second' })), 'and with a new one')
+    await write(standing(`${end}-gone`, end))
+    await me.store.del('handles', `${end}-gone`)
+    t.absent((await get(me.handles, `${end}-gone`)).data, `${end} is deleted`)
+  }
+  await write(standing('denied-other', 'denied'))
+  t.ok(
+    await refused(write({ id: 'denied-other', state: 'joining', invite: 'second' })),
+    'denied to joining under another invite'
+  )
+  stale.push({ ...standing('denied-other', 'joining'), invite: 'second' })
+  t.ok(await refused(write(standing('unknown', 'paused'))), 'a state the table does not have')
+
+  const before = await states(me)
+  for (const row of stale) {
+    const seen = errors.length
+    await behind(me, row)
+    await waitUntil(() => errors.length > seen)
+  }
+  t.ok(errors.every((err) => err.code === 'REFUSED'))
+  await write(standing('last', 'asking'))
+  t.alike(await states(me), { ...before, last: 'asking' }, 'apply refuses what the device refuses')
+
+  await me.close()
+  const meta = { ...spec.meta, rules: spec.meta.rules + 1 }
+  const again = await cero(dir, { ...spec, meta }, { bootstrap: testnet.bootstrap, onerror() {} })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  t.is((await again.store.dispatcher.built(again.store.view))[1], meta.rules, 'applied again')
+  t.alike(await states(again), { ...before, last: 'asking' }, 'every row stands where it stood')
+})
+
+test('handles: a row with no state reads as in, and takes the changes in takes', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  t.absent((await me.store.get('handles', room.id)).data.state, 'a room is stored with no state')
+  t.is((await get(me.team, room.id)).data.state, 'in', 'read by id')
+  t.alike(
+    (await get(me.team)).data.map((row) => row.state),
+    ['in'],
+    'in a list'
+  )
+  t.is((await get(me.handles, room.id)).data.state, 'in', 'and among every handle')
+  const stream = watch(me.team, room.id)
+  t.teardown(() => stream.destroy())
+  const [seen] = await new Promise((resolve) => stream.once('data', (snap) => resolve([snap])))
+  t.is(seen.data.state, 'in', 'and by a watch')
+
+  t.ok(await refused(me.store.set('handles', { id: room.id, state: 'joining' })), 'not to joining')
+  t.ok(await refused(me.store.set('handles', { id: room.id, state: 'left' })), 'nor straight out')
+  await me.store.set('handles', { id: room.id, name: 'renamed' })
+  t.is((await get(me.team, room.id)).data.state, 'in', 'another field changes and it stays')
+  await me.store.set('handles', { id: room.id, state: 'leaving' })
+  t.is((await get(me.team, room.id)).data.state, 'leaving', 'in to leaving')
+})
+
+test('handles: two devices of one identity that write conflicting states end on the same row', async (t) => {
+  const errors = { a: [], b: [] }
+  const a = await ceroOpen(t, { onerror: (err) => errors.a.push(err.code) })
+  await a.me.store.set('handles', standing('room', 'asking'))
+  const b = await ceroOpen(t, {
+    testnet: a.testnet,
+    phrase: a.me.identity.toPhrase(),
+    onerror: (err) => errors.b.push(err.code)
+  })
+  await waitUntil(async () => (await get(b.me.handles, 'room')).data && b.me.store.writable)
+
+  await b.me.network.suspend()
+  await a.me.store.set('handles', { id: 'room', state: 'joining' })
+  await b.me.store.set('handles', { id: 'room', state: 'cancelled', reason: 'app' })
+  await b.me.network.resume()
+
+  const read = async ({ me }) => (await get(me.handles, 'room')).data
+  // apart, each stands where it wrote: the same state is both logs in one order
+  const row = await waitUntil(async () => {
+    const [mine, theirs] = [await read(a), await read(b)]
+    return mine.state === theirs.state ? mine : null
+  })
+  t.is(row.reason, row.state === 'cancelled' ? 'app' : null, 'the first of the two stands, whole')
+  await waitUntil(() => errors.a.includes('REFUSED') && errors.b.includes('REFUSED'))
+  t.pass('and both devices refused the other')
+  t.is((await read(b)).state, row.state, 'for good')
+})
+
+test('handles: the rows asking, joining and leaving among 500 handles are read through the index, never a list of every handle', async (t) => {
+  const { me } = await ceroOpen(t)
+  const unsettled = ['asking', 'joining', 'leaving']
+  await me.store.tx(async (tx) => {
+    for (let i = 0; i < 500; i++) {
+      const state = i % 100 === 0 ? unsettled[(i / 100) % 3] : i % 2 ? 'in' : undefined
+      await tx.set('handles', standing(`room-${i}`, state))
+    }
+  })
+
+  const found = []
+  for (const state of unsettled) found.push(...(await get(me.handles, { state })).data)
+  t.alike(
+    found.map((row) => row.id).sort(),
+    ['room-0', 'room-100', 'room-200', 'room-300', 'room-400'],
+    'the five of 500'
+  )
+
+  // the same reads, counted on the view they are made against
+  const paths = []
+  const view = {
+    find(path, range) {
+      paths.push(path)
+      return me.store.view.find(path, range)
+    }
+  }
+  for (const state of unsettled) await me.store._read(view, 'handles', { state })
+  t.alike(paths, Array(3).fill('@cero/handles-state'), 'one read of the index for each state')
+})
+
+test('handles: a rename from a device whose copy of the row is behind on the state is not refused and does not change the state', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  await me.store.set('handles', standing('room', 'asking'))
+
+  const sent = []
+  const write = me.store.write
+  me.store.write = (ops) => (sent.push(...ops), write.call(me.store, ops))
+  await me.store.set('handles', { id: 'room', name: 'first' })
+  me.store.write = write
+  t.absent(sent[0][1].state, 'a rename sends no state')
+  t.is((await get(me.handles, 'room')).data.state, 'asking', 'and the row stands where it stood')
+
+  await me.store.set('handles', { id: 'room', state: 'denied', reason: 'full', by: 'ana' })
+  // the rename of a device that still reads asking
+  await behind(me, { ...standing('room'), name: 'renamed' })
+  const row = await waitUntil(async () => {
+    const { data } = await get(me.handles, 'room')
+    return data.name === 'renamed' || errors.length ? data : null
+  })
+  t.is(row.name, 'renamed', 'the rename lands')
+  t.alike([row.state, row.reason, row.by, row.invite], ['denied', 'full', 'ana', 'first'])
+  t.alike(errors, [], 'and nothing was refused')
+})
+
+test('handles: a list filtered on state in returns the rooms written before the field', async (t) => {
+  const { me } = await ceroOpen(t)
+  const room = await open(me.team, { name: 'clinic' })
+  t.absent((await me.store.get('handles', room.id)).data.state, 'a room is stored with no state')
+  await me.store.set('handles', standing('named', 'in'))
+  await me.store.set('handles', standing('waiting', 'asking'))
+
+  const ids = (res) => res.data.map((row) => row.id).sort()
+  const both = [room.id, 'named'].sort()
+  t.alike(ids(await get(me.team, { state: 'in' })), both, 'by type')
+  t.alike(ids(await get(me.handles, { state: 'in' })), both, 'among every handle')
+  t.alike(ids(await get(me.team, { state: 'asking' })), ['waiting'], 'another state as stored')
+  const page = await get(me.team, { state: 'in', limit: 1 })
+  t.alike([page.data.length, page.size, page.total], [1, 1, 2], 'a page of them')
+
+  const stream = watch(me.team, { state: 'in' })
+  t.teardown(() => stream.destroy())
+  t.alike(ids(await new Promise((resolve) => stream.once('data', resolve))), both, 'and by a watch')
+})
+
+test('handles: a row is deleted while in, never while asking, joining or leaving', async (t) => {
+  const { me } = await ceroOpen(t)
+  for (const state of ['asking', 'joining', 'leaving']) {
+    await me.store.set('handles', standing(state, state))
+    t.ok(await refused(me.store.del('handles', state)), `not while ${state}`)
+    t.is((await get(me.handles, state)).data.state, state, 'it stays')
+  }
+  const room = await open(me.team, { name: 'clinic' })
+  await me.store.set('handles', standing('named', 'in'))
+  for (const id of [room.id, 'named']) {
+    await me.store.del('handles', id)
+    t.absent((await get(me.handles, id)).data, 'gone')
+  }
+})

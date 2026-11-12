@@ -56,6 +56,10 @@ export declare const main: {
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
+        state: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+        by: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
     file: {
         id: import("@cero-base/core").Prim;

@@ -14,6 +14,9 @@ export declare const defs: {
         };
         handles: {
             type: string;
+            indexes: {
+                state: string[];
+            };
         };
         files: {
             type: string;
@@ -135,6 +138,16 @@ export declare function collections(ns: string, scope: 'main' | 'local'): Array<
 export declare function added(ns: string): Array<{
     name: string;
     schema: string;
+    key: string[];
+}>;
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, collection: string, key: string[] }>}
+ */
+export declare function indexes(ns: string, scope: 'main' | 'local'): Array<{
+    name: string;
+    collection: string;
     key: string[];
 }>;
 /**

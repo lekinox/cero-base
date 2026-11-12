@@ -69,7 +69,13 @@ export const main = {
     updatedAt: int,
     index: uint,
     // its rotation epochs, for a device of the identity opening it later
-    epochs: bytes
+    epochs: bytes,
+    // where the identity stands in it, none for `in`, why and by whom once it is over, and the
+    // invite it asked with
+    state: string,
+    reason: string,
+    by: string,
+    invite: string
   },
   file: {
     id: required(string),

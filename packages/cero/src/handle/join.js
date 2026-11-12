@@ -57,22 +57,32 @@ export class Join {
     this._running = running
     try {
       const row = await this._save({ invite })
+      const id = await this.root._ask(this.type, invite)
       const writer = { publicKey: row.publicKey, secretKey: row.secretKey }
       const { mailbox, identity } = this.root
       const keep = (answer) => (answer instanceof Error ? this._forget() : this._keep(answer))
       const opts = { identity, spec: this.spec, writer, keep, timeout: 0, signal: running.signal }
       const reply = row.key ? unpack(row) : await Pairing.join(mailbox, invite, opts)
-      const child = await this.root._enter(this.type, reply)
+      const { encryptionKey, epochs } = reply
+      await this.root._stand(id, 'joining', {
+        encryptionKey,
+        epochs: c.encode(epochEntries, epochs)
+      })
+      const child = await this.root._enter(this.type, reply, invite)
       // the hold the open took is a waiter's: with none it is let go, idle until the app opens it
       if (!this.waiting) child.close().catch(this.root._onerror)
       this._end(this._resolve, child)
       await this._forget()
     } catch (err) {
       if (running !== this._running) return
-      // a close pauses the join, anything else ends it
-      if (err.code !== 'CLOSED' || this.cancelled) await this._forget()
+      const end = this.cancelled ? CeroError.CANCELLED() : err
+      // a close pauses the join, anything else ends it, and its row says how
+      if (end.code !== 'CLOSED') {
+        await this._forget()
+        await this.root._over(invite, end).catch(this.root._onerror)
+      }
       if (err.code !== 'CLOSED' && !this.waiting) this.root._onerror(err)
-      this._end(this._reject, err)
+      this._end(this._reject, end)
     }
   }
 

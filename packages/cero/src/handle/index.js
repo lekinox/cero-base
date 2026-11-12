@@ -700,15 +700,21 @@ export class Handle extends ReadyResource {
     const { changes, reset, settle } = await this.store.since('handles', 'topics')
     let rows = null
     if (reset) {
-      const wanted = new Set(changes.map(({ next }) => topicOf(next)))
+      const wanted = new Set(
+        changes.filter(({ next }) => next.encryptionKey).map(({ next }) => topicOf(next))
+      )
       rows = new Map((await this.local.store.get('topics')).data.map((row) => [row.id, row]))
       for (const id of rows.keys()) {
         if (!wanted.has(id)) await this._drop(id)
       }
     }
     for (const { prev, next } of changes) {
-      if (!next) await this._drop(topicOf(prev))
-      else await this._row(next, rows ? (rows.get(topicOf(next)) ?? null) : undefined)
+      // a join with no keys yet has no topic to hear a push on
+      if (!next?.encryptionKey) {
+        if (prev?.encryptionKey || !next) await this._drop(topicOf(prev))
+        continue
+      }
+      await this._row(next, rows ? (rows.get(topicOf(next)) ?? null) : undefined)
     }
     await settle()
   }
@@ -1042,12 +1048,61 @@ export class Handle extends ReadyResource {
     return !!join
   }
 
+  // a join's row: `asking` with its invite and no keys. A room this identity was let go from reads `removed` first,
+  // and a join that ended under this invite ends the same way again
+  /** @private */
+  async _ask(type, invite) {
+    const { key } = Invite.parse(invite)
+    const id = hid.encode(key)
+    const { data: row } = await this.store.get('handles', id)
+    let state = row && (row.state || 'in')
+    if (state === 'joining' || (state === 'asking' && row.invite === invite)) return id
+    if (state === 'in') {
+      await this.store.set('handles', { id, state: 'removed' })
+      state = 'removed'
+    }
+    if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
+    const ts = Date.now()
+    await this.store.call('add-handle', {
+      id,
+      type,
+      key,
+      name: null,
+      createdAt: ts,
+      updatedAt: ts,
+      state: 'asking',
+      invite
+    })
+    return id
+  }
+
+  // a join's row moves on once: a step run again finds it there
+  /** @private */
+  async _stand(id, state, fields) {
+    const { data: row } = await this.store.get('handles', id)
+    if (!row || row.state === state) return
+    await this.store.set('handles', { id, state, ...fields })
+  }
+
+  // how a join ended, on its row
+  /** @private */
+  async _over(invite, err) {
+    const state = OVER[err.code]
+    const id = hid.encode(Invite.parse(invite).key)
+    const { data: row } = await this.store.get('handles', id)
+    // a join on its way ends, one seated or over stays as it reads
+    const ends = row?.state === 'asking' || (row?.state === 'joining' && state === 'denied')
+    if (state && ends) await this.store.set('handles', { id, state, reason: err.reason ?? null })
+  }
+
   // a stored writer still admitted reopens without pairing; a removed writer's core is frozen,
   // so that one pairs again with a fresh keypair
   /** @private */
   async _joined(type, key) {
     const { data: existing } = await this.store.get('handles', hid.encode(key))
     if (existing?.type !== type) return null
+    // a join on its way, or one that is over, is its row's to tell
+    if (!existing.encryptionKey || (existing.state || 'in') !== 'in') return null
     const known = await this._load(type, existing.id)
     const { data: me } = await known.store.get('members', this.identity.id)
     const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
@@ -1065,7 +1120,7 @@ export class Handle extends ReadyResource {
    * @returns {Promise<Handle>}
    * @private
    */
-  async _enter(type, reply) {
+  async _enter(type, reply, invite) {
     const child = /** @type {Child} */ (
       this._room({
         spec: pickHandle(this.spec, type),
@@ -1073,9 +1128,16 @@ export class Handle extends ReadyResource {
         ...delivered(reply)
       })
     )
+    const id = hid.encode(reply.key)
+    // its row is listed while it joins: an open by id shares this child, a second on the same core deadlocks
     let publish = null
     let abort = null
-    let inflightId = null
+    const inflight = new Promise((resolve, reject) => {
+      publish = resolve
+      abort = reject
+    })
+    inflight.catch(safetyCatch)
+    this._loading?.set(id, inflight)
     try {
       await child.ready()
       // let in by a promise, this device seats itself: its claim writes the member row
@@ -1086,15 +1148,6 @@ export class Handle extends ReadyResource {
         await child.store.whenWritable({ timeout: 0 })
       }
 
-      const id = hid.encode(child.store.key)
-      // same create/open race as _create, a concurrent _load must share this child
-      const inflight = new Promise((resolve, reject) => {
-        publish = resolve
-        abort = reject
-      })
-      inflight.catch(safetyCatch)
-      inflightId = id
-      this._loading?.set(id, inflight)
       await this._saveKeyPair(id, child.store.keyPair)
 
       const ts = Date.now()
@@ -1106,15 +1159,17 @@ export class Handle extends ReadyResource {
         epochs: c.encode(epochEntries, child.store.keyring.all()),
         name: null,
         createdAt: ts,
-        updatedAt: ts
+        updatedAt: ts,
+        state: 'in',
+        invite
       })
       this._adopt(child, {})
       publish(child)
       this._loading?.delete(id)
       return child
     } catch (err) {
-      if (abort) abort(err)
-      if (inflightId) this._loading?.delete(inflightId)
+      abort(err)
+      this._loading?.delete(id)
       await child._end().catch(safetyCatch)
       throw err
     }
@@ -1124,14 +1179,21 @@ export class Handle extends ReadyResource {
   // outbox kept
   /** @private */
   async _carryOn() {
+    // the rows not settled, through their index: never every handle
+    const going = new Set()
+    for (const state of ['asking', 'joining']) {
+      for (const row of (await this.store.get('handles', { state })).data) going.add(topicOf(row))
+    }
     for (const { id, invite, type } of (await this.local.store.get('joins')).data) {
       // the root's own device link row has no handle type: the launch resumes that one
       if (!this.spec.handles?.[type]) continue
-      if (await this._joined(type, Invite.parse(invite).key)) {
-        await this.local.store.del('joins', id)
+      // stopped before its row was written, it writes it now; one whose row is settled is over
+      const { key } = Invite.parse(invite)
+      if (going.has(id) || !(await this.store.get('handles', hid.encode(key))).data) {
+        this._start(invite, type)
         continue
       }
-      this._start(invite, type)
+      await this.local.store.del('joins', id)
     }
   }
 
@@ -1177,7 +1239,8 @@ export class Handle extends ReadyResource {
     let child = null
     try {
       const { data } = await this.store.get('handles', id)
-      if (!data) throw CeroError.UNKNOWN('handle', id)
+      // a join with no keys yet is no room to open
+      if (!data?.encryptionKey) throw CeroError.UNKNOWN('handle', id)
       if (data.type !== type) {
         throw CeroError.INVALID(`handle ${id} is type ${data.type}, not ${type}`)
       }
@@ -1439,6 +1502,16 @@ export class Handle extends ReadyResource {
       secretKey: data.secretKey
     }
   }
+}
+
+// how a join ends, as its row says it and as `open` throws it
+const OVER = { DENIED: 'denied', EXPIRED: 'expired', CANCELLED: 'cancelled' }
+const ENDS = {
+  denied: (reason) => CeroError.DENIED(reason || null),
+  expired: () => CeroError.EXPIRED(),
+  cancelled: () => CeroError.CANCELLED(),
+  // the invite it was let in with is one minted before its removal
+  removed: () => CeroError.DENIED('removed')
 }
 
 // the keys a pairing reply delivered, as a handle opens with them

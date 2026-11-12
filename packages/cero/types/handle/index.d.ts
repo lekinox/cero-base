@@ -424,6 +424,12 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _cancel;
     /** @private */
+    private _ask;
+    /** @private */
+    private _stand;
+    /** @private */
+    private _over;
+    /** @private */
     private _joined;
     /**
      * Open a joined handle with the keys its reply delivered, once this writer is admitted.

@@ -1205,6 +1205,11 @@ export class Database extends ReadyResource {
       await this._append({ ...stored, role: '' }, verb)
       return { row: stored }
     }
+    // where a handle stands travels the same way, only when named, and apply keeps the stored one
+    if (ref.verb === 'handle' && !('state' in row)) {
+      await this._append({ ...stored, state: null }, verb)
+      return { row: stored }
+    }
     return this._append(stored, verb)
   }
 

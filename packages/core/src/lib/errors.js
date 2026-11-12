@@ -153,6 +153,14 @@ export class CeroError extends Error {
     return new CeroError('DENIED', msg, { reason })
   }
   /**
+   * A join given up with `cancel` before it was answered.
+   *
+   * @param {string} [msg]
+   */
+  static CANCELLED(msg = 'join cancelled') {
+    return new CeroError('CANCELLED', msg)
+  }
+  /**
    * An apply-time rule refused the op. Every peer reaches this verdict from the same node
    * and the same view, so it aborts the writer's whole batch — which is what makes a
    * transaction atomic.

@@ -1,5 +1,6 @@
 import test from 'brittle'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import { existsSync, readFileSync, rmSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -501,6 +502,66 @@ test('rpc: client.create(type) opens a child handle on the server', async (t) =>
   t.ok(team.notes, 'team has notes ref')
   // Server-side: the same team is open on me
   void me
+})
+
+test('rpc: a room reads as in over the bridge, and its state once it has one', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'clinic' })
+  t.is((await get(client.team, team.id)).data.state, 'in', 'by id')
+  t.alike(
+    (await get(client.team)).data.map((row) => row.state),
+    ['in'],
+    'and in a list'
+  )
+  await me.store.set('handles', { id: team.id, state: 'leaving' })
+  t.is((await get(client.team, team.id)).data.state, 'leaving')
+})
+
+test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored with none', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'clinic' })
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+
+  const sent = []
+  const write = me.store.write
+  me.store.write = (ops) => (sent.push(...ops), write.call(me.store, ops))
+  await set(client.handles, { id: 'waiting', name: 'renamed' })
+  me.store.write = write
+  t.absent(sent[0][1].state, 'the rename sends no state')
+  const { data: row } = await get(client.team, 'waiting')
+  t.alike([row.name, row.state], ['renamed', 'asking'], 'and the row stands where it stood')
+
+  t.absent((await me.store.get('handles', team.id)).data.state, 'the room is stored with no state')
+  const listed = await get(client.team, { state: 'in' })
+  t.alike(
+    listed.data.map((row) => row.id),
+    [team.id],
+    'and listed as in'
+  )
+})
+
+test('rpc: a row is deleted over the bridge once it is over, not while asking', async (t) => {
+  const { me, client } = await openPair(t)
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+  const err = await del(client.handles, 'waiting').catch((err) => err)
+  t.is(err?.code, 'REFUSED', 'refused while asking')
+  await me.store.set('handles', { id: 'waiting', state: 'cancelled' })
+  await del(client.handles, 'waiting')
+  t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
 })
 
 test('rpc: a room created while the root closes rejects with CLOSED', async (t) => {
@@ -1077,9 +1138,10 @@ test('rpc: a join that lands after the caller stopped waiting shows up in handle
 
   const arrived = (async () => {
     for await (const { data } of watch(client.handles)) {
-      if (data.some((row) => row.id === room.id)) return true
+      if (data.some((row) => row.id === room.id && row.state === 'in')) return true
     }
   })()
+  t.is((await get(client.team, room.id)).data.state, 'asking', 'its row reads asking meanwhile')
   await cero.resume(owner)
   t.ok(await arrived, 'the client sees the room once a member answers')
   t.is((await open(client.team, { id: room.id })).id, room.id)
@@ -1118,7 +1180,9 @@ test('rpc: a promise withdrawn while the UI waits for its seat rejects DENIED, w
   const err = await refusedAtClaim(t, me, client.team, await cero.invite(room), withdraw)
   t.is(err.code, 'DENIED')
   t.is(err.reason, 'not you')
-  t.is((await get(client.team)).data.length, 0, 'in no room')
+  t.is((await get(client.team, { state: 'in' })).data.length, 0, 'in no room')
+  const [row] = (await get(client.team)).data
+  t.alike([row.state, row.reason], ['denied', 'not you'], 'its row reads denied, with the reason')
 })
 
 test('rpc: a join denied to the UI rejects with the reason', async (t) => {
@@ -1172,9 +1236,12 @@ test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const joining = open(client.team, invite).catch((e) => e)
   await waitUntil(async () => ((await joinsOf(client)).length ? true : null))
   t.alike(await joinsOf(client), [invite])
+  const id = hid.encode(Invite.parse(invite).key)
+  t.is((await get(client.team, id)).data.state, 'asking', 'the UI reads the join on its row')
   t.ok(await cero.cancel(client, invite))
   t.alike(await joinsOf(client), [])
-  t.is((await joining).code, 'CLOSED')
+  t.is((await joining).code, 'CANCELLED')
+  t.is((await get(client.team, id)).data.state, 'cancelled')
 })
 
 // only the files ref uploads: a user collection with its own `data` column

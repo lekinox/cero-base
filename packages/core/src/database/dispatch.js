@@ -79,6 +79,35 @@ export const chainOf = ({ key, proof }) => [...Identity.chain(proof).slice(1), k
 // and alone verifies as nothing
 export const linkOf = (proof) => (Identity.verify(proof, null) ? proof : null)
 
+// where an identity stands in a handle, and where each state leads: one with none is over
+const STATES = {
+  asking: ['joining', 'denied', 'expired', 'cancelled'],
+  joining: ['in', 'denied'],
+  in: ['leaving', 'removed'],
+  leaving: ['left', 'removed'],
+  left: [],
+  removed: [],
+  denied: [],
+  expired: [],
+  cancelled: []
+}
+
+// a handles row with no state is `in`. One that is over is asked again under another invite, and
+// a denied one is let in under its own, by another device of the identity
+function moves(was, row) {
+  const to = row.state || 'in'
+  if (!STATES[to]) return false
+  if (!was) return true
+  const from = was.state || 'in'
+  if (from === to || STATES[from].includes(to)) return true
+  if (STATES[from].length || !row.invite) return false
+  if (to === 'asking') return row.invite !== was.invite
+  return from === 'denied' && to === 'joining' && row.invite === was.invite
+}
+
+// on its way in or out: such a row is not deleted
+const UNSETTLED = new Set(['asking', 'joining', 'leaving'])
+
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -1171,9 +1200,23 @@ export function makeDispatcher({
   add('set-file', update('files', true))
   add('del-file', remove('files', true))
 
-  add('add-handle', upsert('handles', COLLECTION, false))
-  add('set-handle', update('handles', false))
-  add('del-handle', remove('handles', false))
+  // held to its states on every peer, so a device with an older picture writes over no newer one
+  const held = (write) => async (op, ctx) => {
+    const was = await ctx.view.get(col('handles'), { id: op.id })
+    // a write that names no state leaves the row where it stands: its device may read an older one
+    if (was && !op.state) {
+      Object.assign(op, { state: was.state, reason: was.reason, by: was.by, invite: was.invite })
+    }
+    if (!moves(was, op)) throw CeroError.REFUSED('state')
+    return write(op, ctx)
+  }
+  add('add-handle', held(upsert('handles', COLLECTION, false)))
+  add('set-handle', held(update('handles', false)))
+  add('del-handle', async (op, ctx) => {
+    const was = await ctx.view.get(col('handles'), { id: op.id })
+    if (UNSETTLED.has(was?.state)) throw CeroError.REFUSED('state')
+    return remove('handles', false)(op, ctx)
+  })
 
   for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
     if (info.internal) continue

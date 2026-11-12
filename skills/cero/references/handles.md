@@ -93,6 +93,7 @@ member answers, the handle appears in `me.room`, so watch that list. An expired 
 ```js
 const { data: joins } = await cero.get(me.joins) // [{ id, type, invite }], still waiting
 await cero.cancel(me, invite) // give up for good: true when it cancelled one
+const { data: row } = await cero.get(me.room, id) // state: 'asking', 'joining', 'in', or how it ended
 ```
 
 A join the handle turns away rejects `DENIED` once a member who can invite is online, with
