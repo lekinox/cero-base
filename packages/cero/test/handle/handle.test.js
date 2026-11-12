@@ -2462,7 +2462,15 @@ async function relaunch(t, peer, opts = {}) {
 }
 
 // the root's pass over its closed rooms finished
-const passed = (me) => waitUntil(async () => (await me.local.store.get('told')).data)
+// a pass told the rooms the device lists the root holds now
+const passed = (me) =>
+  waitUntil(async () => {
+    const { data: told } = await me.local.store.get('told')
+    const lists = await me._lists()
+    if (!told || !lists) return !!told
+    const same = (a, b) => !!a && b4a.equals(a, b)
+    return same(told.removed, lists.removed) && same(told.standing, lists.standing)
+  })
 
 // the tellings written, the lists of the handles read and the rooms opened while `act` runs
 async function tally(act, onrevoke = () => {}) {

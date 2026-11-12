@@ -1677,8 +1677,9 @@ export class Handle extends ReadyResource {
   }
 
   // the closed rooms are told too, by a pass over those this device has a writer in, and every room
-  // the identity is in for a removal, when the root's device lists or the extensions' stamp are not
-  // the ones last told to all of them. One pass at a time: a call while one waits to start joins it
+  // the identity is in for a removal since this device stood, when the root's device lists or the
+  // extensions' stamp are not the ones last told to all of them. One pass at a time: a call while
+  // one waits to start joins it
   /** @private */
   _tellClosed() {
     if (this._retell) return this._telling
@@ -1698,9 +1699,10 @@ export class Handle extends ReadyResource {
     const stamp = await this._stamp()
     const { data: told } = await this.local.store.get('told')
     const listed =
-      !lists ||
-      (told && sameBytes(told.removed, lists.removed) && sameBytes(told.standing, lists.standing))
-    if (listed && sameBytes(told?.stamp, stamp)) return
+      told &&
+      (!lists ||
+        (sameBytes(told.removed, lists.removed) && sameBytes(told.standing, lists.standing)))
+    if (listed && sameBytes(told.stamp, stamp)) return
     // a writer in a room is the writer keypair this device keeps for it
     const rooms = []
     const held = new Set()
@@ -1715,8 +1717,9 @@ export class Handle extends ReadyResource {
       if (data.length < PAGE) break
       after = data[data.length - 1].id
     }
-    // a room no device that stands may have opened is told a removal too: this device takes a seat
-    if (!listed) {
+    // a room no device that stands may have opened is told a removal too: this device takes a seat.
+    // One the root held when this device first stood is told by the devices that stood then
+    if (lists && told && keysIn(lists.removed).some((key) => !has(keysIn(told.removed), key))) {
       for (const { id } of (await this.store.get('handles', { state: 'in' })).data) {
         if (!held.has(id)) rooms.push({ id, used: 0 })
       }
@@ -2089,6 +2092,12 @@ function unread(err) {
 
 function has(keys, key) {
   return keys.some((k) => b4a.equals(k, key))
+}
+
+function keysIn(bytes) {
+  const keys = []
+  for (let i = 0; i < (bytes?.byteLength || 0); i += 32) keys.push(bytes.subarray(i, i + 32))
+  return keys
 }
 
 function sameBytes(a, b) {
