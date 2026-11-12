@@ -452,7 +452,11 @@ test('invites: a room left with invites is dropped from the list at boot', async
   await waitUntil(async () =>
     (await owner.me.local.store.get('serving')).data.length ? true : null
   )
-  await owner.me.store.call('del-handle', { id: room.id })
+  await owner.me.store.tx(async (tx) => {
+    await tx.set('handles', { id: room.id, state: 'leaving' })
+    await tx.set('handles', { id: room.id, state: 'left' })
+    await tx.del('handles', room.id)
+  })
   await owner.me.close()
 
   const back = await reopen(t, owner.dir, testnet)
@@ -944,18 +948,61 @@ test('cero(): rejects missing spec', async (t) => {
 
 // ─── peek ─────────────────────────────────────────────────────────────────
 
-test('peek(): false on fresh dir', async (t) => {
+test('peek(): null on fresh dir', async (t) => {
   const dir = await t.tmp()
-  t.is(await peek(dir, spec), false)
+  t.is(await peek(dir, spec), null)
 })
 
-test('peek(): true after cero() seeds master', async (t) => {
+test('peek(): ready after cero() seeds master', async (t) => {
   const { me, dir } = await ceroOpen(t)
   await me.close()
-  t.is(await peek(dir, spec), true)
+  t.is(await peek(dir, spec), 'ready')
 })
 
-test('peek(): true after reopening with the stored phrase', async (t) => {
+test('peek(): a recovery or a link still waiting for a device of its identity reads as one', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { me: owner } = await ceroOpen(t, { testnet })
+  const opts = { bootstrap: testnet.bootstrap, recoveryTimeout: 500 }
+
+  const recovering = await t.tmp()
+  const phrase = (await Identity.create()).toPhrase()
+  await t.exception(cero(recovering, spec, { ...opts, phrase }), /TIMEOUT/)
+  t.is(await peek(recovering, spec), 'recovering')
+
+  const linking = await t.tmp()
+  const invite = await cero.invite(owner)
+  await t.exception(cero(linking, spec, { ...opts, invite }), /TIMEOUT/)
+  t.is(await peek(linking, spec), 'linking')
+})
+
+test('cero(): a phrase that is no BIP-39 mnemonic is refused before anything is stored', async (t) => {
+  const dir = await t.tmp()
+  await t.exception(cero(dir, spec, { phrase: 'eleven words are not a phrase' }), /BIP-39/)
+  t.absent(fs.existsSync(`${dir}/main`), 'no store')
+  t.is(await peek(dir, spec), null)
+})
+
+test('cero(): a recovery stopped while it waits goes on at the next open, with no phrase, once a device of it is online', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const ownerDir = await t.tmp()
+  const owner = await cero(ownerDir, spec, opts)
+  const { id } = owner
+  const phrase = owner.identity.toPhrase()
+  await owner.close()
+
+  const dir = await t.tmp()
+  await t.exception(cero(dir, spec, { ...opts, phrase, recoveryTimeout: 500 }), /TIMEOUT/)
+  const resumed = cero(dir, spec, { ...opts, recoveryTimeout: 0 })
+  const again = await cero(ownerDir, spec, opts)
+  t.teardown(() => again.close().catch(() => {}), { order: 6 })
+  const me = await resumed
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.is(me.id, id, 'the identity of the phrase')
+  t.alike(me.store.key, again.store.key, 'recovered into its database')
+})
+
+test('peek(): ready after reopening with the stored phrase', async (t) => {
   const testnet = await makeTestnet(t)
   const dir = await t.tmp()
   const first = await cero(dir, spec, { bootstrap: testnet.bootstrap })
@@ -963,7 +1010,7 @@ test('peek(): true after reopening with the stored phrase', async (t) => {
   await first.close()
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, phrase })
   await me.close()
-  t.is(await peek(dir, spec), true)
+  t.is(await peek(dir, spec), 'ready')
 })
 
 test('cero(): a storage from before device keys is refused, to be recreated', async (t) => {
@@ -971,7 +1018,7 @@ test('cero(): a storage from before device keys is refused, to be recreated', as
   // the seed stored with no device key beside it: what an older cero left
   await me.local.store.del('device')
   await me.close()
-  t.is(await peek(dir, spec), false, 'no device, no identity to open')
+  t.is(await peek(dir, spec), null, 'no device, no identity to open')
   await t.exception(cero(dir, spec, { bootstrap: testnet.bootstrap }), /predates device keys/)
 })
 
@@ -1075,8 +1122,8 @@ test('peek: reads a store opened with a storageKey', async (t) => {
   const storageKey = b4a.alloc(32, 7)
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, storageKey })
   await me.close()
-  t.is(await peek(dir, spec, { storageKey }), true, 'an identity, read with its key')
-  t.is(await peek(await t.tmp(), spec, { storageKey }), false, 'a fresh dir holds none')
+  t.is(await peek(dir, spec, { storageKey }), 'ready', 'an identity, read with its key')
+  t.is(await peek(await t.tmp(), spec, { storageKey }), null, 'a fresh dir holds none')
 })
 
 test('peek(): rejects bad dir', async (t) => {
@@ -1285,7 +1332,7 @@ test('restore(): peek reflects the new identity', async (t) => {
   me = await restore(me, phrase)
   await me.close()
 
-  t.is(await peek(dir, spec), true, 'peek sees new identity')
+  t.is(await peek(dir, spec), 'ready', 'peek sees new identity')
 })
 
 test('restore(): syncs data from the peer holding the phrase', async (t) => {
@@ -1706,6 +1753,62 @@ test('link: a removed device loses its seats in every handle, and the root rotat
   t.pass('and the root rotated its key')
   await waitUntil(() => (b.me.store.writable ? null : true))
   t.pass('the device writes nowhere')
+})
+
+test('link: a device linked by one removed since links another, and reads the rooms', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'from the phone' })
+  const laptop = await linkTo(t, phone)
+  await devices(laptop.me, 2)
+  await del(laptop.me.devices, phone.me.device.id)
+  await devices(laptop.me, 1)
+
+  const tablet = await linkTo(t, laptop)
+  t.is(tablet.me.id, phone.me.id, 'the same identity')
+  await devices(laptop.me, 2)
+  const mine = await open(tablet.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  t.pass('and it reads the room')
+})
+
+test('link: a device removed while it holds a room open reads nothing written there after', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'before' })
+  const laptop = await linkTo(t, phone)
+  const mine = await open(laptop.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  await waitUntil(() => (mine.store.writable ? true : null))
+
+  await del(laptop.me.devices, phone.me.device.id)
+  const epoch = mine.store.keyring.seq
+  await put(mine.messages, { text: 'after' })
+  t.ok(epoch >= 1, 'the room has a new key once the removal resolves')
+  t.absent(room.store.keyring.entropy(mine.store.keyring.current), 'the phone holds none of it')
+})
+
+test('link: a room closed on the remover as it removed a device is written under a key the device lacks once reopened', async (t) => {
+  const phone = await ceroOpen(t)
+  const room = await open(phone.me.team, { name: 'clinic' })
+  await put(room.messages, { text: 'before' })
+  const invite = await cero.invite(phone.me)
+  const linking = ceroOpen(t, { testnet: phone.testnet, invite, keepOpen: 0 })
+  await cero.accept(phone.me, await asked(phone.me))
+  const laptop = await linking
+  const mine = await open(laptop.me.team, { id: room.id })
+  await waitUntil(async () => ((await get(mine.messages)).data.length === 1 ? true : null))
+  await waitUntil(() => (mine.store.writable ? true : null))
+  await cero.close(mine)
+  await waitUntil(() => (mine.closed ? true : null))
+
+  await del(laptop.me.devices, phone.me.device.id)
+  const again = await open(laptop.me.team, { id: room.id })
+  await put(again.messages, { text: 'after' })
+  const { data: rows } = await again.store.get('messages')
+  t.is(rows.length, 2)
+  t.ok(again.store.keyring.seq >= 1, 'the room has a new key before the write')
+  t.absent(room.store.keyring.entropy(again.store.keyring.current), 'the phone holds none of it')
 })
 
 // a new device accepted on `a` that stops waiting before its keys: promised a seat it never takes
@@ -2192,8 +2295,8 @@ test('leave: you are no longer a member of the room you left', async (t) => {
   await waitUntil(async () => (await get(room.members, joiner.me.id)).data)
 
   await cero.leave(joined)
-  await waitUntil(async () => (await get(joiner.me.team, room.id)).data?.state === 'left')
-  t.is((await get(joiner.me.team, { state: 'in' })).data.length, 0, 'the room left the list')
+  await waitUntil(async () => !(await get(joiner.me.team, room.id)).data)
+  t.is((await get(joiner.me.team)).data.length, 0, 'the room left the list')
   await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
   t.pass('the owner sees the member gone')
 })
@@ -2221,8 +2324,8 @@ test('leave: a room can be left, the root cannot', async (t) => {
   await set(room.members, { id: joiner.me.id, role: 'owner' })
 
   await cero.leave(room)
-  await waitUntil(async () => (await get(owner.me.team, room.id)).data?.state === 'left')
-  t.is((await get(owner.me.team, { state: 'in' })).data.length, 0, 'the room left the list')
+  await waitUntil(async () => !(await get(owner.me.team, room.id)).data)
+  t.is((await get(owner.me.team)).data.length, 0, 'the room left the list')
   await t.exception(cero.leave(owner.me), /the root cannot be left/)
 })
 
@@ -2452,8 +2555,8 @@ test('status: behind, invite, rotate and tx wait for the update, and a member ca
   }
 
   await cero.leave(joined)
-  await waitUntil(async () => (await get(joiner.me.team, room.id)).data?.state === 'left')
-  t.is((await get(joiner.me.team, { state: 'in' })).data.length, 0, 'the member left while behind')
+  await waitUntil(async () => !(await get(joiner.me.team, room.id)).data)
+  t.is((await get(joiner.me.team)).data.length, 0, 'the member left while behind')
   await waitUntil(async () => !(await get(room.members, joiner.me.id)).data)
   t.pass('and the owner, behind too, applied it')
 })

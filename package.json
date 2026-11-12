@@ -6,7 +6,8 @@
   "description": "p2p helper",
   "workspaces": [
     "packages/*",
-    "example/*"
+    "example/*",
+    "e2e"
   ],
   "scripts": {
     "format": "prettier . --write",
@@ -27,7 +28,8 @@
     "dev:mobile": "npm run build:mobile && cd example/chat-mobile && npm run ios",
     "release": "node scripts/release.js",
     "release:dry": "node scripts/release.js --dry-run",
-    "smoke": "node scripts/smoke-install.js"
+    "smoke": "node scripts/smoke-install.js",
+    "test:e2e": "npm test -w e2e"
   },
   "repository": {
     "type": "git",

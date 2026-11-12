@@ -43,7 +43,7 @@ if (fresh && !invite && !phrase) showOnce(await cero.phrase(me)) // showOnce is 
 
 `cero(dir, spec)` on an empty directory creates a new identity and stores it there. With `invite`
 it links this device to the identity that minted it; with `phrase` it recovers that identity.
-`cero.peek` tells a first run from a returning one without opening anything. Show the phrase once
+`cero.peek` tells a first run from a returning one, and from a recovery or a link still waiting for a device of its identity, without opening anything. Show the phrase once
 and make keeping it the user's job: Cero never sends it anywhere. Pass `{ words: 24 }` for a 24-word
 phrase.
 
@@ -99,10 +99,10 @@ this device, and the device holds the phrase from then on, like the one that cre
 Use a fresh directory, and have a device of yours online, or in range with the radio on at both
 ends: `bluetooth: { on: true }` on the new one, since the recovery runs inside `cero()`. The new one
 finds it and is let in by it, with the proof the phrase gave its device key. It waits in three steps, each up to
-`recoveryTimeout` (30 s by default), and rejects `TIMEOUT` when no device of yours answers.
+`recoveryTimeout` (30 s by default, `0` for as long as it takes), and rejects `TIMEOUT` when no device of yours answers.
 
 The seed is stored before that wait, so a retry is plain `cero(dir, spec)` with the same channel and
-mirrors, and `cero.peek` reports the directory as used. It rejects `TIMEOUT` again until one of your
+mirrors, and `cero.peek` reads `'recovering'`. It rejects `TIMEOUT` again until one of your
 devices is reachable. [How it works](how-it-works.md) has the steps.
 
 ## Open your handles on it

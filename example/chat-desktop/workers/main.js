@@ -3,6 +3,11 @@ import goodbye from 'graceful-goodbye'
 import { serve } from 'chat-backend/server'
 
 const storage = Bare.argv[2]
+// host:port,host:port: a local test network instead of the public one
+const bootstrap = Bare.argv[3]?.split(',').map((node) => {
+  const [host, port] = node.split(':')
+  return { host, port: Number(port) }
+})
 const ipc = Bare.IPC
 
 Bare.on('uncaughtException', (err) => {
@@ -16,7 +21,8 @@ Bare.on('unhandledRejection', (reason) => {
 
 let server
 try {
-  server = await serve(ipc, { storage })
+  // a phrase waits for a device of the profile as long as it takes: the user cancels, not a timer
+  server = await serve(ipc, { storage, recoveryTimeout: 0, ...(bootstrap && { bootstrap }) })
 } catch (err) {
   console.error(`__BOOT_ERROR__${err.message}`)
   Bare.exit(1)

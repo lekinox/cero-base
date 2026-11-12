@@ -182,7 +182,7 @@ export class Pairing extends ReadyResource {
   /**
    * Revoke an invite, for every member. Needs the remove permission.
    *
-   * @param {string} invite
+   * @param {string} invite  The code, or the id its `invites` row holds.
    * @returns {Promise<boolean>}  Whether it was live.
    */
   async revoke(invite) {
@@ -193,7 +193,7 @@ export class Pairing extends ReadyResource {
     if (me && !can(me.role, REMOVE)) {
       throw CeroError.DENIED(null, 'revoking an invite needs the remove permission')
     }
-    const id = getInviteId(invite)
+    const id = (await this.db.get('invites', invite)).data ? invite : getInviteId(invite)
     if (!id || !(await this.db.get('invites', id)).data) return false
     await this.db.call('del-invite', { id })
     await this._sync()
@@ -620,6 +620,60 @@ export class Pairing extends ReadyResource {
       signal?.removeEventListener('abort', onabort)
       mailbox.off('close', onabort)
       await Promise.allSettled([inbox.close(), post.close()])
+    }
+  }
+
+  /**
+   * Take back a join that waits for a member: the writer's own core says so after its join, and
+   * the database drops the request unless a member let it in first. Announced as the join was.
+   * Called again with the same writer, it announces the cancel already written.
+   *
+   * @param {Mailbox} mailbox
+   * @param {string} invite
+   * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
+   * @returns {Promise<void>}  Resolves once a peer or a mirror holds it, rejects `CLOSED` when the mailbox closes first.
+   */
+  static async cancel(mailbox, invite, { spec, writer }) {
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('cancel')
+    const { network } = mailbox
+    const { store } = network
+    let onclose = null
+    const closed = new Promise((resolve, reject) => {
+      onclose = () => reject(CeroError.CLOSED('cancel'))
+    })
+    closed.catch(safetyCatch)
+    mailbox.once('close', onclose)
+    const core = store.get({
+      keyPair: writer,
+      manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+    })
+    let post = null
+    try {
+      await core.ready()
+      // a writer that wrote no join has nothing to take back
+      if (core.length === 0) return
+      // stamped as the join was: a room older than the cancel skips it on every build, and none
+      // of its devices is put behind
+      const { ns = NAMESPACE, start = 1, encoding } = spec.meta || {}
+      const parsed = Invite.parse(invite)
+      const stamp = parsed.stamp || start
+      const at = await core.getUserData('cero/cancel')
+      if (!at || c.decode(c.uint, at) !== core.length) {
+        const body = spec.dispatch.encode(
+          `@${ns}/cancel-join`,
+          { id: hid.encode(core.key) },
+          { version: encoding?.[stamp] }
+        )
+        await core.append(
+          Autobee.encodeValue(wrap(stamp, body), { optimistic: true, encrypted: true })
+        )
+        await core.setUserData('cero/cancel', c.encode(c.uint, core.length))
+      }
+      post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
+      await Promise.race([post.ready().then(() => post.delivered), closed])
+    } finally {
+      mailbox.off('close', onclose)
+      await (post || core).close().catch(safetyCatch)
     }
   }
 }

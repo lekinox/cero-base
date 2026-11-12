@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react'
-import { Text, View, TextInput } from 'react-native'
+import { Text, View, TextInput, Linking } from 'react-native'
 import { Button, Input, Page, ErrorBox } from './ui'
 import { styles, colors } from '../styles'
 
-export function Setup({
-  onCreate,
-  onRecover,
-  onLink,
-  invite: fromLink = '',
-  error: failed = null
-}) {
+export function Setup({ onCreate, onRecover, onLink }) {
   const [name, setName] = useState('')
   const [phrase, setPhrase] = useState('')
-  const [invite, setInvite] = useState(fromLink)
+  const [invite, setInvite] = useState('')
+  // a device invite can arrive as a link too, scanned or tapped: <scheme>://link?invite=<invite>.
+  // It only fills the field: the user taps to link
   useEffect(() => {
-    if (fromLink) setInvite(fromLink)
-  }, [fromLink])
+    const onUrl = ({ url }) => {
+      const code = /[?&]invite=([a-z0-9]+)/.exec(url)?.[1]
+      if (code) setInvite(code)
+    }
+    Linking.getInitialURL().then((url) => url && onUrl({ url }))
+    const sub = Linking.addEventListener('url', onUrl)
+    return () => sub.remove()
+  }, [])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -31,7 +33,7 @@ export function Setup({
     <Page>
       <Text style={styles.title}>Cero Chat</Text>
 
-      <ErrorBox message={error || failed} />
+      <ErrorBox message={error} />
 
       <Input placeholder='Your name' value={name} onChangeText={setName} autoFocus />
       <Button

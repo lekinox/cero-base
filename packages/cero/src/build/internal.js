@@ -10,8 +10,8 @@ export const defs = {
     members: { type: 'member' },
     devices: { type: 'device' },
     invites: { type: 'invite' },
-    // the handles not settled, and a page of one type in list order, are read through them
-    handles: { type: 'handle', indexes: { state: ['state'], type: ['type', 'index'] } },
+    // the handles of one state, and a page of one type and state in list order, are read through them
+    handles: { type: 'handle', indexes: { state: ['state'], type: ['type', 'state', 'index'] } },
     files: { type: 'file' },
     requests: { type: 'request' }
   },
@@ -225,7 +225,8 @@ export function appended(ns) {
     { name: 'upgrade', requestType: `@${ns}/upgrade` },
     { name: 'revoke', requestType: `@${ns}/revoke` },
     { name: 'ask-key', requestType: `@${ns}/owed` },
-    { name: 'del-owed', requestType: `@${ns}/del-by-id` }
+    { name: 'del-owed', requestType: `@${ns}/del-by-id` },
+    { name: 'cancel-join', requestType: `@${ns}/del-by-id` }
   ]
 }
 

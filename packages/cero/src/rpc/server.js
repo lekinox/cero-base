@@ -1,10 +1,12 @@
 import c from 'compact-encoding'
 import safetyCatch from 'safety-catch'
+import AbortController from 'bare-abort-controller'
 
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
 
 import { cero, restore, link } from '../index.js'
+import { peek } from '../lib/peek.js'
 import {
   put,
   set,
@@ -75,9 +77,9 @@ const VERBS = new Map(
  */
 
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
- * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
- * exposes data ops, pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: a store that holds an identity
+ * boots its root via `cero()` as soon as it opens, so the network is up while the UI still loads; a new one waits
+ * for the client to say how, by init, restore or link. Then it exposes data ops, pairing, and handle lifecycle.
  */
 export class Server extends RPCServer {
   /**
@@ -109,7 +111,11 @@ export class Server extends RPCServer {
     this._booting = null
     /** @private */
     this._adopting = null
+    /** @private */
+    this._stop = new AbortController()
     this._wireInit()
+    this._wireRestore()
+    this._wireLink()
   }
 
   /**
@@ -133,25 +139,38 @@ export class Server extends RPCServer {
   /** @private */
   async _open() {
     await super._open()
-    this._booting = this._boot()
-    // it surfaces on init
-    this._booting.catch(() => {})
+    if (await peek(this.storage, this.spec, this.opts)) this._start()
+  }
+
+  /**
+   * Open the root, as `how` says on a new store: a phrase recovers, an invite links, neither creates.
+   * @private
+   */
+  _start(how = {}) {
+    const booting = this._boot(how)
+    this._booting = booting
+    // it surfaces on the request that waits for it; the next one starts over
+    booting.catch(() => {
+      if (this._booting === booting) this._booting = null
+    })
+    return booting
   }
 
   /** @private */
-  async _boot() {
-    this.me = await cero(this.storage, this.spec, this.opts)
+  async _boot(how) {
+    // a close stops a recovery or a link still waiting for a device: the next open goes on with it
+    const opts = { ...this.opts, ...how, signal: this._stop.signal }
+    this.me = await cero(this.storage, this.spec, opts)
     this.handles.set(this.me.id, this.me)
     await this.me.fileServer.listen()
     this._wireData()
     this._wireHandles()
     this._wireVerbs()
-    this._wireRestore()
-    this._wireLink()
   }
 
   /** @private */
   async _close() {
+    this._stop.abort()
     await this._booting?.catch(() => {})
     if (this.me) {
       try {
@@ -216,7 +235,8 @@ export class Server extends RPCServer {
       stream.on('close', () => this._errors.delete(stream))
     })
     this._on('onInit', async () => {
-      await this._booting
+      await this.ready()
+      await (this._booting ?? this._start())
       // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end, and every open the old
       // page held is let go for it, as it never closes them
       for (const handle of this._watchStreams.keys()) this._endWatches(handle)
@@ -231,8 +251,12 @@ export class Server extends RPCServer {
    */
   _wireRestore() {
     this._on('onRestore', async ({ phrase }) => {
-      if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      await this._adopt(restore(this.me, phrase))
+      await this.ready()
+      if (!this._booting) await this._start({ phrase })
+      else {
+        await this._booting
+        await this._adopt(restore(this.me, phrase))
+      }
       return this._identity()
     })
   }
@@ -246,11 +270,15 @@ export class Server extends RPCServer {
       closeWithWire(stream)
       stream.on('error', safetyCatch)
       const run = async () => {
-        if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-        const linking = link(this.me, stream.data.invite, {
-          onrequest: (id) => stream.write({ request: id })
-        })
-        await this._adopt(linking)
+        await this.ready()
+        const { invite } = stream.data
+        const onrequest = (id) => stream.write({ request: id })
+        // as link() waits: the invite's lifetime, a denial ends it
+        if (!this._booting) await this._start({ invite, onrequest, recoveryTimeout: 0 })
+        else {
+          await this._booting
+          await this._adopt(link(this.me, invite, { onrequest }))
+        }
         stream.write({ request: '', ...this._identity() })
         stream.end()
       }

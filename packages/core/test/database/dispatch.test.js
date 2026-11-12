@@ -142,6 +142,25 @@ test("add-writer: a reader's other device takes no seat", async (t) => {
   t.absent((await db.get('devices', phone.writer.id)).data, 'no row')
 })
 
+test('add-writer: in the root a device linked by a removed one stands while seated, and one the removed signs after stays out', async (t) => {
+  for (const root of [true, false]) {
+    const { db, identity } = await withRole(t, 'owner', { root })
+    const phone = linked(identity)
+    const laptop = linked(phone.identity)
+    t.is(await seat(db, phone), null)
+    t.is(await seat(db, laptop), null)
+    t.is(await apply(db, laptop.writer.publicKey, 'del-device', { id: phone.writer.id }), null)
+    const tablet = linked(laptop.identity)
+    const late = linked(phone.identity)
+    t.is(
+      (await seat(db, tablet))?.code,
+      root ? undefined : 'REFUSED',
+      `the laptop links, root ${root}`
+    )
+    t.is((await seat(db, late))?.code, 'REFUSED', `the removed phone links nobody, root ${root}`)
+  }
+})
+
 test("add-writer: a member's other device seats itself", async (t) => {
   const { db, identity } = await withRole(t, 'member')
   const phone = linked(identity)
@@ -1148,6 +1167,27 @@ test('set-member: a member may still rename itself', async (t) => {
     updatedAt: Date.now()
   })
   t.is((await db.get('members', identity.id)).data.name, 'renamed')
+})
+
+test('set-member: a reader sets her own name and nothing else, and nobody else does', async (t) => {
+  const b = await second('member')
+  const c = await second('member')
+  const { db } = await withRole(t, 'owner', { members: [b.row, c.row] })
+  await seat(db, b)
+  await seat(db, c)
+  // her device keeps its row as a reader's does
+  await apply(db, db.writerKey, 'set-member', { ...b.row, role: 'reader', updatedAt: 1 })
+  const row = { ...b.row, role: 'reader', name: 'reader' }
+  const as = (key, change) => apply(db, key, 'set-member', { ...row, ...change })
+  const stored = async () => (await db.get('members', b.id)).data
+
+  t.is(await as(b.writer.publicKey, { updatedAt: 2 }), null)
+  t.is((await stored()).name, 'reader', 'her name lands')
+  await as(b.writer.publicKey, { alias: 'other', updatedAt: 3 })
+  t.absent((await stored()).alias, 'nothing else of her row moves')
+  t.is((await as(b.writer.publicKey, { role: 'owner' }))?.code, 'REFUSED', 'nor her rank')
+  await as(c.writer.publicKey, { name: 'other', updatedAt: 5 })
+  t.is((await stored()).name, 'reader', 'another member renames her not')
 })
 
 test('set-member: a member renaming itself keeps the key it was admitted with', async (t) => {
@@ -2325,6 +2365,36 @@ test('confirm: accepting or denying needs INVITE; only a join writes a request',
   t.absent((await db.get('requests', id)).data, 'denied by the owner')
 })
 
+test("cancel-join: the joiner takes its waiting join back from its own core, never one admitted nor another writer's", async (t) => {
+  const { db, as } = await withMember(t, 'member')
+  const invite = await minted(db, { confirm: true, reuse: true })
+  const join = async () => {
+    const identity = await Identity.create()
+    const writer = Identity.randomKeyPair().publicKey
+    t.is(await apply(db, writer, 'join', joinOp(db, invite, { identity, writer })), null)
+    return { identity, writer, id: hid.encode(writer) }
+  }
+  const waiting = await join()
+  const admitted = await join()
+
+  const forged = await apply(db, admitted.writer, 'cancel-join', { id: waiting.id })
+  t.is(forged?.code, 'REFUSED', "another writer takes back nobody else's join")
+  t.ok((await db.get('requests', waiting.id)).data, 'still waiting')
+
+  t.is(await apply(db, waiting.writer, 'cancel-join', { id: waiting.id }), null)
+  t.absent((await db.get('requests', waiting.id)).data, 'gone from the requests')
+  t.absent(await refusal(db, waiting.id), 'and nobody turned it away')
+
+  t.is(await as('accept', { id: admitted.id }), null)
+  t.is(await apply(db, admitted.writer, 'cancel-join', { id: admitted.id }), null)
+  t.is(
+    (await db.get('requests', admitted.id)).data?.admitted,
+    true,
+    'an accept that landed first stands'
+  )
+  t.ok((await db.get('members', admitted.identity.id)).data, 'and its member')
+})
+
 test('deny: a reader turns no join away', async (t) => {
   const { db } = await withRole(t, 'owner')
   // minted first: a write through db rebuilds the view without the joins applied straight into it
@@ -3169,6 +3239,46 @@ test('devices: a device record is written only by its own device', async (t) => 
     ),
     null,
     'and it stays removable'
+  )
+})
+
+test('devices: another device of the member renames a device, and changes nothing else on its row', async (t) => {
+  const other = await second('member')
+  const { db, phone } = await lost(t, { members: [other.row] })
+  await seat(db, phone)
+  await seat(db, other)
+  const id = hid.encode(db.writerKey)
+  const before = (await db.get('devices', id)).data
+  const by = phone.writer.publicKey
+  t.is(await apply(db, by, 'set-device', { id, name: 'laptop', updatedAt: 2 }), null)
+  t.is((await db.get('devices', id)).data.name, 'laptop', 'a sibling renames it')
+
+  const key = Identity.randomKeyPair().publicKey
+  const forged = {
+    id,
+    name: 'desk',
+    memberId: other.id,
+    key,
+    chain: key,
+    createdAt: 9,
+    updatedAt: 3
+  }
+  t.is(await apply(db, by, 'set-device', forged), null)
+  t.alike(
+    (await db.get('devices', id)).data,
+    { ...before, name: 'desk', updatedAt: 3 },
+    'nothing but the name'
+  )
+
+  const stranger = other.writer.publicKey
+  t.is(
+    (await apply(db, stranger, 'set-device', { id, name: 'pwned', updatedAt: 4 }))?.code,
+    'REFUSED'
+  )
+  t.is(
+    (await db.get('devices', id)).data.name,
+    'desk',
+    'a device of another member renames nothing'
   )
 })
 

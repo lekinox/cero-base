@@ -250,7 +250,9 @@ export const local = {
     // when an open last took it: the closed rooms are told the most recently used first
     used: int,
     // a digest of the device keys last told to the room, removed and standing
-    told: bytes
+    told: bytes,
+    // the extensions' stamp last told to the room
+    stamp: bytes
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {
@@ -306,11 +308,12 @@ export const local = {
     epochs: bytes,
     writers: bytes
   },
-  // the root's device lists, 32-byte keys back to back, last told to every room this device has a
-  // writer in: a launch with the same lists opens none of them
+  // the root's device lists, 32-byte keys back to back, and the extensions' stamp, last told to
+  // every room this device has a writer in: a launch with the same opens none of them
   told: {
     removed: bytes,
-    standing: bytes
+    standing: bytes,
+    stamp: bytes
   }
 }
 

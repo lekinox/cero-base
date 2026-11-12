@@ -187,7 +187,7 @@ export declare class Pairing extends ReadyResource {
     /**
      * Revoke an invite, for every member. Needs the remove permission.
      *
-     * @param {string} invite
+     * @param {string} invite  The code, or the id its `invites` row holds.
      * @returns {Promise<boolean>}  Whether it was live.
      */
     revoke(invite: string): Promise<boolean>;
@@ -248,6 +248,20 @@ export declare class Pairing extends ReadyResource {
      * @returns {Promise<JoinResult>}
      */
     static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal, keep }?: JoinOpts): Promise<JoinResult>;
+    /**
+     * Take back a join that waits for a member: the writer's own core says so after its join, and
+     * the database drops the request unless a member let it in first. Announced as the join was.
+     * Called again with the same writer, it announces the cancel already written.
+     *
+     * @param {Mailbox} mailbox
+     * @param {string} invite
+     * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
+     * @returns {Promise<void>}  Resolves once a peer or a mirror holds it, rejects `CLOSED` when the mailbox closes first.
+     */
+    static cancel(mailbox: Mailbox, invite: string, { spec, writer }: {
+        spec: JoinOpts['spec'];
+        writer: KeyPair;
+    }): Promise<void>;
 }
 /**
  * A join's payload: sealed to the invite's address, so only those who hold its row read who joins,

@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('bridge', {
   },
   isInitialized: () => ipcRenderer.invoke('pear:isInitialized'),
   startWorker: (specifier) => ipcRenderer.invoke('pear:startWorker', specifier),
+  stopWorker: (specifier) => ipcRenderer.invoke('pear:stopWorker', specifier),
   writeWorkerIPC: (specifier, data) =>
     ipcRenderer.invoke('pear:worker:writeIPC:' + specifier, data),
   onWorkerIPC: (specifier, listener) => {

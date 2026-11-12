@@ -32,3 +32,5 @@ services/relay/key
 # claude-mem stubs, the root file is the only one
 **/CLAUDE.md
 !/CLAUDE.md
+e2e/test-results/
+e2e/playwright-report/

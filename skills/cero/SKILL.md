@@ -152,6 +152,8 @@ import { cero } from '@cero-base/cero/client'
 const me = await cero(ipc, spec, { onerror: console.error })
 ```
 
+On a new store the worker opens nothing until the UI connects: `cero(ipc, spec, { phrase })` recovers,
+`{ invite, onrequest }` links, neither creates, as `cero(dir, spec, opts)` does for a new device.
 The UI gets every verb over the wire but `before`, `after` and `tx`, which take functions and run
 only in the worker. Match errors on `err.code`: the code and message cross, and a denied join's reason. Electron uses a
 Bare worker, Expo a Bare worklet, tests a duplex pair.

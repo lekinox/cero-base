@@ -3,7 +3,7 @@ const { app, BrowserWindow, ipcMain, nativeTheme } = electron
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { readFileSync } from 'fs'
+import { readFileSync, promises as fs } from 'fs'
 import PearRuntime from 'pear-runtime'
 import { isLinux, isMac } from 'which-runtime'
 import { command, flag } from 'paparam'
@@ -26,10 +26,19 @@ const cmd = command(
   appName,
   flag('--storage [storage]', 'pass custom storage to pear-runtime'),
   flag('--no-updates', 'start without OTA updates'),
-  flag('--remote-debug [port]', 'expose a CDP endpoint (e2e/debugging)')
+  flag('--remote-debug [port]', 'expose a CDP endpoint (e2e/debugging)'),
+  flag(
+    '--bootstrap [nodes]',
+    'DHT bootstrap nodes, host:port comma separated (a local test network)'
+  ),
+  flag('--no-devtools', 'start without the detached DevTools')
 )
 
-cmd.parse(app.isPackaged ? process.argv.slice(1) : process.argv.slice(2))
+// the app's own folder, and the switches Chromium and Node read themselves (a test driver passes them first), are not its flags
+const own = (arg) =>
+  !/^--(remote-debugging-port|inspect|no-sandbox)/.test(arg) &&
+  path.resolve(arg) !== app.getAppPath()
+cmd.parse(process.argv.slice(1).filter(own))
 
 if (cmd.flags.remoteDebug !== undefined) {
   app.commandLine.appendSwitch('remote-debugging-port', String(cmd.flags.remoteDebug || 0))
@@ -37,28 +46,31 @@ if (cmd.flags.remoteDebug !== undefined) {
 
 const pearStore = cmd.flags.storage
 const updates = cmd.flags.updates
+const bootstrap = cmd.flags.bootstrap
+const devtools = cmd.flags.devtools
 
 ipcMain.on('pkg', (event) => {
   event.returnValue = pkg
 })
 
+function getDir() {
+  if (pearStore) return pearStore
+  if (getAppPath() === null) return path.join(os.tmpdir(), 'pear', appName)
+  return isMac
+    ? path.join(os.homedir(), 'Library', 'Application Support', appName)
+    : isLinux
+      ? path.join(os.homedir(), '.config', appName)
+      : path.join(os.homedir(), 'AppData', 'Roaming', appName)
+}
+
+const dir = getDir()
+// the window's storage beside the app's: an instance with a folder of its own never waits on another's lock to read it
+app.setPath('userData', dir)
+
 function getPear() {
   if (pear) return pear
 
   const appPath = getAppPath()
-  let dir = null
-  if (pearStore) {
-    dir = pearStore
-  } else if (appPath === null) {
-    dir = path.join(os.tmpdir(), 'pear', appName)
-  } else {
-    dir = isMac
-      ? path.join(os.homedir(), 'Library', 'Application Support', appName)
-      : isLinux
-        ? path.join(os.homedir(), '.config', appName)
-        : path.join(os.homedir(), 'AppData', 'Roaming', appName)
-  }
-
   const hasUpgrade = typeof upgrade === 'string' && upgrade.length > 0
 
   pear = new PearRuntime({
@@ -89,7 +101,8 @@ function getWorker(specifier) {
   if (workers.has(specifier)) return workers.get(specifier)
 
   const runtime = getPear()
-  const worker = runtime.run(path.resolve(__dirname, '..' + specifier), [runtime.storage])
+  const args = bootstrap ? [runtime.storage, bootstrap] : [runtime.storage]
+  const worker = runtime.run(path.resolve(__dirname, '..' + specifier), args)
 
   function sendWorkerStdout(data) {
     process.stdout.write(data)
@@ -174,13 +187,13 @@ async function createWindow() {
   if (devServerUrl) {
     await win.webContents.session.clearCache()
     await win.loadURL(devServerUrl)
-    win.webContents.openDevTools({ mode: 'detach' })
+    if (devtools) win.webContents.openDevTools({ mode: 'detach' })
     return
   }
 
   await win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
 
-  if (!app.isPackaged) win.webContents.openDevTools({ mode: 'detach' })
+  if (!app.isPackaged && devtools) win.webContents.openDevTools({ mode: 'detach' })
 }
 
 ipcMain.handle('pear:applyUpdate', () => getPear().applyUpdate())
@@ -189,14 +202,27 @@ ipcMain.handle('pear:startWorker', (event, filename) => {
   if (filename !== WORKER) throw new Error(`unknown worker: ${filename}`)
   getWorker(WORKER)
   // set up now: a reloaded page must not offer setup again
-  initialized = true
+  state ??= 'ready'
   return true
 })
-let initialized = null
+// a cancelled recovery ends with its worker and leaves nothing: the identity it waited for never opens behind the
+// user's back, and the next launch offers setup
+ipcMain.handle('pear:stopWorker', async (event, filename) => {
+  if (filename !== WORKER) throw new Error(`unknown worker: ${filename}`)
+  const worker = workers.get(WORKER)
+  if (worker) {
+    const exited = new Promise((resolve) => worker.once('exit', resolve))
+    worker.destroy()
+    await exited
+  }
+  await fs.rm(getPear().storage, { recursive: true, force: true })
+  state = null
+})
+// what the store holds: undefined until read, null when new
+let state
 async function checkInitialized() {
-  if (initialized !== null) return initialized
-  initialized = await isInitialized(getPear().storage)
-  return initialized
+  if (state === undefined) state = await isInitialized(getPear().storage)
+  return state
 }
 
 ipcMain.handle('pear:isInitialized', checkInitialized)

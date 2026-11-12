@@ -9,14 +9,16 @@ import { current, lock } from './swap.js'
 
 // outside operators.js so storage deps stay off the client's module graph
 
+const WAITING = { recover: 'recovering', link: 'linking' }
+
 /**
- * Quickly check whether the on-disk directory at `dir` already holds an initialised cero
- * identity (i.e. a stored device key with its proof).
+ * What the directory at `dir` holds, read without opening it: nothing yet, an identity, or a recovery or a link
+ * still waiting for a device of its identity, which the next `cero(dir, spec)` goes on with.
  *
  * @param {string} dir   Cero data directory.
  * @param {import('./spec.js').Spec} spec  Built spec, the value passed to `cero(dir, spec)`.
  * @param {{ storageKey?: Uint8Array }} [opts]  The key `cero()` encrypts the local store with, if any.
- * @returns {Promise<boolean>}  `true` if a device of an identity exists on disk.
+ * @returns {Promise<'ready' | 'recovering' | 'linking' | null>}  `null` when it holds nothing.
  */
 export async function peek(dir, spec, { storageKey } = {}) {
   if (typeof dir !== 'string' || !dir) throw CeroError.INVALID('dir must be a non-empty string')
@@ -32,8 +34,9 @@ export async function peek(dir, spec, { storageKey } = {}) {
     await root.ready()
     await store.ready()
     await local.ready()
-    const { data } = await local.store.get('device')
-    return !!data
+    const setup = (await local.store.get('keypair')).data?.setup
+    if (WAITING[setup]) return WAITING[setup]
+    return (await local.store.get('device')).data ? 'ready' : null
   } finally {
     await local.close().catch(safetyCatch)
     await store.close().catch(safetyCatch)

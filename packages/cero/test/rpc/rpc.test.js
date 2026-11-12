@@ -28,7 +28,7 @@ import {
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { serve } from '../../src/rpc/server.js'
-import { connect, restore, link, supports } from '../../src/rpc/client.js'
+import { Client, connect, restore, link, supports } from '../../src/rpc/client.js'
 import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
@@ -517,7 +517,27 @@ test('rpc: a room reads as in over the bridge, and its state once it has one', a
   t.is((await get(client.team, team.id)).data.state, 'leaving')
 })
 
-test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored with none', async (t) => {
+test('rpc: a list over the bridge is the rooms the identity is in, a state named lists the others, and an id reads any', async (t) => {
+  const { me, client } = await openPair(t)
+  const room = await open(client.team, { name: 'clinic' })
+  for (const [i, state] of ['asking', 'left', 'denied'].entries()) {
+    const key = b4a.alloc(32, i + 1)
+    await me.store.set('handles', { id: state, type: 'team', key, state, invite: 'one' })
+  }
+
+  const ids = (res) => res.data.map((row) => row.id)
+  t.alike(ids(await get(client.team)), [room.id], 'by type')
+  t.alike(ids(await get(client.handles)), [room.id], 'among every handle')
+  t.alike(ids(await get(client.team, { state: 'left' })), ['left'], 'a state named')
+  t.is((await get(client.team, 'denied')).data.state, 'denied', 'an id whatever its state')
+
+  const stream = watch(client.team)
+  t.teardown(() => stream.destroy())
+  const seen = await new Promise((resolve) => stream.once('data', resolve))
+  t.alike(ids(seen), [room.id], 'and by a watch')
+})
+
+test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored in', async (t) => {
   const { me, client } = await openPair(t)
   const team = await open(client.team, { name: 'clinic' })
   const key = b4a.alloc(32, 1)
@@ -538,7 +558,7 @@ test('rpc: a rename over the bridge sends no state, and a list filtered on in re
   const { data: row } = await get(client.team, 'waiting')
   t.alike([row.name, row.state], ['renamed', 'asking'], 'and the row stands where it stood')
 
-  t.absent((await me.store.get('handles', team.id)).data.state, 'the room is stored with no state')
+  t.is((await me.store.get('handles', team.id)).data.state, 'in', 'the room is stored in')
   const listed = await get(client.team, { state: 'in' })
   t.alike(
     listed.data.map((row) => row.id),
@@ -561,6 +581,23 @@ test('rpc: a row is deleted over the bridge once it is over, not while asking', 
   t.is(err?.code, 'REFUSED', 'refused while asking')
   await me.store.set('handles', { id: 'waiting', state: 'cancelled' })
   await del(client.handles, 'waiting')
+  t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
+})
+
+test('rpc: an ended row is deleted over the bridge through its type, not while asking', async (t) => {
+  const { me, client } = await openPair(t)
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+  const err = await del(client.team, 'waiting').catch((err) => err)
+  t.is(err?.code, 'REFUSED', 'refused while asking')
+  await me.store.set('handles', { id: 'waiting', state: 'denied' })
+  await del(client.team, 'waiting')
   t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
 })
 
@@ -1112,16 +1149,89 @@ test('rpc: invite carries ttl and data over the wire', async (t) => {
   t.is(Invite.parse(forever).data, null, 'no data unless given')
 })
 
-test('rpc: the server boots cero before the first init, so the network is up early', async (t) => {
+test('rpc: a store with an identity boots before the first init, so the network is up early', async (t) => {
   const testnet = await makeTestnet(t)
+  const storage = await t.tmp()
+  await (await cero(storage, spec, { bootstrap: testnet.bootstrap })).close()
   const [serverStream] = pair()
-  const server = await serve(serverStream, spec, {
-    storage: await t.tmp(),
-    bootstrap: testnet.bootstrap
-  })
+  const server = await serve(serverStream, spec, { storage, bootstrap: testnet.bootstrap })
   t.teardown(() => server.close().catch(() => {}))
   const me = await waitUntil(() => server.me || null)
   t.ok(me.network.opened, 'booted with no client attached')
+})
+
+// a worker on a new store, and the client that says how it opens
+async function fresh(t, testnet, opts = {}) {
+  const [serverStream, clientStream] = pair()
+  const server = await serve(serverStream, spec, {
+    storage: await t.tmp(),
+    bootstrap: testnet.bootstrap,
+    ...opts
+  })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  const open = (how) => {
+    const client = new Client(clientStream, spec, how)
+    t.teardown(() => client.close().catch(() => {}), { order: 4 })
+    return client.ready().then(() => client)
+  }
+  return { server, storage: server.storage, open, ipc: clientStream }
+}
+
+test('rpc: a new store opens nothing until the client says how, and a wrong phrase leaves no profile', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { storage, open } = await fresh(t, testnet)
+  t.is(await cero.peek(storage, spec), null, 'nothing before the client')
+  const phrase = Identity.toPhrase(Identity.randomBytes(32)).split(' ').slice(1).join(' ')
+  await t.exception(open({ phrase }), /BIP-39/)
+  t.is(await cero.peek(storage, spec), null, 'no profile')
+})
+
+test('rpc: on a new store the client recovers with a phrase, links with an invite, or creates', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 6 })
+
+  const recovered = await (await fresh(t, testnet)).open({ phrase: await cero.phrase(owner) })
+  t.is(recovered.id, owner.id, 'recovered')
+
+  let request = null
+  const invite = await cero.invite(owner)
+  const linking = (await fresh(t, testnet)).open({ invite, onrequest: (id) => (request = id) })
+  await accept(owner, await nextRequest(owner))
+  t.is((await linking).id, owner.id, 'linked')
+  t.ok(request, 'the request id reached the client')
+
+  const created = await (await fresh(t, testnet)).open()
+  t.not(created.id, owner.id, 'a new identity')
+})
+
+test('rpc: a recovery the worker closes on goes on at its next open and ends once a device of it is online', async (t) => {
+  const testnet = await makeTestnet(t)
+  const opts = { bootstrap: testnet.bootstrap }
+  const ownerDir = await t.tmp()
+  const owner = await cero(ownerDir, spec, opts)
+  const { id } = owner
+  const phrase = await cero.phrase(owner)
+  await owner.close()
+
+  const first = await fresh(t, testnet, { recoveryTimeout: 0 })
+  first.open({ phrase }).catch(() => {})
+  await waitUntil(() => first.server._booting !== null)
+  await first.server.close()
+  // the worker gone: its pipe goes with it
+  first.ipc.destroy()
+  t.is(await cero.peek(first.storage, spec), 'recovering', 'the recovery is kept')
+
+  const [serverStream, clientStream] = pair()
+  const storage = first.storage
+  const server = await serve(serverStream, spec, { storage, ...opts, recoveryTimeout: 0 })
+  t.teardown(() => server.close().catch(() => {}), { order: 5 })
+  const resumed = connect(clientStream, spec)
+  const again = await cero(ownerDir, spec, opts)
+  t.teardown(() => again.close().catch(() => {}), { order: 6 })
+  const client = await resumed
+  t.teardown(() => client.close().catch(() => {}), { order: 4 })
+  t.is(client.id, id, 'the identity of the phrase')
 })
 
 test('rpc: a join that lands after the caller stopped waiting shows up in handles', async (t) => {
@@ -1180,8 +1290,8 @@ test('rpc: a promise withdrawn while the UI waits for its seat rejects DENIED, w
   const err = await refusedAtClaim(t, me, client.team, await cero.invite(room), withdraw)
   t.is(err.code, 'DENIED')
   t.is(err.reason, 'not you')
-  t.is((await get(client.team, { state: 'in' })).data.length, 0, 'in no room')
-  const [row] = (await get(client.team)).data
+  t.is((await get(client.team)).data.length, 0, 'in no room')
+  const [row] = (await get(client.team, { state: 'denied' })).data
   t.alike([row.state, row.reason], ['denied', 'not you'], 'its row reads denied, with the reason')
 })
 
@@ -1672,11 +1782,11 @@ async function hostedRoom(t) {
   return { me, client, host, room, joined }
 }
 
-test('rpc: leave reads leaving then left in the UI, once the room holds the removal', async (t) => {
+test('rpc: leave reads leaving, then the row is gone in the UI once the room holds the removal', async (t) => {
   const { me, client, room, joined } = await hostedRoom(t)
   await cero.leave(joined)
-  t.ok(['leaving', 'left'].includes((await get(client.team, room.id)).data.state), 'leaving')
-  await waitUntil(async () => (await get(client.team, room.id)).data.state === 'left')
+  t.ok([undefined, 'leaving'].includes((await get(client.team, room.id)).data?.state), 'leaving')
+  await waitUntil(async () => !(await get(client.team, room.id)).data)
   t.is(await room.store.removed(me.identity.id), 'left', 'the room holds her leaving')
 })
 
@@ -1711,4 +1821,36 @@ test('rpc: status.owed reads in the UI as in the worker, true while its device w
   await waitUntil(async () => (await get(mine.messages)).data.length === 1 || null)
   await waitUntil(async () => (await get(mine.status)).data.owed === false || null)
   t.pass('and not once it was sent them')
+})
+
+test('rpc: a wrong phrase on a new store leaves the worker able to create', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { open } = await fresh(t, testnet)
+  const phrase = Identity.toPhrase(Identity.randomBytes(32)).split(' ').slice(1).join(' ')
+  await t.exception(open({ phrase }), /BIP-39/)
+  const created = await open().catch((err) => err)
+  t.ok(created?.id, `created after the wrong phrase: ${created?.message ?? ''}`)
+})
+
+test('rpc: a link denied on a new store leaves the worker able to create', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 6 })
+  const { open } = await fresh(t, testnet)
+  const linking = open({ invite: await cero.invite(owner) })
+  linking.catch(() => {})
+  await deny(owner, await nextRequest(owner))
+  await t.exception(linking, /DENIED/)
+  const created = await open()
+  t.not(created.id, owner.id, 'a new identity')
+})
+
+test('rpc: a link that expires on a new store leaves the worker able to create', async (t) => {
+  const testnet = await makeTestnet(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 6 })
+  const { open } = await fresh(t, testnet)
+  await t.exception(open({ invite: await cero.invite(owner, { ttl: 1000 }) }), /EXPIRED/)
+  const created = await open()
+  t.not(created.id, owner.id, 'a new identity')
 })

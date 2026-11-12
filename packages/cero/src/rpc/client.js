@@ -57,6 +57,13 @@ export { t, schema }
  * @property {string|null} name
  *
  * @typedef {(Client | Handle) & Record<string, Ref>} Context  A UI's root or handle: the verbs take it like an in-process one.
+ *
+ * @typedef {object} ClientOpts
+ * @property {(err: Error) => void} [onerror]  Where the worker's background errors go, the console without one.
+ * @property {import('./push.js').Messaging} [push]  The platform's messaging service, to follow the handles' push topics.
+ * @property {string} [phrase]  On a worker whose store is new, it recovers the identity of this phrase, as `cero(dir, spec, { phrase })`.
+ * @property {string} [invite]  On a worker whose store is new, it links to the identity of this device invite, as `cero(dir, spec, { invite })`.
+ * @property {(id: string) => void} [onrequest]  With `invite`: the request's id as it is sent.
  */
 
 const blobIdEnc = {
@@ -504,10 +511,12 @@ export class Client extends RPCClient {
   /**
    * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
    * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-   * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]  Where the worker's background errors go, the console without one; `push`: the platform's messaging service, to follow the handles' push topics.
+   * @param {ClientOpts} [opts]
    */
-  constructor(ipc, spec, { onerror, push } = {}) {
+  constructor(ipc, spec, { onerror, push, phrase, invite, onrequest } = {}) {
     super(ipc, spec)
+    /** @private */
+    this._how = { phrase, invite, onrequest }
     /** @private */
     this._push = push || null
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
@@ -546,7 +555,11 @@ export class Client extends RPCClient {
   /** @private */
   async _open() {
     await super._open()
-    this._identify(await this.rpc.init({}))
+    const { phrase, invite, onrequest } = this._how
+    // a worker on a new store opens as these say; on one with an identity they switch to another
+    if (phrase) await restore(this, phrase)
+    else if (invite) await link(this, invite, { onrequest })
+    else this._identify(await this.rpc.init({}))
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
     this._pumpErrors()
@@ -653,7 +666,7 @@ class Handle {
  *
  * @param {import('streamx').Duplex} ipc
  * @param {Spec} spec
- * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Client>}
  */
 export async function connect(ipc, spec, opts) {
@@ -668,7 +681,7 @@ export async function connect(ipc, spec, opts) {
  *
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
- * @param {{ onerror?: (err: Error) => void, push?: import('./push.js').Messaging }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Context>}
  */
 function start(ipc, spec, opts) {

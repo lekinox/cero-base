@@ -137,7 +137,7 @@ export declare function invite(ctx: Context, opts?: import('@cero-base/core/pair
  * Kill an invite, for every member.
  *
  * @param {Context} ctx
- * @param {string} code
+ * @param {string} code  The code `invite` returned, or the id its `invites` row holds.
  * @returns {Promise<boolean>}  Whether it was live.
  */
 export declare function revoke(ctx: Context, code: string): Promise<boolean>;

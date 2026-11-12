@@ -59,6 +59,13 @@ function sealed(wrapped) {
 // member and device have their own set handlers, every other collection upserts via add-
 export const BESPOKE = new Set(['member', 'device'])
 
+// what a member who may not write sets on her own row, as profileSync mirrors it
+const PROFILE = ['name', 'avatar']
+const profile = (row, op) => ({
+  ...row,
+  ...Object.fromEntries(PROFILE.filter((f) => f in op).map((f) => [f, op[f]]))
+})
+
 // the request type of each of Cero's routes that writes no ref's row
 const REQUESTS = {
   'add-writer': 'writer',
@@ -105,9 +112,6 @@ function moves(was, row) {
   return from === 'denied' && to === 'joining' && row.invite === was.invite
 }
 
-// on its way in or out: such a row is not deleted
-const UNSETTLED = new Set(['asking', 'joining', 'leaving'])
-
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
 
@@ -126,6 +130,13 @@ export function keysOf(buf) {
 }
 const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
 
+// the chain a seat stands on, its identity first
+export const seatChain = (device) => [
+  hid.decode(device.memberId),
+  ...keysOf(device.chain),
+  device.key
+]
+
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
  * spec-defined collection/action ops, returning the router plus an apply loop.
@@ -141,10 +152,11 @@ const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
  * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins that name no invite are sealed to.
+ * @param {boolean} [opts.root]  The identity's own database, where a device key past a removed one stands while seated.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[]) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[], telling?: { removed?: Uint8Array, standing?: Uint8Array }) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -157,6 +169,7 @@ export function makeDispatcher({
   key,
   onepoch,
   room,
+  root = false,
   hooks,
   touch,
   read
@@ -636,22 +649,28 @@ export function makeDispatcher({
     await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by, spent })
   }
   // a chain, its identity first, stands unless it passes a removed device key. A key its identity
-  // removed, told or taken out by a device of hers, is passed by a key after it that she told
-  // stands; one another member removed, or whose record says not who, cuts whatever she told
-  async function stands(view, [identity, ...keys]) {
+  // removed, told or taken out by a device of hers, is passed by a key after it that stands: in
+  // the root one seated, in a room one she told stands; one another member removed, or whose
+  // record says not who, cuts whatever she told. With `telling`, as it will once she tells those
+  // lists too
+  async function stands(view, [identity, ...keys], telling) {
     const memberId = hid.encode(identity)
     const told = await view.get(removals, { id: toldId(memberId) })
-    const removed = keysOf(told?.removed)
+    const removed = [...keysOf(told?.removed), ...keysOf(telling?.removed)]
     let cut = -1
     for (const [i, key] of keys.entries()) {
       const removal = await view.get(removals, { id: hid.encode(key) })
       if (removal && removal.by !== memberId) return false
       if (removal || has(removed, key)) cut = i
     }
-    const standing = keysOf(told?.standing)
-    return cut < 0 || keys.slice(cut + 1).some((key) => has(standing, key))
+    if (cut < 0) return true
+    const standing = root
+      ? (await view.find(`@${ns}/devices`, {}).toArray())
+          .filter((d) => d.memberId === memberId && d.key)
+          .map((d) => d.key)
+      : keysOf(telling ? telling.standing : told?.standing)
+    return keys.slice(cut + 1).some((key) => has(standing, key))
   }
-  const seatChain = (device) => [hid.decode(device.memberId), ...keysOf(device.chain), device.key]
 
   // a device tells the room which device keys of its identity are removed and which stand. For
   // its identity alone: the removed add up, the standing replace those told before, and the seats
@@ -677,6 +696,8 @@ export function makeDispatcher({
     const spent = spends || !uncovered
     const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing, spent }
     await ctx.view.insert(removals, row)
+    // a removed device that never sat here may hold the key through its identity's root
+    if (added.length) await owe(ctx.view)
     for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
       if (seated.memberId !== memberId || !seated.key) continue
       if (await stands(ctx.view, seatChain(seated))) continue
@@ -713,7 +734,11 @@ export function makeDispatcher({
     const isSelf = op.id === (await getSignerMember(ctx.view, ctx.key))
     const ranks = Boolean(op.role) && op.role !== existing.role
     if (!isSelf && !ranks) return
-    const next = isSelf ? { ...op } : { ...existing }
+    const next = !isSelf
+      ? { ...existing }
+      : can(existing.role, WRITE)
+        ? { ...op }
+        : profile(existing, op)
     next.key = existing.key
     next.role = existing.role
     next.createdAt = existing.createdAt
@@ -883,11 +908,18 @@ export function makeDispatcher({
     const kept = { key: existing?.key, chain: existing?.chain }
     await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), ...kept })
   })
+  // another device of its member renames it, and changes nothing else of the row
   add('set-device', async (op, ctx) => {
-    selfOnly(op, ctx)
-    const memberId = await bind(ctx)
     const existing = await getDevice(ctx.view, op.id)
     const ts = op.updatedAt || 0
+    if (ctx.key && existing && op.id !== hid.encode(ctx.key)) {
+      const by = await getDevice(ctx.view, hid.encode(ctx.key))
+      if (!by?.memberId || by.memberId !== existing.memberId) throw CeroError.REFUSED('device')
+      await save(ctx, 'set', 'devices', { ...existing, name: op.name, updatedAt: ts })
+      return
+    }
+    selfOnly(op, ctx)
+    const memberId = await bind(ctx)
     await save(ctx, 'set', 'devices', {
       ...op,
       memberId,
@@ -1185,6 +1217,12 @@ export function makeDispatcher({
     await forget(ctx, row)
     await refuse(ctx, row, op.reason || '')
   })
+  // the joiner's own core takes back its join while it waits: an accept that landed first stands
+  add('cancel-join', async (op, ctx) => {
+    selfOnly(op, ctx)
+    const row = await ctx.view.get(requests, { id: op.id })
+    if (row && !row.admitted) await drop(ctx, 'requests', row.id)
+  })
   // only a join writes a request
   const joinsOnly = async () => {
     throw CeroError.REFUSED('request')
@@ -1234,9 +1272,10 @@ export function makeDispatcher({
   // held to its states on every peer, so a device with an older picture writes over no newer one
   const held = (write) => async (op, ctx) => {
     const was = await ctx.view.get(col('handles'), { id: op.id })
-    // a write that names no state leaves the row where it stands: its device may read an older one
-    if (was && !op.state) {
-      Object.assign(op, { state: was.state, reason: was.reason, by: was.by, invite: was.invite })
+    // a write naming no state keeps the row's, `in` on a new row: its device may read an older one
+    if (!op.state) {
+      if (was) Object.assign(op, { reason: was.reason, by: was.by, invite: was.invite })
+      op.state = was?.state || 'in'
     }
     if (!moves(was, op)) throw CeroError.REFUSED('state')
     return write(op, ctx)
@@ -1245,7 +1284,8 @@ export function makeDispatcher({
   add('set-handle', held(update('handles', false)))
   add('del-handle', async (op, ctx) => {
     const was = await ctx.view.get(col('handles'), { id: op.id })
-    if (UNSETTLED.has(was?.state)) throw CeroError.REFUSED('state')
+    // a row that is not over holds its room's key on every device of the identity
+    if (was && STATES[was.state || 'in'].length) throw CeroError.REFUSED('state')
     return remove('handles', false)(op, ctx)
   })
 

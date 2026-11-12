@@ -74,6 +74,8 @@ async function start(dir, spec, opts = {}) {
   if (typeof bt !== 'object') {
     throw CeroError.INVALID('bluetooth takes { on, topic, pipe, maxOutbound, maxInbound }')
   }
+  // refused before anything is stored
+  if (opts.phrase) Identity.toSeed(opts.phrase)
 
   // a swap hands on the lock it holds
   const held = opts.lock ?? (await lock(dir, opts.recoveryTimeout ?? TIMEOUT))
@@ -421,6 +423,10 @@ async function ask(local, network, spec, { invite, writer, onrequest, timeout, s
         keep,
         signal
       })
+    } catch (err) {
+      // an expired invite leaves no join a later launch could resume
+      if (err.code === 'EXPIRED') await local.store.del('joins', row.id)
+      throw err
     } finally {
       await mailbox.close()
     }
