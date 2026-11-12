@@ -727,6 +727,34 @@ test('revoke: a room keeps at most 64 removed keys of an identity, and a telling
   t.is((await told(made.db, made.identity)).removed.byteLength, 65 * 32, 'a first batch keeps all')
 })
 
+test('revoke: a device that fills its identity removals before the room hears of its own is still taken out by a sibling that tells it', async (t) => {
+  const { db, identity, phone } = await lost(t)
+  const laptop = linked(identity)
+  const core = phone.writer.publicKey
+  const proof = phone.identity.sign(admission(db.key, core, core))
+  const made = b4a.concat(Array.from({ length: 64 }, () => Identity.randomKeyPair().publicKey))
+  const filled = { removed: made, standing: keys(phone, laptop), proof }
+  t.is(await apply(db, core, 'revoke', filled), null, 'it names no sibling')
+  t.is(
+    await seatless(db, laptop, [phone], [laptop]),
+    null,
+    'the laptop that stands tells it removed'
+  )
+  const refused = await seatless(db, phone, [laptop], [phone])
+  t.is(refused?.rule, 'removed', 'and the removed one tells nothing after')
+})
+
+test('revoke: a room its first batch made with more than 64 removals of an identity is still told who stands', async (t) => {
+  const { db, identity } = await lost(t)
+  const laptop = linked(identity)
+  const many = b4a.concat(Array.from({ length: 65 }, () => Identity.randomKeyPair().publicKey))
+  const host = { ...noHost, genesis: true }
+  t.is(await apply(db, db.writerKey, 'revoke', { removed: many }, host), null)
+  const again = { removed: many, standing: keys(laptop) }
+  t.is(await apply(db, db.writerKey, 'revoke', again), null, 'nothing new is removed')
+  t.alike((await told(db, identity)).standing, keys(laptop))
+})
+
 test('revoke: a device whose row keeps no key, or no member, tells with a proof as one with no row does', async (t) => {
   const { db, identity, phone } = await lost(t)
   const laptop = linked(identity)
