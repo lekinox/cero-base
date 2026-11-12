@@ -77,6 +77,27 @@ test('compat: a store the previous release wrote opens, reads and writes on this
   t.is((await get(room.status)).data.behind, 0, 'nothing skipped')
 })
 
+test('compat: a room the previous release left stays gone on this one', async (t) => {
+  const { old, before, now } = await previous()
+  const testnet = await makeTestnet(t)
+  const dir = await t.tmp()
+
+  const was = await old.cero(dir, before, { bootstrap: testnet.bootstrap })
+  const kept = await old.open(was.room, { name: 'kept' })
+  const gone = await old.open(was.room, { name: 'gone' })
+  await old.leave(gone)
+  await was.close()
+
+  const me = await cero(dir, now, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  t.alike(
+    (await get(me.room)).data.map((row) => row.id),
+    [kept.id],
+    'only the room it kept'
+  )
+  t.absent((await get(me.room, gone.id)).data, 'the one it left has no row')
+})
+
 test('compat: a push to a store the previous release wrote is refused until its handle opens on this one', async (t) => {
   const { old, before, now } = await previous()
   const testnet = await makeTestnet(t)

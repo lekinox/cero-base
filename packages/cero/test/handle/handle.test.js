@@ -1987,17 +1987,19 @@ test('handles: a page of one type among 500 with some left reads the rooms in th
   )
 })
 
-test('handles: a row is deleted once it ended, never while in, leaving, asking or joining', async (t) => {
+test('handles: a row is deleted while in or leaving, never while asking or joining', async (t) => {
   const { me } = await ceroOpen(t)
-  for (const state of ['in', 'leaving', 'asking', 'joining']) {
+  for (const state of ['asking', 'joining']) {
     await me.store.set('handles', standing(state, state))
     t.ok(await refused(me.store.del('handles', state)), `not while ${state}`)
     t.is((await get(me.handles, state)).data.state, state, 'it stays')
   }
-  for (const state of ENDED) {
-    await me.store.set('handles', standing(state, state))
-    await me.store.del('handles', state)
-    t.absent((await get(me.handles, state)).data, `gone once ${state}`)
+  const room = await open(me.team, { name: 'clinic' })
+  await me.store.set('handles', standing('named', 'in'))
+  await me.store.set('handles', standing('leaving', 'leaving'))
+  for (const id of [room.id, 'named', 'leaving']) {
+    await me.store.del('handles', id)
+    t.absent((await get(me.handles, id)).data, 'gone')
   }
 })
 
@@ -2043,6 +2045,26 @@ test('handles: a launch deletes a cancelled row, and a denied, expired, removed 
   const last = await relaunch(next)
   t.absent((await get(last.handles, 'denied')).data, 'and is gone over 30 days old')
   t.ok((await get(last.handles, 'month')).data, 'the younger one stays')
+})
+
+test('handles: a cancel no peer took goes at a launch once it is over 30 days old', async (t) => {
+  const { me, dir, testnet } = await ceroOpen(t)
+  const retract = Handle.prototype._retract
+  Handle.prototype._retract = async () => true
+  t.teardown(() => {
+    Handle.prototype._retract = retract
+  })
+  const at = Date.now() - 31 * 24 * 60 * 60 * 1000
+  await me.store.set('handles', standing('young', 'cancelled'))
+  await me.store.set('handles', standing('old', 'cancelled'))
+  const { data: row } = await me.store.get('handles', 'old')
+  await me.store.call('add-handle', { ...row, updatedAt: at })
+  await me.close()
+
+  const again = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 5 })
+  t.ok((await get(again.handles, 'young')).data, 'a cancel still owed stays')
+  t.absent((await get(again.handles, 'old')).data, 'and goes over 30 days old')
 })
 
 test('Handle: a page of one type reads through its index the rows, in the order, that filtering every handle gives', async (t) => {

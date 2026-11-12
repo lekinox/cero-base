@@ -1400,15 +1400,16 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // the rows that ended go, with their keypairs: a cancel once no peer is owed it, the others once
-  // the app had `KEPT` to show why
+  // the rows that ended go, with their keypairs: a cancel once no peer is owed it, or `KEPT` on
+  // with none reached, the others once the app had `KEPT` to show why
   /** @private */
   async _sweep() {
     const old = Date.now() - KEPT
     const gone = []
     for (const state of SWEPT) {
       for (const row of (await this.store.get('handles', { state })).data) {
-        if (state === 'cancelled' ? !(await this._retract(row)) : row.updatedAt < old) {
+        const owed = state === 'cancelled' && row.updatedAt >= old && (await this._retract(row))
+        if (!owed && (state === 'cancelled' || row.updatedAt < old)) {
           gone.push(row.id)
         }
       }

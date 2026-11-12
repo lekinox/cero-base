@@ -99,6 +99,9 @@ const STATES = {
   cancelled: []
 }
 
+// on its way in: such a row is not deleted. A leave ends by deleting its row
+const UNSETTLED = new Set(['asking', 'joining'])
+
 // a handles row with no state is `in`. One that is over is asked again under another invite, and
 // a denied one is let in under its own, by another device of the identity
 function moves(was, row) {
@@ -1284,8 +1287,7 @@ export function makeDispatcher({
   add('set-handle', held(update('handles', false)))
   add('del-handle', async (op, ctx) => {
     const was = await ctx.view.get(col('handles'), { id: op.id })
-    // a row that is not over holds its room's key on every device of the identity
-    if (was && STATES[was.state || 'in'].length) throw CeroError.REFUSED('state')
+    if (UNSETTLED.has(was?.state)) throw CeroError.REFUSED('state')
     return remove('handles', false)(op, ctx)
   })
 

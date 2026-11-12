@@ -79,7 +79,13 @@ export async function set(ref, row, opts) {
  */
 export async function del(ref, id) {
   if (ref.handle.opened === false) await ref.handle.ready()
-  if (ref.kind === 'handle') return parentStore(ref).del('handles', id)
+  if (ref.kind === 'handle') {
+    const store = parentStore(ref)
+    const { data: row } = await store.get('handles', id)
+    // a room still in use keeps its key there: `cero.leave` ends it
+    if (row && !ENDED.has(row.state || 'in')) throw CeroError.REFUSED('state')
+    return store.del('handles', id)
+  }
   await ref.handle.store.del(ref.name, id)
   // a device removed is cut from every room open here, with its new key, before this resolves
   if (ref.name === 'devices' && ref.handle.children) await ref.handle._pruneAll()
@@ -98,6 +104,7 @@ export async function call(ref, d) {
 }
 
 const WRITES = { single: ['set', 'del'], collection: ['put', 'set', 'del'] }
+const ENDED = new Set(['left', 'removed', 'denied', 'expired', 'cancelled'])
 
 /**
  * Rule that runs before a write to `ref` lands, or before an action does: at apply, on every
