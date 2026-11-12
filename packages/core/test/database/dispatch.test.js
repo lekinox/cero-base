@@ -742,6 +742,11 @@ test('revoke: the joins that wait or were promised through a key told removed go
   t.is(await apply(db, sits, 'revoke', lists), null)
   t.absent(await promise(db, waits), 'the join that waited through the removed key goes')
   t.absent(await promise(db, cut), 'as does the one promised through it')
+  t.is(
+    (await refusal(db, hid.encode(cut)))?.reason,
+    'removed',
+    'which hears why, so its claim ends'
+  )
   t.is(await owed(db), 1, 'which owes a rotation')
   t.ok(await promise(db, kept), 'one through a key told as standing stays')
   t.is((await claimed(db, laptop.identity, cut))?.rule, 'removed', 'its claim is refused')

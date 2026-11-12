@@ -639,7 +639,7 @@ export function makeDispatcher({
     for (const row of await ctx.view.find(requests, {}).toArray()) {
       // waiting or promised: one admitted at its join has a seat of its own to lose
       if (row.admitted && !row.promised) continue
-      if (!(await stands(ctx.view, [row.identity, ...chainOf(row)]))) await forget(ctx, row)
+      if (!(await stands(ctx.view, [row.identity, ...chainOf(row)]))) await withdraw(ctx, row)
     }
     if (can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
   })
