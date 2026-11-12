@@ -709,17 +709,19 @@ test('revoke: a removed device the room has not heard of tells first, with a pro
   t.is(await owed(db), 1)
 })
 
-test('revoke: a room keeps at most 64 removed keys of an identity, and a telling past them is refused, but in the batch that makes it', async (t) => {
+test('revoke: one telling adds at most 64 removed keys of an identity, as many as it likes over many, and any number in the batch that makes the room', async (t) => {
   const { db, identity } = await withRole(t, 'owner')
   const random = (n) =>
     b4a.concat(Array.from({ length: n }, () => Identity.randomKeyPair().publicKey))
   const first = random(64)
   t.is(await apply(db, db.writerKey, 'revoke', { removed: first }), null)
   t.is((await told(db, identity)).removed.byteLength, 64 * 32, 'all 64 kept')
-  t.is(await apply(db, db.writerKey, 'revoke', { removed: first }), null, 'told again, nothing new')
-  const refused = await apply(db, db.writerKey, 'revoke', { removed: random(1) })
-  t.is(refused?.rule, 'revoke', 'one more is refused')
+  const refused = await apply(db, db.writerKey, 'revoke', { removed: random(65) })
+  t.is(refused?.rule, 'revoke', '65 new in one telling are refused')
   t.is((await told(db, identity)).removed.byteLength, 64 * 32, 'and the room keeps what it had')
+  const more = b4a.concat([first, random(1)])
+  t.is(await apply(db, db.writerKey, 'revoke', { removed: more }), null, 'one more is kept')
+  t.is((await told(db, identity)).removed.byteLength, 65 * 32, 'past 64 in all')
 
   const made = await withRole(t, 'owner')
   const host = { ...noHost, genesis: true }
