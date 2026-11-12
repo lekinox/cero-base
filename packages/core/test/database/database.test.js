@@ -1507,6 +1507,15 @@ test('claim: appends nothing until the member row arrives', { timeout: 10000 }, 
   await t.exception(db.claim({ timeout: 200 }), /waiting for the member row timed out/)
 })
 
+test('claim: its wait looks again once the device writes, not only on an update', async (t) => {
+  const { db } = await withRole(t, 'owner')
+  let seated = false
+  const waiting = db._member(2000, async () => seated)
+  seated = true
+  db.emit('writable')
+  t.ok(await waiting.catch(() => false), 'the seat ends it')
+})
+
 test("claim: a reader's second device takes no seat", async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
@@ -1520,6 +1529,77 @@ test("claim: a reader's second device takes no seat", async (t) => {
   await second.db.claim()
   t.absent(second.db.writable, 'a reader holds no seat')
   t.is(second.db.length, 0, 'and appends nothing')
+})
+
+test('claim: a device whose first add-writer was refused claims again and is seated', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const shared = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const first = await makePeer(t, testnet, shared)
+  const b = await makePeer(t, testnet, { ...shared, identity: first.identity })
+
+  // its claim lands before its identity is a member: refused, it leaves no row
+  const stamp = await b.db._stamp(b.db.view)
+  const seat = b.db._admission(b.db.writerKey)
+  const op = b.db.dispatcher.encode(`@${b.db.ns}/add-writer`, seat, stamp)
+  await b.db.bee.append(wrap(stamp, op), { optimistic: true })
+  await waitFor(async () => (await a.db.bee.system.get(b.db.writerKey))?.length === 1)
+  t.absent((await a.db.get('devices', hid.encode(b.db.writerKey))).data, 'refused')
+
+  await admit(a.db, first.db)
+  await b.db.claim({ timeout: 10000 })
+  t.ok(b.db.writable, 'seated by the claim it makes again')
+  t.is(b.db.length, 2, 'a second add-writer, where the first left nothing')
+})
+
+test('claim: a device refused for good appends its claim once, and again only on a promise made since', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const b = await makePeer(t, testnet, { topic, key: a.db.key, encryptionKey: a.db.encryptionKey })
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+
+  // its device key removed, every claim it makes is refused; no rotation yet, so it reads on
+  a.db.rotation._rotate = async () => {}
+  await a.db.call('del-device', { id: hid.encode(b.db.writerKey) })
+  await waitFor(() => !b.db.bee.writable)
+  const length = b.db.length
+  for (let i = 0; i < 3; i++) await t.exception(b.db.claim({ timeout: 1500 }), /timed out/)
+  t.is(b.db.length, length + 1, 'three calls, one claim')
+
+  const { Invite } = await import('../../src/pairing/invite.js')
+  const { sealJoin } = await import('../../src/pairing/index.js')
+  const { Mailbox } = await import('../../src/mailbox/index.js')
+  const secret = Identity.randomBytes(32)
+  const invite = Invite.create({ key: a.db.key, address: Mailbox.getAddress(secret), own: true })
+  const row = { id: b4a.toHex(invite.id), role: 'member', createdAt: 1, secret, reuse: true }
+  const stamp = await a.db.write([['add-invite', row]])
+  const tablet = await Identity.create({ seed: b.identity.seed })
+  const kp = Identity.randomKeyPair()
+  const core = a.store.get({
+    keyPair: kp,
+    manifest: { version: a.store.manifestVersion, signers: [{ publicKey: kp.publicKey }] }
+  })
+  await core.ready()
+  t.teardown(() => core.close(), { order: 4 })
+  const join = sealJoin(invite, tablet, core.key, Identity.randomBytes(32))
+  const op = wrap(stamp, spec.dispatch.encode('@cero/join', join))
+  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links: [] }))
+  await a.db.bee.wakeup({ key: core.key, length: core.length })
+  await waitFor(async () => (await b.db.get('requests', hid.encode(core.key))).data?.promised)
+  await t.exception(b.db.claim({ timeout: 1500 }), /timed out/)
+  t.is(b.db.length, length + 2, 'a promise made to her since: it claims again')
+})
+
+test('claim: a device that has its row is not held back by the claim that got it', async (t) => {
+  const { db } = await withRole(t, 'reader')
+  const { against } = await db._standing()
+  await db.bee.local.setUserData('cero/claim', against)
+  t.ok(await db._standing(), 'its next claim finds where it stands and returns')
 })
 
 // ─── key-type invariants ──────────────────────────────────────────────────
@@ -4862,17 +4942,38 @@ test('gate: a member behind can still leave, and the others apply it', async (t)
 test('gate: a removal applied while behind starts no rotation on this device, nor an error', async (t) => {
   const { a, b } = await members(t)
   let audits = 0
+  let release = null
+  const behind = new Promise((resolve) => (release = resolve))
   const audit = a.db.rotation._audit.bind(a.db.rotation)
-  a.db.rotation._audit = () => audit().finally(() => audits++)
-  await a.db.removeWriter(b.db.keyPair.publicKey)
+  a.db.rotation._audit = () => behind.then(audit).finally(() => audits++)
+  // her own leave: a removal this device makes carries its rotation before it is behind
+  await b.db.del('members', b.identity.id)
+  await waitFor(async () => !(await a.db.get('members', b.identity.id)).data)
   await raise(a.db, a.db.version + 1)
   t.is(a.db.behind, a.db.version + 1, 'behind before the audit ran')
+  release()
 
   await waitFor(() => audits >= 1)
   t.absent(
     a.errors.find((e) => e.code === 'BEHIND'),
     'the audit did not try to write'
   )
+  t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no rotation')
+})
+
+test('gate: a device behind before the key its removal carries reports nothing, and rotates nothing', async (t) => {
+  const { a, b } = await members(t)
+  const rotate = a.db.rotation._rotate.bind(a.db.rotation)
+  a.db.rotation._rotate = async (...args) => {
+    // past the write queue, which waits for the removal and its key
+    await stamped(a.db, a.db.version, 'upgrade', { version: a.db.version + 1 })
+    return rotate(...args)
+  }
+
+  await a.db.del('members', b.identity.id)
+  t.is(a.db.behind, a.db.version + 1, 'behind before its rotation')
+  t.absent((await a.db.get('members', b.identity.id)).data, 'the removal landed')
+  t.alike(a.errors, [], 'nothing is reported')
   t.is((await a.db.view.find(`@${a.db.ns}/epochs`, {}).toArray()).length, 0, 'no rotation')
 })
 

@@ -24,7 +24,7 @@ import { peek } from './lib/peek.js'
 import { address } from './lib/mail.js'
 import { t, schema } from './lib/spec.js'
 import { TIMEOUT } from './lib/constants.js'
-import { commit, nextOf, settle, staging, sweep } from './lib/swap.js'
+import { commit, flush, lock, nextOf, settle, staging, sweep } from './lib/swap.js'
 
 export { Handle, Ref, Local }
 export * from './lib/operators.js'
@@ -75,8 +75,9 @@ async function start(dir, spec, opts = {}) {
     throw CeroError.INVALID('bluetooth takes { on, topic, pipe, maxOutbound, maxInbound }')
   }
 
-  await settle(dir)
-  const storage = new HypercoreStorage(`${dir}/main`)
+  // a swap hands on the lock it holds
+  const held = opts.lock ?? (await lock(dir, opts.recoveryTimeout ?? TIMEOUT))
+  let storage = null
   let store = null
   let local = null
   let network = null
@@ -88,8 +89,11 @@ async function start(dir, spec, opts = {}) {
   opts = { ...opts, onerror }
   // any failure during open must close what opened, or the storage lock leaks
   try {
+    await settle(dir)
+    storage = new HypercoreStorage(`${dir}/main`)
     await storage.ready()
     await sweep(dir)
+    await held.close()
     await fs.promises.chmod(`${dir}/main`, 0o700)
     store = new Corestore(storage, { manifestVersion: 2 })
     await store.ready()
@@ -232,8 +236,9 @@ async function start(dir, spec, opts = {}) {
       await network?.close().catch(safetyCatch)
       await local?.close().catch(safetyCatch)
       await store?.close().catch(safetyCatch)
-      await storage.close().catch(safetyCatch)
+      await storage?.close().catch(safetyCatch)
     }
+    await held.close().catch(safetyCatch)
     throw err
   }
 }
@@ -284,7 +289,14 @@ async function swap(me, opts) {
   if (me.closing || me.closed) throw CeroError.CLOSED('Handle')
   // everything carries over except the identity, the channel above all
   const { _dir: dir, spec, _opts: was } = me
-  const carried = { ...was, phrase: undefined, invite: undefined, onrequest: undefined }
+  const carried = {
+    ...was,
+    phrase: undefined,
+    invite: undefined,
+    onrequest: undefined,
+    lock: undefined
+  }
+  let held = null
   const ac = new AbortController()
   let finished = () => {}
   const done = new Promise((resolve) => (finished = resolve))
@@ -298,6 +310,9 @@ async function swap(me, opts) {
       try {
         opened = await start(nextOf(dir), spec, { ...carried, ...opts, signal: ac.signal })
         await opened.close()
+        await flush(dir)
+        // from before this identity closes until the new one is open in its place, no launch opens the dir
+        held = await lock(dir, carried.recoveryTimeout ?? TIMEOUT)
         // checked and marked in one step: a close of `me` stopped it by now, or waits for it from here
         if (ac.signal.aborted) throw CeroError.CLOSED('Swap')
         running.committing = true
@@ -310,8 +325,9 @@ async function swap(me, opts) {
       await me._end()
       await commit(dir)
     })
-    return await start(dir, spec, carried)
+    return await start(dir, spec, { ...carried, lock: held })
   } finally {
+    await held?.close().catch(safetyCatch)
     if (me._swap === running) me._swap = null
     finished()
   }

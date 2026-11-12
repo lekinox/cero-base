@@ -1,5 +1,6 @@
 import test from 'brittle'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import { existsSync, readFileSync, rmSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -32,7 +33,15 @@ import { bindCodec } from '@cero-base/core/rpc'
 import { makeMockBluetooth } from 'ble-swarm/mock.js'
 import { spec } from '../fixtures/spec/index.js'
 import { spec as next } from '../fixtures/spec/next/index.js'
-import { makeTestnet, observe, waitUntil, fetch, nextRequest, joinsOf } from '../helpers/index.js'
+import {
+  makeTestnet,
+  observe,
+  waitUntil,
+  fetch,
+  nextRequest,
+  joinsOf,
+  refusedAtClaim
+} from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
 
@@ -495,6 +504,66 @@ test('rpc: client.create(type) opens a child handle on the server', async (t) =>
   void me
 })
 
+test('rpc: a room reads as in over the bridge, and its state once it has one', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'clinic' })
+  t.is((await get(client.team, team.id)).data.state, 'in', 'by id')
+  t.alike(
+    (await get(client.team)).data.map((row) => row.state),
+    ['in'],
+    'and in a list'
+  )
+  await me.store.set('handles', { id: team.id, state: 'leaving' })
+  t.is((await get(client.team, team.id)).data.state, 'leaving')
+})
+
+test('rpc: a rename over the bridge sends no state, and a list filtered on in returns a room stored with none', async (t) => {
+  const { me, client } = await openPair(t)
+  const team = await open(client.team, { name: 'clinic' })
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+
+  const sent = []
+  const write = me.store.write
+  me.store.write = (ops) => (sent.push(...ops), write.call(me.store, ops))
+  await set(client.handles, { id: 'waiting', name: 'renamed' })
+  me.store.write = write
+  t.absent(sent[0][1].state, 'the rename sends no state')
+  const { data: row } = await get(client.team, 'waiting')
+  t.alike([row.name, row.state], ['renamed', 'asking'], 'and the row stands where it stood')
+
+  t.absent((await me.store.get('handles', team.id)).data.state, 'the room is stored with no state')
+  const listed = await get(client.team, { state: 'in' })
+  t.alike(
+    listed.data.map((row) => row.id),
+    [team.id],
+    'and listed as in'
+  )
+})
+
+test('rpc: a row is deleted over the bridge once it is over, not while asking', async (t) => {
+  const { me, client } = await openPair(t)
+  const key = b4a.alloc(32, 1)
+  await me.store.set('handles', {
+    id: 'waiting',
+    type: 'team',
+    key,
+    state: 'asking',
+    invite: 'one'
+  })
+  const err = await del(client.handles, 'waiting').catch((err) => err)
+  t.is(err?.code, 'REFUSED', 'refused while asking')
+  await me.store.set('handles', { id: 'waiting', state: 'cancelled' })
+  await del(client.handles, 'waiting')
+  t.absent((await get(client.team, 'waiting')).data, 'gone once it is over')
+})
+
 test('rpc: a room created while the root closes rejects with CLOSED', async (t) => {
   const { me, client } = await openPair(t)
   const creating = open(client.team, { name: 'clinic' })
@@ -821,18 +890,29 @@ test('rpc: rotate on a room round-trips via the wire', async (t) => {
   t.is([...me.children][0].store.keyring.seq, 1, 'the worker keyring advanced')
 })
 
-test('rpc: a removal made from the UI rotates the room key', async (t) => {
-  const { client, testnet } = await openPair(t)
+test('rpc: a removal made from the UI rotates the room key as it resolves, and the removed device does not read the next write', async (t) => {
+  const { me, client, testnet } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
   const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
   t.teardown(() => other.close().catch(() => {}), { order: 5 })
-  await open(other.team, await cero.invite(team))
+  const theirs = await open(other.team, await cero.invite(team))
+  await put(team.messages, { text: 'pre' })
+  await waitUntil(async () => (await get(theirs.messages)).data.length === 1 || null)
 
   await del(team.members, other.id)
-  await waitUntil(async () => (await get(team.status)).data.epoch === 1 || null)
-  t.pass('the worker opened epoch 1')
+  t.is((await get(team.status)).data.epoch, 1, 'the worker opened epoch 1')
   await put(team.messages, { text: 'post' })
-  t.is((await get(team.messages)).data.length, 1, 'writes go on in the new epoch')
+  t.is((await get(team.messages)).data.length, 2, 'writes go on in the new epoch')
+
+  await waitUntil(async () => !(await get(theirs.members, other.id)).data || null)
+  const key = [...me.children][0].store.keyring.current
+  t.absent(theirs.store.keyring.entropy(key), 'the removed device holds no key for it')
+  const { data } = await get(theirs.messages)
+  t.alike(
+    data.map((r) => r.text),
+    ['pre'],
+    'and reads nothing written after'
+  )
 })
 
 test('rpc: a watch stream over the wire survives a rotation mid-stream', async (t) => {
@@ -1058,9 +1138,10 @@ test('rpc: a join that lands after the caller stopped waiting shows up in handle
 
   const arrived = (async () => {
     for await (const { data } of watch(client.handles)) {
-      if (data.some((row) => row.id === room.id)) return true
+      if (data.some((row) => row.id === room.id && row.state === 'in')) return true
     }
   })()
+  t.is((await get(client.team, room.id)).data.state, 'asking', 'its row reads asking meanwhile')
   await cero.resume(owner)
   t.ok(await arrived, 'the client sees the room once a member answers')
   t.is((await open(client.team, { id: room.id })).id, room.id)
@@ -1085,6 +1166,23 @@ test("rpc: the UI sees a confirm invite's requests and answers them", async (t) 
   const refused = open(bob.team, invite).catch((e) => e)
   await deny(room, await nextRequest(room, request), 'not now')
   t.is((await refused).code, 'DENIED', 'denied from the UI')
+})
+
+test('rpc: a promise withdrawn while the UI waits for its seat rejects DENIED, with the reason', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const owner = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const room = await open(owner.team, { name: 'clinic' })
+  const promised = () =>
+    waitUntil(async () => (await get(room.requests)).data.find((r) => r.promised) || null)
+  const withdraw = async () => deny(room, await promised(), 'not you')
+
+  const err = await refusedAtClaim(t, me, client.team, await cero.invite(room), withdraw)
+  t.is(err.code, 'DENIED')
+  t.is(err.reason, 'not you')
+  t.is((await get(client.team, { state: 'in' })).data.length, 0, 'in no room')
+  const [row] = (await get(client.team)).data
+  t.alike([row.state, row.reason], ['denied', 'not you'], 'its row reads denied, with the reason')
 })
 
 test('rpc: a join denied to the UI rejects with the reason', async (t) => {
@@ -1138,9 +1236,43 @@ test('rpc: pending joins are listed and cancelled over the wire', async (t) => {
   const joining = open(client.team, invite).catch((e) => e)
   await waitUntil(async () => ((await joinsOf(client)).length ? true : null))
   t.alike(await joinsOf(client), [invite])
+  const id = hid.encode(Invite.parse(invite).key)
+  t.is((await get(client.team, id)).data.state, 'asking', 'the UI reads the join on its row')
   t.ok(await cero.cancel(client, invite))
   t.alike(await joinsOf(client), [])
-  t.is((await joining).code, 'CLOSED')
+  t.is((await joining).code, 'CANCELLED')
+  t.is((await get(client.team, id)).data.state, 'cancelled')
+})
+
+// an invite nobody serves, so its join stays asking
+function nowhere(opts) {
+  const random = () => Identity.randomBytes(32)
+  const link = { key: random(), length: 1 }
+  return Invite.create({ key: random(), address: random(), link, ...opts }).toString()
+}
+
+test('rpc: a join whose invite expires rejects EXPIRED over the bridge, and its row reads expired', async (t) => {
+  const { client } = await openPair(t)
+  const invite = nowhere({ ttl: 1500 })
+  t.is((await open(client.team, invite).catch((e) => e)).code, 'EXPIRED')
+  const id = hid.encode(Invite.parse(invite).key)
+  t.is((await get(client.team, id)).data.state, 'expired')
+})
+
+test('rpc: a cancel from a second device ends the join the UI waits on with CANCELLED', async (t) => {
+  const { me, client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, {
+    bootstrap: testnet.bootstrap,
+    phrase: await cero.phrase(me)
+  })
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  const invite = nowhere()
+  const joining = open(client.team, invite).catch((e) => e)
+  const id = hid.encode(Invite.parse(invite).key)
+  await waitUntil(async () => (await get(other.team, id)).data?.state === 'asking')
+  t.ok(await cero.cancel(other, invite), 'no join of its own, the second device cancels it')
+  t.is((await joining).code, 'CANCELLED')
+  t.is((await get(client.team, id)).data.state, 'cancelled')
 })
 
 // only the files ref uploads: a user collection with its own `data` column
@@ -1527,4 +1659,56 @@ test('rpc: send passes keep on to the worker', async (t) => {
 test("rpc: inbox is the worker's, INVALID on a client", async (t) => {
   const { client } = await openPair(t)
   t.exception(() => inbox(client, Identity.randomBytes(32), () => {}), /INVALID/)
+})
+
+// a host's room the UI's identity is in
+async function hostedRoom(t) {
+  const { me, client, testnet } = await openPair(t)
+  const host = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => host.close().catch(() => {}), { order: 5 })
+  const room = await open(host.team, { name: 'clinic' })
+  const joined = await open(client.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data)
+  return { me, client, host, room, joined }
+}
+
+test('rpc: leave reads leaving then left in the UI, once the room holds the removal', async (t) => {
+  const { me, client, room, joined } = await hostedRoom(t)
+  await cero.leave(joined)
+  t.ok(['leaving', 'left'].includes((await get(client.team, room.id)).data.state), 'leaving')
+  await waitUntil(async () => (await get(client.team, room.id)).data.state === 'left')
+  t.is(await room.store.removed(me.identity.id), 'left', 'the room holds her leaving')
+})
+
+test('rpc: a removal by an admin reads removed in the UI, with her id in by', async (t) => {
+  const { me, client, host, room } = await hostedRoom(t)
+  await del(room.members, me.identity.id)
+  const row = await waitUntil(async () => {
+    const { data } = await get(client.team, room.id)
+    return data.state === 'removed' ? data : null
+  })
+  t.is(row.by, host.identity.id, 'by the admin')
+})
+
+test('rpc: status.owed reads in the UI as in the worker, true while its device waits for keys and false after', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  const room = await open(other.team, { name: 'keys' })
+  const mine = await open(client.team, await cero.invite(room))
+  await waitUntil(async () => (await get(room.members)).data.length === 2 || null)
+  t.is((await get(mine.status)).data.owed, false)
+  const seen = []
+  cero.watch(mine.status).on('data', ({ data }) => seen.push(data.owed))
+
+  // the next key sealed to the other's device alone, and a write under it
+  const { data: devices } = await room.store.get('devices')
+  const own = devices.filter((d) => d.memberId === other.identity.id)
+  await room.store.rotation._rotate(false, own)
+  await put(room.messages, { text: 'under' })
+  await waitUntil(async () => seen.includes(true) || null)
+  t.pass('owed in the UI once its device asked')
+  await waitUntil(async () => (await get(mine.messages)).data.length === 1 || null)
+  await waitUntil(async () => (await get(mine.status)).data.owed === false || null)
+  t.pass('and not once it was sent them')
 })

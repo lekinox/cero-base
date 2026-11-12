@@ -5,6 +5,7 @@ import { dirname, join } from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 
 import { encode, createNotification } from 'blind-push'
+import { Invite } from '@cero-base/core/invite'
 
 import { cero, open, put, set, get, invite, receive, schema, t } from '../../src/index.js'
 import { receive as cold } from '../../src/push/index.js'
@@ -143,16 +144,43 @@ test('compat: this release and the previous one write to one room, then one upgr
   t.pass('and still syncs')
 })
 
-test('compat: an invite this release mints admits a device on the previous one', async (t) => {
-  const { old, before, now } = await previous()
+test('compat: the previous release refuses an invite with an address of its own at once', async (t) => {
+  const { now } = await previous()
+  const { root } = JSON.parse(
+    await fs.readFile(join(fixtures, '.compat', 'previous.json'), 'utf-8')
+  )
+  const core = join(root, 'node_modules', '@cero-base', 'core', 'src', 'pairing', 'invite.js')
+  const { Invite: Previous } = await import(pathToFileURL(core).href)
   const testnet = await makeTestnet(t)
   const me = await cero(await t.tmp(), now, { bootstrap: testnet.bootstrap })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+
+  const code = await invite(await open(me.room, { name: 'shared' }))
+  t.ok(Invite.parse(code).own, 'an invite with an address of its own')
+  t.exception(
+    () => Previous.parse(code),
+    /unknown invite version/,
+    'instead of waiting on a join nobody opens'
+  )
+})
+
+test('compat: an invite this release mints admits a device on the previous one', async (t) => {
+  const { old, before } = await previous()
+  // the app as it shipped and upgraded, in a room the previous release keeps at its version
+  const shipped = await shippedSpec()
+  const testnet = await makeTestnet(t)
+  const owner = await old.cero(await t.tmp(), before, { bootstrap: testnet.bootstrap })
+  t.teardown(() => owner.close().catch(() => {}), { order: 5 })
+  const me = await cero(await t.tmp(), shipped, { bootstrap: testnet.bootstrap })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   const them = await old.cero(await t.tmp(), before, { bootstrap: testnet.bootstrap })
   t.teardown(() => them.close().catch(() => {}), { order: 5 })
 
-  const mine = await open(me.room, { name: 'shared' })
-  const theirs = await old.open(them.room, await invite(mine))
+  const room = await old.open(owner.room, { name: 'shared' })
+  const mine = await open(me.room, await old.invite(room))
+  const code = await invite(mine)
+  t.absent(Invite.parse(code).own, "today's invite: the room's version keeps no secret")
+  const theirs = await old.open(them.room, code)
   await put(mine.messages, { text: 'from now' })
   await waitUntil(async () => (await old.get(theirs.messages)).data.length === 1)
   t.pass('it joins and reads the room')

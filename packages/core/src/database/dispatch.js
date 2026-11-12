@@ -11,10 +11,12 @@ import {
   COUNTERS,
   VERSION,
   BUILT,
+  OWED,
   EPOCHS,
   REMOVALS,
   REFUSALS,
   SPENT,
+  ASKS,
   OWNER,
   INVITE,
   REMOVE,
@@ -37,6 +39,7 @@ import { getEncoding } from '../lib/spec/index.js'
 import { decodeId } from '../blobs/codec.js'
 import { Identity } from '../identity/index.js'
 import { Invite } from '../pairing/invite.js'
+import { keyPair } from '../mailbox/inbox.js'
 import { wraps } from './encryption.js'
 
 const Join = getEncoding('@cero/join')
@@ -63,11 +66,65 @@ const REQUESTS = {
   join: 'join',
   accept: 'accept',
   deny: 'deny',
-  'rotate-key': 'epoch'
+  'rotate-key': 'epoch',
+  revoke: 'revoke',
+  'ask-key': 'owed'
 }
+
+// the device keys a request stands on: its own, and those of the chain its join proved or a link
+// wrote for it
+export const chainOf = ({ key, proof }) => [...Identity.chain(proof).slice(1), key]
+
+// the chain a link wrote, which a seat keeps and an answer carries: a join's proof signs its join,
+// and alone verifies as nothing
+export const linkOf = (proof) => (Identity.verify(proof, null) ? proof : null)
+
+// where an identity stands in a handle, and where each state leads: one with none is over
+const STATES = {
+  asking: ['joining', 'denied', 'expired', 'cancelled'],
+  joining: ['in', 'denied'],
+  in: ['leaving', 'removed'],
+  leaving: ['left', 'removed'],
+  left: [],
+  removed: [],
+  denied: [],
+  expired: [],
+  cancelled: []
+}
+
+// a handles row with no state is `in`. One that is over is asked again under another invite, and
+// a denied one is let in under its own, by another device of the identity
+function moves(was, row) {
+  const to = row.state || 'in'
+  if (!STATES[to]) return false
+  if (!was) return true
+  const from = was.state || 'in'
+  if (from === to || STATES[from].includes(to)) return true
+  if (STATES[from].length || !row.invite) return false
+  if (to === 'asking') return row.invite !== was.invite
+  return from === 'denied' && to === 'joining' && row.invite === was.invite
+}
+
+// on its way in or out: such a row is not deleted
+const UNSETTLED = new Set(['asking', 'joining', 'leaving'])
 
 // a member who left, apart from one removed and from a revoked device, in the removals: ids never hold ':'
 export const leftId = (memberId) => `left:${memberId}`
+
+// what an identity's devices told a room of its device keys, in the removals too
+export const toldId = (memberId) => `told:${memberId}`
+
+/**
+ * 32-byte keys back to back, or none when they are not that.
+ *
+ * @param {Uint8Array | null} [buf]
+ * @returns {Uint8Array[]}
+ */
+export function keysOf(buf) {
+  if (!buf?.byteLength || buf.byteLength % 32) return []
+  return Array.from({ length: buf.byteLength / 32 }, (_, i) => buf.subarray(i * 32, i * 32 + 32))
+}
+const has = (keys, key) => keys.some((k) => b4a.equals(k, key))
 
 /**
  * Build the hyperdispatch router for a spec: wires membership, builtin, and
@@ -83,11 +140,11 @@ export const leftId = (memberId) => `left:${memberId}`
  * @param {(err: Error) => void} opts.onerror  Called when a malformed node is skipped.
  * @param {() => Uint8Array | null} opts.key  The database key, null until the bee booted.
  * @param {(row: { epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }) => Promise<void>} opts.onepoch  Per-peer side of an applied rotation (skipped in dry runs).
- * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins are sealed to.
+ * @param {() => { publicKey: Uint8Array, secretKey: Uint8Array } | null} opts.room  The keypair behind the database's address, which joins that name no invite are sealed to.
  * @param {(phase: 'before' | 'after', op: string) => Function[]} opts.hooks  Registered hooks for an op, run inside its transaction.
  * @param {(name: string) => void} opts.touch  Marks a ref written by a hook, once its batch commits, so its watchers tick.
  * @param {(view: object, name: string, query?: string | import('./index.js').Query) => Promise<import('./index.js').SingleResult | import('./index.js').ListResult>} opts.read  Planned read against a given view, for a hook's `ctx.get`.
- * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
+ * @returns {{ encode: (route: string, value: unknown, stamp: number) => Uint8Array, cut: (route: string, value: Record<string, unknown>, stamp: number) => Record<string, unknown>, dispatch: (value: Buffer, ctx: object) => Promise<void>, role: (view: object, writer: Uint8Array) => Promise<string | null>, stands: (view: object, chain: Uint8Array[]) => Promise<boolean>, version: (view: object) => Promise<number>, built: (view: object) => Promise<Array<number | null> | null>, apply: (nodes: Array<{ value: Buffer, key: Buffer, version: number }>, view: object, host: object) => Promise<{ landed: Array<{ value: Buffer, key: Buffer, version: number }>, changed: boolean }> }}  `apply` takes each op with its author's stamp, runs it at its effective stamp, and resolves to the nodes that landed and whether they changed a row.
  */
 export function makeDispatcher({
   spec,
@@ -111,11 +168,9 @@ export function makeDispatcher({
   const removals = `@${ns}/${REMOVALS}`
   const refusals = `@${ns}/${REFUSALS}`
   const spent = `@${ns}/${SPENT}`
+  const asks = `@${ns}/${ASKS}`
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
   const getDevice = (view, id) => view.get(`@${ns}/devices`, { id })
-
-  const getRole = async (view, identityKey) =>
-    identityKey ? ((await getMember(view, hid.encode(identityKey)))?.role ?? null) : null
 
   const getSignerRole = async (view, writerKey) => {
     if (!writerKey) return null
@@ -165,6 +220,9 @@ export function makeDispatcher({
     await view.insert(countersCol, { name, value })
     return value
   }
+
+  // set where someone who may hold the keys is taken out, decided again by each rotation that lands
+  const owe = (view, value = 1) => view.insert(countersCol, { name: OWED, value })
 
   // every reader decodes a file id it renders: one that does not decode never lands
   function checkFiles(name, row) {
@@ -381,11 +439,15 @@ export function makeDispatcher({
     return hooked(fns, meta, ctx, (r) => insert(ctx.view, name, r))
   }
 
-  // a seat taken again, as a linked device's own claim does, keeps the chain its link wrote
-  async function seat(ctx, writer, memberId, ts, key, proof = null) {
+  // a seat taken again, as a linked device's own claim does, keeps the chain its link wrote. With
+  // it go the device keys of the proof it was `verified` with, which a removal told later is read by
+  async function seat(ctx, writer, memberId, ts, key, proof, verified) {
     const id = hid.encode(writer)
     proof ??= (await getDevice(ctx.view, id))?.proof ?? null
-    return save(ctx, 'put', 'devices', { id, memberId, createdAt: ts, updatedAt: ts, key, proof })
+    const keys = Identity.chain(verified).slice(1)
+    const chain = keys.length ? b4a.concat(keys) : null
+    const row = { id, memberId, createdAt: ts, updatedAt: ts, key, proof, chain }
+    return save(ctx, 'put', 'devices', row)
   }
 
   // deleting a row that is not there changes nothing, and fires nothing
@@ -477,30 +539,88 @@ export function makeDispatcher({
     if (!b4a.equals(op.writer, ctx.key)) return
     const signed = Identity.verify(op.proof, admission(ctx.dbKey, op.writer, ctx.key), op.master)
     if (!signed) return
-    if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
+    if (!(await stands(ctx.view, Identity.chain(op.proof)))) throw CeroError.REFUSED('removed')
     const { genesis } = ctx.host
-    const inviter = await getRole(ctx.view, op.master)
-    if (!genesis && !can(inviter, INVITE)) throw CeroError.REFUSED('invite')
+    const memberId = hid.encode(op.master)
+    const ts = op.ts || 0
+    const known = await getMember(ctx.view, memberId)
+    const made = genesis ? [] : await promised(ctx.view, op.master)
+    // a member stands on what this device was promised, or every device she links would take a
+    // row on one promise; who is no member yet, on any made to her
+    const mine = made.find((row) => b4a.equals(row.key, signed.device))
+    const owed = known ? mine : made[0]
+    if (!genesis && !can(known?.role, INVITE) && !owed) throw CeroError.REFUSED('invite')
     // only a device of the signer's own identity: another member's device seats itself through
     // its join, or any key the signer holds would act as them.
     // Always an indexer: autobee gc's caught-up non-indexer sessions and they miss later appends
-    const memberId = hid.encode(op.master)
     if (op.memberId && op.memberId !== memberId) throw CeroError.REFUSED('member')
     if (await boundElsewhere(ctx.view, op.writer, memberId)) throw CeroError.REFUSED('member')
-    await ctx.host.addWriter(op.writer, { isIndexer: true })
-    await seat(ctx, op.writer, memberId, op.ts || 0, signed.device)
+    // a promise kept: the member it was made to, at the role of the first one made. One made to
+    // a member is kept at the role she holds
+    const role = known ? known.role : made[0]?.role
+    if (role && !known) {
+      const member = { id: memberId, key: op.writer, role, createdAt: ts, updatedAt: ts }
+      await save(ctx, 'put', 'members', member)
+    }
+    if (genesis || can(role, WRITE)) await ctx.host.addWriter(op.writer, { isIndexer: true })
+    // a linked device's seat keeps the chain its promise carries. The promises stay: a member
+    // who may invite settles one once it sees it kept
+    await seat(ctx, op.writer, memberId, ts, signed.device, linkOf(mine?.proof), op.proof)
   })
 
   // a device goes with its seat and its key: by its own member, or one who may remove her
   async function unseat(ctx, id, device) {
-    if (device?.memberId !== (await getSignerMember(ctx.view, ctx.key))) {
+    const by = await getSignerMember(ctx.view, ctx.key)
+    if (device?.memberId !== by) {
       if (!(await canRemoveMember(ctx.view, ctx.key, device?.memberId))) {
         throw CeroError.REFUSED('remove')
       }
     }
+    const may = can(await getSignerRole(ctx.view, ctx.key), REMOVE)
     await ctx.host.removeWriter(hid.decode(id))
-    await revoke(ctx, device)
+    await revoke(ctx, device, by, may)
     await drop(ctx, 'devices', id)
+    await ctx.view.delete(asks, { id })
+    if (device) await owe(ctx.view)
+    // with the seat go the keys its writer was still owed, and what its device key was promised:
+    // a rotation is sealed to the promised
+    const own = await ctx.view.get(requests, { id })
+    await (device ? forget(ctx, own) : withdraw(ctx, own))
+    const stood = (row) => chainOf(row).some((key) => b4a.equals(key, device.key))
+    for (const row of device?.key ? await ctx.view.find(requests, {}).toArray() : []) {
+      // waiting or promised: one admitted at its join has a seat of its own to lose
+      if (row.admitted && !row.promised) continue
+      if (stood(row)) await withdraw(ctx, row)
+    }
+    if (device && may) await shut(ctx)
+  }
+  // a removal by someone who may remove spends the invites that let in on their own: one the
+  // removed held, or saw, brings nobody in after it. Those that wait for an accept stay. A promise
+  // no device claimed goes too, its invite used up or not, unless a member accepted it
+  async function shut(ctx) {
+    for (const invite of await ctx.view.find(invites, {}).toArray()) {
+      if (invite.secret && !invite.confirm) await spend(ctx, invite, 'removed')
+    }
+    for (const row of await ctx.view.find(requests, {}).toArray()) {
+      if (!row.promised || row.accepted || (await ctx.view.get(invites, { id: row.invite }))) {
+        continue
+      }
+      if ((await ctx.view.get(spent, { id: row.invite }))?.confirm) continue
+      if (!(await sat(ctx.view, row))) await withdraw(ctx, row)
+    }
+  }
+  // a request goes: a promise among them was handed the keys, so a rotation is owed
+  async function forget(ctx, row) {
+    if (!row) return
+    await drop(ctx, 'requests', row.id)
+    if (row.promised) await owe(ctx.view)
+  }
+  // a promise goes with the member or device it stood on: one no device claimed hears why, so
+  // its claim ends
+  async function withdraw(ctx, row) {
+    if (!row?.promised || (await sat(ctx.view, row))) return forget(ctx, row)
+    await forget(ctx, row)
+    await refuse(ctx, row, 'removed')
   }
   add('del-writer', async (op, ctx) => {
     if (!isKey(op.writer)) return
@@ -509,20 +629,70 @@ export function makeDispatcher({
   })
 
   // a removed device's key, and any device it attests after, stays out: its chain is static, so
-  // the removal is kept here, beside the members'
-  async function revoke(ctx, device) {
+  // the removal is kept here, beside the members', with whether it spent the open invites
+  async function revoke(ctx, device, by, spent) {
     if (!device?.key) return
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted })
+    await ctx.view.insert(removals, { id: hid.encode(device.key), index: minted, by, spent })
   }
-  // the devices of the chain, not the identity it starts with: a member's removal is ordered by
-  // its invites, a device's is for good
-  async function revoked(view, proof) {
-    for (const key of Identity.chain(proof).slice(1)) {
-      if (await view.get(removals, { id: hid.encode(key) })) return true
+  // a chain, its identity first, stands unless it passes a removed device key. A key its identity
+  // removed, told or taken out by a device of hers, is passed by a key after it that she told
+  // stands; one another member removed, or whose record says not who, cuts whatever she told
+  async function stands(view, [identity, ...keys]) {
+    const memberId = hid.encode(identity)
+    const told = await view.get(removals, { id: toldId(memberId) })
+    const removed = keysOf(told?.removed)
+    let cut = -1
+    for (const [i, key] of keys.entries()) {
+      const removal = await view.get(removals, { id: hid.encode(key) })
+      if (removal && removal.by !== memberId) return false
+      if (removal || has(removed, key)) cut = i
     }
-    return false
+    const standing = keysOf(told?.standing)
+    return cut < 0 || keys.slice(cut + 1).some((key) => has(standing, key))
   }
+  const seatChain = (device) => [hid.decode(device.memberId), ...keysOf(device.chain), device.key]
+
+  // a device tells the room which device keys of its identity are removed and which stand. For
+  // its identity alone: the removed add up, the standing replace those told before, and the seats
+  // of the identity whose chain no longer stands go, with the joins that wait or were promised
+  // through one. Told by someone who may remove, a key no removal that spent the open invites
+  // covers is a removal by her
+  add('revoke', async (op, ctx) => {
+    const device = ctx.key ? await getDevice(ctx.view, hid.encode(ctx.key)) : null
+    if (!device?.memberId || !device.key) throw CeroError.REFUSED('device')
+    if (!(await stands(ctx.view, seatChain(device)))) throw CeroError.REFUSED('removed')
+    const { memberId } = device
+    const id = toldId(memberId)
+    const told = await ctx.view.get(removals, { id })
+    const before = keysOf(told?.removed)
+    const added = keysOf(op.removed).filter((key) => !has(before, key))
+    const removed = [...before, ...added]
+    let uncovered = false
+    for (const key of told?.spent ? added : removed) {
+      if (!(await ctx.view.get(removals, { id: hid.encode(key) }))?.spent) uncovered = true
+    }
+    const spends = uncovered && can(await getSignerRole(ctx.view, ctx.key), REMOVE)
+    const standing = b4a.concat(keysOf(op.standing))
+    const spent = spends || !uncovered
+    const row = { id, index: 0, by: memberId, removed: b4a.concat(removed), standing, spent }
+    await ctx.view.insert(removals, row)
+    for (const seated of await ctx.view.find(`@${ns}/devices`, {}).toArray()) {
+      if (seated.memberId !== memberId || !seated.key) continue
+      if (await stands(ctx.view, seatChain(seated))) continue
+      await ctx.host.removeWriter(hid.decode(seated.id))
+      await drop(ctx, 'devices', seated.id)
+      await ctx.view.delete(asks, { id: seated.id })
+      await owe(ctx.view)
+      await forget(ctx, await ctx.view.get(requests, { id: seated.id }))
+    }
+    for (const row of await ctx.view.find(requests, {}).toArray()) {
+      // waiting or promised: one admitted at its join has a seat of its own to lose
+      if (row.admitted && !row.promised) continue
+      if (!(await stands(ctx.view, [row.identity, ...chainOf(row)]))) await withdraw(ctx, row)
+    }
+    if (spends) await shut(ctx)
+  })
 
   // the genesis batch names the creator; everyone after comes in through a signed join
   add('add-member', async (op, ctx) => {
@@ -581,9 +751,15 @@ export function makeDispatcher({
 
   add('del-member', async (op, ctx) => {
     const existing = await getMember(ctx.view, op.id)
-    if (!existing) return
+    if (!existing) {
+      // taken out after she left: leaving first dodges nothing
+      const left = await ctx.view.get(removals, { id: leftId(op.id) })
+      if (left && can(await getSignerRole(ctx.view, ctx.key), REMOVE)) await shut(ctx)
+      return
+    }
     // leaving is hers: only someone else taking her out turns her older codes away
-    const leaving = op.id === (await getSignerMember(ctx.view, ctx.key))
+    const by = await getSignerMember(ctx.view, ctx.key)
+    const leaving = op.id === by
     // every device of the member goes with them, and any keys they were still owed
     const vacate = async () => {
       if (existing.key) await ctx.host.removeWriter(existing.key)
@@ -591,8 +767,11 @@ export function makeDispatcher({
         if (device.memberId !== op.id) continue
         await ctx.host.removeWriter(hid.decode(device.id))
         await drop(ctx, 'devices', device.id)
+        await ctx.view.delete(asks, { id: device.id })
+        await owe(ctx.view)
         await drop(ctx, 'requests', device.id)
       }
+      for (const row of await promised(ctx.view, hid.decode(op.id))) await withdraw(ctx, row)
     }
     if (leaving) {
       if (existing.role === OWNER && (await orphans(ctx.view, op.id))) {
@@ -617,10 +796,10 @@ export function makeDispatcher({
       await hooked(pick('del', ctx), meta, ctx, write, 'remove')
     }
     // an invite they could hold, or saw, does not bring them back on its own: after a removal it is turned away, after
-    // leaving it waits for a member to accept her again, so leaving first never dodges a removal. Either row rotates
-    // the handle's key at its first removal (rotation.js)
+    // leaving it waits for a member to accept her again, so leaving first never dodges a removal
     const minted = (await ctx.view.get(countersCol, { name: 'invites' }))?.value ?? 0
-    await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted })
+    await ctx.view.insert(removals, { id: leaving ? leftId(op.id) : op.id, index: minted, by })
+    if (!leaving) await shut(ctx)
   })
 
   add('rotate-key', async (op, ctx) => {
@@ -631,11 +810,17 @@ export function makeDispatcher({
     if (!Number.isInteger(op.stamp) || op.stamp <= 0 || op.stamp > 0xffffffff) return
     // envelopes that do not decode would stop every later audit
     if (!sealed(op.wrapped)) return
-    if (!can(await getSignerRole(ctx.view, ctx.key), REMOVE)) {
+    const role = await getSignerRole(ctx.view, ctx.key)
+    const aside = !can(role, REMOVE)
+    // a reorder can take her rank after she wrote under her key: kept, what she wrote reads
+    if (aside && !(can(role, WRITE) && (await asides(ctx.view)))) {
       throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
     }
     const rows = await ctx.view.find(`@${ns}/${EPOCHS}`, {}).toArray()
-    if (rows.some((r) => r.stamp === op.stamp)) return
+    const taken = rows.find((r) => r.stamp === op.stamp)
+    // one key per stamp: a counted rotation always lands, and takes it from one set aside
+    if (taken && (aside || !taken.aside)) return
+    if (taken) await ctx.view.delete(`@${ns}/${EPOCHS}`, { epoch: taken.epoch })
     // sequence numbers order epochs; concurrent rotations get consecutive sequences, both readable
     const epoch = await bump(ctx.view, EPOCHS)
     const row = {
@@ -643,13 +828,28 @@ export function makeDispatcher({
       stamp: op.stamp,
       wrapped: op.wrapped,
       createdAt: op.createdAt || 0,
-      commit: op.commit
+      commit: op.commit,
+      aside
     }
     await ctx.view.insert(`@${ns}/${EPOCHS}`, row)
+    // sealed before a removal it crossed, it names a device taken out since: one more is owed
+    if (!aside) await owe(ctx.view, (await outsider(ctx.view, op.wrapped)) ? 1 : 0)
     ctx.touched?.push(EPOCHS)
     // learned once its batch commits: a refused batch teaches no epoch, and a dry run commits nothing
     ctx.epochs?.push(row)
   })
+
+  const asides = async (view) => since?.types[`@${ns}/epoch`]?.aside <= (await versionOf(view))
+
+  // whether a rotation names a device with no seat and no promise where it lands. A promise row
+  // is one that stands: a removal takes those on its key, and past its invite a member withdraws it
+  async function outsider(view, wrapped) {
+    for (const { id } of c.decode(wraps, wrapped)) {
+      if (await getDevice(view, id)) continue
+      if (!(await view.get(requests, { id }))?.promised) return true
+    }
+    return false
+  }
 
   // only an owner moves the version, and only up: a lower one is no change and no error. The
   // genesis batch raises first, before the member row it writes, so all of it runs at the version
@@ -676,11 +876,12 @@ export function makeDispatcher({
   const selfOnly = (op, ctx) => {
     if (!ctx.key || op.id !== hid.encode(ctx.key)) throw CeroError.REFUSED('device')
   }
-  // the device key stays what the admission proved, never what the row says
+  // the device key and the chain stay what the admission proved, never what the row says
   add('add-device', async (op, ctx) => {
     selfOnly(op, ctx)
     const existing = await getDevice(ctx.view, op.id)
-    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), key: existing?.key })
+    const kept = { key: existing?.key, chain: existing?.chain }
+    await save(ctx, 'put', 'devices', { ...op, memberId: await bind(ctx), ...kept })
   })
   add('set-device', async (op, ctx) => {
     selfOnly(op, ctx)
@@ -691,9 +892,25 @@ export function makeDispatcher({
       ...op,
       memberId,
       key: existing?.key,
+      chain: existing?.chain,
       createdAt: existing?.createdAt || op.createdAt || ts,
       updatedAt: ts
     })
+  })
+
+  // a device of a member who stands asks for the keys it lacks, from its own core whether it
+  // writes or only reads: one row, at the address it asked with last, that only its own op closes
+  add('ask-key', async (op, ctx) => {
+    selfOnly(op, ctx)
+    if (!isKey(op.reply)) return
+    await bind(ctx)
+    ctx.touched?.push(ASKS)
+    await ctx.view.insert(asks, { id: op.id, reply: op.reply })
+  })
+  add('del-owed', async (op, ctx) => {
+    selfOnly(op, ctx)
+    ctx.touched?.push(ASKS)
+    await ctx.view.delete(asks, op)
   })
 
   // any WRITE member mints an invite, its rank capped at admission; an existing row is never
@@ -728,31 +945,63 @@ export function makeDispatcher({
     if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
     await ctx.view.delete(spent, { id: op.id })
   })
-  // its joins still waiting for a member are turned away with it; admitted ones are still owed
-  // their keys. Its id stays, so a later join with it hears why
+  // its joins still waiting for a member are turned away with it, and the promises made under it
+  // withdrawn, unless it was used up by the join it let in; admitted ones are still owed their
+  // keys. Its id stays, and its secret, so a later join with it is opened and hears why
   async function spend(ctx, invite, reason) {
     const expires = invite.expires || 0
     await drop(ctx, 'invites', invite.id)
-    await ctx.view.insert(spent, { id: invite.id, reason, expires })
+    const { secret, confirm } = invite
+    await ctx.view.insert(spent, { id: invite.id, reason, expires, secret, confirm })
+    const kept = async (request) => {
+      if (!request.admitted) return false
+      if (!request.promised || reason === 'spent') return true
+      // a removal withdraws what no device claimed: a promise kept waits for a member to settle it
+      return reason === 'removed' && (request.accepted || sat(ctx.view, request))
+    }
     for (const request of await ctx.view.find(requests, {}).toArray()) {
-      if (request.invite !== invite.id || request.admitted) continue
-      await drop(ctx, 'requests', request.id)
+      if (request.invite !== invite.id || (await kept(request))) continue
+      await forget(ctx, request)
       await refuse(ctx, request, reason)
     }
   }
 
-  // a join turned away is answered at its reply address. A writer with a request hears through
-  // that: one of the two per writer, or a denial could race its keys
-  async function refuse(ctx, { id, reply, expires }, reason) {
+  // a join turned away is answered at its reply address, under its invite. A writer with a request
+  // hears through that: one of the two per writer, or a denial could race its keys. A spent
+  // invite keeps the answer to its newest join alone, and a live one the newest to each identity
+  // it turns away as removed, so nobody holding one fills the log
+  async function refuse(
+    ctx,
+    { id, reply, expires, invite, identity = null },
+    reason,
+    last = false
+  ) {
     if (await ctx.view.get(requests, { id })) return
-    await ctx.view.insert(refusals, { id, reply, reason, expires })
+    const rows = last ? await ctx.view.find(refusals, {}).toArray() : []
+    const same = (row) =>
+      identity ? row.identity && b4a.equals(row.identity, identity) : row.spent
+    for (const row of rows) {
+      if (row.invite === invite && same(row)) await ctx.view.delete(refusals, { id: row.id })
+    }
+    const row = { id, reply, reason, expires, invite, spent: last && !identity, identity }
+    await ctx.view.insert(refusals, row)
   }
+  // from the version that has an invite's secret, whatever stamp a join carries
+  const bounded = async (view) => since?.types[`@${ns}/invite`]?.secret <= (await versionOf(view))
+  // from the version whose requests say a member accepted them
+  const marked = async (view) => since?.types[`@${ns}/request`]?.accepted <= (await versionOf(view))
+  // from the version whose refusals record who joined
+  const recorded = async (view) =>
+    since?.types[`@${ns}/refusal`]?.identity <= (await versionOf(view))
 
   // the member, when new, and its device, seated when the member writes; its request stays until
   // a member delivered the keys. The invite is spent unless it is reusable
-  async function admit(ctx, { invite, identity, key, writer, reply, role, ts }) {
+  async function admit(ctx, { invite, identity, key, writer, reply, role, ts, proof }) {
     const memberId = hid.encode(identity)
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
+    if (invite.secret) {
+      return promise(ctx, { invite, identity, key, writer, reply, role, ts, proof })
+    }
     const member =
       (await getMember(ctx.view, memberId)) ??
       (await save(ctx, 'put', 'members', {
@@ -763,7 +1012,7 @@ export function makeDispatcher({
         updatedAt: ts
       }))
     if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
-    await seat(ctx, writer, memberId, ts, key)
+    await seat(ctx, writer, memberId, ts, key, null, proof)
     await save(ctx, 'put', 'requests', {
       ...request(invite, identity, key, writer, reply, ts),
       role,
@@ -777,14 +1026,44 @@ export function makeDispatcher({
   async function admitDevice(ctx, { invite, memberId, key, proof, writer, reply, ts }) {
     if (await boundElsewhere(ctx.view, writer, memberId)) throw CeroError.REFUSED('member')
     const member = await getMember(ctx.view, memberId)
+    if (invite.secret) {
+      const identity = hid.decode(memberId)
+      const { role } = member
+      return promise(ctx, { invite, identity, key, writer, reply, role, ts, proof })
+    }
     if (can(member.role, WRITE)) await ctx.host.addWriter(writer, { isIndexer: true })
-    await seat(ctx, writer, memberId, ts, key, proof)
+    await seat(ctx, writer, memberId, ts, key, proof, proof)
     await save(ctx, 'put', 'requests', {
       ...request(invite, hid.decode(memberId), key, writer, reply, ts),
       role: member.role,
       admitted: true
     })
     if (!invite.reuse) await spend(ctx, invite, 'spent')
+  }
+
+  // let in through an invite with an address of its own: admitted, with no member and no seat
+  // until a device of the identity, holding the keys, seats itself. With a link's chain for its
+  // proof, that one device
+  async function promise(ctx, { invite, identity, key, writer, reply, role, ts, proof }) {
+    // only an accept hands a promise an invite that waits
+    const accepted = !!invite.confirm && (await marked(ctx.view))
+    await save(ctx, 'put', 'requests', {
+      ...request(invite, identity, key, writer, reply, ts),
+      role,
+      admitted: true,
+      promised: true,
+      proof,
+      ...(accepted && { accepted })
+    })
+    if (!invite.reuse) await spend(ctx, invite, 'spent')
+  }
+
+  // what an identity was promised, the first made first
+  async function promised(view, identity) {
+    const rows = await view.find(requests, {}).toArray()
+    return rows
+      .filter((row) => row.promised && b4a.equals(row.identity, identity))
+      .sort((a, b) => a.index - b.index)
   }
 
   function request(invite, identity, key, writer, reply, ts) {
@@ -794,22 +1073,30 @@ export function makeDispatcher({
     return { id, identity, key, invite: invite.id, role, reply, expires, createdAt: ts }
   }
 
-  // null when it does not open: anyone may append a join
-  function open(box) {
-    const pair = room()
+  // null when it does not open: anyone may append a join. One that names its invite is sealed to
+  // that invite's own address, and only its row, live or spent, has the secret; the name in the
+  // clear is the one in the box
+  async function open(view, { box, invite }) {
+    const pair = invite ? await pairOf(view, b4a.toHex(invite)) : room()
     if (!pair || !box?.byteLength) return null
     try {
       const plain = crypto.decrypt(box, pair)
-      return plain && c.decode(Join, plain)
+      const join = plain && c.decode(Join, plain)
+      if (join && invite && !b4a.equals(join.invite, invite)) return null
+      return join
     } catch {
       return null
     }
+  }
+  async function pairOf(view, id) {
+    const row = (await view.get(invites, { id })) ?? (await view.get(spent, { id }))
+    return row?.secret ? keyPair(row.secret) : null
   }
 
   // the joiner's own core asks in: the invite proves it may, its device signs where the keys go
   // and the proof's chain says whose device it is
   add('join', async (op, ctx) => {
-    const join = open(op.box)
+    const join = await open(ctx.view, op)
     if (!join || !ctx.key) return
     if (!Invite.proven(join.invite, ctx.key, join.signature)) return
     const signed = Identity.verify(join.proof, joining(ctx.dbKey, join.invite, ctx.key, join.reply))
@@ -817,25 +1104,35 @@ export function makeDispatcher({
     join.identity = signed.identity
     const id = hid.encode(ctx.key)
     const invite = await ctx.view.get(invites, { id: b4a.toHex(join.invite) })
+    const record = invite ?? (await ctx.view.get(spent, { id: b4a.toHex(join.invite) }))
+    // an invite with an address of its own is joined by name only
+    if (record?.secret && !op.invite) return
     if (!invite) {
       // an invite the database never held could be anyone's: nobody answers it
-      const record = await ctx.view.get(spent, { id: b4a.toHex(join.invite) })
       if (!record) return
-      return refuse(ctx, { id, reply: join.reply, expires: record.expires }, record.reason)
+      const turned = { id, reply: join.reply, expires: record.expires, invite: record.id }
+      return refuse(ctx, turned, record.reason, await bounded(ctx.view))
     }
     const ts = join.ts || 0
     const memberId = hid.encode(join.identity)
     const known = await getMember(ctx.view, memberId)
     const removal = known ? null : await ctx.view.get(removals, { id: memberId })
     const out =
-      (removal && (invite.index ?? 0) <= removal.index) || (await revoked(ctx.view, join.proof))
-    if (out) return refuse(ctx, { id, reply: join.reply, expires: invite.expires || 0 }, 'removed')
+      (removal && (invite.index ?? 0) <= removal.index) ||
+      !(await stands(ctx.view, Identity.chain(join.proof)))
+    if (out) {
+      const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
+      const last = await recorded(ctx.view)
+      return refuse(ctx, { ...turned, identity: last ? join.identity : null }, 'removed', last)
+    }
     await ctx.view.delete(refusals, { id })
     const gone = known ? null : await ctx.view.get(removals, { id: leftId(memberId) })
     const older = gone && (invite.index ?? 0) <= gone.index
     if ((invite.confirm || older) && !known) {
       const waiting = request(invite, join.identity, signed.device, ctx.key, join.reply, ts)
-      return save(ctx, 'put', 'requests', waiting)
+      // a promise it writes over was handed the keys
+      if ((await ctx.view.get(requests, { id }))?.promised) await owe(ctx.view)
+      return save(ctx, 'put', 'requests', { ...waiting, proof: join.proof })
     }
     await admit(ctx, {
       invite,
@@ -844,7 +1141,8 @@ export function makeDispatcher({
       writer: ctx.key,
       reply: join.reply,
       role: invite.role,
-      ts
+      ts,
+      proof: join.proof
     })
   })
   // a waiting join, admitted at a role within the invite's and the accepter's; with a proof, as a
@@ -852,30 +1150,40 @@ export function makeDispatcher({
   add('accept', async (op, ctx) => {
     const waiting = await ctx.view.get(requests, { id: op.id })
     if (!waiting || waiting.admitted) return
-    const invite = await ctx.view.get(invites, { id: waiting.invite })
+    const live = await ctx.view.get(invites, { id: waiting.invite })
+    // spent by this, it says a member let the join in, whatever it asked for itself
+    const invite = live && (await marked(ctx.view)) ? { ...live, confirm: true } : live
     const r = await getSignerRole(ctx.view, ctx.key)
     const role = op.role || invite?.role
     if (!invite || !can(r, INVITE) || !grants(r, role) || !grants(invite.role, role)) {
       throw CeroError.REFUSED('invite')
     }
-    const { identity, key, reply, createdAt: ts = 0 } = waiting
+    const { identity, key, reply, proof, createdAt: ts = 0 } = waiting
+    // a key removed since the join was made lets nobody in
+    if (!(await stands(ctx.view, [identity, ...chainOf(waiting)]))) {
+      throw CeroError.REFUSED('removed')
+    }
     const writer = hid.decode(op.id)
     if (op.proof) {
       const memberId = await getSignerMember(ctx.view, ctx.key)
       const linked = Identity.verify(op.proof, null, hid.decode(memberId))
       if (!linked || !b4a.equals(linked.device, key)) throw CeroError.REFUSED('device')
-      if (await revoked(ctx.view, op.proof)) throw CeroError.REFUSED('removed')
+      if (!(await stands(ctx.view, Identity.chain(op.proof)))) throw CeroError.REFUSED('removed')
       return admitDevice(ctx, { invite, memberId, key, proof: op.proof, writer, reply, ts })
     }
-    await admit(ctx, { invite, identity, key, writer, reply, role, ts })
+    await admit(ctx, { invite, identity, key, writer, reply, role, ts, proof })
   })
-  // answered through the log like every refusal; a deny that lost the race to an accept is nothing
+  // a waiting join is turned away by one who may invite; a promise is withdrawn by one who may
+  // remove, since its joiner may hold the keys. Answered through the log like every refusal
   add('deny', async (op, ctx) => {
-    const waiting = await ctx.view.get(requests, { id: op.id })
-    if (!waiting || waiting.admitted) return
-    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
-    await drop(ctx, 'requests', op.id)
-    await refuse(ctx, waiting, op.reason || '')
+    const row = await ctx.view.get(requests, { id: op.id })
+    if (!row || (row.admitted && !row.promised)) return
+    const [perm, rule] = row.promised ? [REMOVE, 'remove'] : [INVITE, 'invite']
+    if (!can(await getSignerRole(ctx.view, ctx.key), perm)) throw CeroError.REFUSED(rule)
+    // a promise its device claimed is settled: nobody is turned away and no keys are owed
+    if (row.promised && (await sat(ctx.view, row))) return drop(ctx, 'requests', row.id)
+    await forget(ctx, row)
+    await refuse(ctx, row, op.reason || '')
   })
   // only a join writes a request
   const joinsOnly = async () => {
@@ -883,11 +1191,25 @@ export function makeDispatcher({
   }
   add('add-request', joinsOnly)
   add('set-request', joinsOnly)
-  // a denial, or keys delivered
+  // a denial, or keys delivered. A promise dropped before the device it was made to sat under its
+  // member is one withdrawn: its joiner may hold the keys, so it takes the right to remove, unless
+  // a key of its chain was removed since
   add('del-request', async (op, ctx) => {
-    if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
+    const r = await getSignerRole(ctx.view, ctx.key)
+    if (!can(r, INVITE)) throw CeroError.REFUSED('invite')
+    const row = await ctx.view.get(requests, { id: op.id })
+    if (!row) return
+    const open = row.promised && !(await sat(ctx.view, row))
+    const cut = open && !(await stands(ctx.view, [row.identity, ...chainOf(row)]))
+    if (open && !can(r, REMOVE) && !cut) throw CeroError.REFUSED('remove')
     await drop(ctx, 'requests', op.id)
+    if (open) await owe(ctx.view)
   })
+  async function sat(view, { identity, key }) {
+    const memberId = hid.encode(identity)
+    const devices = await view.find(`@${ns}/devices`, {}).toArray()
+    return devices.some((d) => d.memberId === memberId && d.key && b4a.equals(d.key, key))
+  }
   // read by the joiner, or past its expiry with nobody waiting
   add('del-refusal', async (op, ctx) => {
     if (!can(await getSignerRole(ctx.view, ctx.key), INVITE)) throw CeroError.REFUSED('invite')
@@ -909,9 +1231,23 @@ export function makeDispatcher({
   add('set-file', update('files', true))
   add('del-file', remove('files', true))
 
-  add('add-handle', upsert('handles', COLLECTION, false))
-  add('set-handle', update('handles', false))
-  add('del-handle', remove('handles', false))
+  // held to its states on every peer, so a device with an older picture writes over no newer one
+  const held = (write) => async (op, ctx) => {
+    const was = await ctx.view.get(col('handles'), { id: op.id })
+    // a write that names no state leaves the row where it stands: its device may read an older one
+    if (was && !op.state) {
+      Object.assign(op, { state: was.state, reason: was.reason, by: was.by, invite: was.invite })
+    }
+    if (!moves(was, op)) throw CeroError.REFUSED('state')
+    return write(op, ctx)
+  }
+  add('add-handle', held(upsert('handles', COLLECTION, false)))
+  add('set-handle', held(update('handles', false)))
+  add('del-handle', async (op, ctx) => {
+    const was = await ctx.view.get(col('handles'), { id: op.id })
+    if (UNSETTLED.has(was?.state)) throw CeroError.REFUSED('state')
+    return remove('handles', false)(op, ctx)
+  })
 
   for (const [name, info] of Object.entries(spec.meta?.refs || {})) {
     if (info.internal) continue
@@ -949,6 +1285,7 @@ export function makeDispatcher({
     cut,
     dispatch: async (value, ctx) => router.dispatch(await decode(value, ctx.stamp, ctx.view), ctx),
     role: getSignerRole,
+    stands,
     version: versionOf,
     built,
     async apply(nodes, view, host) {

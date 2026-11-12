@@ -468,7 +468,10 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
 
   const s = Hyperschema.from(schemaDir)
   const sns = s.namespace(ns)
-  const stored = [...internal.collections(ns, 'main'), ...collections].map((x) => x.schema)
+  const added = internal.added(ns)
+  const stored = [...internal.collections(ns, 'main'), ...collections, ...added].map(
+    (x) => x.schema
+  )
   const routes = [...internal.dispatches(ns), ...dispatches, ...internal.appended(ns)]
   const sent = routes.map((x) => x.requestType)
   const keep = slots(schemaDir, ns, new Set([...stored, ...sent]))
@@ -482,6 +485,9 @@ function emitMain(dir, ns, { types, collections, dispatches, indexes = [] }, { r
   for (const desc of internal.collections(ns, 'main')) dns.collections.register(desc)
   for (const desc of collections) dns.collections.register(desc)
   for (const desc of indexes) dns.indexes.register(desc)
+  // after the app's: indexes number by position, and the app's keep theirs
+  for (const desc of internal.indexes(ns, 'main')) dns.indexes.register(desc)
+  for (const desc of added) dns.collections.register(desc)
   HyperdbBuilder.toDisk(db, dbDir, { esm: true })
 
   const d = Hyperdispatch.from(schemaDir, dispatchDir)

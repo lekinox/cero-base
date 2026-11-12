@@ -87,7 +87,7 @@ Every context carries these, undeclared. `t.extend` adds fields to the first six
 | `devices`  | every | `{ id, memberId, name, isMobile, createdAt, updatedAt, index }`: each member's devices.                                                                                                                                                                                                                                                                                                                     |
 | `invites`  | every | `{ id, role, expires, reuse, confirm, createdAt, index }`: live invites. `id` is the invite's public id in hex; `expires` is ms since 1970, `0` for never.                                                                                                                                                                                                                                                  |
 | `requests` | every | `{ id, identity, key, invite, role, admitted, expires, reply, createdAt, index }`: a join until the joiner has its keys. `id` is the joiner's writer, `identity` their identity key and `key` their device key, raw bytes, `invite` the invite id in hex. `{ admitted: false }` rows wait on `cero.accept` or `cero.deny`. On `me`, a device asking to be linked: `identity` is its own key until accepted. |
-| `handles`  | every | `{ id, type, key, encryptionKey, name, createdAt, updatedAt, index }`: on the root, your handles, which `me.room` reads by type.                                                                                                                                                                                                                                                                            |
+| `handles`  | every | `{ id, type, key, encryptionKey, name, createdAt, updatedAt, index, state, reason, by, invite }`: on the root, your handles, which `me.room` reads by type. `state` is where you stand in it, `in` for one you are in.                                                                                                                                                                                      |
 | `files`    | every | `{ id, name, memberId, type, size, url, index }`, and `from` on a copy of another context's file: files put into the context. `url` is served on this device.                                                                                                                                                                                                                                               |
 | `status`   | every | One row, [below](#status). Read-only.                                                                                                                                                                                                                                                                                                                                                                       |
 | `joins`    | root  | `{ id, type, invite }`: the joins this device still waits on. `id` is the handle's discovery key in hex, not its `room.id`. Read-only.                                                                                                                                                                                                                                                                      |
@@ -100,16 +100,17 @@ Each row of your own collections carries `id`, `memberId` (its author), `index` 
 
 ### status
 
-| Field       | Value                                                                                                                                 |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `role`      | Your role here, `null` when you are not a member.                                                                                     |
-| `writable`  | `true` once this device can write here: its admission is in the view, so its own row reads back.                                      |
-| `epoch`     | The key in use, by number: `0` before the first rotation.                                                                             |
-| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                                              |
-| `behind`    | `0`, or the version of a newer app this handle or the root is at: this device reads, and its writes throw `BEHIND`, until it updates. |
-| `version`   | The version of the app this handle is at, which `cero.supports` answers from. An owner's device on a newer app moves it forward.      |
-| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                                           |
-| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it.                         |
+| Field       | Value                                                                                                                                                       |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`      | Your role here, `null` when you are not a member.                                                                                                           |
+| `writable`  | `true` once this device can write here: its admission is in the view, so its own row reads back.                                                            |
+| `epoch`     | The key in use, by number: `0` before the first rotation.                                                                                                   |
+| `suspended` | `true` between `cero.suspend(me)` and `cero.resume(me)`.                                                                                                    |
+| `behind`    | `0`, or the version of a newer app this handle or the root is at: this device reads, and its writes throw `BEHIND`, until it updates.                       |
+| `version`   | The version of the app this handle is at, which `cero.supports` answers from. An owner's device on a newer app moves it forward.                            |
+| `nearby`    | The radio: `'on'`, `'off'`, `'waiting'`, `'starting'`, `'unauthorized'` or `'unsupported'`.                                                                 |
+| `topic`     | On a handle, its push topic: the discovery key in hex. The string a device subscribes to for pushes about it.                                               |
+| `owed`      | `true` while this device waits for keys it asked the other devices for: it reads and writes on with the keys it holds, and reads the rest once they arrive. |
 
 ## Data
 
@@ -162,11 +163,11 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 | `cero.revoke(room, invite)`                   | `true` if it was live         | Takes the string `cero.invite` returned, not a `room.invites` row. Its waiting requests are turned away. Needs remove: `DENIED`.                                                                                                    |
 | `cero.accept(room, request, { role })`        | `undefined`                   | Let in a `room.requests` row. `role` is the invite's by default: above it `INVALID`, above your own `REFUSED`. `EXPIRED` past the invite's `ttl`. On `me`: link it.                                                                 |
 | `cero.deny(room, request, reason)`            | `undefined`                   | Turn it away: the joiner's `open` rejects with `DENIED` and your `reason` as `err.reason`.                                                                                                                                          |
-| `cero.rotate(room)`                           | `{ epoch }`                   | Rotate the key: a member removed before it reads nothing written after. A removal rotates it by itself shortly after; this is the one to await. Needs remove: `REFUSED`.                                                            |
+| `cero.rotate(room)`                           | `{ epoch }`                   | Rotate the key: a member removed before it reads nothing written after. A removal by an admin or the owner rotates it as it resolves; this is for any other time. Needs remove: `REFUSED`.                                          |
 | `cero.leave(room)`                            | `undefined`                   | Remove yourself from its members, drop it from your list on every device and close it here. `INVALID` on the root, and for the last owner of a handle others are in. `BEHIND` while the root is behind.                             |
 | `cero.removed(room, id)`                      | `'removed'`, `'left'`, `null` | Whether a member is out for good, as this device has seen it: taken out, or left on her own. `null` for a member, someone let in again, a stranger, or a going that has not reached this device yet. [Handles](handles.md#removed). |
 | `cero.close(ctx)`                             | `undefined`                   | Close a handle, or `me` and everything under it. The data stays.                                                                                                                                                                    |
-| `cero.cancel(me, invite)`                     | `true` if a join was waiting  | Give up a join for good. Its waiting `open` rejects with `CLOSED`.                                                                                                                                                                  |
+| `cero.cancel(me, invite)`                     | `true` if a join was asking   | Give up a join for good, from any device: its row reads `cancelled`. Its waiting `open` rejects with `CANCELLED`.                                                                                                                   |
 
 `accept` and `deny` need the invite permission (`REFUSED`) and throw `UNKNOWN` for a request already settled or not seen yet.
 
@@ -174,9 +175,10 @@ A slow reader gets only the newest item. With `changes: true` in the query, each
 
 `cero.open(me.room, invite)` resolves the handle once a member's device lets you in and hands over its keys. A handle already in your list resolves at once.
 
-- After 30 s it rejects with `TIMEOUT` and the join goes on: it is listed in `me.joins`, resumes after a restart, and the handle joins `me.room` when you are let in. `open` again with the same invite waits on the same join; `cero.cancel(me, invite)` ends it.
+- After 30 s it rejects with `TIMEOUT` and the join goes on: its row stays in `me.room`, it resumes after a restart, and the row reads `in` once you are let in. `open` again with the same invite, on any device of yours, waits on the same row; `cero.cancel(me, invite)` ends it.
+- The join is a row of `me.room` from the start, read like any other: `state` is `asking` until it is answered (no key yet, so it opens no handle), `joining` once the keys arrive, `in` once this device is seated. One that ends reads `denied` with its `reason`, `expired` or `cancelled`, and `open` with the same invite rejects with that code again.
 - It rejects with `DENIED`, their reason in `err.reason`, when a member turned you away, `EXPIRED` when the invite is past its `ttl`, `INVALID_INVITE` when the string is not an invite, and `NETWORK_ERROR` when the join could not be sent: `open` again.
-- The handle turns a join away by itself, `DENIED` once a member who can invite is online, with `err.reason` `'revoked'`, `'spent'` (a single-use invite already used) or `'removed'` (an invite minted before your removal). Either way the join ends and leaves `me.joins`.
+- The handle turns a join away by itself, `DENIED` once a member who can invite is online, with `err.reason` `'revoked'`, `'spent'` (a single-use invite already used) or `'removed'` (an invite minted before your removal, or spent by one). Either way the join ends, and its row says how.
 
 ### Invite options
 

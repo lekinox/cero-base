@@ -81,6 +81,8 @@ test('rejoin: a member let back in after a rotation reopens the room and reads i
   const joined = await open(b.me.team, await cero.invite(clinic))
   await waitForConnection(a.net)
   await put(joined.messages, { text: 'first' })
+  // written by a device that seated itself a moment ago: the owner has it before she removes it
+  await waitUntil(async () => (await get(clinic.messages)).data.length === 1)
 
   await del(clinic.members, b.identity.id)
   await cero.rotate(clinic)
@@ -157,6 +159,8 @@ test('rejoin: after leave() then re-join with a fresh invite', async (t) => {
 
   // the app's self-kick does exactly this: forget the room locally
   await cero.leave(joined)
+  // a code minted once the room holds her leaving lets her straight back in
+  await waitUntil(async () => !(await get(clinic.members, b.me.identity.id)).data)
 
   const back = await open(b.me.team, await cero.invite(clinic))
   t.teardown(() => back.close().catch(() => {}))

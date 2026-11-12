@@ -34,6 +34,7 @@ export declare const main: {
         index: import("@cero-base/core").Prim;
         key: import("@cero-base/core").Prim;
         proof: import("@cero-base/core").Prim;
+        chain: import("@cero-base/core").Prim;
     };
     invite: {
         id: import("@cero-base/core").Prim;
@@ -43,6 +44,7 @@ export declare const main: {
         createdAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         confirm: import("@cero-base/core").Prim;
+        secret: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;
@@ -54,6 +56,10 @@ export declare const main: {
         updatedAt: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
+        state: import("@cero-base/core").Prim;
+        reason: import("@cero-base/core").Prim;
+        by: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
     file: {
         id: import("@cero-base/core").Prim;
@@ -71,9 +77,11 @@ export declare const main: {
         createdAt: import("@cero-base/core").Prim;
         commit: import("@cero-base/core").Prim;
         stamp: import("@cero-base/core").Prim;
+        aside: import("@cero-base/core").Prim;
     };
     join: {
         box: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
     };
     accept: {
         id: import("@cero-base/core").Prim;
@@ -91,10 +99,17 @@ export declare const main: {
         expires: import("@cero-base/core").Prim;
         role: import("@cero-base/core").Prim;
         key: import("@cero-base/core").Prim;
+        promised: import("@cero-base/core").Prim;
+        proof: import("@cero-base/core").Prim;
+        accepted: import("@cero-base/core").Prim;
     };
     removal: {
         id: import("@cero-base/core").Prim;
         index: import("@cero-base/core").Prim;
+        by: import("@cero-base/core").Prim;
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
+        spent: import("@cero-base/core").Prim;
     };
     status: {
         role: import("@cero-base/core").Prim;
@@ -104,11 +119,7 @@ export declare const main: {
         behind: import("@cero-base/core").Prim;
         version: import("@cero-base/core").Prim;
         nearby: import("@cero-base/core").Prim;
-    };
-    joining: {
-        id: import("@cero-base/core").Prim;
-        type: import("@cero-base/core").Prim;
-        invite: import("@cero-base/core").Prim;
+        owed: import("@cero-base/core").Prim;
     };
     peer: {
         id: import("@cero-base/core").Prim;
@@ -121,11 +132,20 @@ export declare const main: {
         reply: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        spent: import("@cero-base/core").Prim;
+        identity: import("@cero-base/core").Prim;
     };
     spent: {
         id: import("@cero-base/core").Prim;
         reason: import("@cero-base/core").Prim;
         expires: import("@cero-base/core").Prim;
+        secret: import("@cero-base/core").Prim;
+        confirm: import("@cero-base/core").Prim;
+    };
+    owed: {
+        id: import("@cero-base/core").Prim;
+        reply: import("@cero-base/core").Prim;
     };
     deny: {
         id: import("@cero-base/core").Prim;
@@ -139,6 +159,10 @@ export declare const main: {
     };
     upgrade: {
         version: import("@cero-base/core").Prim;
+    };
+    revoke: {
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {
@@ -162,6 +186,9 @@ export declare const local: {
         publicKey: import("@cero-base/core").Prim;
         secretKey: import("@cero-base/core").Prim;
         encryptionKey: import("@cero-base/core").Prim;
+        invite: import("@cero-base/core").Prim;
+        used: import("@cero-base/core").Prim;
+        told: import("@cero-base/core").Prim;
     };
     serving: {
         id: import("@cero-base/core").Prim;
@@ -202,6 +229,10 @@ export declare const local: {
         encryptionKey: import("@cero-base/core").Prim;
         epochs: import("@cero-base/core").Prim;
         writers: import("@cero-base/core").Prim;
+    };
+    told: {
+        removed: import("@cero-base/core").Prim;
+        standing: import("@cero-base/core").Prim;
     };
 };
 export declare const contract: {

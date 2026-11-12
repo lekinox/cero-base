@@ -130,13 +130,11 @@ test('build: t.extend cannot redeclare a base field', async (t) => {
   await t.exception.all(() => build(dir, collisionSchema), /base field/)
 })
 
-test('build: status and joins are computed builtins an app cannot declare', async (t) => {
+test('build: status is a computed builtin an app cannot declare', async (t) => {
   const specDir = await buildInto(t, 'live')
   const { meta } = await importSpec(specDir)
   t.is(meta.refs.status.kind, 'single')
-  t.is(meta.refs.joins.kind, 'collection', 'the root lists its joins')
   t.is(meta.handles.team.refs.status.kind, 'single')
-  t.absent(meta.handles.team.refs.joins, 'a room has none')
 
   const dir = join(buildRoot, 'live-taken')
   t.teardown(() => fs.rm(dir, { recursive: true, force: true }))
@@ -472,6 +470,18 @@ test('build: the app routes start at the id they shipped with', async (t) => {
   const json = await fs.readFile(join(specDir, 'main/dispatch/dispatch.json'), 'utf-8')
   const ids = Object.fromEntries(JSON.parse(json).schema.map((r) => [r.name, r.id]))
   t.is(ids['@cero/set-profile'], 25, 'the first app route')
+})
+
+test("build: a collection Cero added once apps shipped is numbered after the app's collections and indexes", async (t) => {
+  const specDir = await buildInto(t, 'added-ids')
+  const json = await fs.readFile(join(specDir, 'main/db/db.json'), 'utf-8')
+  const rows = JSON.parse(json).schema
+  const owed = rows.find((row) => row.name === 'owed')
+  t.ok(
+    rows.some((row) => row.type === 2),
+    'the app has an index'
+  )
+  t.is(owed?.id, Math.max(...rows.map((row) => row.id)), 'so none of theirs moved')
 })
 
 // a route's id is the wire format: one added later takes a free id, wherever its schema registers it,

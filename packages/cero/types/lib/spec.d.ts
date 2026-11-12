@@ -15,7 +15,7 @@ export type RefInfo = {
      */
     internal?: boolean;
     /**
-     * Computed on the device, never stored: status, joins, nearby.
+     * Computed on the device, never stored: status, nearby, topics.
      */
     live?: boolean;
     /**
@@ -96,7 +96,7 @@ export type Row = import('@cero-base/core/database').Row;
  * @property {string} [schema]
  * @property {string} [type]      The handle type a `handle` ref opens.
  * @property {boolean} [internal] A builtin: members, devices, files and the like.
- * @property {boolean} [live]     Computed on the device, never stored: status, joins, nearby.
+ * @property {boolean} [live]     Computed on the device, never stored: status, nearby, topics.
  * @property {string[]} [fields]  The declared fields, in schema order.
  * @property {Record<string, string>} [required]  The required fields and their types.
  * @property {string[]} [files]   The fields holding file ids.

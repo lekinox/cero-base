@@ -165,7 +165,7 @@ test('invites: a removed member comes back only through an invite minted after i
   const err = await open(b.me.team, before).catch((e) => e)
   t.is(err.code, 'DENIED', 'the old invite admits nobody')
   t.is(err.reason, 'removed', 'and says why')
-  t.alike((await get(b.me.joins)).data, [], 'the join is over')
+  t.is((await get(b.me.team, room.id)).data.state, 'removed', 'and its row reads removed')
   t.absent((await get(room.members, b.identity.id)).data)
 
   const back = await open(b.me.team, await cero.invite(room))
@@ -174,7 +174,7 @@ test('invites: a removed member comes back only through an invite minted after i
   t.pass('an invite minted after the removal brings them back')
 })
 
-test('invites: after a removal and a rotation, old and new invites admit, and the removed member answers none', async (t) => {
+test('invites: after a removal and a rotation, an invite minted before is turned away as removed, a new one admits, and the removed member answers none', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await openHandle(t, { testnet })
   await a.me.store.bootstrap({ name: 'a-root' })
@@ -194,7 +194,13 @@ test('invites: after a removal and a rotation, old and new invites admit, and th
   await waitUntil(() => (b.room._pair.serving ? null : true))
   t.pass('the removed member stops answering joins')
 
-  await joinAsRoot(t, testnet, before)
+  // the removal spent the invite she could have seen
+  const late = await openHandle(t, { testnet })
+  await late.me.store.bootstrap({ name: 'peer-root' })
+  const err = await open(late.me.team, before).catch((e) => e)
+  t.is(err.code, 'DENIED', 'the invite minted before the removal admits nobody')
+  t.is(err.reason, 'removed', 'and says why')
+
   await joinAsRoot(t, testnet, after)
-  await memberCount(room, 3)
+  await memberCount(room, 2)
 })

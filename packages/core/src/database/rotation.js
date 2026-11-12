@@ -3,11 +3,21 @@ import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import hid from 'hypercore-id-encoding'
 
-import { REMOVE } from '../lib/constants.js'
+import { REMOVE, COUNTERS, OWED } from '../lib/constants.js'
 import { can } from '../lib/utils.js'
 import { wraps, epochEntries, seal, opened } from './encryption.js'
+import { chainOf } from './dispatch.js'
 import { Identity } from '../identity/index.js'
+import { keyPair } from '../mailbox/inbox.js'
 import { CeroError } from '../lib/errors.js'
+
+// the secrets one sender handed over for a stamp before its row landed, and its stamps waiting
+const CANDIDATES = 4
+const STAMPS = 16
+// the blocks met under a key no row holds yet: any writer can append under any stamp
+const MET = 64
+// the rotations set aside that no block under them has needed yet
+const ASIDE = 64
 
 /**
  * Epoch key rotation for a database: mint a secret, seal it to every device, announce it
@@ -18,12 +28,20 @@ export class Rotation {
   constructor(db) {
     this.db = db
     this.current = null
+    /** @type {Promise<void> | null} Pending while a removal and its rotation go in. */
+    this.carrying = null
     /** @private */
     this._queue = Promise.resolve()
     /** @private */
     this._timer = null
     /** @private */
     this._healedFor = null
+    /** @private */
+    this._kept = new Map() // sender → stamp → the secrets it handed over before the row landed
+    /** @private */
+    this._aside = new Map() // stamp → a row set aside, opened once a block under it is met
+    /** @private */
+    this._met = new Set() // stamps of blocks met under a key this device does not hold
   }
 
   close() {
@@ -38,7 +56,24 @@ export class Rotation {
    * @returns {Promise<{ epoch: number }>}
    */
   rotate() {
-    const run = this._queue.catch(() => {}).then(() => this._rotate(false))
+    return this._queued(() => this._rotate(false))
+  }
+
+  /**
+   * A removal by a device that may remove carries its rotation: the removal, then the key sealed
+   * to the devices that stay and to those still promised a seat, with nothing else of this device
+   * in between. The key is a block of its own, so it lands even when a reorder refuses the removal.
+   *
+   * @param {Array<[string, unknown]>} ops  A batch that takes a member or a device out.
+   * @returns {Promise<number | undefined>}  What the removal's write resolves.
+   */
+  carry(ops) {
+    return this._queued(() => this._carry(ops))
+  }
+
+  /** @private */
+  _queued(fn) {
+    const run = this._queue.catch(() => {}).then(fn)
     this._queue = run
     return run
   }
@@ -51,7 +86,18 @@ export class Rotation {
   async learn(row) {
     const { keyring } = this.db
     const known = this.held(row)
-    const entropy = known || this._unseal(row)
+    if (row.aside && !known && !this._met.has(row.stamp)) {
+      this._aside.delete(row.stamp)
+      this._aside.set(row.stamp, row)
+      if (this._aside.size > ASIDE) this._aside.delete(this._aside.keys().next().value)
+      return
+    }
+    this._aside.delete(row.stamp)
+    // a counted rotation took its stamp from one set aside: that key reads nothing any more
+    const stale = !row.aside && !known && keyring.entropy(row.stamp)
+    if (stale) keyring.remove(row.stamp)
+    const entropy = known || this._unseal(row) || this._handed(row)
+    if (entropy) this._met.delete(row.stamp)
     if (known) {
       keyring.add(row.stamp, known, row.epoch) // re-applied, the sequence may be news
     } else if (this.current && entropy && b4a.equals(entropy, this.current.entropy)) {
@@ -66,8 +112,87 @@ export class Rotation {
         keyring.remove(row.stamp)
         this.db._onerror(err)
       }
+    } else if (stale) {
+      await this._save().catch((err) => this.db._onerror(err))
     }
     this.heal()
+  }
+
+  /**
+   * A block met under a key this device does not hold: a rotation set aside is opened now.
+   *
+   * @param {number} stamp
+   * @returns {Uint8Array | null}
+   */
+  meet(stamp) {
+    const row = this._aside.get(stamp)
+    this._aside.delete(stamp)
+    const entropy = row && this._unseal(row)
+    if (entropy) {
+      this.db.keyring.add(row.stamp, entropy, row.epoch)
+      // kept like any key it holds: a restart still reads with it, and it is handed to a device that asks
+      this._save().then(
+        () => this.db.emit('epoch'),
+        (err) => this.db._onerror(err)
+      )
+      return entropy
+    }
+    this._met.delete(stamp)
+    this._met.add(stamp)
+    if (this._met.size > MET) this._met.delete(this._met.values().next().value)
+    // one set aside it was not sealed to: a device that holds it is asked
+    if (row) this.heal()
+    return null
+  }
+
+  /**
+   * A secret handed over before its announcement landed here: kept, and checked against the
+   * commitment when it does.
+   *
+   * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
+   * @param {string} [from]  The device that sent it: each sender has slots of its own.
+   */
+  keep(e, from = '') {
+    // a seated device can hand this one anything: bounded per sender, and a forged one never
+    // pushes out the real one
+    for (const [sender, kept] of this._kept) {
+      for (const stamp of kept.keys()) if (this.db.keyring.entropy(stamp)) kept.delete(stamp)
+      if (kept.size === 0) this._kept.delete(sender)
+    }
+    if (this.db.keyring.entropy(e.stamp)) return
+    const kept = this._kept.get(from) ?? new Map()
+    const list = kept.get(e.stamp) ?? []
+    if (list.length >= CANDIDATES) return
+    kept.set(e.stamp, [...list, e.entropy])
+    if (kept.size > STAMPS) kept.delete(kept.keys().next().value)
+    this._kept.set(from, kept)
+  }
+
+  /** @private */
+  _handed(row) {
+    const candidates = []
+    for (const [sender, kept] of this._kept) {
+      candidates.push(...(kept.get(row.stamp) ?? []))
+      kept.delete(row.stamp)
+      if (kept.size === 0) this._kept.delete(sender)
+    }
+    if (!row.commit) return null
+    return candidates.find((entropy) => b4a.equals(crypto.hash(entropy), row.commit)) ?? null
+  }
+
+  /**
+   * @returns {Promise<boolean>} Whether this device cannot open the log's newest key, or one set
+   * aside that a block it met was written under.
+   */
+  async lacks() {
+    return this._lacking(await this._epochs())
+  }
+
+  /** @private */
+  _lacking(rows) {
+    const top = newest(rows)
+    if (top !== null && !this.held(top)) return true
+    return rows.some((r) => r.aside && this._met.has(r.stamp) && !this.held(r))
   }
 
   /**
@@ -104,7 +229,7 @@ export class Rotation {
   async pick(view = this.db.view) {
     let top = null
     for await (const row of view.find(`@${this.db.ns}/epochs`, {}, { reverse: true })) {
-      if (!this.held(row)) continue
+      if (row.aside || !this.held(row)) continue
       top = row
       break
     }
@@ -126,7 +251,47 @@ export class Rotation {
   }
 
   /** @private */
-  async _rotate(retried) {
+  async _carry(ops) {
+    const db = this.db
+    let done = null
+    this.carrying = new Promise((resolve) => (done = resolve))
+    try {
+      // a write on its way goes in first
+      await Promise.allSettled(db._writes)
+      const devices = await this._staying(ops)
+      const stamp = await db._write(ops, true)
+      if (!devices || stamp === undefined) return stamp
+      try {
+        // the promised are read now: the removal took those that stood on what it removed
+        await this._rotate(false, [...devices, ...(await this._promised())])
+      } catch (err) {
+        // the removal is in: the key check rotates. Behind, it says nothing, as that check does
+        if (!db.closing && !db.closed && db.behind === null) db._onerror(err)
+        this.heal()
+      }
+      return stamp
+    } finally {
+      this.carrying = null
+      done()
+    }
+  }
+
+  // the devices a removal leaves, read before it is appended, or null when this device carries no
+  // rotation: its own seat goes, or its member may not remove
+  /** @private */
+  async _staying(ops) {
+    const db = this.db
+    const { data: devices } = await db.get('devices')
+    const gone = new Set(ops.flatMap(([op, data]) => SEATS.get(op)?.(data, devices) ?? []))
+    const me = devices.find((d) => d.id === hid.encode(db.writerKey))
+    if (!me || gone.has(me.id)) return null
+    const { data: member } = await db.get('members', me.memberId)
+    if (!can(member?.role, REMOVE)) return null
+    return devices.filter((d) => d.key && !gone.has(d.id))
+  }
+
+  /** @private */
+  async _rotate(retried, devices) {
     const db = this.db
     db.guard()
     if (!db.writable) throw CeroError.NOT_WRITABLE('Database')
@@ -134,18 +299,24 @@ export class Rotation {
     if (db.bee.local.manifest?.version < 2) {
       throw CeroError.INVALID('rotation requires manifest v2 cores')
     }
+    // apply sets one aside, never the key: only a reorder may make one
+    const { data: me } = await db.get('devices', hid.encode(db.writerKey))
+    const member = me?.memberId ? (await db.get('members', me.memberId)).data : null
+    if (!can(member?.role, REMOVE)) {
+      throw CeroError.REFUSED('rotate', 'rotate requires the remove permission')
+    }
     // claimed synchronously; the keyring learns the secret only after the announcement flushed
     const entropy = Identity.randomBytes(32)
     const stamp = this._mint()
     this.current = { entropy, stamp, epoch: 0 }
     try {
-      const wrapped = seal(await this._devices(), entropy)
+      const wrapped = seal(devices || (await this._devices()), entropy)
       const epoch = await this._announce(stamp, entropy, wrapped)
       if (!epoch) {
         // a stamp collision (~2^-32, or an adversarial pre-claim) is not a refusal
         if (!retried && (await this._taken(stamp))) {
           this.current = null
-          return this._rotate(true)
+          return this._rotate(true, devices)
         }
         // permission is refused before the append, so the dry-run missed something
         throw CeroError.INVALID('rotation was not applied')
@@ -160,13 +331,29 @@ export class Rotation {
     }
   }
 
-  // every seated device, readers' too: a member keeps reading on each of its devices
+  // every seated device, readers' too: a member keeps reading on each of its devices. And every
+  // device promised a seat: let in before a rotation, it reads on once it has taken it
   /** @private */
   async _devices() {
     const { data: devices } = await this.db.get('devices')
     const keyed = devices.filter((d) => d.key)
     if (keyed.length === 0) throw CeroError.INVALID('cannot rotate a database with no devices')
-    return keyed
+    return [...keyed, ...(await this._promised())]
+  }
+
+  /** @private */
+  async _promised() {
+    const { data: requests } = await this.db.get('requests')
+    const promised = []
+    for (const row of requests) if (await this._stands(row)) promised.push(row)
+    return promised
+  }
+
+  // a promise stands while its invite lasts and the chain it stands on does, as the log reads it
+  /** @private */
+  async _stands(row) {
+    if (!row.promised || (row.expires > 0 && Date.now() > row.expires)) return false
+    return this.db.dispatcher.stands(this.db.view, [row.identity, ...chainOf(row)])
   }
 
   // resolves the sequence apply assigned, 0 if it never applied
@@ -174,13 +361,14 @@ export class Rotation {
   async _announce(stamp, entropy, wrapped) {
     const { bee } = this.db
     const from = bee.local.length
-    await this.db.call('rotate-key', {
+    const op = {
       epoch: 0, // sequence assigned deterministically at apply time
       stamp,
       wrapped: c.encode(wraps, wrapped),
       createdAt: Date.now(),
       commit: crypto.hash(entropy)
-    })
+    }
+    await this.db._write([['rotate-key', op]], true)
     await bee.update()
     // a block appended during a rotation must not carry the stamp it announces
     for (let i = from; i < bee.local.length; i++) {
@@ -231,41 +419,92 @@ export class Rotation {
   }
 
   // a rotation seals for the rotator's view of the members; REMOVE-capable devices rotate
-  // when the current epoch's recipients drift from the member list, or when its envelope
-  // for them does not open: a rotator must not seal anyone who could heal it out
+  // when the log owes one, someone taken out since the newest key may hold it, when the newest
+  // key does not name a seated device, or when its envelope for them does not open: a rotator
+  // must not seal anyone who could heal it out
   /** @private */
   async _audit() {
+    if (!(await this._due())) return
+    // decided again once it holds the queue: a removal carried meanwhile brought its key
+    await this._queued(async () => {
+      const state = await this._due()
+      if (!state) return
+      this._healedFor = state
+      await this._rotate(false)
+    })
+  }
+
+  // the (epoch, devices) state a rotation is due for, one attempt each: a failing rotate must
+  // not loop
+  /** @private */
+  async _due() {
+    const state = await this._drift()
+    return state === this._healedFor ? null : state
+  }
+
+  /** @private */
+  async _drift() {
     const db = this.db
     // behind, the membership this device sees is stale: the devices that read everything rotate
-    if (db.closing || db.closed || !db.writable || this.current || db.behind !== null) return
+    if (db.closing || db.closed || this.current || db.behind !== null) return null
     const { data: device } = await db.get('devices', hid.encode(db.writerKey))
     const me = device?.memberId ? (await db.get('members', device.memberId)).data : null
-    if (!can(me?.role, REMOVE)) return
-
     const rows = await this._epochs()
-    // a database still on its creation key rotates at its first removal
-    if (!rows.length) {
-      if (await db.view.findOne(`@${db.ns}/removals`, {})) await this._heal('first removal')
-      return
-    }
-    const top = rows.reduce((a, b) => (b.epoch > a.epoch ? b : a))
-    const recipients = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
-    const ids = new Set((await this._devices()).map((d) => d.id))
-    const sealedOut = !db.keyring.entropy(top.stamp)
-    if (!sealedOut && recipients.size === ids.size && [...recipients].every((id) => ids.has(id))) {
+    const top = newest(rows)
+    if (me && this._lacking(rows)) await this._ask()
+    if (!db.writable || !can(me?.role, REMOVE)) return null
+
+    const sealedOut = top !== null && !db.keyring.entropy(top.stamp)
+    const owed = await db.view.get(`@${db.ns}/${COUNTERS}`, { name: OWED })
+    if (!sealedOut && !owed?.value && !(top && (await this._unnamed(top)))) {
       this._healedFor = null
-      return
+      return null
     }
-    await this._heal(`${top.stamp}:${[...ids].sort().join(',')}`)
+    const ids = (await this._devices()).map((d) => d.id)
+    return `${top?.stamp ?? 0}:${ids.sort().join(',')}`
   }
 
-  // one attempt per (epoch, membership) state, a failing rotate must not loop
+  // a device that lacks a key asks for them from its own core. Its row stands until it closes it:
+  // asking again changes nothing, and appends nothing
   /** @private */
-  async _heal(state) {
-    if (this._healedFor === state) return
-    this._healedFor = state
-    await this.rotate()
+  async _ask() {
+    const db = this.db
+    const since = db.meta.since?.routes?.[`@${db.ns}/ask-key`]
+    if (!(since <= (await db.dispatcher.version(db.view)))) return
+    const reply = keyPair(db.keyPair.secretKey).publicKey
+    await db._write([['ask-key', { id: hid.encode(db.writerKey), reply }]])
   }
+
+  // a seated device of a member who stands that the newest key does not name: its join crossed
+  // a rotation, or a removal that sealed it out was refused
+  /** @private */
+  async _unnamed(top) {
+    const named = new Set(c.decode(wraps, top.wrapped).map((w) => w.id))
+    const { data: members } = await this.db.get('members')
+    const standing = new Set(members.map((m) => m.id))
+    const { data: devices } = await this.db.get('devices')
+    return devices.some((d) => d.key && standing.has(d.memberId) && !named.has(d.id))
+  }
+}
+
+// the seats an op takes out: a device by its row or by its writer, a member's every device
+const SEATS = new Map([
+  ['del-device', (op) => [op.id]],
+  ['del-writer', (op) => [hid.encode(op.writer)]],
+  ['del-member', (op, devices) => devices.filter((d) => d.memberId === op.id).map((d) => d.id)]
+])
+
+/**
+ * @param {Array<[string, unknown]>} ops
+ * @returns {boolean} Whether a batch takes a member or a device out.
+ */
+export function removes(ops) {
+  return ops.some(([op]) => SEATS.has(op))
+}
+
+function newest(rows) {
+  const counted = rows.filter((r) => !r.aside)
+  return counted.length ? counted.reduce((a, b) => (b.epoch > a.epoch ? b : a)) : null
 }
 
 // the epoch stamp autobee's encryption writes into every block header

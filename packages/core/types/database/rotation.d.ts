@@ -9,12 +9,20 @@ export declare class Rotation {
         stamp: number;
         epoch: number;
     };
+    /** @type {Promise<void> | null} Pending while a removal and its rotation go in. */
+    carrying: Promise<void> | null;
     /** @private */
     _queue;
     /** @private */
     _timer;
     /** @private */
     _healedFor;
+    /** @private */
+    _kept;
+    /** @private */
+    _aside;
+    /** @private */
+    _met;
     /** @param {import('./index.js').Database} db */
     constructor(db: import('./index.js').Database);
     close(): void;
@@ -28,6 +36,17 @@ export declare class Rotation {
         epoch: number;
     }>;
     /**
+     * A removal by a device that may remove carries its rotation: the removal, then the key sealed
+     * to the devices that stay and to those still promised a seat, with nothing else of this device
+     * in between. The key is a block of its own, so it lands even when a reorder refuses the removal.
+     *
+     * @param {Array<[string, unknown]>} ops  A batch that takes a member or a device out.
+     * @returns {Promise<number | undefined>}  What the removal's write resolves.
+     */
+    carry(ops: Array<[string, unknown]>): Promise<number | undefined>;
+    /** @private */
+    private _queued;
+    /**
      * An applied rotation announcement: open our envelope, learn the secret, persist it.
      *
      * @param {{ epoch: number, stamp: number, wrapped: Uint8Array, commit: Uint8Array }} row
@@ -38,6 +57,34 @@ export declare class Rotation {
         wrapped: Uint8Array;
         commit: Uint8Array;
     }): Promise<void>;
+    /**
+     * A block met under a key this device does not hold: a rotation set aside is opened now.
+     *
+     * @param {number} stamp
+     * @returns {Uint8Array | null}
+     */
+    meet(stamp: number): Uint8Array | null;
+    /**
+     * A secret handed over before its announcement landed here: kept, and checked against the
+     * commitment when it does.
+     *
+     * @param {{ epoch: number, stamp: number, entropy: Uint8Array }} e
+     * @param {string} [from]  The device that sent it: each sender has slots of its own.
+     */
+    keep(e: {
+        epoch: number;
+        stamp: number;
+        entropy: Uint8Array;
+    }, from?: string): void;
+    /** @private */
+    private _handed;
+    /**
+     * @returns {Promise<boolean>} Whether this device cannot open the log's newest key, or one set
+     * aside that a block it met was written under.
+     */
+    lacks(): Promise<boolean>;
+    /** @private */
+    private _lacking;
     /**
      * Safety net after boot: an epoch applied but never saved, e.g. a crash between a
      * rotation's append and its save, is learned from the epochs collection.
@@ -63,9 +110,17 @@ export declare class Rotation {
     /** Debounced key check, with the owner's raise beside it, run at open and after every update. */
     heal(): void;
     /** @private */
+    private _carry;
+    /** @private */
+    private _staying;
+    /** @private */
     private _rotate;
     /** @private */
     private _devices;
+    /** @private */
+    private _promised;
+    /** @private */
+    private _stands;
     /** @private */
     private _announce;
     /** @private */
@@ -81,5 +136,16 @@ export declare class Rotation {
     /** @private */
     private _audit;
     /** @private */
-    private _heal;
+    private _due;
+    /** @private */
+    private _drift;
+    /** @private */
+    private _ask;
+    /** @private */
+    private _unnamed;
 }
+/**
+ * @param {Array<[string, unknown]>} ops
+ * @returns {boolean} Whether a batch takes a member or a device out.
+ */
+export declare function removes(ops: Array<[string, unknown]>): boolean;

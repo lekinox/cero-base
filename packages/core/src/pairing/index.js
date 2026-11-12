@@ -7,16 +7,27 @@ import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
 import { Invite, STAMPED } from './invite.js'
-import { Response, STATUS_ACCEPTED, STATUS_DENIED } from './response.js'
+import {
+  Response,
+  STATUS_ACCEPTED,
+  STATUS_DENIED,
+  tag,
+  proven,
+  signed,
+  signer
+} from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
+import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE, MEMBER, REFUSALS, SPENT } from '../lib/constants.js'
+import { NAMESPACE, MEMBER, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 
 const Join = getEncoding('@cero/join')
+// what a sync follows in the log
+const WATCHED = ['*', 'invites', 'requests', 'members', 'devices', ASKS]
 const MAX_DELAY = 2 ** 31 - 1
 
 /**
@@ -57,10 +68,17 @@ const MAX_DELAY = 2 ** 31 - 1
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A join
+ * that may invite offers them while online, and the first one read settles it for all. Under an
+ * invite with an address of its own, being let in is a promise: no member and no seat until a device
+ * of the joiner, holding the keys, claims its seat. Its keys are offered until a member that may
+ * invite sees that device seated and settles the promise, or until the invite expires, whoever
+ * reads them. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
+ * Where the database's version keeps an invite's secret on its record, the invite has an address
+ * of its own: its joins are sealed to it, and its answers follow the tag only that secret and the
+ * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -80,13 +98,17 @@ export class Pairing extends ReadyResource {
     /** @private */
     this._denials = new Map() // writer id → the Post telling why its join was turned away
     /** @private */
+    this._keys = new Map() // writer id → the Post sending a device the keys it asked for
+    /** @private */
+    this._inbox = null
+    /** @private */
     this._expiry = null
     /** @private */
     this._onupdate = (touched) => {
-      if (['*', 'invites', 'requests', 'members'].some((name) => touched.has(name))) {
-        this._sync().catch(safetyCatch)
-      }
+      if (WATCHED.some((name) => touched.has(name))) this._sync().catch(safetyCatch)
     }
+    /** @private */
+    this._onepoch = () => this._sync().catch(safetyCatch)
   }
 
   /** @private */
@@ -95,16 +117,21 @@ export class Pairing extends ReadyResource {
     await this.db.ready()
     await this._sync()
     this.db.on('update', this._onupdate)
+    this.db.on('epoch', this._onepoch)
   }
 
   /** @private */
   async _close() {
     this.db.off('update', this._onupdate)
+    this.db.off('epoch', this._onepoch)
     clearTimeout(this._expiry)
     this._expiry = null
-    const posts = [...this._replies.values(), ...this._denials.values()]
+    const posts = [...this._replies.values(), ...this._denials.values(), ...this._keys.values()]
+    if (this._inbox) posts.push(this._inbox)
     this._replies.clear()
     this._denials.clear()
+    this._keys.clear()
+    this._inbox = null
     await Promise.allSettled(posts.map((post) => post.close()))
   }
 
@@ -124,20 +151,32 @@ export class Pairing extends ReadyResource {
       throw CeroError.INVALID(`a reusable invite admits at most member, not '${role}'`)
     }
 
-    const invite = Invite.create({ ttl, data, key: this.db.key, address: this.db.address })
+    const secret = await this._secret()
+    const address = secret ? Mailbox.getAddress(secret) : this.db.address
+    const invite = Invite.create({ ttl, data, key: this.db.key, address, own: !!secret })
     const row = {
       id: b4a.toHex(invite.id),
       role,
       reuse,
       confirm,
       expires: invite.expires,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      secret
     }
     invite.stamp = await this.db.write([['add-invite', row]])
-    if (invite.stamp > this.db.start) invite.version = STAMPED
+    if (secret || invite.stamp > this.db.start) invite.version = STAMPED
     invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()
+  }
+
+  // an invite's own address needs its secret on its row: none where the built spec has no such
+  // field, or the database's version has not reached it, and the invite carries the room's address
+  /** @private */
+  async _secret() {
+    const since = this.db.meta.since?.types[`@${this.db.ns}/invite`]?.secret
+    const version = await this.db.dispatcher.version(this.db.view)
+    return since <= version ? crypto.randomBytes(32) : null
   }
 
   /**
@@ -185,13 +224,16 @@ export class Pairing extends ReadyResource {
 
   /**
    * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+   * On a join already let in by a promise, it withdraws the promise: that needs the remove
+   * permission.
    *
    * @param {string} id
    * @param {string} [reason]
    * @returns {Promise<void>}
    */
   async deny(id, reason = '') {
-    await this._waiting(id)
+    const { data: row } = await this.db.get('requests', id)
+    if (!row?.promised) await this._waiting(id)
     await this.db.call('deny', { id, reason })
   }
 
@@ -214,22 +256,57 @@ export class Pairing extends ReadyResource {
     const spent = await this._list(SPENT)
     if (this.closing || this.closed) return
     const role = me?.role
-    // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting,
-    // and a spent one forgotten, since no joiner uses it past then
+    // behind, this device's view of the room is stale: it answers no join until it updates
+    const inviter = can(role, INVITE) && this.db.behind === null
+    // a promise is settled here once it is kept or void, never by a read of its keys
+    const done = inviter ? await this._done(requests) : []
+    for (const { id } of done) await this.db.call('del-request', { id }).catch(safetyCatch)
+    // apply has no clock: past its invite, a promise nobody kept is withdrawn here
+    if (inviter && can(role, REMOVE)) {
+      for (const row of requests) {
+        if (!row.promised || !expired(row)) continue
+        await this.db.call('deny', { id: row.id, reason: 'expired' }).catch(safetyCatch)
+      }
+    }
+    // past its expiry an invite is dropped, so the log stops admitting, and a spent one
+    // forgotten, since no joiner uses it past then
     if (can(role, REMOVE)) {
       for (const row of [...invites, ...spent].filter(expired)) {
         await this.db.call('del-invite', { id: row.id }).catch(safetyCatch)
       }
     }
     this._arm([...invites, ...requests, ...spent])
-    // behind, this device's view of the room is stale: it answers no join until it updates
-    const inviter = can(role, INVITE) && this.db.behind === null
-    const owed = inviter ? requests.filter((row) => row.admitted) : []
+    // an admission is owed its keys until they are read; a promise, until done or past its invite
+    const over = (row) => row.promised && (done.includes(row) || expired(row))
+    const owed = inviter ? requests.filter((row) => row.admitted && !over(row)) : []
     const refused = inviter ? refusals : []
-    await this._answer(owed, refused, role)
+    const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
+    await this._answer(owed, refused, role, secrets)
+    await this._deliver(await this._list(ASKS))
     const live = invites.some((row) => !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
+  }
+
+  // the promises kept, the device each was made to sits under the member it was made to, and
+  // those void, their chain standing no more as the log reads it
+  /** @private */
+  async _done(requests) {
+    const promised = requests.filter((row) => row.promised)
+    if (promised.length === 0) return []
+    const { data: devices } = await this.db.get('devices')
+    const seated = ({ identity, key }) => {
+      const id = hid.encode(identity)
+      return devices.some((d) => d.memberId === id && d.key && b4a.equals(d.key, key))
+    }
+    this.db.guard()
+    const { dispatcher, view } = this.db
+    const done = []
+    for (const row of promised) {
+      const stands = await dispatcher.stands(view, [row.identity, ...chainOf(row)])
+      if (!stands || seated(row)) done.push(row)
+    }
+    return done
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it
@@ -251,13 +328,15 @@ export class Pairing extends ReadyResource {
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
   // online, until one is read. Past the invite's expiry the joiner has given up: the answer owed to
   // an extra device of a member is dropped, a member who can remove drops a new one, and a refused
-  // one is forgotten
+  // one is forgotten. A promised joiner is offered its keys until its device has seated itself: a
+  // read settles nothing. An answer under an invite that has a secret is tagged with it
   /** @private */
-  async _answer(owed, refused, role) {
-    // a device linked under a member reads its chain off its row
+  async _answer(owed, refused, role, secrets) {
+    // a device linked under a member reads its chain off its seat, or off the promise of one
     const proofs = new Map()
-    for (const { id } of owed) {
-      proofs.set(id, (await this.db.get('devices', id)).data?.proof ?? null)
+    for (const { id, promised, proof } of owed) {
+      const chain = promised ? linkOf(proof) : (await this.db.get('devices', id)).data?.proof
+      proofs.set(id, chain ?? null)
     }
     const keys = ({ id }) => ({
       status: STATUS_ACCEPTED,
@@ -274,9 +353,10 @@ export class Pairing extends ReadyResource {
       encryptionKey: null,
       epochs: null
     })
+    const sealed = (answer) => (row) => seal(answer(row), secrets.get(row.invite), row.reply)
     // only a device that read its keys covers another: unread ones would keep each other in
     const unread = new Map(owed.map((row) => [row.id, row]))
-    for (const row of this._offer(this._replies, owed, keys, 'del-request')) {
+    for (const row of this._offer(this._replies, owed, sealed(keys), 'del-request')) {
       const id = hid.encode(row.identity)
       const { data: devices } = await this.db.get('devices')
       const others = devices.filter((d) => d.memberId === id && d.id !== row.id)
@@ -286,24 +366,94 @@ export class Pairing extends ReadyResource {
         await this.db.call('del-member', { id }).catch(safetyCatch)
       }
     }
-    for (const row of this._offer(this._denials, refused, denied, 'del-refusal')) {
+    for (const row of this._offer(this._denials, refused, sealed(denied), 'del-refusal')) {
       await this.db.call('del-refusal', { id: row.id }).catch(safetyCatch)
     }
   }
 
-  // posts each live row its answer once, closes those settled elsewhere, returns those past expiry
+  // a device that asked for the keys it lacks is sent them by every seated device that holds any,
+  // inviter or not, and again once that one learns another. Nothing is settled by it: the device
+  // that asked closes its own row, once it opens the newest key
+  /** @private */
+  async _deliver(asks) {
+    // a sync that awaited past close sends and receives nothing: _close closed them already
+    if (this.closing || this.closed) return
+    const { db } = this
+    const me = hid.encode(db.writerKey)
+    const epochs = db.keyring.all()
+    const seats = asks.length > 0 && db.behind === null ? await this._seats() : new Set()
+    const sends = epochs.length > 0 && seats.has(me)
+    const rows = asks
+      .filter((row) => sends && row.id !== me && seats.has(row.id))
+      // offered again when what this device holds changed
+      .map(({ id, reply }) => ({ id, reply, invite: epochs.length, promised: true, expires: 0 }))
+    const keys = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
+    const answer = c.encode(Response, keys)
+    const { secretKey } = db.identity.device
+    const sign = (row) =>
+      signed(answer, { room: db.key, to: hid.decode(row.id), writer: db.writerKey, secretKey })
+    this._offer(this._keys, rows, sign, null)
+
+    const mine = asks.some((row) => row.id === me)
+    if (mine && !this._inbox) {
+      const onkeys = (message) => this._onkeys(message)
+      this._inbox = this.mailbox.receive(db.keyPair.secretKey, onkeys, { keep: false })
+    } else if (!mine && this._inbox) {
+      this._inbox.close().catch(safetyCatch)
+      this._inbox = null
+    }
+    if (mine && !(await db.rotation.lacks())) {
+      await db.call('del-owed', { id: me }).catch(safetyCatch)
+    }
+  }
+
+  // the device key of a writer seated here, of a member who stands, or null
+  /** @private */
+  async _seat(writer) {
+    const { data: device } = await this.db.get('devices', hid.encode(writer))
+    if (!device?.memberId) return null
+    const { data: member } = await this.db.get('members', device.memberId)
+    return member ? device.key : null
+  }
+
+  // the devices of the members who stand, by id, to the device key each was admitted with
+  /** @private */
+  async _seats() {
+    const { data: members } = await this.db.get('members')
+    const { data: devices } = await this.db.get('devices')
+    const standing = new Set(members.map((m) => m.id))
+    return new Map(devices.filter((d) => standing.has(d.memberId)).map((d) => [d.id, d.key]))
+  }
+
+  // the keys this device asked for, signed by a device seated here: anyone with the address can
+  // send to it. Each secret is held to its commitment in the log and saved, and the row is closed
+  // once the newest opens
+  /** @private */
+  async _onkeys(message) {
+    const { db } = this
+    // one row, the sender's own: a stranger who sends to the address costs no read of every seat
+    const seated = message.byteLength > 32 ? await this._seat(message.subarray(0, 32)) : null
+    const sent = signer(message, { room: db.key, to: db.writerKey }, () => seated)
+    const answer = sent && decode(Response, sent.answer)
+    if (!answer?.epochs) return false
+    await db.learn(answer.epochs, hid.encode(sent.writer))
+    await this._sync()
+  }
+
+  // posts each live row its answer once, closes those settled elsewhere or made for a row since
+  // written again under another invite, returns those past expiry
   /** @private */
   _offer(posts, rows, answer, settled) {
-    const live = new Set(rows.map((row) => row.id))
+    const live = new Map(rows.map((row) => [row.id, row.invite]))
     for (const [id, post] of posts) {
-      if (live.has(id)) continue
+      if (live.has(id) && live.get(id) === post.invite) continue
       posts.delete(id)
       post.close().catch(safetyCatch)
     }
     const gone = []
     for (const row of rows) {
       if (!expired(row)) {
-        if (!posts.has(row.id)) this._post(posts, row, answer(row), settled)
+        if (!posts.has(row.id)) this._post(posts, row, answer(row), row.promised ? null : settled)
         continue
       }
       // a device already offering it stops: nobody waits for it any more
@@ -316,12 +466,16 @@ export class Pairing extends ReadyResource {
 
   // kept in memory, not in the outbox: the row in the log is what outlives a restart
   /** @private */
-  _post(posts, { id, reply }, answer, settled) {
+  _post(posts, { id, reply, invite }, answer, settled) {
     const { network } = this.mailbox
-    const post = new Post(network, reply, c.encode(Response, answer), { mirrors: network.mirrors })
+    const post = new Post(network, reply, answer, { mirrors: network.mirrors })
+    // the invite its answer is tagged under
+    post.invite = invite
     posts.set(id, post)
     const settle = async () => {
       await post.ready()
+      // a promise is kept by its device's own claim: whoever reads the keys, nothing is settled
+      if (!settled) return
       await post.delivered
       await this.db.call(settled, { id })
     }
@@ -382,6 +536,8 @@ export class Pairing extends ReadyResource {
     }
     const parsed = Invite.parse(invite)
     if (parsed.expired) throw CeroError.EXPIRED()
+    // an invite with its own address proves its answers: one without a valid tag is nobody's
+    const mine = parsed.own ? Mailbox.keyPair(writer.secretKey) : null
     // an invite with no stamp was minted before invites carried one: at the start
     const { version = 1, start = 1 } = spec.meta || {}
     const stamp = parsed.stamp || start
@@ -409,10 +565,15 @@ export class Pairing extends ReadyResource {
     // keeps no row of it, and its core only when it was read back from a row kept across a restart
     const onreply = async (message) => {
       if (settling) return false
-      const response = decode(Response, message)
+      const answer = mine ? proven(message, mine.secretKey, parsed.address) : message
+      const response = answer && decode(Response, answer)
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
-      } else if (response?.key && b4a.equals(response.key, parsed.key) && owns(response, parsed)) {
+      } else if (
+        response?.key &&
+        b4a.equals(response.key, parsed.key) &&
+        (mine || owns(response, parsed))
+      ) {
         const { key, encryptionKey, epochs, proof = null } = response
         await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
       } else {
@@ -464,15 +625,16 @@ export class Pairing extends ReadyResource {
 }
 
 /**
- * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's device, under its chain to the identity,
- * for this writer and reply address.
+ * A join's payload: sealed to the invite's address, so only those who hold its row read who joins,
+ * every member for an invite that carries the database's address; proven by the invite over the
+ * writer; signed by the joiner's device, under its chain to the identity, for this writer and reply
+ * address. An invite with an address of its own is named in the clear, so apply finds its secret.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
  * @param {Uint8Array} writer
  * @param {Uint8Array} reply
- * @returns {{ box: Uint8Array }}
+ * @returns {{ box: Uint8Array, invite?: Uint8Array }}
  */
 export function sealJoin(invite, identity, writer, reply) {
   const join = {
@@ -482,7 +644,8 @@ export function sealJoin(invite, identity, writer, reply) {
     proof: identity.sign(joining(invite.key, invite.id, writer, reply)),
     ts: Date.now()
   }
-  return { box: crypto.encrypt(c.encode(Join, join), invite.address) }
+  const box = crypto.encrypt(c.encode(Join, join), invite.address)
+  return invite.own ? { box, invite: invite.id } : { box }
 }
 
 // one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
@@ -504,6 +667,13 @@ async function write(core, spec, stamp, invite, identity, writer) {
 // the database key is no secret, every mirror holds it: the encryption key must own the invite's address
 function owns({ encryptionKey }, invite) {
   return !!encryptionKey && b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
+}
+
+// an answer under an invite with a secret follows the tag it makes with the reply address
+function seal(answer, secret, reply) {
+  const message = c.encode(Response, answer)
+  const proof = secret ? tag(message, Mailbox.keyPair(secret).secretKey, reply) : null
+  return proof ? b4a.concat([proof, message]) : message
 }
 
 function expired({ expires }) {

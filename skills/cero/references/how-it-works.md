@@ -55,9 +55,9 @@ flowchart TB
 
 1. **Ask.** The joiner's device starts its own log for the handle and writes the join as its first entry, sealed to the handle and signed twice: by the invite, and by the joiner for that log and the address its keys go to.
 2. **Reach.** The handle's peers and mirrors get that log, and any member's device with the handle open pulls it in.
-3. **Admit.** Every device checks both signatures and the invite's row, and turns away a member whose removal came after the invite. Then, in one step, it adds the member and the device, lets the log write if the role writes, and spends a single-use invite.
-4. **Keys.** Every online device of a member who can invite sends the joiner the handle's keys, directly and through mirrors, until one is stored by the joiner or a mirror. A join turned away with an invite the handle knows, revoked, spent or older than the joiner's removal, gets `DENIED` and the reason the same way; the handle keeps a revoked or spent invite until it would have expired. A join with an invite the handle never held gets no answer.
-5. **Expiry.** Past an invite's expiry, a device of a member who can remove drops the invite and removes any joiner still without keys.
+3. **Admit.** Every device checks both signatures and the invite's row, and turns away a member whose removal came after the invite. Then it lets the joiner in and spends a single-use invite. The joiner becomes a member once its own device, holding the keys, takes its seat: that adds the member and the device, and lets the log write if the role writes.
+4. **Keys.** Every online device of a member who can invite sends the joiner the handle's keys, directly and through mirrors, until the joiner's device has taken its seat or the invite has expired. A join turned away with an invite the handle knows, revoked, spent or older than the joiner's removal, gets `DENIED` and the reason the same way; the handle keeps a revoked or spent invite until it would have expired. A join with an invite the handle never held gets no answer.
+5. **Expiry.** Past an invite's expiry, a device of a member who can remove drops the invite. A joiner whose device never took its seat never became a member.
 
 An invite made with `confirm: true` pauses at step 3: the join waits in `room.requests` until a member who can invite accepts it, at the invite's role or lower, or denies it and the joiner gets `DENIED`. The first answer settles it everywhere.
 
@@ -77,8 +77,9 @@ Each handle has its own key, made at creation, kept in your root and handed to j
 
 A removal takes the member's logs out at once, but their key would still read what comes next. So the handle rotates its key: a new secret, sealed to each remaining device and announced in its log, for every row and file written after. A device of yours that opens the handle later reads with the keys its root carries, and is sealed to from then on.
 
-- Half a second after a removal lands, a device of an admin or the owner with the handle open rotates its key, or the next one to come online. `cero.rotate(room)` rotates it at once and resolves when the key is in place: await it before writing what the removed member must not read.
-- Once a handle has rotated its key, any change of members rotates it again, joins included.
+- A removal by an admin or the owner carries the rotation: the removal goes into the log, then the new key, sealed to the devices that stay, and nothing else this device writes goes between them. When `cero.del` resolves the key is in place, and what this device writes next the removed member does not read.
+- A member who leaves, or who removes a device of her own where she cannot remove members, rotates nothing: half a second after it lands, a device of an admin or the owner with the handle open rotates the key, or the next one to come online. `cero.rotate(room)` rotates it at once and resolves when the key is in place.
+- A joiner is handed the keys, and the next rotation is sealed to their device too. A device that takes its seat after a rotation that did not name it is sealed a new key the same way a leave is followed by one: by a device of an admin or the owner, half a second later. A join let in and then turned away, by `cero.deny`, by revoking its invite or at its expiry, rotates the key as a leave does.
 - Each rotation starts an epoch, `status.epoch`. Every block names its epoch, so a reader picks the right key in any arrival order.
 - A removed member never learns a new epoch. The removal lands first, so they see it: `status.role` turns `null` and what they read stops there.
 

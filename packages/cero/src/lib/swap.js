@@ -1,10 +1,15 @@
 import fs from 'fs'
+import FDLock from 'fd-lock'
+
+import { CeroError } from '@cero-base/core/errors'
 
 // Another identity comes in beside `main`, in `main.next`, and takes its place only once it has opened: the new store
 // is flushed to disk, then main moves to `main.old` and `main.next/main` to `main`, each rename atomic. A launch reads
-// from what is on disk how far a killed swap got
+// from what is on disk how far a killed swap got. The swap and every open of `dir` take turns on `main.lock`
 const NEXT = 'main.next'
 const OLD = 'main.old'
+const LOCK = 'main.lock'
+const RETRY = 20
 
 // the dirs a swap is running in, in this process: their `main.next` is in use
 const running = new Set()
@@ -46,8 +51,34 @@ export async function settle(dir) {
 }
 
 /**
+ * The lock on `dir`, a file beside the stores, held from before a store closes or opens until the one in `main` is
+ * open: a store's own lock goes with its close and moves with its directory. Another holder is waited for, a try
+ * every few ms; a kill frees it.
+ *
+ * @param {string} dir
+ * @param {number} [timeout]  The longest wait in ms, 0 for no limit.
+ * @returns {Promise<{ close: () => Promise<void> }>}  Held until closed.
+ */
+export async function lock(dir, timeout = 0) {
+  await fs.promises.mkdir(dir, { recursive: true })
+  const deadline = timeout ? Date.now() + timeout : Infinity
+  while (true) {
+    const held = new FDLock(await open(`${dir}/${LOCK}`))
+    try {
+      await held.ready()
+      return held
+    } catch (err) {
+      // a file that cannot be locked at all carries the system's code, one that is held does not
+      if (err.code) throw err
+      if (Date.now() >= deadline) throw CeroError.TIMEOUT(`The lock on ${dir}`)
+      await new Promise((resolve) => setTimeout(resolve, RETRY))
+    }
+  }
+}
+
+/**
  * What a killed swap left in `main.next` goes, unless a swap is running there. Only once `main` is open: a swap in
- * another process holds its lock while the incoming identity opens, and lets it go to rename, a window this misses.
+ * another process keeps main open while the incoming identity opens.
  *
  * @param {string} dir
  */
@@ -77,13 +108,22 @@ export async function staging(dir, fn) {
 }
 
 /**
- * The identity opened and closed in `main.next` takes main's place. Both must be closed.
+ * The identity opened and closed in `main.next`, all of it on disk: a rename that follows never points at data
+ * still in a cache.
+ *
+ * @param {string} dir
+ */
+export async function flush(dir) {
+  await durable(`${nextOf(dir)}/main`)
+}
+
+/**
+ * The identity opened, closed and flushed in `main.next` takes main's place. Both must be closed.
  *
  * @param {string} dir
  */
 export async function commit(dir) {
   const incoming = `${nextOf(dir)}/main`
-  await durable(incoming)
   await fs.promises.rename(`${dir}/main`, `${dir}/${OLD}`)
   await fs.promises.rename(incoming, `${dir}/main`)
   await sync(dir, true)
@@ -91,7 +131,6 @@ export async function commit(dir) {
   await rm(nextOf(dir))
 }
 
-// every file and directory under `path` on disk, so a rename that follows never points at data still in a cache
 async function durable(path) {
   for (const entry of await fs.promises.readdir(path, { withFileTypes: true })) {
     const at = `${path}/${entry.name}`
@@ -115,6 +154,12 @@ async function sync(path, dir) {
   } finally {
     await handle.close()
   }
+}
+
+function open(path) {
+  return new Promise((resolve, reject) => {
+    fs.open(path, 'a', (err, fd) => (err ? reject(err) : resolve(fd)))
+  })
 }
 
 function exists(path) {

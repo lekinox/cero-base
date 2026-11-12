@@ -10,6 +10,7 @@ import ProtomuxRpcRouter from 'protomux-rpc-router'
 import HyperDHT from 'hyperdht'
 
 import { Network } from '@cero-base/core/network'
+import { Database } from '@cero-base/core/database'
 import { Identity } from '@cero-base/core/identity'
 
 import { cero, get } from '../../src/index.js'
@@ -108,10 +109,11 @@ export async function waitForConnection(net, timeout = 30000) {
   throw new Error('timeout waiting for connection')
 }
 
-// the invites of the joins a device still waits on
+// the invites of the joins not settled yet, as the rows of `me.team` list them
 export async function joinsOf(me) {
-  const { data } = await get(me.joins)
-  return data.map((join) => join.invite)
+  const rows = []
+  for (const state of ['asking', 'joining']) rows.push(...(await get(me.team, { state })).data)
+  return rows.map((row) => row.invite)
 }
 
 // a join waiting on the room's confirm invites, read the way an app reads it; `after` skips one
@@ -120,6 +122,23 @@ export function nextRequest(room, after = null) {
     const { data } = await get(room.requests, { admitted: false })
     return data.find((r) => r.id !== after?.id) || null
   })
+}
+
+// a join through `invite` by `root`, where it runs, whose device opens the room with its keys and
+// claims its seat only once `first` ran and its own view shows its writer refused; `team` is the
+// ref as the app holds it
+export async function refusedAtClaim(t, root, team, invite, first) {
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  Database.prototype.claim = async function (opts) {
+    if (this.identity.id === root.id) {
+      await first()
+      const id = hid.encode(this.writerKey)
+      await waitUntil(() => this.view.get(`@${this.ns}/refusals`, { id }))
+    }
+    return claim.call(this, opts)
+  }
+  return cero.open(team, invite).catch((err) => err)
 }
 
 export async function waitUntil(fn, timeout = 30000, step = 50) {
@@ -212,7 +231,7 @@ export async function ceroOpen(t, opts = {}) {
 }
 
 // `count` handles rows added to a root in one transaction, rooms it holds and never opened: their ids
-export async function addHandles(me, count, from = 0) {
+export async function addHandles(me, count, from = 0, type = 'team') {
   const ids = []
   const ts = Date.now()
   await me.store.tx(async (tx) => {
@@ -222,7 +241,7 @@ export async function addHandles(me, count, from = 0) {
       ids.push(id)
       await tx.call('add-handle', {
         id,
-        type: 'team',
+        type,
         key,
         encryptionKey: Identity.randomBytes(32),
         name: `room ${i}`,

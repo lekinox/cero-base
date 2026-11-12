@@ -93,13 +93,14 @@ member answers, the handle appears in `me.room`, so watch that list. An expired 
 `EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
 
 ```js
-const { data: joins } = await cero.get(me.joins) // [{ id, type, invite }], still waiting
+const { data: waiting } = await cero.get(me.room, { state: 'asking' }) // still waiting for an answer
 await cero.cancel(me, invite) // give up for good: true when it cancelled one
+const { data: row } = await cero.get(me.room, id) // state: 'asking', 'joining', 'in', or how it ended
 ```
 
 A join the handle turns away rejects `DENIED` once a member who can invite is online, with
 `err.reason` saying why: `'revoked'`, `'spent'` for a single-use invite someone already used, or
-`'removed'` for an invite minted before your removal. An invite to a handle you already have returns
+`'removed'` for an invite minted before your removal or spent by one. An invite to a handle you already have returns
 that handle; a newer invite to the same handle takes over. Once nobody waits on a join, a denial or
 expiry reaches `onerror`.
 
@@ -177,7 +178,12 @@ Removing needs the remove permission and a higher rank: removing an equal or hig
 `REFUSED`. Anyone may remove themselves, a reader too, except the last owner of a handle others are
 in: `INVALID`. The removed member's `room.status` shows `role: null`, and
 they come back only through an invite minted after the removal: an older one rejects `DENIED` with
-`err.reason` `'removed'`.
+`err.reason` `'removed'`. A removal by an admin or the owner, of a member, of a device, or of someone
+who already left, also spends the invites that let people in without `confirm`, since the one
+removed may hold one: a join with one rejects `DENIED` with `err.reason` `'removed'`, and a join one
+had let in that has not taken its seat yet ends the same, unless a member accepted it. Invites with
+`confirm` stay. Mint a new
+invite for anyone still expected.
 
 ### Removed
 
@@ -194,25 +200,31 @@ end what the handle gave her elsewhere, a seat in another handle say.
 ## Remove and rotate the key
 
 ```js
-await cero.del(room.members, memberId)
-await cero.rotate(room) // { epoch }: the room has a new key
+await cero.del(room.members, memberId) // removed, and the room has a new key
+await cero.rotate(room) // { epoch }: a new key at any other time
 ```
 
-A removal rotates the handle's key shortly after on its own, on a device that can remove, so the
-removed member reads nothing written after it. `cero.rotate` rotates it at once: await it before writing
-something they must not see. It needs the remove permission, `REFUSED` otherwise, and cannot run
+A removal by an admin or the owner rotates the handle's key in the same step: when `cero.del`
+resolves the key is in place, and the removed member reads nothing written after it. `cero.rotate`
+rotates it at any other time. It needs the remove permission, `REFUSED` otherwise, and cannot run
 inside a transaction: `cero.rotate(tx)` throws `INVALID`. [How it works](how-it-works.md) has the
 mechanism.
 
 ## Leave a handle
 
 ```js
-await cero.leave(room) // out of its members, out of your list on every device, closed here
+await cero.leave(room) // its row reads leaving, then left on every device
 ```
 
-`cero.leave` removes you from the handle's members, at any role, then the handle from your list. The
-last owner of a handle others are in gets `INVALID`: make another member an owner first, with
-`cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
+`cero.leave` writes `leaving` on the handle's row. Every device of yours seated in the handle
+carries it: it takes you out of the handle's members, at any role, waits until another device or a
+mirror holds that, then writes `left`, keeps none of the handle's keys and closes it. An app closed
+on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with the
+remover's id in `by`. The row stays in your list until the app deletes it: a row at `left`,
+`removed`, `denied`, `expired` or `cancelled` can be deleted, or joined again with a new code, and
+`cero.get(me.room, { state: 'in' })` lists only the handles you are in. The last owner of a handle
+others are in gets `INVALID` from `cero.leave`, and nothing is written: make another member an
+owner first, with `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
 after you left brings you back; an older one, or the handle's reusable one, puts you in
 `room.requests` until a member accepts or denies you, so leaving first never dodges a removal. The
 handle still rotates its key, sealing you out. Removed by someone else, only a code minted after the removal does.

@@ -1,5 +1,5 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
@@ -10,7 +10,8 @@ export const defs = {
     members: { type: 'member' },
     devices: { type: 'device' },
     invites: { type: 'invite' },
-    handles: { type: 'handle' },
+    // the handles not settled, and a page of one type in list order, are read through them
+    handles: { type: 'handle', indexes: { state: ['state'], type: ['type', 'index'] } },
     files: { type: 'file' },
     requests: { type: 'request' }
   },
@@ -24,7 +25,8 @@ export const defs = {
     outbox: { type: 'mail' },
     environment: { type: 'environment', kind: 'single' },
     serving: { type: 'serving' },
-    topics: { type: 'subscription' }
+    topics: { type: 'subscription' },
+    told: { type: 'told', kind: 'single' }
   }
 }
 
@@ -40,7 +42,6 @@ export const base = [
 // computed on the device, never stored: `get` and `watch` read them like any other ref
 const LIVE = {
   status: { type: 'status', kind: 'single' },
-  joins: { type: 'joining', root: true },
   nearby: { type: 'peer', root: true },
   topics: { type: 'topic', root: true }
 }
@@ -121,6 +122,7 @@ export function refs(ns, scope) {
         path: [name],
         internal: true,
         ...(scope === 'main' && declare({ verb: def.type }, schemas.main[def.type])),
+        ...(def.indexes && { indexes: def.indexes }),
         schema: `@${ns}/${def.type}`
       }
     ])
@@ -167,6 +169,31 @@ export function collections(ns, scope) {
 
 /**
  * @param {string} ns
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
+// collections cero added once apps shipped: numbered after the app's collections and indexes, so
+// a new spec gives each of those the id an older release gave it
+export function added(ns) {
+  return [{ name: ASKS, schema: `@${ns}/owed`, key: ['id'] }]
+}
+
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, collection: string, key: string[] }>}
+ */
+export function indexes(ns, scope) {
+  return Object.entries(defs[scope]).flatMap(([name, def]) =>
+    Object.entries(def.indexes || {}).map(([idx, key]) => ({
+      name: `${name}-${idx}`,
+      collection: `@${ns}/${name}`,
+      key
+    }))
+  )
+}
+
+/**
+ * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
 // a route keeps the id a built spec gave it, and one added here takes the next free id there
@@ -194,7 +221,12 @@ export function dispatches(ns) {
 // routes cero added once apps shipped: numbered after the app's, so a new spec gives the app's
 // routes the ids an older release gave them
 export function appended(ns) {
-  return [{ name: 'upgrade', requestType: `@${ns}/upgrade` }]
+  return [
+    { name: 'upgrade', requestType: `@${ns}/upgrade` },
+    { name: 'revoke', requestType: `@${ns}/revoke` },
+    { name: 'ask-key', requestType: `@${ns}/owed` },
+    { name: 'del-owed', requestType: `@${ns}/del-by-id` }
+  ]
 }
 
 /**
@@ -211,6 +243,7 @@ export function reserved(ns, scope, root) {
   return {
     refs: new Set([
       ...collections(ns, scope).map((c) => c.name),
+      ...(main ? added(ns) : []).map((c) => c.name),
       ...Object.keys(main ? live(ns, root) : {})
     ]),
     types: new Set(Object.keys({ ...schemas[scope], ...(main && schemas.rpc) })),

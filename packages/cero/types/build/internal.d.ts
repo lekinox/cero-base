@@ -14,6 +14,10 @@ export declare const defs: {
         };
         handles: {
             type: string;
+            indexes: {
+                state: string[];
+                type: string[];
+            };
         };
         files: {
             type: string;
@@ -56,6 +60,10 @@ export declare const defs: {
         };
         topics: {
             type: string;
+        };
+        told: {
+            type: string;
+            kind: string;
         };
     };
 };
@@ -126,6 +134,25 @@ export declare function declare(ref: RefInfo, fields: Record<string, FieldType>)
 export declare function collections(ns: string, scope: 'main' | 'local'): Array<{
     name: string;
     schema: string;
+    key: string[];
+}>;
+/**
+ * @param {string} ns
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
+export declare function added(ns: string): Array<{
+    name: string;
+    schema: string;
+    key: string[];
+}>;
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, collection: string, key: string[] }>}
+ */
+export declare function indexes(ns: string, scope: 'main' | 'local'): Array<{
+    name: string;
+    collection: string;
     key: string[];
 }>;
 /**

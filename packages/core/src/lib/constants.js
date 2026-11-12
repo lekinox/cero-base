@@ -50,6 +50,9 @@ export const VERSION = '_version'
 // the build that applied the view: its database, rules, contract and the lowest version it
 // skipped, counters rows under names no collection can take
 export const BUILT = ['_db', '_rules', '_contract', '_skipped']
+// a rotation is owed: someone taken out may hold the keys. A counters row under a name no
+// collection can take
+export const OWED = '_owed'
 // rotation announcements
 export const EPOCHS = 'epochs'
 // removed members, with the last invite minted before their removal
@@ -58,3 +61,5 @@ export const REMOVALS = 'removals'
 export const REFUSALS = 'refusals'
 // invites spent or revoked, until they expire
 export const SPENT = 'spent'
+// devices that asked for the keys they lack, until each closes its own
+export const ASKS = 'owed'

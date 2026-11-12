@@ -17,7 +17,9 @@ import {
   ADMIN,
   OWNER,
   WRITE,
-  REMOVALS
+  REMOVALS,
+  REFUSALS,
+  ASKS
 } from '../lib/constants.js'
 import { genId } from '../lib/ids.js'
 import {
@@ -33,9 +35,9 @@ import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs, plainId } from './encryption.js'
 import { CeroError } from '../lib/errors.js'
 import { Identity } from '../identity/index.js'
-import { Rotation } from './rotation.js'
+import { Rotation, removes } from './rotation.js'
 import { makeChanges } from './changes.js'
-import { makeDispatcher, BESPOKE, leftId } from './dispatch.js'
+import { makeDispatcher, BESPOKE, leftId, toldId, keysOf } from './dispatch.js'
 import { keyPair } from '../mailbox/inbox.js'
 
 // autobee remaps an older store once a recovery peer, a mirror, serves it; unset, it closes the store
@@ -140,6 +142,7 @@ export class Database extends ReadyResource {
     /** @private */
     this._delivered = !!opts.epochs?.length
     this.rotation = new Rotation(this)
+    this.keyring.onmiss = (stamp) => this.rotation.meet(stamp)
     this.key = opts.key || null
     this.pinned = opts.pinned === true
     this.push = opts.push === true
@@ -483,19 +486,34 @@ export class Database extends ReadyResource {
    * @returns {Promise<number | undefined>}  The stamp the last op was appended with; nothing when queued or when nothing changed.
    */
   async write(ops) {
-    // behind, a set merges from a view missing the newer writes and every device takes the stale
-    // row: no writes until the update, but leaving, which touches nothing else
-    const frozen = () => this.behind !== null && !leaving(ops, this.identity.id)
-    if (frozen()) throw CeroError.BEHIND(this.behind)
+    if (this._frozen(ops)) throw CeroError.BEHIND(this.behind)
     if (this.txQueue) {
       if (this.spent) throw CeroError.INVALID('a write through tx after its fn returned')
       for (const op of ops) this.txQueue.push(op)
       return
     }
     this.guard()
+    return removes(ops) ? this.rotation.carry(ops) : this._write(ops)
+  }
+
+  // behind, a set merges from a view missing the newer writes and every device takes the stale
+  // row: no writes until the update, but leaving, which touches nothing else
+  /** @private */
+  _frozen(ops) {
+    return this.behind !== null && !leaving(ops, this.identity.id)
+  }
+
+  // a removal and the rotation it carries are `queued`: every other write waits until both are in
+  /** @private */
+  async _write(ops, queued = false) {
     // a write goes in on the bee it started on: a rebuild closes it once the write is done
-    while (this._rebuilding) await this._rebuilding
-    const writing = this._commit(ops, frozen)
+    for (;;) {
+      const busy = this._rebuilding || (!queued && this.rotation.carrying)
+      if (!busy) break
+      await busy
+    }
+    this.guard()
+    const writing = this._commit(ops)
     this._writes.add(writing)
     try {
       return await writing
@@ -505,9 +523,10 @@ export class Database extends ReadyResource {
   }
 
   /** @private */
-  async _commit(ops, frozen) {
-    // leaving takes no seat: a reader's own removal goes in optimistically, apply admits it
-    const optimistic = !this.bee.writable && leaving(ops, this.identity.id)
+  async _commit(ops) {
+    // leaving takes no seat, nor does asking for keys: a reader's own goes in optimistically, apply
+    // admits it
+    const optimistic = !this.bee.writable && seatless(ops, this.identity.id)
     if (!this.bee.writable && !optimistic) throw CeroError.NOT_WRITABLE('Database')
     // writable flips inside the apply that admits us, before its view flush lands our device row
     await this.bee.updated()
@@ -517,7 +536,7 @@ export class Database extends ReadyResource {
       const { wrapped, changed, stamp } = await this._dryRun(ops)
       if (!changed && !action) return
       // a newer op may have applied while this write awaited
-      if (frozen()) throw CeroError.BEHIND(this.behind)
+      if (this._frozen(ops)) throw CeroError.BEHIND(this.behind)
       await this.bee.append(wrapped.length === 1 ? wrapped[0] : wrapped, { optimistic })
       const ref = this.push ? this._ref(ops) : null
       if (ref) this._push(ref)
@@ -619,6 +638,70 @@ export class Database extends ReadyResource {
     if (await this.view.get(col, { id: memberId })) return 'removed'
     if (await this.view.get(col, { id: leftId(memberId) })) return 'left'
     return null
+  }
+
+  /**
+   * What a member's devices told this database of her device keys, 32 bytes each: those removed, and those that
+   * stand.
+   *
+   * @param {string} memberId
+   * @returns {Promise<{ removed: Uint8Array[], standing: Uint8Array[] }>}
+   */
+  async told(memberId) {
+    this.guard()
+    const row = await this.view.get(`@${this.ns}/${REMOVALS}`, { id: toldId(memberId) })
+    return { removed: keysOf(row?.removed), standing: keysOf(row?.standing) }
+  }
+
+  /**
+   * The keys this database holds as removed, 32 bytes each: a device's own, and a removed member's identity.
+   *
+   * @returns {Promise<Uint8Array[]>}
+   */
+  async removals() {
+    this.guard()
+    const rows = await this.view.find(`@${this.ns}/${REMOVALS}`, {}).toArray()
+    return rows.filter((row) => !row.id.includes(':')).map((row) => hid.decode(row.id))
+  }
+
+  /**
+   * Who removed a member, from the record of her removal: null while none reached this device, and
+   * for one who left on her own.
+   *
+   * @param {string} memberId
+   * @returns {Promise<{ by: string | null } | null>}
+   */
+  async removal(memberId) {
+    if ((await this.removed(memberId)) !== 'removed') return null
+    const row = await this.view.get(`@${this.ns}/${REMOVALS}`, { id: memberId })
+    return { by: row.by ?? null }
+  }
+
+  /**
+   * Resolves once another device or a mirror holds every block this device wrote.
+   *
+   * @returns {Promise<void>}
+   */
+  async held() {
+    this.guard()
+    const core = this.bee.local
+    const length = core.length
+    if (core.remoteContiguousLength >= length) return
+    await new Promise((resolve, reject) => {
+      const check = () => {
+        if (this.closing || core.closed) done(CeroError.CLOSED('Database'))
+        else if (core.remoteContiguousLength >= length) done(null)
+      }
+      const done = (err) => {
+        core.off('remote-contiguous-length', check)
+        core.off('close', check)
+        if (err) reject(err)
+        else resolve()
+      }
+      core.on('remote-contiguous-length', check)
+      core.on('close', check)
+      check()
+    })
   }
 
   // the same read against any view: hooks read the transaction they run in
@@ -755,9 +838,13 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * Seat this device's writer where its identity is a member: wait for the member row, append
-   * the add-writer the identity signs from this device's own core, and resolve once it writes.
-   * A member whose role cannot write takes no seat.
+   * Seat this device's writer where its identity is a member, or was promised to be one: wait
+   * for the member row or the promise, append the add-writer the identity signs from this
+   * device's own core, and resolve once it writes. A member whose role cannot write takes no
+   * seat; a promise made to her is kept all the same, and resolves at this device's row. A claim
+   * that left this device nothing is made again once her member row or a promise made to her is
+   * new. Rejects `DENIED`, with the reason, once the room shows this writer turned away: its
+   * promise withdrawn.
    *
    * @param {{ timeout?: number }} [opts]
    * @returns {Promise<void>}
@@ -765,8 +852,10 @@ export class Database extends ReadyResource {
   async claim({ timeout = 30000 } = {}) {
     this.guard()
     if (this.bee.writable) return
-    const { role } = await this._member(timeout)
-    if (!can(role, WRITE)) return
+    const { role, promised, against } = await this._member(timeout, () => this._standing())
+    // seated while it waited: a join that was admitted wrote the seat with the member row
+    if (this.bee.writable) return
+    if (!promised && !can(role, WRITE)) return
     const stamp = await this._stamp(this.view)
     const op = this.dispatcher.encode(
       `@${this.ns}/add-writer`,
@@ -775,8 +864,9 @@ export class Database extends ReadyResource {
     )
     // from a core not yet admitted: apply verifies the identity's signature and seats it
     await this.bee.append(wrap(stamp, op), { optimistic: true })
+    await this.bee.local.setUserData('cero/claim', against)
     await this.bee.update()
-    await this.whenWritable({ timeout })
+    await this._member(timeout, () => this._kept(role))
   }
 
   /**
@@ -820,18 +910,21 @@ export class Database extends ReadyResource {
 
   /**
    * Learn epochs handed over after the open, as a root carries them for a handle. One is kept
-   * once its announcement applied here and the secret meets the commitment it carries: hand them
-   * over again when an announcement applies.
+   * once its announcement applied here and the secret meets the commitment it carries; one whose
+   * announcement has not applied yet waits for it, and is checked then.
    *
    * @param {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
+   * @param {string} [from]  The device that sent them, when one did.
    * @returns {Promise<void>}
    */
-  async learn(epochs) {
+  async learn(epochs, from) {
     this.guard()
     const rows = await this.rotation._epochs()
     let added = false
     for (const e of epochs) {
+      if (e.entropy?.byteLength !== 32) continue
       const row = rows.find((r) => r.stamp === e.stamp)
+      if (!row) this.rotation.keep(e, from)
       if (!row?.commit || this.rotation.held(row)) continue
       if (!b4a.equals(crypto.hash(e.entropy), row.commit)) continue
       this.keyring.add(e.stamp, e.entropy, e.epoch)
@@ -840,6 +933,14 @@ export class Database extends ReadyResource {
     if (!added) return
     await this.rotation.pick()
     await this.rotation._save()
+  }
+
+  /**
+   * @returns {Promise<boolean>} Whether this device asked for keys it lacks and its ask still stands.
+   */
+  async owed() {
+    this.guard()
+    return !!(await this.view.get(`@${this.ns}/${ASKS}`, { id: hid.encode(this.writerKey) }))
   }
 
   /**
@@ -1157,6 +1258,11 @@ export class Database extends ReadyResource {
       await this._append({ ...stored, role: '' }, verb)
       return { row: stored }
     }
+    // where a handle stands travels the same way, only when named, and apply keeps the stored one
+    if (ref.verb === 'handle' && !('state' in row)) {
+      await this._append({ ...stored, state: null }, verb)
+      return { row: stored }
+    }
     return this._append(stored, verb)
   }
 
@@ -1356,28 +1462,82 @@ export class Database extends ReadyResource {
     return (await view.find(path, bounds).toArray()).length
   }
 
-  // this identity's member row, looked up again on every update until one lands it
+  // what `find` reads of this identity's place, read again on every update and once this device
+  // writes, until there is something; its throw ends the wait
   /** @private */
-  _member(timeout) {
+  _member(timeout, find) {
     return new Promise((resolve, reject) => {
-      const done = (err, member) => {
+      const done = (err, found) => {
         clearTimeout(timer)
         this.off('update', check)
+        this.off('writable', check)
         this.off('close', onclose)
         if (err) reject(err)
-        else resolve(member)
+        else resolve(found)
       }
-      const check = () =>
-        this.get('members', this.identity.id).then(({ data }) => data && done(null, data), done)
+      const check = () => find().then((found) => found && done(null, found), done)
       const onclose = () => done(CeroError.CLOSED('Database'))
       const timer =
         timeout > 0
           ? setTimeout(() => done(CeroError.TIMEOUT('waiting for the member row')), timeout)
           : null
       this.on('update', check)
+      this.on('writable', check)
       this.once('close', onclose)
       check()
     })
+  }
+
+  // the member's role, or that of the first promise made to the identity, as apply picks it, and
+  // whether this device has a promise to keep
+  /** @private */
+  async _standing() {
+    const { data: member } = await this.get('members', this.identity.id)
+    const { data: requests } = await this.get('requests')
+    // a core that wrote already, its join or an earlier claim, claims once the view holds what it
+    // wrote: appended on a view still catching up with it, a claim is lost. Turned away, it hears.
+    // What the view read and kept no row of, a claim refused where it landed, is made again
+    const id = hid.encode(this.writerKey)
+    const { data: device } = await this.get('devices', id)
+    const landed = device || requests.some((row) => row.id === id)
+    if (this.length > 0 && !landed) {
+      await this._refused()
+      const read = await this.bee.system.get(this.writerKey)
+      if (!read || read.length < this.length) return null
+    }
+    const mine = (row) => row.promised && b4a.equals(row.identity, this.identity.publicKey)
+    const made = requests.filter(mine)
+    const [first] = made
+    // a claim that left no row was refused: made again against the same member row and promises,
+    // it would be refused again, a block at every launch
+    const against = b4a.from(JSON.stringify([member?.role, made.map((row) => row.id)]))
+    const claimed = device ? null : await this.bee.local.getUserData('cero/claim')
+    if (claimed && b4a.equals(claimed, against)) return null
+    // a member's device keeps what it was promised itself, once: its row is the promise kept
+    const own = made.some((row) => b4a.equals(row.key, this.identity.device.publicKey))
+    if (member) return { role: member.role, promised: own && !device, against }
+    return first ? { role: first.role, promised: true, against } : null
+  }
+
+  // a claim kept: this device's seat, or its row at a role with none
+  /** @private */
+  async _kept(role) {
+    await this._refused()
+    if (can(role, WRITE)) return this.writable
+    return (await this.get('devices', hid.encode(this.writerKey))).data
+  }
+
+  // a writer has a refusal only where it has no request: its join turned away, or what it was
+  // promised withdrawn. One under another invite than the join its core carries answers a join
+  // it made before, read while its view has yet to reach this one
+  /** @private */
+  async _refused() {
+    const id = hid.encode(this.writerKey)
+    const refusal = await this.view.get(`@${this.ns}/${REFUSALS}`, { id })
+    if (!refusal) return
+    const joined = refusal.invite && (await this.bee.local.getUserData('cero/join'))
+    if (joined && b4a.toHex(joined) !== refusal.invite) return
+    throw CeroError.DENIED(refusal.reason || null)
   }
 
   // the add-writer row for `writer`, appended by this device and proven by its device key
@@ -1476,19 +1636,25 @@ function verbMap(refs) {
   return map
 }
 
-// the one op a device without a writer seat may append
 function leaving(ops, id) {
   return ops.length === 1 && ops[0][0] === 'del-member' && ops[0][1]?.id === id
+}
+
+// what a device without a writer seat may append: its leave, its ask for keys and the close of it
+function seatless(ops, id) {
+  return leaving(ops, id) || (ops.length === 1 && ['ask-key', 'del-owed'].includes(ops[0][0]))
 }
 
 const RANGE = new Set(['gt', 'gte', 'lt', 'lte'])
 
 const byIndex = (a, b) => (a.index ?? 0) - (b.index ?? 0)
 
-// the index whose fields are exactly the query's equality keys
+// the index whose fields are exactly the query's equality keys, or those and then `index`: that
+// one reads the matches in list order
 function matchIndex(indexes, fields) {
   for (const [name, keys] of Object.entries(indexes || {})) {
-    if (keys.length === fields.length && keys.every((f) => fields.includes(f))) return name
+    const eq = keys.at(-1) === 'index' && !fields.includes('index') ? keys.slice(0, -1) : keys
+    if (eq.length === fields.length && eq.every((f) => fields.includes(f))) return name
   }
   return null
 }

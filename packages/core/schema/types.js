@@ -26,7 +26,9 @@ export const types = [
       { name: 'seed', type: 'fixed32', required: true },
       { name: 'link', type: '@cero/link', required: true },
       { name: 'data', type: 'buffer', required: false },
-      { name: 'stamp', type: 'uint', required: false }
+      { name: 'stamp', type: 'uint', required: false },
+      // the address is the invite's own, not the room's: its join names it, its answers are tagged
+      { name: 'own', type: 'bool', required: false }
     ]
   },
   // Pairing join — sealed to the room's address, in the joiner's own writer core. `signature` is
