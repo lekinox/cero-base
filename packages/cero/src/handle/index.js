@@ -1183,22 +1183,17 @@ export class Handle extends ReadyResource {
     join.running?.abort()
   }
 
-  // a join's row: `asking` with its invite and no keys. A room this identity was let go from reads `removed` first,
-  // and a join that ended under this invite ends the same way again
+  // a join's row: `asking` with its invite and no keys. A join that ended under this invite ends the same way again
   /** @private */
   async _ask(type, invite) {
     const { key } = Invite.parse(invite)
     const id = hid.encode(key)
     const { data: row } = await this.store.get('handles', id)
-    let state = row && (row.state || 'in')
+    const state = row && (row.state || 'in')
     // the writer this device asks with: fixed before the join is written, so a resumed one hears the reply to it
     const { data: kept } = await this.local.store.get('handle-keypairs', id)
     const mine = !!kept?.invite && (state === 'asking' || state === 'joining')
     if (mine && (state === 'joining' || row.invite === invite)) return id
-    if (state === 'in') {
-      await this.store.set('handles', { id, state: 'removed' })
-      state = 'removed'
-    }
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
     await this._saveKeyPair(id, mine ? kept : Identity.randomKeyPair(), invite)
     // a room another device of this identity already has the keys of is joined with them
@@ -1243,7 +1238,10 @@ export class Handle extends ReadyResource {
   /** @private */
   async _joined(type, key) {
     const { data: existing } = await this.store.get('handles', hid.encode(key))
-    if (existing?.type !== type) return null
+    if (!existing) return null
+    if (existing.type !== type) {
+      throw CeroError.INVALID(`handle ${existing.id} is type ${existing.type}, not ${type}`)
+    }
     // a join on its way, or one that is over, is its row's to tell
     if (!existing.encryptionKey || (existing.state || 'in') !== 'in') return null
     const known = await this._load(type, existing.id)
@@ -1251,7 +1249,10 @@ export class Handle extends ReadyResource {
     const { data: device } = await known.store.get('devices', hid.encode(known.store.writerKey))
     // a reader never had a seat, a removed writer lost it
     if (me && (device || me.role === 'reader')) return known
+    // the identity's removal is its row's, every device's; a device that alone lost its seat is refused here
+    if (!me) await this._ousted(known).catch(safetyCatch)
     await known._end().catch(safetyCatch)
+    if (me) throw ENDS.removed()
     return null
   }
 

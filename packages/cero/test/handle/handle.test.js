@@ -2029,6 +2029,28 @@ test('removed: a removal by an admin reads removed with her id in by, and the ro
   }
 })
 
+test('removed: a device removed from a room opens it with a new invite: the open is refused, and its identity stays in', async (t) => {
+  const { room, a, b, onA, onB, states } = await seatedTwins(t)
+  const seen = states(a.me)
+  await del(room.devices, hid.encode(onB.store.writerKey))
+  await waitUntil(() => !onB.store.writable || null)
+
+  const err = await open(b.me.team, await cero.invite(room)).catch((e) => e)
+  t.is(err?.code, 'DENIED', 'the open is refused')
+  t.is(err?.reason, 'removed')
+  t.is((await get(a.me.team, room.id)).data.state, 'in', 'the row stays in on her other device')
+  t.ok(
+    seen.every((state) => state === 'in'),
+    'and never moved'
+  )
+  await put(onA.messages, { text: 'still here' })
+  await waitUntil(async () => (await get(room.messages)).data.some((m) => m.text === 'still here'))
+  t.pass('her other device still writes in the room')
+  const wrong = await a.me._join(await cero.invite(room), 'ward').catch((e) => e)
+  t.is(wrong?.code, 'INVALID', 'an open as another type is refused')
+  t.is((await get(a.me.team, room.id)).data.state, 'in', 'and writes no state')
+})
+
 test('leave: a row at left is joined again with a new invite, and one at removed is deleted by the app', async (t) => {
   const { room, a, onA } = await seatedTwins(t)
   await cero.leave(onA)
