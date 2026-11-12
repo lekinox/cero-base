@@ -26,10 +26,18 @@ const cmd = command(
   appName,
   flag('--storage [storage]', 'pass custom storage to pear-runtime'),
   flag('--no-updates', 'start without OTA updates'),
-  flag('--remote-debug [port]', 'expose a CDP endpoint (e2e/debugging)')
+  flag('--remote-debug [port]', 'expose a CDP endpoint (e2e/debugging)'),
+  flag(
+    '--bootstrap [nodes]',
+    'DHT bootstrap nodes, host:port comma separated (a local test network)'
+  ),
+  flag('--no-devtools', 'start without the detached DevTools')
 )
 
-cmd.parse(app.isPackaged ? process.argv.slice(1) : process.argv.slice(2))
+// the app's own folder, and the switches Chromium and Node read themselves (a test driver passes them first), are not its flags
+const own = (arg) =>
+  !/^--(remote-debugging-port|inspect)/.test(arg) && path.resolve(arg) !== app.getAppPath()
+cmd.parse(process.argv.slice(1).filter(own))
 
 if (cmd.flags.remoteDebug !== undefined) {
   app.commandLine.appendSwitch('remote-debugging-port', String(cmd.flags.remoteDebug || 0))
@@ -37,6 +45,8 @@ if (cmd.flags.remoteDebug !== undefined) {
 
 const pearStore = cmd.flags.storage
 const updates = cmd.flags.updates
+const bootstrap = cmd.flags.bootstrap
+const devtools = cmd.flags.devtools
 
 ipcMain.on('pkg', (event) => {
   event.returnValue = pkg
@@ -89,7 +99,8 @@ function getWorker(specifier) {
   if (workers.has(specifier)) return workers.get(specifier)
 
   const runtime = getPear()
-  const worker = runtime.run(path.resolve(__dirname, '..' + specifier), [runtime.storage])
+  const args = bootstrap ? [runtime.storage, bootstrap] : [runtime.storage]
+  const worker = runtime.run(path.resolve(__dirname, '..' + specifier), args)
 
   function sendWorkerStdout(data) {
     process.stdout.write(data)
@@ -174,13 +185,13 @@ async function createWindow() {
   if (devServerUrl) {
     await win.webContents.session.clearCache()
     await win.loadURL(devServerUrl)
-    win.webContents.openDevTools({ mode: 'detach' })
+    if (devtools) win.webContents.openDevTools({ mode: 'detach' })
     return
   }
 
   await win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
 
-  if (!app.isPackaged) win.webContents.openDevTools({ mode: 'detach' })
+  if (!app.isPackaged && devtools) win.webContents.openDevTools({ mode: 'detach' })
 }
 
 ipcMain.handle('pear:applyUpdate', () => getPear().applyUpdate())
