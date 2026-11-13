@@ -276,7 +276,7 @@ test('compat: an invite to a room past the start is refused by the previous rele
 
   const mine = await open(me.room, { name: 'shared' })
   const err = await old.open(them.room, await invite(mine)).catch((e) => e)
-  t.is(err?.code, 'INVALID_INVITE', 'it refuses the invite instead of waiting on a join')
+  t.is(err?.code, 'BEHIND', 'it tells its device to update instead of waiting on a join')
 })
 
 test(

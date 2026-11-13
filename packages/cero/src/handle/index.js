@@ -1338,8 +1338,7 @@ export class Handle extends ReadyResource {
     return null
   }
 
-  // the passes this identity's devices may open in a room open here: each starts its join, and
-  // goes once the room is on the root or the join under it ended
+  // the passes this device opens in a room open here: each starts its join
   /** @private */
   async _passes(from) {
     const { store } = from
@@ -1349,23 +1348,30 @@ export class Handle extends ReadyResource {
       const pass = opens(this.identity, row.pass)
       const type = pass?.data && b4a.toString(pass.data)
       if (!type || !this.spec.handles?.[type]) continue
+      if (await this._spent(from, row, pass)) continue
       const id = hid.encode(pass.key)
       const { data: was } = await this.store.get('handles', id)
       const state = was && (was.state || 'in')
-      const ended = SWEPT.includes(state)
-      if (state === 'in' || (ended && was.invite === pass.invite)) {
-        if (store.writable) await store.call('del-pass', { id: row.id })
-        continue
-      }
       // another device's join, or one under way here that waits for a reply
       const mine = state === 'asking' && (await this._asked(id, pass.invite, was.writer))
-      if (was && !ended && !mine) continue
-      const again = (err) => {
-        if (err?.code === 'TIMEOUT' || err?.code === 'CLOSED' || from.closing) return
-        this._passes(from).catch((err) => this.closing || this._onerror(err))
-      }
-      this._start(pass.invite, type, pass).done.then(() => again(), again)
+      if (was && !SWEPT.includes(state) && !mine) continue
+      const spend = () =>
+        this._spent(from, row, pass).catch((err) => this.closing || this._onerror(err))
+      this._start(pass.invite, type, pass).done.then(spend, spend)
     }
+  }
+
+  // a pass goes once its room is on the root, the join under its invite ended, or it ran out
+  /** @private */
+  async _spent(from, row, pass) {
+    const { data: was } = await this.store.get('handles', hid.encode(pass.key))
+    const state = was && (was.state || 'in')
+    const ended = SWEPT.includes(state) && was.invite === pass.invite
+    if (state !== 'in' && !ended && !Invite.parse(pass.invite).expired) return false
+    if (from.store.writable && !from.closing && !from.closed) {
+      await from.store.call('del-pass', { id: row.id })
+    }
+    return true
   }
 
   // ends it for good from any device: its row reads cancelled, so no device and no restart carries it on

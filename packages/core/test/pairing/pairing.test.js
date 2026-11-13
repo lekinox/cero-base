@@ -2579,3 +2579,50 @@ test('keys asked for: a device removed after it asked is sent nothing, nor is an
   await pairing._deliver([row({ db })])
   t.is(pairing._keys.size, 0, 'and a device that is behind sends none')
 })
+
+// ─── an invite made to one member ─────────────────────────────────────────
+
+test("invite: one made to a member is single-use and waits for no accept, and 'to' is her id", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing, db } = await makeHost(t, testnet)
+  const { id } = await Identity.create()
+  t.is(await code(pairing.invite({ to: id, reuse: true })), 'INVALID', 'not reusable')
+  t.is(await code(pairing.invite({ to: id, confirm: true })), 'INVALID', 'nor confirmed')
+  t.is(await code(pairing.invite({ to: 'nobody' })), 'INVALID', 'nor made to what is no id')
+  t.alike(await invites(db), [], 'no invite was written')
+  await pairing.invite({ to: id })
+  t.is((await invites(db))[0].to, id, 'on its row')
+})
+
+test('serving: invites made to a member owe no answer, any other does', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { pairing } = await makeHost(t, testnet)
+  await pairing.invite({ to: (await Identity.create()).id })
+  t.is(pairing.serving, false, 'her device joins with the keys it was handed')
+  await pairing.invite()
+  t.is(pairing.serving, true)
+})
+
+test('write: the join goes into the writer core once, waiting for nothing, and a join with that writer goes on from it', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { host, joiner } = await makeHostJoiner(t, testnet)
+  const invite = await host.pairing.invite()
+  const writer = crypto.keyPair()
+  const opts = { identity: joiner.identity, spec, writer }
+  await Promise.all([
+    Pairing.write(joiner.mailbox, invite, opts),
+    Pairing.write(joiner.mailbox, invite, opts)
+  ])
+  await Pairing.write(joiner.mailbox, invite, opts)
+  const key = Hypercore.key({ version: 2, signers: [{ publicKey: writer.publicKey }] })
+  const core = joiner.net.store.get({ key })
+  await core.ready()
+  t.is(core.length, 1, 'one join, however often it is written')
+  t.absent(await member(host.db, joiner.identity), 'and nobody heard of it')
+
+  const { key: room } = await joiner.join(invite, { writer })
+  t.alike(room, host.db.key, 'the join goes on from it')
+  t.is(core.length, 1, 'writing nothing more')
+  t.ok(await member(host.db, joiner.identity))
+  await core.close()
+})
