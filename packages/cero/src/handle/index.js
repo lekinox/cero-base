@@ -1327,6 +1327,8 @@ export class Handle extends ReadyResource {
       if (!(await until(store, shows, TIMEOUT, signal))) {
         throw signal.aborted ? CeroError.CLOSED('join') : CeroError.TIMEOUT('join')
       }
+      // a seat lost while the room stayed closed here ends on the root before she asks again
+      await this._ousted(reader)
     } finally {
       await reader._end().catch(safetyCatch)
     }
@@ -1375,13 +1377,14 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // a pass goes once its room is on the root, the join under its invite ended, or it ran out
+  // a pass goes once its join is in or ended, or it ran out. A room in under another invite is a
+  // seat she may have lost since, unheard on a device that keeps it closed
   /** @private */
   async _spent(from, row, pass) {
     const { data: was } = await this.store.get('handles', hid.encode(pass.key))
     const state = was && (was.state || 'in')
-    const ended = SWEPT.includes(state) && was.invite === pass.invite
-    if (state !== 'in' && !ended && !Invite.parse(pass.invite).expired) return false
+    const done = was?.invite === pass.invite && (state === 'in' || SWEPT.includes(state))
+    if (!done && !Invite.parse(pass.invite).expired) return false
     if (from.store.writable && !from.closing && !from.closed) {
       await from.store.call('del-pass', { id: row.id })
     }

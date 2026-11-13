@@ -659,6 +659,25 @@ test('seat: a device that closes a room as soon as nothing holds it keeps the wr
   t.alike(errors, [])
 })
 
+test('seat: taken out while the room is closed on her device and seated again, she takes the new seat', async (t) => {
+  const errors = []
+  const { b, general, plans } = await apart(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
+  await cero.seat(plans, b.me.id, { from: general })
+  await reaches(b.me, plans.id, 'in')
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  await cero.del(plans.members, b.me.id)
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 0 || null)
+  await cero.seat(plans, b.me.id, { from: general })
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  t.pass('seated again')
+  await waitUntil(async () => (await get(plans.invites)).data.length === 0 || null)
+  t.pass('and no invite is left open')
+  const room = await open(b.me.team, { id: plans.id })
+  t.teardown(() => room.close().catch(() => {}))
+  t.ok(room.store.writable, 'the room opens seated')
+  t.alike(errors, [])
+})
+
 test('seat: her request turned away after she asked, her row is denied with the reason', async (t) => {
   const { b, general, plans } = await apart(t)
   const { claim } = Database.prototype
