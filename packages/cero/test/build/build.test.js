@@ -188,6 +188,14 @@ test('build: a name only the root computes is free in a handle type', async (a) 
   a.is(meta.handles.room.refs.nearby.kind, 'collection')
 })
 
+test('build: passes is an app noun, free in the root and a handle type', async (a) => {
+  const text = t.collection({ text: t.string })
+  const specDir = await buildInto(a, 'ref-passes', schema({ passes: text, room: { passes: text } }))
+  const { meta } = await importSpec(specDir)
+  a.is(meta.refs.passes.kind, 'collection')
+  a.is(meta.handles.room.refs.passes.kind, 'collection')
+})
+
 test('build: an app ref named like a builtin type is refused', async (a) => {
   const text = t.collection({ text: t.string })
   await refused(a, 'type-counter', schema({ counter: text }), /'counter' is a builtin type/)
@@ -476,12 +484,16 @@ test("build: a collection Cero added once apps shipped is numbered after the app
   const specDir = await buildInto(t, 'added-ids')
   const json = await fs.readFile(join(specDir, 'main/db/db.json'), 'utf-8')
   const rows = JSON.parse(json).schema
-  const owed = rows.find((row) => row.name === 'owed')
   t.ok(
     rows.some((row) => row.type === 2),
     'the app has an index'
   )
-  t.is(owed?.id, Math.max(...rows.map((row) => row.id)), 'so none of theirs moved')
+  const last = [...rows].sort((a, b) => a.id - b.id).slice(-2)
+  t.alike(
+    last.map((row) => row.name),
+    ['owed', 'seats'],
+    'so none of theirs moved'
+  )
 })
 
 // a route's id is the wire format: one added later takes a free id, wherever its schema registers it,

@@ -4171,7 +4171,7 @@ test('to: a room below the version that brings it keeps none on an invite, which
 
 // ─── passes ───────────────────────────────────────────────────────────────
 
-const passes = (db) => db.view.find(`@${db.ns}/passes`, {}).toArray()
+const passes = (db) => db.view.find(`@${db.ns}/seats`, {}).toArray()
 const passRow = (id, to, extra = {}) => ({ id, to, pass: b4a.alloc(8, 1), createdAt: 1, ...extra })
 
 test('add-pass: a member who writes leaves one under her own name, a reader or a stranger none, and none past 64 KB', async (t) => {
