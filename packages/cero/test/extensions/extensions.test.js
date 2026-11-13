@@ -934,6 +934,43 @@ test('profileSync: a t.file avatar lands in the room and resolves there for ever
   t.alike(onJoiner, avatar, 'and for another member of it')
 })
 
+test("profileSync: a reader's name reaches the room when her avatar is a file", async (t) => {
+  const { host, joiner } = await openTwo(
+    t,
+    await buildSpec(t, 'ps-reader-file', fileSchema, fileSync)
+  )
+  const room = await open(host.room)
+  await open(joiner.room, await cero.invite(room, { role: 'reader', ttl: 60_000 }))
+  await waitForConnection(host.network)
+  await waitForConnection(joiner.network)
+
+  const { data: file } = await put(joiner.files, { data: b4a.from('avatar'), type: 'image/png' })
+  await set(joiner.profile, { name: 'reader', avatar: file.id })
+
+  const m = await waitUntil(async () => {
+    const { data } = await get(room.members, joiner.identity.id)
+    return data?.name === 'reader' ? data : null
+  })
+  t.is(m.avatar, null, 'a file is a write she has no seat for')
+})
+
+test('profileSync: a file avatar set to null is cleared in the room for every member', async (t) => {
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'ps-clear', fileSchema, fileSync))
+  const room = await open(host.room)
+  const joined = await open(joiner.room, await cero.invite(room, { role: 'member' }))
+  const { data: file } = await put(host.files, { data: b4a.from('avatar'), type: 'image/png' })
+  await set(host.profile, { name: 'jb', avatar: file.id })
+  await waitUntil(async () => (await get(joined.members, host.identity.id)).data?.avatar)
+
+  await set(host.profile, { avatar: null })
+  const m = await waitUntil(async () => {
+    const { data } = await get(joined.members, host.identity.id)
+    return data.avatar === null ? data : null
+  })
+  t.is(m.name, 'jb', 'her name stays')
+  t.is((await get(host.profile)).data.avatar, null, 'and her profile has none')
+})
+
 // ─── handleSync ─────────────────────────────────────────────────────────
 
 test('handleSync: extends the handle builtin with avatar', async (t) => {
