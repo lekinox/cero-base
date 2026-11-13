@@ -576,6 +576,86 @@ test('Handle: a removal heard as the root closes reaches onerror with nothing', 
   )
 })
 
+test('join: a second invite asked while the first join enters waits on it, and every open gets the one handle', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const first = await cero.invite(room)
+  const second = await cero.invite(room)
+  const { me } = await ceroOpen(t, { testnet })
+  let release = null
+  const gate = new Promise((resolve) => (release = resolve))
+  let entered = 0
+  const enter = me._enter
+  me._enter = async function (...args) {
+    entered++
+    await gate
+    return enter.apply(this, args)
+  }
+  let waiting = 0
+  const landed = me._landed
+  me._landed = function (...args) {
+    waiting++
+    return landed.apply(this, args)
+  }
+  const a = open(me.team, first)
+  await waitUntil(() => entered === 1)
+  const b = open(me.team, second)
+  await waitUntil(() => waiting === 2)
+  release()
+  const [x, y] = await Promise.all([a, b])
+  t.teardown(() => x.close().catch(() => {}))
+  t.is(x.id, room.id, 'the first open lands')
+  t.is(y, x, 'the second gets the same handle')
+  t.is(entered, 1, 'which entered the room once')
+  const z = await open(me.team, { id: room.id })
+  t.is(z, x, 'and so does a later open by id')
+  t.is((await get(me.team, room.id)).data.state, 'in')
+})
+
+test('join: an invite that takes over once the older one heard its reply enters the room once', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const first = await cero.invite(room)
+  const second = await cero.invite(room)
+  const { me } = await ceroOpen(t, { testnet })
+  let release = null
+  const gate = new Promise((resolve) => (release = resolve))
+  let replied = false
+  const pair = Pairing.join
+  Pairing.join = async function (...args) {
+    const reply = await pair.apply(this, args)
+    replied = true
+    await gate
+    return reply
+  }
+  t.teardown(() => (Pairing.join = pair))
+  let ran = 0
+  const run = me._run
+  me._run = function (...args) {
+    return run.apply(this, args).finally(() => ran++)
+  }
+  // the newer join enters once the older one went on from its reply, before the room row reads in
+  let entered = 0
+  const enter = me._enter
+  me._enter = async function (...args) {
+    if (++entered === 1) {
+      release()
+      await waitUntil(() => ran === 1 || entered > 1)
+    }
+    return enter.apply(this, args)
+  }
+  const a = open(me.team, first)
+  await waitUntil(() => replied)
+  const b = open(me.team, second)
+  await waitUntil(() => ran === 2 || entered > 1)
+  t.is(entered, 1, 'the newer join entered the room, the older one did not')
+  const [x, y] = await Promise.all([a, b])
+  t.teardown(() => x.close().catch(() => {}))
+  t.is(y, x, 'and both opens get the one handle')
+})
+
 test('join: a cancel takes the request back from the room, and an approve after it lets nobody in', async (t) => {
   const { room, invite, a } = await twins(t)
   const joining = open(a.me.team, invite).catch((e) => e)
