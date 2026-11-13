@@ -68,6 +68,19 @@ export const types = [
       { name: 'proof', type: 'buffer', required: false }
     ]
   },
+  // What a pass seals to each device it is for: an invite into a room and the keys that read it,
+  // so the device joins with them in hand. `data` is the sealer's own.
+  {
+    name: 'pass',
+    compact: false,
+    fields: [
+      { name: 'invite', type: 'string', required: true },
+      { name: 'key', type: 'fixed32', required: true },
+      { name: 'encryptionKey', type: 'fixed32', required: true },
+      { name: 'epochs', type: '@cero/epoch', required: false, array: true },
+      { name: 'data', type: 'buffer', required: false }
+    ]
+  },
 
   // ─── Wire envelope types for @cero-base/core/rpc codec ─────────────────────────
 

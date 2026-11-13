@@ -318,6 +318,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _removed;
     /** @private */
+    private _seat;
+    /** @private */
     private _tx;
     /** @private */
     private _leave;
@@ -449,6 +451,10 @@ export declare class Handle extends ReadyResource {
     private _start;
     /** @private */
     private _run;
+    /** @private */
+    private _take;
+    /** @private */
+    private _passes;
     /** @private */
     private _cancel;
     /** @private */

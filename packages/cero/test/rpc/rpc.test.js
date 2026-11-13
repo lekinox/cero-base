@@ -952,6 +952,24 @@ test('rpc: a removal made from the UI rotates the room key as it resolves, and t
   )
 })
 
+test('rpc: seat from the UI names the room both are in by its id, and she is let in with nothing called on her side', async (t) => {
+  const { client, testnet } = await openPair(t)
+  const general = await open(client.team, { name: 'general' })
+  const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => other.close().catch(() => {}), { order: 5 })
+  const theirs = await open(other.team, await cero.invite(general))
+  const known = async () => (await get(general.devices)).data.some((d) => d.memberId === other.id)
+  await waitUntil(async () => (await known()) || null)
+
+  const plans = await open(client.team, { name: 'plans' })
+  t.is(await cero.seat(plans, other.id, { from: general }), undefined, 'nothing back')
+  t.is((await get(plans.invites)).data[0]?.to, other.id, 'an invite made to her')
+  await waitUntil(async () => (await get(other.handles, plans.id)).data?.state === 'in' || null)
+  await waitUntil(async () => (await get(plans.members)).data.length === 2 || null)
+  t.pass('she is in')
+  t.ok(theirs, 'by the room both are in')
+})
+
 test('rpc: a watch stream over the wire survives a rotation mid-stream', async (t) => {
   const { client } = await openPair(t)
   const team = await open(client.team, { name: 'engineering' })
@@ -1054,7 +1072,11 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'invite with an ArrayBuffer for options': (root, room) => cero.invite(room, new ArrayBuffer(4)),
     'invite with a function for options': (root, room) => cero.invite(room, () => {}),
     'device invite with null for options': (root) => cero.invite(root, null),
-    'device invite with an array for options': (root) => cero.invite(root, [])
+    'device invite with an array for options': (root) => cero.invite(root, []),
+    'seat on the root': (root, room) => cero.seat(root, root.id, { from: room }),
+    'seat with no options': (root, room) => cero.seat(room, root.id),
+    'seat from a room nobody here has': (root, room) => cero.seat(room, root.id, { from: 'nope' }),
+    'seat one who is in no room here': (root, room) => cero.seat(room, 'nobody', { from: room })
   }
   // a TypeError has no code, and none crosses as ''
   const outcome = (run) =>
@@ -1077,6 +1099,8 @@ test('rpc: the worker runs a verb only by its name in the list', async (t) => {
     const err = await client.rpc.verb({ handle: client.id, verb, args }).catch((e) => e)
     t.is(err?.code, 'UNKNOWN', `${verb} is refused`)
   }
+  const seat = await client.rpc.verb({ handle: client.id, verb: 'seat', args }).catch((e) => e)
+  t.is(seat?.code, 'INVALID', 'seat is listed: it runs, and the root takes no seat')
   t.absent(server.me.closing, 'the root is still open')
 })
 

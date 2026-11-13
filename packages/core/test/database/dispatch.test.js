@@ -4081,3 +4081,139 @@ test('removal: below the version whose requests say a member accepted them, an a
   t.absent(await promise(db, again), 'the removal withdraws the promise')
   t.is((await refusal(db, hid.encode(again)))?.reason, 'removed')
 })
+
+// ─── an invite made to one member ─────────────────────────────────────────
+
+test("to: an invite made to a member lets in her devices alone, and anyone else's join is turned away 'denied'", async (t) => {
+  const { db } = await withRole(t, 'owner')
+  const her = await Identity.create()
+  const invite = await addressed(db, { to: her.id })
+  t.is((await live(db, invite))?.to, her.id, 'on its row')
+
+  const other = await Identity.create()
+  const first = await joined(db, invite, { op: named, identity: other })
+  t.absent((await db.get('requests', first)).data, 'nothing promised to another identity')
+  t.is((await refusal(db, first))?.reason, 'denied', 'who hears why')
+  const again = await joined(db, invite, { op: named, identity: other })
+  t.alike(
+    (await refused(db)).map((row) => row.id),
+    [again],
+    'one answer kept for her, the newest'
+  )
+  t.ok(await live(db, invite), 'and the invite stays')
+
+  const phone = linked(her)
+  const writer = phone.writer.publicKey
+  await apply(db, writer, 'join', named(db, invite, { identity: phone.identity, writer }))
+  t.ok((await promise(db, writer))?.promised, 'a device linked under her is let in')
+  t.is(await claimed(db, phone.identity, writer), null)
+  t.is((await db.get('members', her.id)).data?.role, 'member', 'as the member it was made to')
+})
+
+test('to: one that ends unused owes a rotation, revoked or spent by a removal, and one she used owes none', async (t) => {
+  const { db, id } = await withMember(t)
+  db.rotation._audit = async () => {}
+  const her = await Identity.create()
+  const used = await addressed(db, { to: her.id })
+  const plain = await addressed(db)
+  const revoked = await addressed(db, { to: her.id })
+  const waiting = await addressed(db, { to: (await Identity.create()).id })
+  const writer = Identity.randomKeyPair().publicKey
+  await apply(db, writer, 'join', named(db, used, { identity: her, writer }))
+  t.is(await claimed(db, her, writer), null)
+  t.is((await spent(db, b4a.toHex(used.id)))?.reason, 'spent')
+  t.is(await owed(db), null, 'her own join owes none')
+
+  t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(plain.id) }), null)
+  t.is(await owed(db), null, 'nor does an invite to nobody, revoked')
+  t.is(await apply(db, db.writerKey, 'del-invite', { id: b4a.toHex(revoked.id) }), null)
+  t.is(await owed(db), 1, 'revoked: whoever it was made to held the keys')
+
+  const seats = [hid.encode(db.writerKey), hid.encode(writer)]
+  t.is(await apply(db, db.writerKey, 'rotate-key', rotation(seats)), null)
+  t.is(await owed(db), 0)
+  t.is(await apply(db, db.writerKey, 'del-member', { id }), null)
+  t.is((await spent(db, b4a.toHex(waiting.id)))?.reason, 'removed')
+  t.is(await owed(db), 1, 'spent by a removal: owed again')
+})
+
+test('to: a room below the version that brings it keeps none on an invite, which lets in whoever holds it', async (t) => {
+  const { since } = spec.meta
+  const invite = { ...since.types['@cero/invite'], to: 2 }
+  const meta = {
+    ...spec.meta,
+    since: { ...since, types: { ...since.types, '@cero/invite': invite } }
+  }
+  const { db } = await withRole(t, 'owner', { spec: { ...spec, meta } })
+  const her = await Identity.create()
+  const row = (made) => inviteRow(b4a.toHex(made.id), { to: her.id })
+  const add = (made, stamp) =>
+    db.dispatcher.dispatch(db.spec.dispatch.encode('@cero/add-invite', row(made)), {
+      view: db.view,
+      host: noHost,
+      key: db.writerKey,
+      dbKey: db.key,
+      stamp
+    })
+  const early = Invite.create({ key: db.key, address: db.address })
+  await t.exception(db.call('add-invite', row(early)), /UNSUPPORTED/, 'its device hears it')
+  await add(early, 1)
+  t.absent((await live(db, early))?.to, 'one in the log all the same keeps none')
+  const anyone = await joined(db, early)
+  t.is((await db.get('requests', anyone)).data?.admitted, true, 'and lets in whoever holds it')
+
+  t.is(await apply(db, db.writerKey, 'upgrade', { version: 2 }), null)
+  const late = Invite.create({ key: db.key, address: db.address })
+  await add(late, 2)
+  t.is((await live(db, late))?.to, her.id, 'at it: kept')
+  t.is((await refusal(db, await joined(db, late)))?.reason, 'denied', 'and held to')
+})
+
+// ─── passes ───────────────────────────────────────────────────────────────
+
+const passes = (db) => db.view.find(`@${db.ns}/passes`, {}).toArray()
+const passRow = (id, to, extra = {}) => ({ id, to, pass: b4a.alloc(8, 1), createdAt: 1, ...extra })
+
+test('add-pass: a member who writes leaves one under her own name, a reader or a stranger none, and none past 64 KB', async (t) => {
+  const { db, id, as } = await withMember(t)
+  const her = (await Identity.create()).id
+  t.is(await as('add-pass', passRow('one', her, { by: her })), null)
+  const [row] = await passes(db)
+  t.is(row.to, her, 'for the member it names')
+  t.is(row.by, id, 'by its author, whatever the op says')
+  const big = passRow('big', her, { pass: b4a.alloc(64 * 1024 + 1) })
+  t.is((await as('add-pass', big))?.code, 'REFUSED', 'past the cap')
+  t.is(
+    (await as('add-pass', passRow('full', her, { pass: b4a.alloc(64 * 1024) })))?.code,
+    undefined
+  )
+
+  const stranger = Identity.randomKeyPair().publicKey
+  t.is((await apply(db, stranger, 'add-pass', passRow('none', her)))?.code, 'REFUSED')
+  const reader = await withMember(t, 'reader')
+  t.is((await reader.as('add-pass', passRow('none', her)))?.code, 'REFUSED', 'a reader writes none')
+  t.is((await passes(db)).length, 2)
+})
+
+test('del-pass: by the member it is to, by its author or by one who may remove, and by nobody else', async (t) => {
+  const [her, other] = [await second('member'), await second('member')]
+  const { db, as } = await withMember(t, 'member', [her.row, other.row])
+  const by = async (member, id) => {
+    await seat(db, member)
+    return apply(db, member.writer.publicKey, 'del-pass', { id })
+  }
+  for (const id of ['hers', 'authors', 'owners', 'kept']) {
+    t.is(await as('add-pass', passRow(id, her.id)), null)
+  }
+  t.is(await by(her, 'hers'), null)
+  t.is(await as('del-pass', { id: 'authors' }), null)
+  t.is(await apply(db, db.writerKey, 'del-pass', { id: 'owners' }), null)
+  t.is((await by(other, 'kept'))?.code, 'REFUSED', 'another member takes none out')
+  const stranger = Identity.randomKeyPair().publicKey
+  t.is((await apply(db, stranger, 'del-pass', { id: 'kept' }))?.code, 'REFUSED', 'nor a stranger')
+  t.is(await by(other, 'gone'), null, 'one that is not there changes nothing')
+  t.alike(
+    (await passes(db)).map((row) => row.id),
+    ['kept']
+  )
+})

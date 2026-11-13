@@ -204,3 +204,45 @@ test('invites: after a removal and a rotation, an invite minted before is turned
   await joinAsRoot(t, testnet, after)
   await memberCount(room, 2)
 })
+
+// two identities in `general`, the first of them alone in `plans`
+async function sharing(t) {
+  const testnet = await makeTestnet(t)
+  const a = await openHandle(t, { testnet })
+  await a.me.store.bootstrap({ name: 'a-root' })
+  const general = await open(a.me.team, { name: 'general' })
+  t.teardown(() => general.close().catch(() => {}))
+  const b = await joinAsRoot(t, testnet, await cero.invite(general))
+  await waitUntil(async () => (await devicesOf(general, b.identity.id)).length > 0 || null)
+  const plans = await open(a.me.team, { name: 'plans' })
+  t.teardown(() => plans.close().catch(() => {}))
+  return { testnet, a, b, general, plans }
+}
+
+const devicesOf = async (room, id) =>
+  (await get(room.devices)).data.filter((d) => d.memberId === id && d.key)
+const passesOf = (room) => room.store.view.find(`@${room.store.ns}/passes`, {}).toArray()
+const rowOf = async (me, id) => (await get(me.handles, id)).data
+
+test('seat: a member of a room both are in is let into another, with nothing called on her side', async (t) => {
+  const { a, b, general, plans } = await sharing(t)
+
+  t.is(await cero.seat(plans, b.identity.id, { from: general }), undefined)
+  const [invite] = (await get(plans.invites)).data
+  t.is(invite.to, b.identity.id, 'an invite made to her')
+  t.is(plans._pair.serving, false, 'which owes no answer')
+  t.is((await passesOf(general)).length, 1, 'and its pass waits in the room both are in')
+
+  await waitUntil(async () => (await rowOf(b.me, plans.id))?.state === 'in' || null)
+  const room = await open(b.me.team, { id: plans.id })
+  t.teardown(() => room.close().catch(() => {}))
+  t.is((await get(room.status)).data.role, 'member', 'she is in, at the role it named')
+  await cero.put(room.notes, { text: 'hi' })
+  await waitUntil(async () => (await get(plans.notes)).data.length === 1 || null)
+  t.pass('and writes there')
+  await memberCount(plans, 2)
+  await waitUntil(async () => (await passesOf(general)).length === 0 || null)
+  await waitUntil(async () => (await passesOf(b.room)).length === 0 || null)
+  t.pass('her device takes the pass out once she is in')
+  t.is((await get(a.me.handles, plans.id)).data?.state ?? 'in', 'in')
+})

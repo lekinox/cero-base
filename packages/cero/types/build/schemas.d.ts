@@ -45,6 +45,7 @@ export declare const main: {
         index: import("@cero-base/core").Prim;
         confirm: import("@cero-base/core").Prim;
         secret: import("@cero-base/core").Prim;
+        to: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;
@@ -165,6 +166,13 @@ export declare const main: {
         removed: import("@cero-base/core").Prim;
         standing: import("@cero-base/core").Prim;
         proof: import("@cero-base/core").Prim;
+    };
+    pass: {
+        id: import("@cero-base/core").Prim;
+        to: import("@cero-base/core").Prim;
+        by: import("@cero-base/core").Prim;
+        pass: import("@cero-base/core").Prim;
+        createdAt: import("@cero-base/core").Prim;
     };
 };
 export declare const local: {

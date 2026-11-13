@@ -10,7 +10,7 @@ import z32 from 'z32'
 import { Identity } from '@cero-base/core/identity'
 import { Database } from '@cero-base/core/database'
 import { blobEpochKey, epochEntries } from '@cero-base/core/database/encryption'
-import { Pairing } from '@cero-base/core/pairing'
+import { Pairing, Pass } from '@cero-base/core/pairing'
 import { read } from '../push/index.js'
 import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { KEEP_OPEN, NS, TIMEOUT } from '../lib/constants.js'
+import { KEEP_OPEN, NS, PASSES, SPENT, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { box } from '../local/index.js'
@@ -477,6 +477,47 @@ export class Handle extends ReadyResource {
   /** @private */
   _removed(id) {
     return this.store.removed(id)
+  }
+
+  // an invite made to her, sealed with this room's keys to her devices in a room both are in, where
+  // they find it. `from` crosses the bridge as its id
+  /** @private */
+  async _seat(id, { from, role = 'member', ttl } = {}) {
+    if (!this.parent) throw CeroError.INVALID('a device is linked, not seated')
+    if (typeof from === 'string') {
+      const { data: row } = await this.root.store.get('handles', from)
+      if (!row) throw CeroError.UNKNOWN('handle', from)
+      const shared = await this.root._load(row.type, from)
+      try {
+        return await this._seat(id, { from: shared, role, ttl })
+      } finally {
+        await shared.close()
+      }
+    }
+    if (!(from instanceof Handle) || !from.parent) {
+      throw CeroError.INVALID('seat takes { from }: a room she is in')
+    }
+    const { data: her } = await from.store.get('members', id)
+    if (!her) throw CeroError.UNKNOWN('member', id)
+    const { data: me } = await from.store.get('members', this.identity.id)
+    if (!can(me?.role, WRITE)) throw CeroError.DENIED(null, `you cannot write in ${from.id}`)
+    const devices = (await from.store.get('devices')).data.filter((d) => d.memberId === id && d.key)
+    if (!devices.length) throw CeroError.UNKNOWN('device', id)
+    if ((await this.store.get('members', id)).data) {
+      throw CeroError.INVALID(`${id} is a member already`)
+    }
+    const invite = await this._invite({ role, ttl, to: id })
+    const { key, encryptionKey, keyring } = this.store
+    const epochs = keyring.all()
+    const pass = Pass.seal(devices, {
+      invite,
+      key,
+      encryptionKey,
+      epochs,
+      data: b4a.from(this.type)
+    })
+    const row = { id: b4a.toHex(Identity.randomBytes(16)), to: id, pass, createdAt: Date.now() }
+    await from.store.call('add-pass', row)
   }
 
   // the same context, its refs writing into one batch; a fn that ignores it would write outside
@@ -1179,11 +1220,11 @@ export class Handle extends ReadyResource {
 
   // one join a handle, whoever waits on it: it goes on until its row says how it ended, and a close only pauses it
   /** @private */
-  _start(invite, type) {
+  _start(invite, type, pass = null) {
     const id = hid.encode(Invite.parse(invite).key)
     let join = this._joining.get(id)
     if (!join) {
-      join = { id, type, invite: null, writer: null, waiting: 0, end: null, running: null }
+      join = { id, type, invite: null, pass, writer: null, waiting: 0, end: null, running: null }
       join.done = new Promise((resolve, reject) => {
         join.resolve = resolve
         join.reject = reject
@@ -1191,8 +1232,12 @@ export class Handle extends ReadyResource {
       join.done.catch(safetyCatch)
       this._joining.set(id, join)
     }
-    // a join past its reply enters with those keys: a newer invite waits on it
-    if (join.invite !== invite && !join.entering) this._run(join, invite)
+    // a join past its reply enters with those keys: a newer invite waits on it, and one waiting
+    // for a reply takes the keys a pass hands it
+    if ((join.invite !== invite || (pass && !join.pass)) && !join.entering) {
+      join.pass = pass
+      this._run(join, invite)
+    }
     return join
   }
 
@@ -1208,7 +1253,9 @@ export class Handle extends ReadyResource {
       end(value)
     }
     try {
-      const id = await this._ask(join.type, invite)
+      const { pass } = join
+      const taken = pass && (await this._take(join, invite, running.signal))
+      const id = pass ? hid.encode(pass.key) : await this._ask(join.type, invite)
       const writer = (join.writer = await this._loadKeyPair(id))
       const { data: row } = await this.store.get('handles', id)
       // the keys are on the row before the reply is let go: a restart opens the handle without joining again
@@ -1218,14 +1265,16 @@ export class Handle extends ReadyResource {
       const spec = pickHandle(this.spec, join.type)
       const { identity, mailbox } = this
       const opts = { identity, spec, writer, keep, timeout: 0, signal: running.signal }
-      const reply = row.encryptionKey
-        ? { ...row, epochs: row.epochs ? c.decode(epochEntries, row.epochs) : [], writer }
-        : await Pairing.join(mailbox, invite, opts)
+      const reply = taken
+        ? { ...pass, writer }
+        : row.encryptionKey
+          ? { ...row, epochs: row.epochs ? c.decode(epochEntries, row.epochs) : [], writer }
+          : await Pairing.join(mailbox, invite, opts)
       // an abort stops no reply already in hand: the newer attempt enters
-      if (running !== join.running) return
+      if (running !== join.running) return taken?._end()
       join.entering = true
       await this._stand(id, 'joining', keys(reply))
-      const child = await this._enter(join.type, reply, invite)
+      const child = await this._enter(join.type, reply, invite, taken)
       // every waiter takes its own hold once the row reads in: this one is let go, idle until the app opens it
       child.close().catch(this._onerror)
       settle(join.resolve, child)
@@ -1239,8 +1288,83 @@ export class Handle extends ReadyResource {
       if (end.code !== 'CLOSED') {
         await this._over(join.id, end, { invite, writer: join.writer }).catch(report)
       }
-      if (err.code !== 'CLOSED' && alone) this._onerror(err)
+      // a pass whose room did not show in time is tried again, nothing on the root
+      if (err.code !== 'CLOSED' && err.code !== 'TIMEOUT' && alone) this._onerror(err)
       settle(join.reject, end)
+    }
+  }
+
+  // a pass's join: its invite read in the room its keys open before the root shows anything, then
+  // seated by this device's own claim. Null when that takes longer: it goes on as a plain join
+  /** @private */
+  async _take(join, invite, signal) {
+    const { type, pass } = join
+    const id = hid.encode(pass.key)
+    const spec = pickHandle(this.spec, type)
+    const { data: kept } = await this.local.store.get('handle-keypairs', id)
+    const { publicKey, secretKey } = kept?.invite === invite ? kept : Identity.randomKeyPair()
+    const writer = (join.writer = { publicKey, secretKey })
+    // stored before its join is on the core: a retry joins with it, never with another
+    await this._saveKeyPair(id, writer, invite)
+    await Pairing.write(this.mailbox, invite, { identity: this.identity, spec, writer })
+    const { key, encryptionKey, epochs } = pass
+    const namespace = `${NS}/handle/${type}/${randomNs()}`
+    const child = this._room({ spec, namespace, key, encryptionKey, epochs, keyPair: writer })
+    try {
+      await child.ready()
+      const { store } = child
+      const inviteId = b4a.toHex(Invite.parse(invite).id)
+      const shows = async () =>
+        !!(await store.get('invites', inviteId)).data ||
+        !!(await store.view.get(`@${store.ns}/${SPENT}`, { id: inviteId }))
+      if (!(await until(store, shows, TIMEOUT, signal))) {
+        throw signal.aborted ? CeroError.CLOSED('join') : CeroError.TIMEOUT('join')
+      }
+      await this._ask(type, invite, writer)
+      const seated = await store.claim({ timeout: TIMEOUT }).then(
+        () => true,
+        (err) => {
+          if (err.code !== 'TIMEOUT') throw err
+          return false
+        }
+      )
+      if (signal.aborted) throw CeroError.CLOSED('join')
+      if (seated) return child
+    } catch (err) {
+      await child._end().catch(safetyCatch)
+      throw err
+    }
+    await child._end()
+    return null
+  }
+
+  // the passes this identity's devices may open in a room open here: each starts its join, and
+  // goes once the room is on the root or the join under it ended
+  /** @private */
+  async _passes(from) {
+    const { store } = from
+    const rows = await store.view.find(`@${store.ns}/${PASSES}`, {}).toArray()
+    for (const row of rows) {
+      if (row.to !== this.identity.id) continue
+      const pass = opens(this.identity, row.pass)
+      const type = pass?.data && b4a.toString(pass.data)
+      if (!type || !this.spec.handles?.[type]) continue
+      const id = hid.encode(pass.key)
+      const { data: was } = await this.store.get('handles', id)
+      const state = was && (was.state || 'in')
+      const ended = SWEPT.includes(state)
+      if (state === 'in' || (ended && was.invite === pass.invite)) {
+        if (store.writable) await store.call('del-pass', { id: row.id })
+        continue
+      }
+      // another device's join, or one under way here that waits for a reply
+      const mine = state === 'asking' && (await this._asked(id, pass.invite, was.writer))
+      if (was && !ended && !mine) continue
+      const again = (err) => {
+        if (err?.code === 'TIMEOUT' || err?.code === 'CLOSED' || from.closing) return
+        this._passes(from).catch((err) => this.closing || this._onerror(err))
+      }
+      this._start(pass.invite, type, pass).done.then(() => again(), again)
     }
   }
 
@@ -1331,7 +1455,7 @@ export class Handle extends ReadyResource {
 
   // a join's row: `asking` with its invite and no keys. A join that ended under this invite ends the same way again
   /** @private */
-  async _ask(type, invite) {
+  async _ask(type, invite, given = null) {
     const { key } = Invite.parse(invite)
     const id = hid.encode(key)
     const { data: row } = await this.store.get('handles', id)
@@ -1346,7 +1470,8 @@ export class Handle extends ReadyResource {
     const mine = !!kept?.invite && (state === 'joining' || latest)
     if (mine && (state === 'joining' || row.invite === invite)) return id
     if (ENDS[state] && row.invite === invite) throw ENDS[state](row.reason)
-    const writer = mine ? kept : Identity.randomKeyPair()
+    // a pass's join asks with the writer its join is already written with
+    const writer = mine ? kept : given || Identity.randomKeyPair()
     await this._saveKeyPair(id, writer, invite)
     // a room another device of this identity already has the keys of is joined with them
     if (state === 'joining') return id
@@ -1431,18 +1556,20 @@ export class Handle extends ReadyResource {
    * @returns {Promise<Handle>}
    * @private
    */
-  async _enter(type, reply, invite) {
+  async _enter(type, reply, invite, taken = null) {
     const id = hid.encode(reply.key)
     // a room this identity lost its seat in stays open on its old writer: it ends before the new seat opens it
     const stale = [...this.children].find((c) => c.id === id && !c.closing)
     const out = stale && (await stale.store.removed(this.identity.id))
     if (out) await stale._end().catch(safetyCatch)
+    // a pass's join is already open, seated
     const child = /** @type {Child} */ (
-      this._room({
-        spec: pickHandle(this.spec, type),
-        namespace: `${NS}/handle/${type}/${randomNs()}`,
-        ...delivered(reply)
-      })
+      taken ||
+        this._room({
+          spec: pickHandle(this.spec, type),
+          namespace: `${NS}/handle/${type}/${randomNs()}`,
+          ...delivered(reply)
+        })
     )
     // its row is listed while it joins: an open by id shares this child, a second on the same core deadlocks
     let publish = null
@@ -1652,6 +1779,9 @@ export class Handle extends ReadyResource {
     child.once('close', () => child.store.off('writable', prune))
     prune()
     this._seats(child)
+    const take = () => this._passes(child).catch((err) => this.closing || this._onerror(err))
+    child.once('close', child.store.onUpdate(PASSES, take))
+    take()
     // what a listener ties to the handle as it runs is no holder's: it stays through their last close
     child._arriving = true
     try {
@@ -2247,6 +2377,38 @@ function listed(rows, query = {}) {
   if (typeof query === 'string') return { data: rows.find((row) => row.id === query) ?? null }
   const data = filter(rows, query)
   return { data, total: data.length, size: data.length }
+}
+
+// whether `check` holds of a room within `ms` as its view updates: false once past, or stopped
+function until(db, check, ms, signal) {
+  return new Promise((resolve, reject) => {
+    const done = (err, found) => {
+      clearTimeout(timer)
+      db.off('update', test)
+      db.off('close', closed)
+      signal.removeEventListener('abort', stop)
+      if (err) reject(err)
+      else resolve(found)
+    }
+    const test = () => check().then((found) => found && done(null, true), done)
+    const stop = () => done(null, false)
+    const closed = () => done(CeroError.CLOSED('Database'))
+    const timer = setTimeout(stop, ms)
+    db.on('update', test)
+    db.once('close', closed)
+    signal.addEventListener('abort', stop)
+    if (signal.aborted) stop()
+    else test()
+  })
+}
+
+// what a pass holds for this device; a malformed one, or none of its boxes, is nothing
+function opens(identity, pass) {
+  try {
+    return Pass.open(identity, pass)
+  } catch {
+    return null
+  }
 }
 
 function admitted(db, id) {

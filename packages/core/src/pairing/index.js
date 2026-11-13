@@ -25,6 +25,8 @@ import { CeroError } from '../lib/errors.js'
 import { can, grants, isRank, isOptions, joining, INVITE, REMOVE } from '../lib/utils.js'
 import { NAMESPACE, MEMBER, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 
+export { Pass } from './pass.js'
+
 const Join = getEncoding('@cero/join')
 // what a sync follows in the log
 const WATCHED = ['*', 'invites', 'requests', 'members', 'devices', ASKS]
@@ -43,6 +45,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise spent by the first.
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
+ * @property {string | null} [to]                   The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
@@ -144,8 +147,16 @@ export class Pairing extends ReadyResource {
   async invite(opts = {}) {
     if (!isOptions(opts)) throw CeroError.INVALID('invite options are an object')
     const { role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = opts
+    const to = opts.to == null ? null : memberId(opts.to)
+    if (to && (reuse || confirm)) {
+      throw CeroError.INVALID("an invite made 'to' a member is single-use and waits for no accept")
+    }
     if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
     if (!this.opened) await this.ready()
+    // the encoder drops a field the built spec lacks: the invite would let anyone in
+    if (to && !('to' in (this.db.meta.since?.types[`@${this.db.ns}/invite`] ?? {}))) {
+      throw CeroError.UNSUPPORTED("'to' in 'invites'")
+    }
     // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently
     await this._checkGrant(role)
     // a rank above member is handed out once
@@ -163,7 +174,8 @@ export class Pairing extends ReadyResource {
       confirm,
       expires: invite.expires,
       createdAt: Date.now(),
-      secret
+      secret,
+      to
     }
     invite.stamp = await this.db.write([['add-invite', row]])
     if (secret || invite.stamp > this.db.start) invite.version = STAMPED
@@ -285,7 +297,8 @@ export class Pairing extends ReadyResource {
     const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
     await this._answer(owed, refused, role, secrets)
     await this._deliver(await this._list(ASKS))
-    const live = invites.some((row) => !expired(row))
+    // one made for a member owes no answer: her device joins with the keys it was handed
+    const live = invites.some((row) => !row.to && !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
   }
@@ -530,20 +543,9 @@ export class Pairing extends ReadyResource {
       keep = async () => {}
     } = {}
   ) {
-    if (!mailbox) throw CeroError.REQUIRED('mailbox')
-    if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
-    if (!spec?.dispatch) throw CeroError.REQUIRED('spec')
-    if (writer?.publicKey?.byteLength !== 32 || writer.secretKey?.byteLength !== 64) {
-      throw CeroError.INVALID('writer must be a keypair')
-    }
-    const parsed = Invite.parse(invite)
-    if (parsed.expired) throw CeroError.EXPIRED()
+    const { parsed, stamp } = joinable(mailbox, invite, { identity, spec, writer })
     // an invite with its own address proves its answers: one without a valid tag is nobody's
     const mine = parsed.own ? Mailbox.keyPair(writer.secretKey) : null
-    // an invite with no stamp was minted before invites carried one: at the start
-    const { version = 1, start = 1 } = spec.meta || {}
-    const stamp = parsed.stamp || start
-    if (stamp > version) throw CeroError.BEHIND(stamp)
     if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
     if (!mailbox.opened) await mailbox.ready()
 
@@ -587,11 +589,7 @@ export class Pairing extends ReadyResource {
 
     // in the network's store, which every connection replicates: open the database from it
     const { network } = mailbox
-    const { store } = network
-    const core = store.get({
-      keyPair: writer,
-      manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
-    })
+    const core = coreOf(network.store, writer)
     // a reply read no longer than the join waits for it
     const reads = timeout > 0 ? { timeout: Math.min(timeout, 30000) } : {}
     const inbox = mailbox.receive(writer.secretKey, onreply, { keep: false, ...reads })
@@ -617,7 +615,7 @@ export class Pairing extends ReadyResource {
     const left = parsed.expires - Date.now()
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
     const expiry = parsed.expires && left < MAX_DELAY ? setTimeout(expire, left) : null
-    write(core, spec, stamp, parsed, identity, writer)
+    written(core, spec, stamp, parsed, identity, writer)
       .then(() => post.ready())
       .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))
     try {
@@ -628,6 +626,28 @@ export class Pairing extends ReadyResource {
       signal?.removeEventListener('abort', onabort)
       mailbox.off('close', onabort)
       await Promise.allSettled([inbox.close(), post.close()])
+    }
+  }
+
+  /**
+   * Write the join into the writer's own core and stop there: nothing is announced and no reply
+   * is waited for. A device that holds the database's keys opens it with this writer and applies
+   * its own join; `Pairing.join` with the same writer goes on from it and writes nothing more.
+   *
+   * @param {Mailbox} mailbox
+   * @param {string} invite
+   * @param {{ identity: JoinOpts['identity'], spec: JoinOpts['spec'], writer: KeyPair }} opts
+   * @returns {Promise<void>}
+   */
+  static async write(mailbox, invite, { identity, spec, writer } = {}) {
+    const { parsed, stamp } = joinable(mailbox, invite, { identity, spec, writer })
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
+    if (!mailbox.opened) await mailbox.ready()
+    const core = coreOf(mailbox.network.store, writer)
+    try {
+      await written(core, spec, stamp, parsed, identity, writer)
+    } finally {
+      await core.close()
     }
   }
 
@@ -713,6 +733,44 @@ export function sealJoin(invite, identity, writer, reply) {
 // the cancel being appended, by writer: two at once on one writer append it once
 const cancels = new Map()
 
+// the join being written, by writer: two at once on one writer write it once
+const writing = new Map()
+
+// what a join is made with, checked before anything is written: its invite, and the stamp it takes
+function joinable(mailbox, invite, { identity, spec, writer }) {
+  if (!mailbox) throw CeroError.REQUIRED('mailbox')
+  if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
+  if (!spec?.dispatch) throw CeroError.REQUIRED('spec')
+  if (writer?.publicKey?.byteLength !== 32 || writer.secretKey?.byteLength !== 64) {
+    throw CeroError.INVALID('writer must be a keypair')
+  }
+  const parsed = Invite.parse(invite)
+  if (parsed.expired) throw CeroError.EXPIRED()
+  // an invite with no stamp was minted before invites carried one: at the start
+  const { version = 1, start = 1 } = spec.meta || {}
+  const stamp = parsed.stamp || start
+  if (stamp > version) throw CeroError.BEHIND(stamp)
+  return { parsed, stamp }
+}
+
+// a writer's core in the network's store, which every connection replicates
+function coreOf(store, writer) {
+  return store.get({
+    keyPair: writer,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+  })
+}
+
+function written(core, spec, stamp, invite, identity, writer) {
+  const id = b4a.toHex(writer.publicKey)
+  const run = () => write(core, spec, stamp, invite, identity, writer)
+  const last = (writing.get(id) ?? Promise.resolve()).then(run, run)
+  writing.set(id, last)
+  const done = () => writing.get(id) === last && writing.delete(id)
+  last.then(done, done)
+  return last
+}
+
 async function retract(core, op) {
   const at = await core.getUserData('cero/cancel')
   if (at && c.decode(c.uint, at) === core.length) return
@@ -766,5 +824,14 @@ function getInviteId(invite) {
     return b4a.toHex(Invite.parse(invite).id)
   } catch {
     return null
+  }
+}
+
+// a member's id as its row has it, from any form of the identity's key
+function memberId(to) {
+  try {
+    return hid.normalize(to)
+  } catch {
+    throw CeroError.INVALID("'to' is a member's id")
   }
 }
