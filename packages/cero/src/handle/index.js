@@ -1191,7 +1191,8 @@ export class Handle extends ReadyResource {
       join.done.catch(safetyCatch)
       this._joining.set(id, join)
     }
-    if (join.invite !== invite) this._run(join, invite)
+    // a join past its reply enters with those keys: a newer invite waits on it
+    if (join.invite !== invite && !join.entering) this._run(join, invite)
     return join
   }
 
@@ -1220,6 +1221,9 @@ export class Handle extends ReadyResource {
       const reply = row.encryptionKey
         ? { ...row, epochs: row.epochs ? c.decode(epochEntries, row.epochs) : [], writer }
         : await Pairing.join(mailbox, invite, opts)
+      // an abort stops no reply already in hand: the newer attempt enters
+      if (running !== join.running) return
+      join.entering = true
       await this._stand(id, 'joining', keys(reply))
       const child = await this._enter(join.type, reply, invite)
       // every waiter takes its own hold once the row reads in: this one is let go, idle until the app opens it
@@ -1664,7 +1668,7 @@ export class Handle extends ReadyResource {
     const onchange = (touched) => {
       if (touched.has('*') || touched.has('devices') || touched.has('members')) {
         this._index(child).catch(this._onerror)
-        this._ousted(child).catch(this._onerror)
+        this._ousted(child).catch((err) => this.closing || this._onerror(err))
       }
     }
     child.store.on('update', onchange)
