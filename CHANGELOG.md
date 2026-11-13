@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.1 (2026-11-13)
+
+### Bug Fixes
+
+- an invite asked while a join of the same room enters waits on that join, and a removal heard at close reports nothing (#74)
+
+### Documentation
+
+- the cero skill says what 3.0.0 does: room lists, cancel and the latest ask, revoke by row id, recovery waits and peek, naming and removing devices (#73)
+
+### Other
+
+- 🚀 test: compat tests the release below this one, so main is green after a release and 3.0.1 can ship (#75)
+
 ## 3.0.0 (2026-11-12)
 
 ### Features
