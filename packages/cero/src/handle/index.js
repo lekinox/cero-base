@@ -1664,7 +1664,7 @@ export class Handle extends ReadyResource {
     const onchange = (touched) => {
       if (touched.has('*') || touched.has('devices') || touched.has('members')) {
         this._index(child).catch(this._onerror)
-        this._ousted(child).catch(this._onerror)
+        this._ousted(child).catch((err) => this.closing || this._onerror(err))
       }
     }
     child.store.on('update', onchange)

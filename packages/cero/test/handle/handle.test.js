@@ -551,6 +551,31 @@ test('join: a cancel as the app closes reaches onerror with nothing', async (t) 
   )
 })
 
+test('Handle: a removal heard as the root closes reaches onerror with nothing', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const room = await open(me.team, { name: 'clinic' })
+  // the root closes while the room reads who removed this identity
+  room.store.removal = async () => {
+    me.close().catch(() => {})
+    await waitUntil(() => me.store.closed)
+    return { by: me.identity.id }
+  }
+  let ousted = null
+  const oust = me._ousted
+  me._ousted = function (child) {
+    return (ousted = oust.call(this, child))
+  }
+  room.store.emit('update', new Set(['members']))
+  await ousted.catch(() => {})
+  await waitUntil(() => me.closed)
+  t.alike(
+    errors.map((err) => err.code || err.message),
+    [],
+    'nothing reached onerror'
+  )
+})
+
 test('join: a cancel takes the request back from the room, and an approve after it lets nobody in', async (t) => {
   const { room, invite, a } = await twins(t)
   const joining = open(a.me.team, invite).catch((e) => e)
