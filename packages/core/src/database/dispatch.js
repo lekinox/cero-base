@@ -17,6 +17,7 @@ import {
   REFUSALS,
   SPENT,
   ASKS,
+  PASSES,
   OWNER,
   INVITE,
   REMOVE,
@@ -75,7 +76,8 @@ const REQUESTS = {
   deny: 'deny',
   'rotate-key': 'epoch',
   revoke: 'revoke',
-  'ask-key': 'owed'
+  'ask-key': 'owed',
+  'add-pass': 'pass'
 }
 
 // the device keys a request stands on: its own, and those of the chain its join proved or a link
@@ -121,6 +123,7 @@ export const leftId = (memberId) => `left:${memberId}`
 // what an identity's devices told a room of its device keys, in the removals too
 export const toldId = (memberId) => `told:${memberId}`
 const MAX_REMOVED = 64
+const MAX_PASS = 64 * 1024
 
 /**
  * 32-byte keys back to back, or none when they are not that.
@@ -186,6 +189,7 @@ export function makeDispatcher({
   const refusals = `@${ns}/${REFUSALS}`
   const spent = `@${ns}/${SPENT}`
   const asks = `@${ns}/${ASKS}`
+  const passes = `@${ns}/${PASSES}`
   const getMember = (view, id) => view.get(`@${ns}/members`, { id })
   const getDevice = (view, id) => view.get(`@${ns}/devices`, { id })
 
@@ -989,6 +993,25 @@ export function makeDispatcher({
     await ctx.view.delete(asks, op)
   })
 
+  // a pass waits in a room both are in for the member it is sealed to: left by a member who
+  // writes, under her name, and taken out by either of them or by one who may remove
+  add('add-pass', async (op, ctx) => {
+    await requireWrite(ctx)
+    if (!(op.pass.byteLength <= MAX_PASS)) throw CeroError.REFUSED('pass')
+    ctx.touched?.push(PASSES)
+    await ctx.view.insert(passes, { ...op, by: await getSignerMember(ctx.view, ctx.key) })
+  })
+  add('del-pass', async (op, ctx) => {
+    const row = await ctx.view.get(passes, { id: op.id })
+    if (!row) return
+    const { memberId, role } = await author(ctx)
+    if (!memberId || (memberId !== row.to && memberId !== row.by && !can(role, REMOVE))) {
+      throw CeroError.REFUSED('pass')
+    }
+    ctx.touched?.push(PASSES)
+    await ctx.view.delete(passes, { id: op.id })
+  })
+
   // any WRITE member mints an invite, its rank capped at admission; an existing row is never
   // overwritten, and altering or revoking one needs REMOVE
   const invites = `@${ns}/invites`
@@ -1029,6 +1052,8 @@ export function makeDispatcher({
     await drop(ctx, 'invites', invite.id)
     const { secret, confirm } = invite
     await ctx.view.insert(spent, { id: invite.id, reason, expires, secret, confirm })
+    // one made to a member went to her with the keys: unused, she holds them and no seat
+    if (invite.to && reason !== 'spent') await owe(ctx.view)
     const kept = async (request) => {
       if (!request.admitted) return false
       if (!request.promised || reason === 'spent') return true
@@ -1200,6 +1225,11 @@ export function makeDispatcher({
       const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
       const last = await recorded(ctx.view)
       return refuse(ctx, { ...turned, identity: last ? join.identity : null }, 'removed', last)
+    }
+    // one made to a member lets in her devices alone
+    if (invite.to && invite.to !== memberId) {
+      const turned = { id, reply: join.reply, expires: invite.expires || 0, invite: invite.id }
+      return refuse(ctx, { ...turned, identity: join.identity }, 'denied', true)
     }
     await ctx.view.delete(refusals, { id })
     const gone = known ? null : await ctx.view.get(removals, { id: leftId(memberId) })

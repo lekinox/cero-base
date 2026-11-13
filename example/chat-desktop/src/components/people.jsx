@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { cero } from '@cero-base/cero/client'
 import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
@@ -9,7 +9,11 @@ const roles = ['member', 'reader', 'admin']
 // cero.revoke takes the code, and a room.invites row keeps only its id
 const codes = new Map()
 
-function describe(invite) {
+function describe(invite, known) {
+  if (invite.to) {
+    const name = known.find((p) => p.id === invite.to)?.name || invite.to.slice(0, 8)
+    return `seat for ${name}, ${invite.role}`
+  }
   const kind = invite.reuse ? 'reusable' : 'single use'
   return `${invite.role}, ${kind}${invite.confirm ? ', needs approval' : ''}`
 }
@@ -34,9 +38,38 @@ function Request({ request, onError }) {
   )
 }
 
+// the members of these rooms, each room held open while the panel lists them
+function useKnown(rooms, onError) {
+  const me = useCero()
+  const [members, setMembers] = useState({})
+  const ids = rooms.map((r) => r.id).join()
+
+  useEffect(() => {
+    const gone = Promise.withResolvers()
+    const follow = async ({ id }) => {
+      const from = await cero.open(me.room, { id })
+      const stream = cero.watch(from.members)
+      stream.on('data', ({ data }) =>
+        setMembers((all) => ({ ...all, [id]: data.map((m) => ({ ...m, from })) }))
+      )
+      stream.on('error', onError)
+      await gone.promise
+      stream.destroy()
+      await cero.close(from)
+    }
+    for (const room of rooms) follow(room).catch(onError)
+    return gone.resolve
+  }, [me, ids]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return rooms.flatMap(({ id, name }) =>
+    (members[id] ?? []).map((m) => ({ ...m, room: name || 'Unnamed' }))
+  )
+}
+
 export function People({ seated, onError }) {
   const me = useCero()
   const room = useRoom()
+  const { data: rooms } = useQuery(me.room)
   const { data: status } = useQuery(room.status)
   const { data: members } = useQuery(room.members)
   const { data: requests } = useQuery(room.requests, { admitted: false })
@@ -48,6 +81,10 @@ export function People({ seated, onError }) {
   const [code, setCode] = useState('')
   const writer = seated && status.role !== 'reader'
   const moderator = seated && (status.role === 'owner' || status.role === 'admin')
+  const known = useKnown(writer ? rooms.filter((r) => r.id !== room.id) : [], onError)
+  // in the room, or with a seat that waits for them
+  const taken = new Set([...members.map((m) => m.id), ...invites.map((i) => i.to)])
+  const addable = known.filter((p) => !taken.has(p.id))
 
   const mint = async () => {
     const { data: before } = await cero.get(room.invites)
@@ -100,6 +137,21 @@ export function People({ seated, onError }) {
           </div>
           {code && <Input readOnly aria-label='Code' value={code} className='w-full font-mono' />}
 
+          {addable.length > 0 && (
+            <section aria-label='Add from another room'>
+              <Section title='Add from another room'>
+                {addable.map((p) => (
+                  <div key={`${p.from.id}/${p.id}`} className='flex items-center gap-2'>
+                    <span className='flex-1 text-card-foreground'>{`${p.name || p.id.slice(0, 8)} · ${p.room}`}</span>
+                    <Button onClick={() => cero.seat(room, p.id, { from: p.from }).catch(onError)}>
+                      Add
+                    </Button>
+                  </div>
+                ))}
+              </Section>
+            </section>
+          )}
+
           {requests.length > 0 && (
             <section aria-label='Requests'>
               <Section title='Requests'>
@@ -115,11 +167,11 @@ export function People({ seated, onError }) {
               <Section title='Invites'>
                 {invites.map((i) => (
                   <div key={i.id} className='flex items-center gap-2'>
-                    <span className='flex-1 text-muted'>{describe(i)}</span>
-                    {moderator && codes.has(i.id) && (
+                    <span className='flex-1 text-muted'>{describe(i, known)}</span>
+                    {moderator && (i.to || codes.has(i.id)) && (
                       <Button
                         variant='ghost'
-                        onClick={() => cero.revoke(room, codes.get(i.id)).catch(onError)}
+                        onClick={() => cero.revoke(room, codes.get(i.id) ?? i.id).catch(onError)}
                       >
                         Revoke
                       </Button>

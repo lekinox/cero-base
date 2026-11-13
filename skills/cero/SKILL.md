@@ -107,11 +107,13 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
    `cero.del(room.members, id)` removes a member and rotates the handle's key in the same step;
    `await cero.rotate(room)` rotates it at any other time. `cero.revoke(room, invite)` takes the code
-   or the `id` of its `room.invites` row. A join waiting for approval is ended from any device with
-   `cero.cancel(me, invite)`; the latest ask stands, so asking again under another invite takes the
-   older request back. A leave deletes the room's row; a row that ended otherwise (`denied`,
-   `expired`, `removed`, `cancelled`) stays 30 days at most, and `cero.del(me.room, id)` deletes an
-   ended row sooner.
+   or the `id` of its `room.invites` row. `cero.seat(room, id, { from, ttl })` lets in a member of
+   `from`, a handle you both are in, by member id: the room appears in their list with nothing
+   called on their side, and revoking the `room.invites` row whose `to` is that id takes it back.
+   A join waiting for approval is ended from any device with `cero.cancel(me, invite)`; the latest
+   ask stands, so asking again under another invite takes the older request back. A leave deletes
+   the room's row; a row that ended otherwise (`denied`, `expired`, `removed`, `cancelled`) stays
+   30 days at most, and `cero.del(me.room, id)` deletes an ended row sooner.
 9. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
    show `await cero.phrase(me)` to the user once. With a phrase, Cero finds one of the user's devices
    (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT` past `recoveryTimeout`

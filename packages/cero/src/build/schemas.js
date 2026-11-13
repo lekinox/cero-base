@@ -57,7 +57,9 @@ export const main = {
     confirm: bool,
     // the secret behind its own address: every device that has the row opens its joins and proves
     // their answers
-    secret: bytes
+    secret: bytes,
+    // the member it was made for: nobody else joins with it
+    to: string
   },
   handle: {
     id: required(string),
@@ -222,6 +224,15 @@ export const main = {
     removed: bytes,
     standing: bytes,
     proof: bytes
+  },
+  // an invite into another room and that room's keys, sealed to the devices of the member it is
+  // `to`, waiting here until one of them takes it. `by` is the member who wrote it
+  pass: {
+    id: required(string),
+    to: required(string),
+    by: string,
+    pass: required(bytes),
+    createdAt: uint
   }
 }
 
@@ -335,7 +346,7 @@ export const local = {
 
 // what a write means to apply. A release that changes it without changing what is stored bumps
 // this, so an app's next build raises its contract and devices on the old release skip the new writes
-export const contract = { version: 4 }
+export const contract = { version: 5 }
 
 export const rpc = {
   'req-empty': {

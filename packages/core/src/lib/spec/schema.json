@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "schema": [
     {
       "name": "link",
@@ -290,6 +290,45 @@
           "required": true,
           "type": "string",
           "version": 1
+        }
+      ]
+    },
+    {
+      "name": "pass",
+      "namespace": "cero",
+      "compact": false,
+      "flagsPosition": 3,
+      "fields": [
+        {
+          "name": "invite",
+          "required": true,
+          "type": "string",
+          "version": 4
+        },
+        {
+          "name": "key",
+          "required": true,
+          "type": "fixed32",
+          "version": 4
+        },
+        {
+          "name": "encryptionKey",
+          "required": true,
+          "type": "fixed32",
+          "version": 4
+        },
+        {
+          "name": "epochs",
+          "required": false,
+          "array": true,
+          "type": "@cero/epoch",
+          "version": 4
+        },
+        {
+          "name": "data",
+          "required": false,
+          "type": "buffer",
+          "version": 4
         }
       ]
     }

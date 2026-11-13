@@ -1,6 +1,7 @@
 import ReadyResource from 'ready-resource';
 import { Invite } from './invite.js';
 import { Mailbox } from '../mailbox/index.js';
+export { Pass } from './pass.js';
 export type KeyPair = {
     publicKey: Uint8Array;
     secretKey: Uint8Array;
@@ -36,6 +37,10 @@ export type InviteOpts = {
      * The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
      */
     data?: Uint8Array | null;
+    /**
+     * The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
+     */
+    to?: string | null;
 };
 export type AcceptOpts = {
     /**
@@ -113,6 +118,7 @@ export type JoinResult = {
  * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise spent by the first.
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
+ * @property {string | null} [to]                   The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
@@ -248,6 +254,21 @@ export declare class Pairing extends ReadyResource {
      * @returns {Promise<JoinResult>}
      */
     static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal, keep }?: JoinOpts): Promise<JoinResult>;
+    /**
+     * Write the join into the writer's own core and stop there: nothing is announced and no reply
+     * is waited for. A device that holds the database's keys opens it with this writer and applies
+     * its own join; `Pairing.join` with the same writer goes on from it and writes nothing more.
+     *
+     * @param {Mailbox} mailbox
+     * @param {string} invite
+     * @param {{ identity: JoinOpts['identity'], spec: JoinOpts['spec'], writer: KeyPair }} opts
+     * @returns {Promise<void>}
+     */
+    static write(mailbox: Mailbox, invite: string, { identity, spec, writer }?: {
+        identity: JoinOpts['identity'];
+        spec: JoinOpts['spec'];
+        writer: KeyPair;
+    }): Promise<void>;
     /**
      * Take back a join that waits for a member: the writer's own core says so after its join, and
      * the database drops the request unless a member let it in first. Announced as the join was.

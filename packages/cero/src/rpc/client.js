@@ -31,6 +31,7 @@ export const {
   deny,
   leave,
   removed,
+  seat,
   close,
   cancel,
   suspend,
@@ -377,6 +378,11 @@ const operators = {
   /** @private */
   _removed(id) {
     return this._verb('removed', id)
+  },
+
+  /** @private */
+  _seat(id, { from, ...opts }) {
+    return this._verb('seat', id, { ...opts, from: from?.id ?? from })
   },
 
   /** @private */

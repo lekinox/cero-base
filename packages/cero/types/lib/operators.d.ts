@@ -198,6 +198,23 @@ export declare function deny(ctx: Context, request: {
  */
 export declare function removed(ctx: Context, id: string): Promise<'removed' | 'left' | null>;
 /**
+ * Let a member of another handle in, with no invite to pass on: her devices find it in `from` while
+ * they have it open, join on their own, and the handle shows up in her list. Taken back with
+ * `revoke` on the `invites` row whose `to` is her id. Rejects `DENIED` for a role above your own or
+ * when you cannot write in `from`, `UNKNOWN` when she or none of her devices is in `from`, `INVALID`
+ * when she is a member already.
+ *
+ * @param {Context} ctx  The handle she is let into.
+ * @param {string} id  Her member id.
+ * @param {{ from: Context, role?: string, ttl?: number | string }} opts  `from`: a handle both are in. `role` is `member` by default.
+ * @returns {Promise<void>}
+ */
+export declare function seat(ctx: Context, id: string, opts: {
+    from: Context;
+    role?: string;
+    ttl?: number | string;
+}): Promise<void>;
+/**
  * Quit a handle for good: its row reads `leaving`, then `left` once the handle holds it, and it closes.
  *
  * @param {Context} ctx

@@ -1,5 +1,5 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT, ASKS, PASSES } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
@@ -175,7 +175,10 @@ export function collections(ns, scope) {
 // collections cero added once apps shipped: numbered after the app's collections and indexes, so
 // a new spec gives each of those the id an older release gave it
 export function added(ns) {
-  return [{ name: ASKS, schema: `@${ns}/owed`, key: ['id'] }]
+  return [
+    { name: ASKS, schema: `@${ns}/owed`, key: ['id'] },
+    { name: PASSES, schema: `@${ns}/pass`, key: ['id'] }
+  ]
 }
 
 /**
@@ -227,7 +230,9 @@ export function appended(ns) {
     { name: 'revoke', requestType: `@${ns}/revoke` },
     { name: 'ask-key', requestType: `@${ns}/owed` },
     { name: 'del-owed', requestType: `@${ns}/del-by-id` },
-    { name: 'cancel-join', requestType: `@${ns}/del-by-id` }
+    { name: 'cancel-join', requestType: `@${ns}/del-by-id` },
+    { name: 'add-pass', requestType: `@${ns}/pass` },
+    { name: 'del-pass', requestType: `@${ns}/del-by-id` }
   ]
 }
 

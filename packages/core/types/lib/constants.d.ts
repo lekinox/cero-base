@@ -37,3 +37,4 @@ export declare const REMOVALS = "removals";
 export declare const REFUSALS = "refusals";
 export declare const SPENT = "spent";
 export declare const ASKS = "owed";
+export declare const PASSES = "passes";

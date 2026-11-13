@@ -44,6 +44,11 @@ export declare const cero: {
         id: string;
     }, reason?: string): Promise<void>;
     removed(ctx: operators.Context, id: string): Promise<'removed' | 'left' | null>;
+    seat(ctx: operators.Context, id: string, opts: {
+        from: operators.Context;
+        role?: string;
+        ttl?: number | string;
+    }): Promise<void>;
     leave(ctx: operators.Context): Promise<void>;
     close(ctx: operators.Context): Promise<void>;
     cancel(me: operators.Context, code: string): Promise<boolean>;

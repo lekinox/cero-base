@@ -63,3 +63,5 @@ export const REFUSALS = 'refusals'
 export const SPENT = 'spent'
 // devices that asked for the keys they lack, until each closes its own
 export const ASKS = 'owed'
+// invites into other rooms, sealed to a member's devices, until one of them takes its own
+export const PASSES = 'passes'
