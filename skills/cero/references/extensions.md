@@ -95,7 +95,7 @@ profile: t.single({ name: t.string, avatar: t.string, phone: t.string })
 
 A copied field holds a plain value or a file. A `t.file` avatar,
 `profileSync({ fields: { avatar: t.file } })`, is copied with its file into each handle, where every
-member reads it.
+member reads it. A reader adds no file to a handle: her name is copied there, her file is not.
 
 `handleSync` needs the handle type to declare `profile: t.single({ name: t.string })`, and any other
 field of it must exist on `handles`, as `avatar` does by default. A `t.file` avatar,

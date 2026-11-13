@@ -3,15 +3,21 @@ import { cero } from '@cero-base/cero/client'
 import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input } from './ui'
+import { Avatar } from './avatar'
 import { Toast } from './toast'
 import { People } from './people'
 import { useToast } from '../hooks/use-toast'
 import { useSeated } from '../hooks/use-seated'
 
-function MessageGroup({ messages, mine, sender }) {
+function MessageGroup({ messages, mine, sender, avatar }) {
   return (
     <div className={mine ? 'text-right' : ''}>
-      {!mine && <div className='text-xs text-accent mb-0.5'>{sender}</div>}
+      {!mine && (
+        <div className='flex items-center gap-1 mb-0.5'>
+          <Avatar name={sender} src={avatar} size={16} />
+          <span className='text-xs text-accent'>{sender}</span>
+        </div>
+      )}
       <div className={`flex flex-col gap-0.5 ${mine ? 'items-end' : 'items-start'}`}>
         {messages.map((m) => (
           <div
@@ -91,6 +97,7 @@ export function Room({ onClose }) {
   const room = useRoom()
   const { data: messages } = useQuery(room.messages)
   const { data: members } = useQuery(room.members)
+  const { data: files } = useQuery(room.files)
   const { data: row } = useQuery(me.room, room.id)
   const { data: status } = useQuery(room.status)
   const toast = useToast()
@@ -107,6 +114,8 @@ export function Room({ onClose }) {
   const sorted = [...messages].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
   const groups = groupMessages(sorted, me.id)
   const fail = (err) => toast.show(err.message)
+  // a member row holds its avatar as the id of a file in the room
+  const avatar = (member) => files.find((f) => f.id === member?.avatar)?.url
   const send = (text) => cero.put(room.messages, { text }).catch(fail)
   const rename = (name) => cero.set(room.profile, { name }).then(() => setNaming(false), fail)
 
@@ -159,17 +168,21 @@ export function Room({ onClose }) {
           Read only: readers cannot write here
         </div>
       )}
-      {open && <People seated={seated} onError={fail} />}
+      {open && <People seated={seated} onError={fail} avatar={avatar} />}
 
       <div ref={ref} className='flex-1 overflow-y-auto p-3 space-y-2'>
-        {groups.map((g, i) => (
-          <MessageGroup
-            key={i}
-            messages={g.messages}
-            mine={g.mine}
-            sender={members.find((x) => x.id === g.memberId)?.name || g.memberId?.slice(0, 8)}
-          />
-        ))}
+        {groups.map((g, i) => {
+          const author = members.find((x) => x.id === g.memberId)
+          return (
+            <MessageGroup
+              key={i}
+              messages={g.messages}
+              mine={g.mine}
+              sender={author?.name || g.memberId?.slice(0, 8)}
+              avatar={avatar(author)}
+            />
+          )
+        })}
       </div>
 
       <ChatInput onSend={send} disabled={!seated} />

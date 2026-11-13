@@ -3,6 +3,7 @@ import { cero } from '@cero-base/cero/client'
 import { useCero, useRoom } from '../hooks/use-cero'
 import { useQuery } from '../hooks/use-query'
 import { Button, Input, Section } from './ui'
+import { Avatar } from './avatar'
 
 const roles = ['member', 'reader', 'admin']
 
@@ -34,7 +35,7 @@ function Request({ request, onError }) {
   )
 }
 
-export function People({ seated, onError }) {
+export function People({ seated, onError, avatar }) {
   const me = useCero()
   const room = useRoom()
   const { data: status } = useQuery(room.status)
@@ -137,6 +138,7 @@ export function People({ seated, onError }) {
           <ul className='space-y-1'>
             {members.map((m) => (
               <li key={m.id} className='flex items-center gap-2'>
+                <Avatar name={m.name} src={avatar(m)} size={20} />
                 <span className='flex-1 text-card-foreground'>{`${m.name || m.id.slice(0, 8)} · ${m.role}`}</span>
                 {moderator && m.id !== me.id && (
                   <Button
