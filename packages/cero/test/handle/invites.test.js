@@ -659,6 +659,26 @@ test('seat: a device that closes a room as soon as nothing holds it keeps the wr
   t.alike(errors, [])
 })
 
+test('seat: revoked and seated again before she comes, she takes the new seat whichever pass she reads first', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await ceroOpen(t, { testnet })
+  const general = await open(a.me.team, { name: 'general' })
+  const b = await ceroOpen(t, { testnet })
+  // a reader where the passes wait: her device cannot take one away
+  await open(b.me.team, await cero.invite(general, { role: 'reader' }))
+  await waitUntil(async () => (await get(general.members)).data.length === 2 || null)
+  const plans = await open(a.me.team, { name: 'plans' })
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  const [{ id }] = (await get(plans.invites)).data
+  t.ok(await cero.revoke(plans, id))
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  t.pass('in on the new seat')
+})
+
 test('seat: taken out while the room is closed on her device and seated again, she takes the new seat', async (t) => {
   const errors = []
   const { b, general, plans } = await apart(t, { keepOpen: 0, onerror: (err) => errors.push(err) })

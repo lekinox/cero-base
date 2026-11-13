@@ -1371,9 +1371,15 @@ export class Handle extends ReadyResource {
       const type = pass?.data && b4a.toString(pass.data)
       if (!type || !this.spec.handles?.[type]) continue
       if (await this._spent(from, row, pass)) continue
-      const spend = () =>
-        this._spent(from, row, pass).catch((err) => this.closing || this._onerror(err))
-      this._start(pass.invite, type, pass).done.then(spend, spend)
+      // one done with is read again as spent: another for the room, which this join kept waiting, starts
+      const spend = async () => {
+        if ((await this._spent(from, row, pass)) && !from.closing && !from.closed) {
+          await this._passes(from)
+        }
+      }
+      this._start(pass.invite, type, pass)
+        .done.then(spend, spend)
+        .catch((err) => this.closing || this._onerror(err))
     }
   }
 
