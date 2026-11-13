@@ -503,8 +503,13 @@ export class Handle extends ReadyResource {
     // a member's devices, which a removal takes with her
     const devices = (await store.get('devices')).data.filter((d) => d.memberId === id && d.key)
     if (!devices.length) throw CeroError.UNKNOWN('member', id)
-    if ((await this.store.get('members', id)).data) {
-      throw CeroError.INVALID(`${id} is a member already`)
+    // one seat at a time: in, let in and not yet claimed, or seated and not come yet
+    if (await promised(this.store, { id, publicKey: hid.decode(id) })) {
+      throw CeroError.INVALID(`${id} is in already`)
+    }
+    const { data: invites } = await this.store.get('invites')
+    if (invites.some((i) => i.to === id && !(i.expires && i.expires <= Date.now()))) {
+      throw CeroError.INVALID(`${id} has a seat already`)
     }
     // what would keep its pass out of `from` is checked first: an invite minted is live
     const at = Math.min(store.version, await store.dispatcher.version(store.view))

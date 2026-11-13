@@ -612,6 +612,36 @@ test('seat: the room out of reach, nothing is on her root; in reach at the next 
   t.pass('in once it is in reach')
 })
 
+test('seat: one at a time: a second before she comes, or while she is let in and not yet seated, is INVALID, and none is left open once she is in', async (t) => {
+  const { b, general, plans } = await apart(t)
+  const again = () => code(() => cero.seat(plans, b.me.id, { from: general }))
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  t.is(await again(), 'INVALID', 'a second before she comes')
+  t.is((await get(plans.invites)).data.length, 1, 'one seat open')
+
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  let held = false
+  Database.prototype.claim = async function (opts) {
+    if (!held && this.identity.id === b.me.id && b4a.equals(this.key, plans.store.key)) {
+      held = true
+      const promised = async () => (await get(plans.requests)).data.some((r) => r.promised) || null
+      await waitUntil(promised)
+      t.absent((await get(plans.members, b.me.id)).data, 'let in, not yet a member')
+      t.is((await get(plans.invites)).data.length, 0, 'her seat used')
+      t.is(await again(), 'INVALID', 'a second while her seat is not yet claimed')
+    }
+    return claim.call(this, opts)
+  }
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  t.ok(held)
+  await memberCount(plans, 2)
+  t.is((await get(plans.invites)).data.length, 0, 'none left open once she is in')
+})
+
 test('seat: her request turned away after she asked, her row is denied with the reason', async (t) => {
   const { b, general, plans } = await apart(t)
   const { claim } = Database.prototype

@@ -96,7 +96,7 @@ device has `general` open. `cero.seat` returns nothing.
 
 Seating needs the invite permission in `plans`. It rejects `DENIED` for a role above your own or
 when you cannot write in `from`, `UNKNOWN` when they are not a member of `from` or none of their
-devices is there, `INVALID` when they are already a member of `plans` or the call is on `me`, and
+devices is there, `INVALID` when they are already a member of `plans`, already have a seat there or the call is on `me`, and
 `UNSUPPORTED` when `plans` is at an older version of the app.
 
 ```js
