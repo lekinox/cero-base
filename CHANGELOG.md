@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.1.0 (2026-11-13)
+
+### Features
+
+- cero.seat (#77)
+
+### Bug Fixes
+
+- keep the writer a join came in on (#81)
+- one seat at a time (#80)
+- seat follow-ups (#79)
+- a seat's pass lives in a collection named seats, so an app keeps passes as its own noun (#78)
+
+### Other
+
+- 🚀 test: avatar e2e (#76)
+
 ## 3.0.1 (2026-11-13)
 
 ### Bug Fixes
