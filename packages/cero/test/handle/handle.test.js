@@ -576,6 +576,23 @@ test('Handle: a removal heard as the root closes reaches onerror with nothing', 
   )
 })
 
+test('join: a member opens the room with each new invite at once, asks nothing and spends none', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const room = await open(host.me.team, { name: 'clinic' })
+  const { me } = await ceroOpen(t, { testnet })
+  const joined = await open(me.team, await cero.invite(room))
+  t.teardown(() => joined.close().catch(() => {}))
+  for (const opts of [{}, { confirm: true }, { reuse: true }]) {
+    const code = await cero.invite(room, opts)
+    const again = await open(me.team, code)
+    t.is(again, joined, `the same room, ${JSON.stringify(opts)}`)
+  }
+  t.is((await get(room.invites)).data.length, 3, 'none of the three is spent')
+  t.is((await get(room.requests)).data.length, 0, 'and no request reached the room')
+  t.is((await get(room.members)).data.length, 2)
+})
+
 test('join: a second invite asked while the first join enters waits on it, and every open gets the one handle', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await openHandle(t, { testnet })
