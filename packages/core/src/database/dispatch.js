@@ -18,6 +18,7 @@ import {
   SPENT,
   ASKS,
   PASSES,
+  MAX_PASS,
   OWNER,
   INVITE,
   REMOVE,
@@ -123,7 +124,6 @@ export const leftId = (memberId) => `left:${memberId}`
 // what an identity's devices told a room of its device keys, in the removals too
 export const toldId = (memberId) => `told:${memberId}`
 const MAX_REMOVED = 64
-const MAX_PASS = 64 * 1024
 
 /**
  * 32-byte keys back to back, or none when they are not that.
@@ -994,10 +994,12 @@ export function makeDispatcher({
   })
 
   // a pass waits in a room both are in for the member it is sealed to: left by a member who
-  // writes, under her name, and taken out by either of them or by one who may remove
+  // writes, under her name, never over another, and taken out by either of them or by one who may
+  // remove
   add('add-pass', async (op, ctx) => {
     await requireWrite(ctx)
     if (!(op.pass.byteLength <= MAX_PASS)) throw CeroError.REFUSED('pass')
+    if (await ctx.view.get(passes, { id: op.id })) throw CeroError.REFUSED('pass')
     ctx.touched?.push(PASSES)
     await ctx.view.insert(passes, { ...op, by: await getSignerMember(ctx.view, ctx.key) })
   })

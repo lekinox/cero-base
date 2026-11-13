@@ -4195,6 +4195,22 @@ test('add-pass: a member who writes leaves one under her own name, a reader or a
   t.is((await passes(db)).length, 2)
 })
 
+test('add-pass: one whose id is taken is refused, from another member or its own author, and the row stays as it was', async (t) => {
+  const [her, other] = [await second('member'), await second('member')]
+  const { db, id, as } = await withMember(t, 'member', [her.row, other.row])
+  t.is(await as('add-pass', passRow('one', her.id)), null)
+  const [before] = await passes(db)
+  await seat(db, other)
+  const junk = passRow('one', other.id, { pass: b4a.alloc(8, 2) })
+  const err = await apply(db, other.writer.publicKey, 'add-pass', junk)
+  t.is(err?.code, 'REFUSED', 'another member cannot write over it')
+  t.is((await as('add-pass', passRow('one', other.id)))?.code, 'REFUSED', 'nor can its author')
+  const [after] = await passes(db)
+  t.alike(after, before, 'it is as it was')
+  t.is(after.to, her.id)
+  t.is(after.by, id)
+})
+
 test('del-pass: by the member it is to, by its author or by one who may remove, and by nobody else', async (t) => {
   const [her, other] = [await second('member'), await second('member')]
   const { db, as } = await withMember(t, 'member', [her.row, other.row])

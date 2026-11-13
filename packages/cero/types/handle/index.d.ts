@@ -456,6 +456,8 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _passes;
     /** @private */
+    private _spent;
+    /** @private */
     private _cancel;
     /** @private */
     private _check;

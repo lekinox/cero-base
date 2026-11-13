@@ -40,6 +40,7 @@ export type PassFields = {
 export declare const Pass: {
     seal: typeof seal;
     open: typeof open;
+    fits: typeof fits;
 };
 /**
  * One box per device, under its device key. A key nothing can be sealed to gets none.
@@ -59,4 +60,15 @@ declare function seal(devices: Array<{
  * @returns {PassFields | null}  Null when no box is this device's.
  */
 declare function open(identity: import('../identity/index.js').Identity, pass: Uint8Array): PassFields | null;
+/**
+ * Whether a pass to `devices` with these keys stays within what a room keeps of one, whatever
+ * invite with no data it carries: known before the invite is minted.
+ *
+ * @param {Array<{ key: Uint8Array }>} devices
+ * @param {Omit<PassFields, 'invite'>} fields
+ * @returns {boolean}
+ */
+declare function fits(devices: Array<{
+    key: Uint8Array;
+}>, fields: Omit<PassFields, 'invite'>): boolean;
 export {};
