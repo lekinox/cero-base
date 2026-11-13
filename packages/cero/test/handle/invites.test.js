@@ -221,7 +221,7 @@ async function sharing(t) {
 
 const devicesOf = async (room, id) =>
   (await get(room.devices)).data.filter((d) => d.memberId === id && d.key)
-const passesOf = (room) => room.store.view.find(`@${room.store.ns}/passes`, {}).toArray()
+const passesOf = (room) => room.store.view.find(`@${room.store.ns}/seats`, {}).toArray()
 const rowOf = async (me, id) => (await get(me.handles, id)).data
 
 test('seat: a member of a room both are in is let into another, with nothing called on her side', async (t) => {
