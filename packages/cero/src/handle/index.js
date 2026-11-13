@@ -1623,6 +1623,8 @@ export class Handle extends ReadyResource {
       }
 
       await this._saveKeyPair(id, child.store.keyPair, invite)
+      // seated on its own writer: its ask is answered, never read as one let in on another device
+      await this.local.store.del('asks', hid.encode(child.store.keyPair.publicKey))
 
       const ts = Date.now()
       await this.store.call('add-handle', {
