@@ -642,6 +642,23 @@ test('seat: one at a time: a second before she comes, or while she is let in and
   t.is((await get(plans.invites)).data.length, 0, 'none left open once she is in')
 })
 
+test('seat: a device that closes a room as soon as nothing holds it keeps the writer it came in on, and opens it seated on that one', async (t) => {
+  const errors = []
+  const { b, general, plans } = await apart(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
+  await cero.seat(plans, b.me.id, { from: general })
+  await reaches(b.me, plans.id, 'in')
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  await waitUntil(async () => (await b.me.local.store.get('asks')).data.length === 0 || null)
+  const { data: kept } = await b.me.local.store.get('handle-keypairs', plans.id)
+  t.ok(kept, 'its writer is kept')
+  const room = await open(b.me.team, { id: plans.id })
+  t.teardown(() => room.close().catch(() => {}))
+  t.ok(room.store.writable, 'and the room opens seated on it')
+  t.alike(room.store.keyPair.publicKey, kept.publicKey)
+  t.is((await devicesOf(plans, b.me.id)).length, 1, 'no second seat')
+  t.alike(errors, [])
+})
+
 test('seat: her request turned away after she asked, her row is denied with the reason', async (t) => {
   const { b, general, plans } = await apart(t)
   const { claim } = Database.prototype
