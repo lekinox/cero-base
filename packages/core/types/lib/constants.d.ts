@@ -37,4 +37,5 @@ export declare const REMOVALS = "removals";
 export declare const REFUSALS = "refusals";
 export declare const SPENT = "spent";
 export declare const ASKS = "owed";
-export declare const PASSES = "passes";
+export declare const PASSES = "seats";
+export declare const MAX_PASS: number;

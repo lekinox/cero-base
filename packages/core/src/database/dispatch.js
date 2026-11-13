@@ -18,6 +18,7 @@ import {
   SPENT,
   ASKS,
   PASSES,
+  MAX_PASS,
   OWNER,
   INVITE,
   REMOVE,
@@ -123,7 +124,6 @@ export const leftId = (memberId) => `left:${memberId}`
 // what an identity's devices told a room of its device keys, in the removals too
 export const toldId = (memberId) => `told:${memberId}`
 const MAX_REMOVED = 64
-const MAX_PASS = 64 * 1024
 
 /**
  * 32-byte keys back to back, or none when they are not that.

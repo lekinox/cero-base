@@ -65,3 +65,5 @@ export const SPENT = 'spent'
 export const ASKS = 'owed'
 // invites into other rooms, sealed to a member's devices, until one of them takes its own
 export const PASSES = 'seats'
+// what a room keeps of one
+export const MAX_PASS = 64 * 1024

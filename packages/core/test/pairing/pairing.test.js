@@ -2594,6 +2594,18 @@ test("invite: one made to a member is single-use and waits for no accept, and 't
   t.is((await invites(db))[0].to, id, 'on its row')
 })
 
+test("invite: a build whose invites carry no 'to' makes none to a member, UNSUPPORTED, and writes nothing", async (t) => {
+  const testnet = await makeTestnet(t)
+  const { since } = spec.meta
+  const { to, ...fields } = since.types['@cero/invite']
+  const types = { ...since.types, '@cero/invite': fields }
+  const bare = { ...spec, meta: { ...spec.meta, since: { ...since, types } } }
+  const { pairing, db } = await makeHost(t, testnet, { spec: bare })
+  t.is(to, 0)
+  t.is(await code(pairing.invite({ to: (await Identity.create()).id })), 'UNSUPPORTED')
+  t.alike(await invites(db), [], 'it would let in whoever holds it')
+})
+
 test('serving: invites made to a member owe no answer, any other does', async (t) => {
   const testnet = await makeTestnet(t)
   const { pairing } = await makeHost(t, testnet)

@@ -6,6 +6,7 @@ import { Identity } from '../../src/identity/index.js'
 import { Invite } from '../../src/pairing/invite.js'
 import { Pass } from '../../src/pairing/index.js'
 import { wraps } from '../../src/database/encryption.js'
+import { MAX_PASS } from '../../src/lib/constants.js'
 
 const key = Identity.randomBytes(32)
 const link = { key: Identity.randomBytes(32), length: 1 }
@@ -51,4 +52,18 @@ test('pass: what is not one is INVALID, sealed or opened', async (t) => {
   const box = Identity.seal(phone.device.publicKey, b4a.from('junk'))
   const junk = c.encode(wraps, [{ id: phone.device.id, box }])
   t.exception(() => Pass.open(phone, junk), /INVALID/, 'a box that opens to junk')
+})
+
+test('pass: whether one fits what a room keeps is known before its invite exists, and holds once it does', async (t) => {
+  const phone = await Identity.create()
+  const { invite, ...keys } = fields()
+  const entropy = Identity.randomBytes(32)
+  const epochs = (n) =>
+    Array.from({ length: n }, (_, i) => ({ epoch: i + 1, stamp: i + 2, entropy }))
+  t.ok(Pass.fits([device(phone)], keys))
+  t.absent(Pass.fits([device(phone)], { ...keys, epochs: epochs(2000) }), 'too many keys')
+  let n = 1600
+  while (Pass.fits([device(phone)], { ...keys, epochs: epochs(n + 1) })) n++
+  const sealed = Pass.seal([device(phone)], { ...keys, epochs: epochs(n), invite })
+  t.ok(sealed.byteLength <= MAX_PASS, 'the most that fits, sealed with a real invite, is kept')
 })

@@ -497,27 +497,31 @@ export class Handle extends ReadyResource {
     if (!(from instanceof Handle) || !from.parent) {
       throw CeroError.INVALID('seat takes { from }: a room she is in')
     }
-    const { data: her } = await from.store.get('members', id)
-    if (!her) throw CeroError.UNKNOWN('member', id)
-    const { data: me } = await from.store.get('members', this.identity.id)
+    const { store } = from
+    const { data: me } = await store.get('members', this.identity.id)
     if (!can(me?.role, WRITE)) throw CeroError.DENIED(null, `you cannot write in ${from.id}`)
-    const devices = (await from.store.get('devices')).data.filter((d) => d.memberId === id && d.key)
-    if (!devices.length) throw CeroError.UNKNOWN('device', id)
+    // a member's devices, which a removal takes with her
+    const devices = (await store.get('devices')).data.filter((d) => d.memberId === id && d.key)
+    if (!devices.length) throw CeroError.UNKNOWN('member', id)
     if ((await this.store.get('members', id)).data) {
       throw CeroError.INVALID(`${id} is a member already`)
     }
-    const invite = await this._invite({ role, ttl, to: id })
+    // what would keep its pass out of `from` is checked first: an invite minted is live
+    const at = Math.min(store.version, await store.dispatcher.version(store.view))
+    if ((store.meta.since?.routes[`@${store.ns}/add-pass`] ?? 0) > at) {
+      throw CeroError.UNSUPPORTED(`'add-pass' in ${from.id}`)
+    }
     const { key, encryptionKey, keyring } = this.store
-    const epochs = keyring.all()
-    const pass = Pass.seal(devices, {
-      invite,
-      key,
-      encryptionKey,
-      epochs,
-      data: b4a.from(this.type)
-    })
+    const fields = { key, encryptionKey, epochs: keyring.all(), data: b4a.from(this.type) }
+    if (!Pass.fits(devices, fields)) {
+      throw CeroError.INVALID(
+        `this room has too many keys to seal to her ${devices.length} devices`
+      )
+    }
+    const invite = await this._invite({ role, ttl, to: id })
+    const pass = Pass.seal(devices, { ...fields, invite })
     const row = { id: b4a.toHex(Identity.randomBytes(16)), to: id, pass, createdAt: Date.now() }
-    await from.store.call('add-pass', row)
+    await store.call('add-pass', row)
   }
 
   // the same context, its refs writing into one batch; a fn that ignores it would write outside
@@ -1294,25 +1298,23 @@ export class Handle extends ReadyResource {
     }
   }
 
-  // a pass's join: its invite read in the room its keys open before the root shows anything, then
-  // seated by this device's own claim. Null when that takes longer: it goes on as a plain join
+  // a pass's join: its invite read in the room its keys open, as nobody, before anything is written;
+  // then asked, written and seated by this device's own claim. Null when that takes longer: it goes
+  // on as a plain join
   /** @private */
   async _take(join, invite, signal) {
     const { type, pass } = join
     const id = hid.encode(pass.key)
     const spec = pickHandle(this.spec, type)
-    const { data: kept } = await this.local.store.get('handle-keypairs', id)
-    const { publicKey, secretKey } = kept?.invite === invite ? kept : Identity.randomKeyPair()
-    const writer = (join.writer = { publicKey, secretKey })
-    // stored before its join is on the core: a retry joins with it, never with another
-    await this._saveKeyPair(id, writer, invite)
-    await Pairing.write(this.mailbox, invite, { identity: this.identity, spec, writer })
     const { key, encryptionKey, epochs } = pass
-    const namespace = `${NS}/handle/${type}/${randomNs()}`
-    const child = this._room({ spec, namespace, key, encryptionKey, epochs, keyPair: writer })
+    const room = (keyPair) => {
+      const namespace = `${NS}/handle/${type}/${randomNs()}`
+      return this._room({ spec, namespace, key, encryptionKey, epochs, keyPair })
+    }
+    const reader = room(Identity.randomKeyPair())
     try {
-      await child.ready()
-      const { store } = child
+      await reader.ready()
+      const { store } = reader
       const inviteId = b4a.toHex(Invite.parse(invite).id)
       const shows = async () =>
         !!(await store.get('invites', inviteId)).data ||
@@ -1320,16 +1322,29 @@ export class Handle extends ReadyResource {
       if (!(await until(store, shows, TIMEOUT, signal))) {
         throw signal.aborted ? CeroError.CLOSED('join') : CeroError.TIMEOUT('join')
       }
-      await this._ask(type, invite, writer)
-      const seated = await store.claim({ timeout: TIMEOUT }).then(
-        () => true,
-        (err) => {
-          if (err.code !== 'TIMEOUT') throw err
-          return false
-        }
-      )
+    } finally {
+      await reader._end().catch(safetyCatch)
+    }
+    const { data: kept } = await this.local.store.get('handle-keypairs', id)
+    const { publicKey, secretKey } = kept?.invite === invite ? kept : Identity.randomKeyPair()
+    const writer = (join.writer = { publicKey, secretKey })
+    // asked before its join is written: a retry, or the latest ask, finds its writer
+    await this._ask(type, invite, writer)
+    await Pairing.write(this.mailbox, invite, { identity: this.identity, spec, writer })
+    const child = room(writer)
+    try {
+      await child.ready()
+      const { store } = child
+      const err = await store.claim({ timeout: TIMEOUT }).catch((err) => err)
       if (signal.aborted) throw CeroError.CLOSED('join')
-      if (seated) return child
+      if (!err) return child
+      // another device of hers took the invite first: this one sits beside it, on a writer of its own
+      if (err.code === 'DENIED' && (await promised(store, this.identity))) {
+        await this._saveKeyPair(id, Identity.randomKeyPair(), invite)
+        await this._stand(id, 'joining', keys(pass))
+      } else if (err.code !== 'TIMEOUT') {
+        throw err
+      }
     } catch (err) {
       await child._end().catch(safetyCatch)
       throw err
@@ -1349,12 +1364,6 @@ export class Handle extends ReadyResource {
       const type = pass?.data && b4a.toString(pass.data)
       if (!type || !this.spec.handles?.[type]) continue
       if (await this._spent(from, row, pass)) continue
-      const id = hid.encode(pass.key)
-      const { data: was } = await this.store.get('handles', id)
-      const state = was && (was.state || 'in')
-      // another device's join, or one under way here that waits for a reply
-      const mine = state === 'asking' && (await this._asked(id, pass.invite, was.writer))
-      if (was && !SWEPT.includes(state) && !mine) continue
       const spend = () =>
         this._spent(from, row, pass).catch((err) => this.closing || this._onerror(err))
       this._start(pass.invite, type, pass).done.then(spend, spend)
@@ -1401,11 +1410,23 @@ export class Handle extends ReadyResource {
     if (mine && asks && row.writer === ask.id) return
     // a seated row names no writer
     const ended = row && !asks && state !== 'cancelled' && (!row.writer || row.writer === ask.id)
-    if (ended && row.invite === ask.invite) return this.local.store.del('asks', ask.id)
+    const same = ended && row.invite === ask.invite
+    // let in on another device, this one's join stops and its writer, which may never have claimed,
+    // goes: the room opens here as on any device of hers
+    const elsewhere =
+      same &&
+      state === 'in' &&
+      !this._loading.has(ask.handle) &&
+      ![...this.children].some((c) => c.id === ask.handle)
+    if (same && !elsewhere) return this.local.store.del('asks', ask.id)
     // only the join that asks with this writer stops: one still choosing its writer may ask anew
     const join = this._joining.get(ask.handle)
     if (join?.writer && b4a.equals(join.writer.publicKey, ask.publicKey)) {
       this._stop(join, CeroError.CANCELLED())
+    }
+    if (elsewhere) {
+      await this._forget(ask.handle, ask)
+      return this.local.store.del('asks', ask.id)
     }
     if (this._taking.has(ask.id)) return
     this._taking.add(ask.id)
@@ -2406,6 +2427,13 @@ function until(db, check, ms, signal) {
     if (signal.aborted) stop()
     else test()
   })
+}
+
+// whether a room let this identity in, by any of its devices
+async function promised(db, identity) {
+  if ((await db.get('members', identity.id)).data) return true
+  const { data: requests } = await db.get('requests')
+  return requests.some((row) => row.promised && b4a.equals(row.identity, identity.publicKey))
 }
 
 // what a pass holds for this device; a malformed one, or none of its boxes, is nothing

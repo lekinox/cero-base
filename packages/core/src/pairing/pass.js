@@ -2,11 +2,12 @@ import b4a from 'b4a'
 import c from 'compact-encoding'
 import hid from 'hypercore-id-encoding'
 
-import { Invite } from './invite.js'
+import { Invite, STAMPED } from './invite.js'
 import { Identity } from '../identity/index.js'
 import { wraps, opened } from '../database/encryption.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
+import { MAX_PASS } from '../lib/constants.js'
 
 const Encoding = getEncoding('@cero/pass')
 
@@ -24,7 +25,7 @@ const Encoding = getEncoding('@cero/pass')
  * joins with the keys in hand and waits for no answer. Unsigned, so whoever opens one holds what
  * it carries to the database's own log.
  */
-export const Pass = { seal, open }
+export const Pass = { seal, open, fits }
 
 /**
  * One box per device, under its device key. A key nothing can be sealed to gets none.
@@ -64,6 +65,24 @@ function open(identity, pass) {
     }
     return null
   })
+}
+
+/**
+ * Whether a pass to `devices` with these keys stays within what a room keeps of one, whatever
+ * invite with no data it carries: known before the invite is minted.
+ *
+ * @param {Array<{ key: Uint8Array }>} devices
+ * @param {Omit<PassFields, 'invite'>} fields
+ * @returns {boolean}
+ */
+function fits(devices, fields) {
+  const { key } = fields
+  const widest = Number.MAX_SAFE_INTEGER
+  const address = Identity.randomKeyPair().publicKey
+  const link = { key, length: widest }
+  const at = { version: STAMPED, expires: widest, stamp: widest, own: true }
+  const invite = new Invite({ ...at, key, address, seed: key, link }).toString()
+  return seal(devices, { ...fields, invite }).byteLength <= MAX_PASS
 }
 
 // the invite opens the database the keys are for

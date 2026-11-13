@@ -1,14 +1,24 @@
 import test from 'brittle'
+import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
+import { Identity } from '@cero-base/core/identity'
+import { Invite } from '@cero-base/core/invite'
+import { Pass } from '@cero-base/core/pairing'
+import { Database } from '@cero-base/core/database'
+import { CeroError } from '@cero-base/core/errors'
 
 import { get, open, del } from '../../src/lib/operators.js'
 import { cero } from '../../src/index.js'
+import { spec } from '../fixtures/spec/index.js'
 import {
   makeStore,
   makeTestnet,
   makeNet,
+  makeMirror,
   waitForConnection,
   waitUntil,
-  openHandle
+  openHandle,
+  ceroOpen
 } from '../helpers/index.js'
 
 test.configure({ timeout: 90000 })
@@ -245,4 +255,380 @@ test('seat: a member of a room both are in is let into another, with nothing cal
   await waitUntil(async () => (await passesOf(b.room)).length === 0 || null)
   t.pass('her device takes the pass out once she is in')
   t.is((await get(a.me.handles, plans.id)).data?.state ?? 'in', 'in')
+})
+
+test('seat: a pass the room both are in cannot keep, or that room below the version that brings passes, is refused before any invite is minted', async (t) => {
+  const { b, general, plans } = await sharing(t)
+  const { keyring } = plans.store
+  const { all } = keyring
+  const entropy = Identity.randomBytes(32)
+  const many = Array.from({ length: 2000 }, (_, i) => ({ epoch: i + 1, stamp: i + 2, entropy }))
+  keyring.all = () => [...all.call(keyring), ...many]
+  const big = await cero.seat(plans, b.identity.id, { from: general }).catch((e) => e)
+  keyring.all = all
+  t.is(big?.code, 'INVALID', 'too many keys for her devices')
+
+  const { meta } = general.store
+  const routes = { ...meta.since.routes, [`@${general.store.ns}/add-pass`]: meta.version + 1 }
+  general.store.meta = { ...meta, since: { ...meta.since, routes } }
+  const low = await cero.seat(plans, b.identity.id, { from: general }).catch((e) => e)
+  general.store.meta = meta
+  t.is(low?.code, 'UNSUPPORTED', 'a room with no passes yet')
+
+  t.is((await get(plans.invites)).data.length, 0, 'no invite was minted')
+  t.is((await passesOf(general)).length, 0, 'nor a pass written')
+  await cero.seat(plans, b.identity.id, { from: general })
+  t.is((await get(plans.invites)).data.length, 1, 'one is, once both hold')
+})
+
+const code = async (run) => (await run().catch((e) => e))?.code
+const stateOf = async (me, id) => (await rowOf(me, id))?.state
+const reaches = (me, id, state) => waitUntil(async () => (await stateOf(me, id)) === state || null)
+
+test('seat: a reader, a rank above your own or a room you cannot write in is DENIED, what is no seat INVALID or UNKNOWN, and nothing is written', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await openHandle(t, { testnet })
+  await a.me.store.bootstrap({ name: 'a-root' })
+  const general = await open(a.me.team, { name: 'general' })
+  const plans = await open(a.me.team, { name: 'plans' })
+  t.teardown(() => Promise.all([general, plans].map((room) => room.close().catch(() => {}))))
+  const b = await joinAsRoot(t, testnet, await cero.invite(general))
+  const c = await joinAsRoot(t, testnet, await cero.invite(general))
+  const d = await joinAsRoot(t, testnet, await cero.invite(general, { role: 'reader' }))
+  const reader = await open(b.me.team, await cero.invite(plans, { role: 'reader' }))
+  const member = await open(c.me.team, await cero.invite(plans))
+  const dee = await open(d.me.team, { name: 'dee' })
+  t.teardown(() => Promise.all([reader, member, dee].map((room) => room.close().catch(() => {}))))
+  for (const room of [general, b.room, c.room]) {
+    await waitUntil(async () => (await devicesOf(room, d.identity.id)).length > 0 || null)
+  }
+  await memberCount(plans, 3)
+
+  const her = d.identity.id
+  t.is(
+    await code(() => cero.seat(reader, her, { from: b.room })),
+    'DENIED',
+    'a reader seats nobody'
+  )
+  const admin = { from: c.room, role: 'admin' }
+  t.is(await code(() => cero.seat(member, her, admin)), 'DENIED', 'nor a member above her rank')
+  const from = { from: d.room }
+  t.is(await code(() => cero.seat(dee, b.identity.id, from)), 'DENIED', 'nor a reader in from')
+  t.is(
+    await code(() => cero.seat(a.me, her, { from: general })),
+    'INVALID',
+    'the root seats nobody'
+  )
+  t.is(await code(() => cero.seat(plans, her)), 'INVALID', 'nor with no room to find her in')
+  const there = c.identity.id
+  t.is(
+    await code(() => cero.seat(plans, there, { from: general })),
+    'INVALID',
+    'nor one in already'
+  )
+  const stranger = (await Identity.create()).id
+  t.is(await code(() => cero.seat(plans, stranger, { from: general })), 'UNKNOWN', 'nor a stranger')
+  t.is(
+    await code(() => cero.seat(plans, her, { from: 'nope' })),
+    'UNKNOWN',
+    'nor from no room here'
+  )
+  const { get: read } = general.store
+  general.store.get = (name, q) =>
+    name === 'devices' ? { data: [] } : read.call(general.store, name, q)
+  t.is(
+    await code(() => cero.seat(plans, her, { from: general })),
+    'UNKNOWN',
+    'nor with no device known'
+  )
+  general.store.get = read
+  for (const room of [plans, reader, member, dee]) {
+    t.is((await get(room.invites)).data.length, 0, 'no invite minted')
+  }
+  t.is((await passesOf(general)).length, 0, 'and no pass written')
+})
+
+test('seat: a pass she cannot use writes nothing on her root and nothing goes to onerror', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await openHandle(t, { testnet })
+  await a.me.store.bootstrap({ name: 'a-root' })
+  const general = await open(a.me.team, { name: 'general' })
+  const plans = await open(a.me.team, { name: 'plans' })
+  t.teardown(() => Promise.all([general, plans].map((room) => room.close().catch(() => {}))))
+  const errors = []
+  const onerror = (err) => errors.push(err)
+  const b = await joinAsRoot(t, testnet, await cero.invite(general), { opts: { onerror } })
+  await waitUntil(async () => (await devicesOf(general, b.identity.id)).length > 0 || null)
+
+  const to = b.identity.id
+  const add = (pass) =>
+    general.store.call('add-pass', { id: b4a.toHex(Identity.randomBytes(16)), to, pass })
+  const link = { key: Identity.randomBytes(32), length: 1 }
+  const address = plans.store.address
+  const inviteTo = (key) => Invite.create({ key, address, own: true, link }).toString()
+  const { key, encryptionKey } = plans.store
+  const team = b4a.from('team')
+  const hers = [{ key: b.identity.device.publicKey }]
+  const someone = [{ key: (await Identity.create()).device.publicKey }]
+  const nowhere = Identity.randomBytes(32)
+  const unread = { key: nowhere, encryptionKey: Identity.randomBytes(32), data: team }
+  await add(Identity.randomBytes(64))
+  await add(Pass.seal(someone, { invite: inviteTo(key), key, encryptionKey, data: team }))
+  const other = Identity.randomBytes(32)
+  const foreign = { key: other, encryptionKey, data: b4a.from('nope') }
+  await add(Pass.seal(hers, { invite: inviteTo(other), ...foreign }))
+  await add(Pass.seal(hers, { invite: inviteTo(nowhere), ...unread }))
+  await add(Pass.seal(hers, { invite: inviteTo(key), key, encryptionKey, data: team }))
+
+  await waitUntil(() => b.me._joining.size === 2 || null)
+  t.pass('a pass in no form, sealed to another device or of a type her app lacks is left alone')
+  const quiet = async () => {
+    t.absent(await rowOf(b.me, plans.id), 'nothing on her root for an invite in no log')
+    t.absent(await rowOf(b.me, hid.encode(nowhere)), 'nor for keys that open nothing')
+  }
+  await quiet()
+  // each tried for as long as a reply is waited for, then let go
+  await waitUntil(() => b.me._joining.size === 0 || null, 60000)
+  await quiet()
+  t.is((await passesOf(b.room)).length, 5, 'every pass stays')
+  t.alike(errors, [], 'and onerror hears nothing')
+})
+
+// two devices that come and go, each cero() in a directory of its own
+async function apart(t, opts = {}) {
+  const testnet = opts.testnet || (await makeTestnet(t))
+  const a = await ceroOpen(t, { ...opts, testnet })
+  const general = await open(a.me.team, { name: 'general' })
+  const b = await ceroOpen(t, { ...opts, testnet })
+  await open(b.me.team, await cero.invite(general))
+  await waitUntil(async () => (await devicesOf(general, b.me.id)).length > 0 || null)
+  const plans = await open(a.me.team, { name: 'plans' })
+  return { testnet, a, b, general, plans }
+}
+
+async function back(t, { dir, testnet }, opts = {}) {
+  const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
+  t.teardown(() => me.close().catch(() => {}), { order: 5 })
+  return me
+}
+
+test('seat: she is offline at the seat, and the room shows up once she opens the room both are in', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  t.absent(await rowOf(me, plans.id), 'nothing while the room both are in stays closed')
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  t.pass('in once it opens')
+  await waitUntil(async () => (await passesOf(general)).length === 0 || null)
+  t.pass('and the pass goes')
+})
+
+test('seat: revoked before she comes, she is turned away, the pass goes and the room rotates; seated again, she is in', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  const [{ id }] = (await get(plans.invites)).data
+  t.ok(await cero.revoke(plans, id))
+  await waitUntil(async () => (await get(plans.status)).data.epoch === 1 || null)
+  t.pass('her devices had its keys: the room rotates')
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'denied')
+  t.is((await rowOf(me, plans.id)).reason, 'revoked', 'with the reason')
+  await waitUntil(async () => (await passesOf(general)).length === 0 || null)
+  t.is((await get(plans.members)).data.length, 1, 'nobody let in')
+
+  await cero.seat(plans, b.me.id, { from: general })
+  await reaches(me, plans.id, 'in')
+  t.pass('seated again after her row ended, she is in')
+})
+
+test('seat: past its ttl before she comes, she is let into nothing and the pass goes', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general, ttl: 200 })
+  await waitUntil(async () => (await get(plans.invites)).data.length === 0 || null)
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await waitUntil(async () => (await passesOf(general)).length === 0 || null)
+  t.absent(await rowOf(me, plans.id), 'nothing on her root')
+})
+
+test('seat: spent by a removal of someone else before she comes, she is turned away as removed', async (t) => {
+  const { testnet, b, general, plans } = await apart(t)
+  const c = await ceroOpen(t, { testnet })
+  await open(c.me.team, await cero.invite(plans))
+  await memberCount(plans, 2)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  await del(plans.members, c.me.id)
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'denied')
+  t.is((await rowOf(me, plans.id)).reason, 'removed')
+})
+
+test('seat: the room rotated after the seat, she is let in and reads what was written since', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  await cero.rotate(plans)
+  await cero.put(plans.notes, { text: 'after' })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  const room = await open(me.team, { id: plans.id })
+  await waitUntil(async () => (await get(room.notes)).data.length === 1 || null)
+  t.pass('she reads what was written under the new key')
+})
+
+test('seat: the seater is offline when she comes, and she is let in through the mirror', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const mirrors = [b4a.toHex(mirror.publicKey)]
+  const { a, b, general, plans } = await apart(t, { testnet, mirrors })
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  for (const { store } of [general, plans]) {
+    const core = mirror.store.get({ key: store.writerKey })
+    await core.ready()
+    await waitUntil(() => core.contiguousLength >= store.bee.local.length || null)
+    await core.close()
+  }
+  await a.me.close()
+  const me = await back(t, b, { mirrors })
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  t.pass('in with nobody else online')
+})
+
+// her device stops at its `n`th claim in the room, as a killed app would, and comes back
+async function stopsAt(t, n) {
+  const { b, general, plans } = await apart(t)
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  let claims = 0
+  Database.prototype.claim = async function (opts) {
+    await claim.call(this, opts)
+    if (this.identity.id !== b.me.id || !b4a.equals(this.key, plans.store.key)) return
+    if (++claims === n) throw CeroError.CLOSED('Database')
+  }
+  await cero.seat(plans, b.me.id, { from: general })
+  await waitUntil(() => claims === n || null)
+  const state = await stateOf(b.me, plans.id)
+  await b.me.close()
+  Database.prototype.claim = claim
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  await memberCount(plans, 2)
+  t.is((await devicesOf(plans, b.me.id)).length, 1, 'one seat')
+  return state
+}
+
+test('seat: stopped after its claim, before the root row moves on, she comes back in with one seat', async (t) => {
+  t.is(await stopsAt(t, 1), 'asking')
+})
+
+test('seat: stopped while her root row is joining, she comes back in with one seat', async (t) => {
+  t.is(await stopsAt(t, 2), 'joining')
+})
+
+test('seat: her other device took the seat and stopped before her root moved on, so this one sits beside it, that one comes in from her root, and so does one linked after', async (t) => {
+  const { testnet, b, general, plans } = await apart(t)
+  const linked = async (dir, root) => {
+    const fresh = await cero(dir, spec, { bootstrap: testnet.bootstrap })
+    t.teardown(() => fresh.close().catch(() => {}), { order: 5 })
+    const linking = cero.link(fresh, await cero.invite(root))
+    const asked = async () => (await get(root.requests)).data.find((r) => !r.admitted) || null
+    await cero.accept(root, await waitUntil(asked))
+    const me = await linking
+    t.teardown(() => me.close().catch(() => {}), { order: 4 })
+    return me
+  }
+  const phone = { dir: await t.tmp(), testnet }
+  phone.me = await linked(phone.dir, b.me)
+  await open(phone.me.team, { id: general.id })
+  await waitUntil(async () => (await devicesOf(general, b.me.id)).length === 2 || null)
+
+  // the phone is let in and stops before her root row moves on
+  await b.me.close()
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  const device = phone.me.identity.device.publicKey
+  Database.prototype.claim = async function (opts) {
+    await claim.call(this, opts)
+    const theirs = b4a.equals(this.identity.device.publicKey, device)
+    if (theirs && b4a.equals(this.key, plans.store.key)) throw CeroError.CLOSED('Database')
+  }
+  await cero.seat(plans, b.me.id, { from: general })
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  await phone.me.close()
+  Database.prototype.claim = claim
+
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  const room = await open(me.team, { id: plans.id })
+  await cero.put(room.notes, { text: 'beside' })
+  await waitUntil(async () => (await get(plans.notes)).data.length === 1 || null)
+  t.pass('in, writing, on a writer of its own')
+
+  const again = await back(t, phone)
+  await reaches(again, plans.id, 'in')
+  const theirs = await open(again.team, { id: plans.id })
+  await cero.put(theirs.notes, { text: 'phone' })
+  await waitUntil(async () => (await get(plans.notes)).data.length === 2 || null)
+  t.pass('the phone comes in on the seat it took')
+  const laptop = await linked(await t.tmp(), me)
+  await reaches(laptop, plans.id, 'in')
+  const late = await open(laptop.team, { id: plans.id })
+  t.is(late.id, plans.id, 'one linked after opens it from her root')
+})
+test('seat: the room out of reach, nothing is on her root; in reach at the next open of the room both are in, she is in', async (t) => {
+  const { testnet, a, b, general, plans } = await apart(t)
+  const c = await ceroOpen(t, { testnet })
+  const relay = await open(c.me.team, await cero.invite(general))
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  await waitUntil(async () => (await passesOf(relay)).length === 1 || null)
+  await a.me.close()
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await waitUntil(() => me._joining.size === 1 || null)
+  await waitUntil(() => me._joining.size === 0 || null, 60000)
+  t.absent(
+    await rowOf(me, plans.id),
+    'nothing on her root while only the room both are in is served'
+  )
+  const seater = await back(t, a)
+  await open(seater.team, { id: plans.id })
+  await me.close()
+  const again = await back(t, b)
+  await open(again.team, { id: general.id })
+  await reaches(again, plans.id, 'in')
+  t.pass('in once it is in reach')
+})
+
+test('seat: her request turned away after she asked, her row is denied with the reason', async (t) => {
+  const { b, general, plans } = await apart(t)
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  Database.prototype.claim = async function (opts) {
+    if (this.identity.id === b.me.id && b4a.equals(this.key, plans.store.key)) {
+      t.is(await stateOf(b.me, plans.id), 'asking', 'she asked')
+      const asked = async () => (await get(plans.requests)).data[0] || null
+      await cero.deny(plans, await waitUntil(asked), 'not now')
+      const writer = hid.encode(this.writerKey)
+      await waitUntil(() => this.view.get(`@${this.ns}/refusals`, { id: writer }))
+    }
+    return claim.call(this, opts)
+  }
+  await cero.seat(plans, b.me.id, { from: general })
+  await reaches(b.me, plans.id, 'denied')
+  t.is((await rowOf(b.me, plans.id)).reason, 'not now')
+  await waitUntil(async () => (await passesOf(general)).length === 0 || null)
+  t.pass('and the pass goes')
 })

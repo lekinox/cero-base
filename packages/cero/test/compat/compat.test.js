@@ -279,6 +279,35 @@ test('compat: an invite to a room past the start is refused by the previous rele
   t.is(err?.code, 'BEHIND', 'it tells its device to update instead of waiting on a join')
 })
 
+test('compat: a room the previous release hosts takes no seat, as the room both are in or the one seated into, and nothing is minted', async (t) => {
+  const { old, before } = await previous()
+  const shipped = await shippedSpec()
+  if (shipped.meta.version <= shipped.meta.start) return t.pass('no raise between the two releases')
+  const testnet = await makeTestnet(t)
+  const launch = async (release, built) => {
+    const me = await release.cero(await t.tmp(), built, { bootstrap: testnet.bootstrap })
+    t.teardown(() => me.close().catch(() => {}), { order: 5 })
+    return me
+  }
+  const them = await launch(old, before)
+  const me = await launch({ cero }, shipped)
+  const other = await launch({ cero }, shipped)
+  const shared = await old.open(them.room, { name: 'shared' })
+  const theirs = await open(me.room, await old.invite(shared))
+  const mine = await open(me.room, { name: 'mine' })
+  await open(other.room, await invite(mine))
+  const known = (room, id) =>
+    waitUntil(async () => (await get(room.devices)).data.some((d) => d.memberId === id) || null)
+  await known(theirs, them.id)
+  await known(mine, other.id)
+
+  const from = await cero.seat(mine, them.id, { from: theirs }).catch((e) => e)
+  t.is(from?.code, 'UNSUPPORTED', 'from a room it hosts')
+  const into = await cero.seat(theirs, other.id, { from: mine }).catch((e) => e)
+  t.is(into?.code, 'UNSUPPORTED', 'into one')
+  t.is((await get(mine.invites)).data.length, 0, 'nothing minted')
+  t.is((await get(theirs.invites)).data.length, 0)
+})
 test(
   'compat: a join cancelled in a room the previous release hosts leaves every peer with the same members once the previous release accepts it',
   older,
