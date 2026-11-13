@@ -29,6 +29,9 @@ export async function mirror(from, row, fields, to, id) {
       changed ||= (was[k] ?? null) !== (row[k] ?? null)
     } else if (prev && (await get(to.handle.files, prev)).data?.from === file) {
       out[k] = prev
+    } else if (!to.handle.store.writable) {
+      // a file takes a seat to add: a reader's row keeps the one it has, and takes the rest
+      out[k] = prev
     } else {
       const data = await from.handle._bytes(file)
       const { type } = decodeId(file)

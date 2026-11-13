@@ -64,7 +64,7 @@ export function Rooms({ onOpen, onSettings }) {
           onClick={onSettings}
           className='flex items-center gap-2 px-2 py-1 bg-card hover:bg-card/80 border border-border rounded-full'
         >
-          <Avatar name={userName} />
+          <Avatar name={userName} src={profile?.avatar?.url} />
           <span className='text-xs text-muted pr-1'>{userName}</span>
         </button>
       </div>
