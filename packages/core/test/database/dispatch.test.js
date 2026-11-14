@@ -22,6 +22,7 @@ import {
   unchecked
 } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
+import { MAX_PASS } from '../../src/lib/constants.js'
 import { genId } from '../../src/lib/ids.js'
 import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
@@ -1579,6 +1580,36 @@ test('add-invite: a reader mints none, not even at its own rank', async (t) => {
   const err = await apply(db, db.writerKey, 'add-invite', inviteRow('mine', { role: 'reader' }))
   t.is(err?.code, 'REFUSED')
   t.absent((await db.get('invites', 'mine')).data, 'no invite')
+})
+
+test('add-invite / set-invite: device keys ride only on a seat that lets in on its own, the kind a removal spends', async (t) => {
+  const { db, as } = await withMember(t)
+  const keys = Identity.randomKeyPair().publicKey
+  const seat = { to: (await Identity.create()).id, secret: Identity.randomBytes(32), keys }
+  t.absent(await as('add-invite', inviteRow('seat', seat)), 'a seat names her devices')
+  t.alike((await db.get('invites', 'seat')).data.keys, keys)
+
+  const refused = [
+    ['made to nobody', { ...seat, to: null }],
+    ['with no address of its own', { ...seat, secret: null }],
+    ['that waits for an accept', { ...seat, confirm: true }],
+    ['that lets in more than one', { ...seat, reuse: true }],
+    ['with more keys than a pass holds', { ...seat, keys: b4a.alloc(MAX_PASS + 32) }]
+  ]
+  for (const [what, row] of refused) {
+    t.is((await as('add-invite', inviteRow(what, row)))?.code, 'REFUSED', `one ${what} names none`)
+  }
+
+  const set = (extra) =>
+    apply(db, db.writerKey, 'set-invite', inviteRow('seat', { ...seat, ...extra }))
+  t.is(
+    (await set({ confirm: true }))?.code,
+    'REFUSED',
+    'nor is a seat made one a removal leaves standing'
+  )
+  await db.call('add-invite', inviteRow('plain'))
+  const named = await apply(db, db.writerKey, 'set-invite', inviteRow('plain', { keys }))
+  t.is(named?.code, 'REFUSED', 'nor another invite given keys')
 })
 
 test('del-invite / set-invite: revoking or altering a shared invite needs REMOVE', async (t) => {
