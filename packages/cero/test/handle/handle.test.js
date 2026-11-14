@@ -2206,6 +2206,25 @@ test('handles: an ended row is deleted through its type, and one in, leaving, as
   t.absent((await get(me.team, 'denied')).data, 'gone once it is over')
 })
 
+test('handles: what is tied to an open room is undone by one close listener, and a read of its keys it closed under reports nothing', async (t) => {
+  const errors = []
+  const { me } = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const room = await open(me.team, { name: 'clinic' })
+  t.is(room.listenerCount('close'), 1)
+
+  await cero.rotate(room)
+  await waitUntil(async () => (await me.store.get('handles', room.id)).data.epochs?.byteLength)
+  let reads = 0
+  room.store.learn = async () => {
+    reads++
+    throw CeroError.CLOSED('Database')
+  }
+  await me.store.set('handles', { id: room.id, name: 'surgery' })
+  await waitUntil(() => reads > 0)
+  await me.store.get('handles', room.id)
+  t.alike(errors, [])
+})
+
 test('handles: a row written with no state is stored in, and takes the changes in takes', async (t) => {
   const { me } = await ceroOpen(t)
   const room = await open(me.team, { name: 'clinic' })

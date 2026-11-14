@@ -242,7 +242,7 @@ export class Handle extends ReadyResource {
       /** @private */
       this._ac = new AbortController()
       if (this.closed) this._ac.abort()
-      else this.once('close', () => this._ac.abort())
+      else this._onclose(() => this._ac.abort())
     }
     return this._ac.signal
   }
@@ -252,6 +252,17 @@ export class Handle extends ReadyResource {
     let h = this
     while (h.parent) h = h.parent
     return h
+  }
+
+  // what is tied to this handle while it is open is undone as it closes, by one listener however many there are
+  /** @private */
+  _onclose(fn) {
+    if (!this._offs) {
+      /** @private */
+      this._offs = []
+      this.once('close', () => this._offs.forEach((off) => off()))
+    }
+    this._offs.push(fn)
   }
 
   /**
@@ -329,10 +340,10 @@ export class Handle extends ReadyResource {
         this._pruneAll().catch(this._onerror)
         this._tellClosed()
       })
-      this.once('close', prune)
+      this._onclose(prune)
       if (this._bluetooth) {
         const off = this.store.onUpdate('profile', () => this._tell().catch(this._onerror))
-        this.once('close', off)
+        this._onclose(off)
         await this._tell()
       }
       // the joins on their way, at launch and as their rows move
@@ -344,7 +355,7 @@ export class Handle extends ReadyResource {
       this._tellClosed()
       // the handles rows, keyed by push topic, for a cold push process that cannot read the root
       const off = this.store.onUpdate('handles', () => this._index().catch(this._onerror))
-      this.once('close', off)
+      this._onclose(off)
       await this._index()
     }
   }
@@ -1853,7 +1864,7 @@ export class Handle extends ReadyResource {
     const child = new Handle({ parent: this, ...opts })
     for (const hook of this._typeHooks) hook.apply(child)
     this._pending.add(child)
-    child.once('close', () => this._pending.delete(child))
+    child._onclose(() => this._pending.delete(child))
     return child
   }
 
@@ -1887,12 +1898,12 @@ export class Handle extends ReadyResource {
     // it tells a handle nothing before it has a seat there
     const prune = () => this._prune(child).catch(this._onerror)
     child.store.on('writable', prune)
-    child.once('close', () => child.store.off('writable', prune))
+    child._onclose(() => child.store.off('writable', prune))
     prune()
     this._seats(child)
     const take = () => this._passes(child).catch((err) => this.closing || this._onerror(err))
-    child.once('close', child.store.onUpdate(PASSES, take))
-    child.once('close', () => {
+    child._onclose(child.store.onUpdate(PASSES, take))
+    child._onclose(() => {
       clearTimeout(this._retries.get(child))
       this._retries.delete(child)
     })
@@ -1918,7 +1929,7 @@ export class Handle extends ReadyResource {
       this._ousted(child).catch((err) => this.closing || this._onerror(err))
     }
     child.store.on('update', onchange)
-    child.once('close', () => child.store.off('update', onchange))
+    child._onclose(() => child.store.off('update', onchange))
     this._index(child).catch(this._onerror)
   }
 
@@ -2247,13 +2258,15 @@ export class Handle extends ReadyResource {
     }
     const touches = (name) => (touched) => touched.has('*') || touched.has(name)
     const onepoch = () => save().catch(this._onerror)
-    const onroot = (touched) => touches('handles')(touched) && read().catch(this._onerror)
-    const onchild = (touched) => touches('epochs')(touched) && read().catch(this._onerror)
+    // a room that closed under the read says nothing
+    const report = (err) => err.code === 'CLOSED' || this._onerror(err)
+    const onroot = (touched) => touches('handles')(touched) && read().catch(report)
+    const onchild = (touched) => touches('epochs')(touched) && read().catch(report)
     child.store.on('epoch', onepoch)
     child.store.on('update', onchild)
     this.store.on('update', onroot)
     this.store.on('epoch', onepoch)
-    child.once('close', () => {
+    child._onclose(() => {
       child.store.off('epoch', onepoch)
       child.store.off('update', onchild)
       this.store.off('update', onroot)
@@ -2271,7 +2284,7 @@ export class Handle extends ReadyResource {
       apply: (child) => {
         if (child.type !== ref.type) return
         offs.set(child, attach(child))
-        child.once('close', () => offs.delete(child))
+        child._onclose(() => offs.delete(child))
       }
     }
     this._typeHooks.add(hook)

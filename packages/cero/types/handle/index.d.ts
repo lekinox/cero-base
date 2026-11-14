@@ -245,6 +245,8 @@ export declare class Handle extends ReadyResource {
     _live;
     /** @private */
     _ac;
+    /** @private */
+    _offs;
     _queued: {
         root: boolean;
         children: Set<any>;
@@ -260,6 +262,8 @@ export declare class Handle extends ReadyResource {
     get signal(): AbortSignal;
     /** The top-most handle in the parent chain — itself for a root handle. */
     get root(): this;
+    /** @private */
+    private _onclose;
     /**
      * Lazily-built file server for this identity. Root-only — child handles
      * reach it through `this.root.fileServer`.
