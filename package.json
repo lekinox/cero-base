@@ -42,7 +42,7 @@
     "bare": "^1.37.1",
     "lunte": "^1.8.6",
     "prettier-config-holepunch": "^2.0.0",
-    "turbo": "^2.11.10"
+    "turbo": "^2.11.11"
   },
   "overrides": {
     "react": "19.3.1"

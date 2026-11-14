@@ -353,6 +353,12 @@ export class Rotation {
     const { data: requests } = await this.db.get('requests')
     const promised = []
     for (const row of requests) if (await this._stands(row)) promised.push(row)
+    // a seat handed its member the keys before any device of hers asked: sealed to them until she comes
+    const { data: invites } = await this.db.get('invites')
+    for (const { keys, expires } of invites) {
+      if (expires > 0 && Date.now() > expires) continue
+      for (const key of keysOf(keys)) promised.push({ id: hid.encode(key), key })
+    }
     return promised
   }
 
@@ -490,7 +496,8 @@ export class Rotation {
     const { data: members } = await this.db.get('members')
     const standing = new Set(members.map((m) => m.id))
     const { data: devices } = await this.db.get('devices')
-    return devices.some((d) => d.key && standing.has(d.memberId) && !named.has(d.id))
+    const unnamed = (d) => !named.has(d.id) && !named.has(hid.encode(d.key))
+    return devices.some((d) => d.key && standing.has(d.memberId) && unnamed(d))
   }
 }
 

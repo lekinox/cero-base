@@ -59,7 +59,9 @@ export const main = {
     // their answers
     secret: bytes,
     // the member it was made for: nobody else joins with it
-    to: string
+    to: string,
+    // her device keys, 32 bytes each, back to back: a rotation before she comes is sealed to them
+    keys: bytes
   },
   handle: {
     id: required(string),
@@ -346,7 +348,7 @@ export const local = {
 
 // what a write means to apply. A release that changes it without changing what is stored bumps
 // this, so an app's next build raises its contract and devices on the old release skip the new writes
-export const contract = { version: 5 }
+export const contract = { version: 6 }
 
 export const rpc = {
   'req-empty': {

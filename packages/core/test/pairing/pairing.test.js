@@ -1405,6 +1405,16 @@ test("refused: below the version that has an invite's secret, a spent invite kee
   t.is((await last).code, 'CLOSED')
 })
 
+test("invite: one made to a member below the version that has an invite's secret names no devices, and is minted all the same", async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeHost(t, testnet)
+  const to = (await Identity.create()).id
+  await host.pairing.invite({ to, keys: [Identity.randomKeyPair().publicKey] })
+  const [row] = await invites(host.db)
+  t.is(row.to, to)
+  t.absent(row.keys?.byteLength, 'only an invite a removal spends names any')
+})
+
 test('expiry: a member who can remove drops the invite once it runs out', async (t) => {
   const testnet = await makeTestnet(t)
   const host = await makeHost(t, testnet)

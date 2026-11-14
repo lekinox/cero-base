@@ -470,18 +470,24 @@ test('seat: spent by a removal of someone else before she comes, she is turned a
   t.is((await rowOf(me, plans.id)).reason, 'removed')
 })
 
-test('seat: the room rotated after the seat, she is let in and reads what was written since', async (t) => {
+test('seat: the room rotated after the seat and its other owner left as she came: she reads what was written since, with nobody to hand her the key', async (t) => {
   const { b, general, plans } = await apart(t)
   await b.me.close()
-  await cero.seat(plans, b.me.id, { from: general })
+  await cero.seat(plans, b.me.id, { from: general, role: 'owner' })
   await cero.rotate(plans)
   await cero.put(plans.notes, { text: 'after' })
   const me = await back(t, b)
   await open(me.team, { id: general.id })
+  const owners = async (room) => (await get(room.members)).data.filter((m) => m.role === 'owner')
+  await waitUntil(async () => (await owners(plans)).length === 2 || null)
+  // gone before her device could ask it for the key
+  await cero.leave(plans)
   await reaches(me, plans.id, 'in')
   const room = await open(me.team, { id: plans.id })
-  await waitUntil(async () => (await get(room.notes)).data.length === 1 || null)
-  t.pass('she reads what was written under the new key')
+  t.teardown(() => room.close().catch(() => {}))
+  await waitUntil(async () => (await get(room.members)).data.length === 1 || null)
+  t.pass('she reads that it left')
+  t.is((await get(room.notes)).data.length, 1, 'and what was written under the new key')
 })
 
 test('seat: the seater is offline when she comes, and she is let in through the mirror', async (t) => {
@@ -656,6 +662,94 @@ test('seat: a device that closes a room as soon as nothing holds it keeps the wr
   t.ok(room.store.writable, 'and the room opens seated on it')
   t.alike(room.store.keyPair.publicKey, kept.publicKey)
   t.is((await devicesOf(plans, b.me.id)).length, 1, 'no second seat')
+  t.alike(errors, [])
+})
+
+test('seat: revoked and seated again before she comes, she takes the new seat whichever pass she reads first', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await ceroOpen(t, { testnet })
+  const general = await open(a.me.team, { name: 'general' })
+  const b = await ceroOpen(t, { testnet })
+  // a reader where the passes wait: her device cannot take one away
+  await open(b.me.team, await cero.invite(general, { role: 'reader' }))
+  await waitUntil(async () => (await get(general.members)).data.length === 2 || null)
+  const plans = await open(a.me.team, { name: 'plans' })
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  const [{ id }] = (await get(plans.invites)).data
+  t.ok(await cero.revoke(plans, id))
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  t.pass('in on the new seat')
+})
+
+test('seat: a pass whose invite never shows in its room lets the next one for the room through', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  const { key, encryptionKey, address } = plans.store
+  const link = { key: Identity.randomBytes(32), length: 1 }
+  const nowhere = Invite.create({ key, address, own: true, link }).toString()
+  const hers = [{ key: b.me.identity.device.publicKey }]
+  const pass = Pass.seal(hers, { invite: nowhere, key, encryptionKey, data: b4a.from('team') })
+  await general.store.call('add-pass', {
+    id: b4a.toHex(Identity.randomBytes(16)),
+    to: b.me.id,
+    pass
+  })
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  // whichever she reads first: the one that never shows waits its time, then lets the other go
+  await waitUntil(async () => (await rowOf(me, plans.id))?.state === 'in' || null, 60000)
+  t.pass('in on the seat that shows')
+})
+
+test('seat: a seat she took on her device that never counted in the room does not keep her from the next', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  // her root as a revoke that reached the room before her join leaves it: in, with no seat there and
+  // no removal, the race no single device can be made to lose on cue
+  const ts = Date.now()
+  const { key, encryptionKey } = plans.store
+  const invite = await cero.invite(plans)
+  await me.store.call('add-handle', {
+    id: plans.id,
+    type: 'team',
+    key,
+    encryptionKey,
+    epochs: null,
+    name: null,
+    createdAt: ts,
+    updatedAt: ts,
+    state: 'in',
+    invite
+  })
+  await open(me.team, { id: general.id })
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  t.pass('she takes the seat')
+  await reaches(me, plans.id, 'in')
+})
+
+test('seat: taken out while the room is closed on her device and seated again, she takes the new seat', async (t) => {
+  const errors = []
+  const { b, general, plans } = await apart(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
+  await cero.seat(plans, b.me.id, { from: general })
+  await reaches(b.me, plans.id, 'in')
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  await cero.del(plans.members, b.me.id)
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 0 || null)
+  await cero.seat(plans, b.me.id, { from: general })
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  t.pass('seated again')
+  await waitUntil(async () => (await get(plans.invites)).data.length === 0 || null)
+  t.pass('and no invite is left open')
+  const room = await open(b.me.team, { id: plans.id })
+  t.teardown(() => room.close().catch(() => {}))
+  t.ok(room.store.writable, 'the room opens seated')
   t.alike(errors, [])
 })
 

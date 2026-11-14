@@ -46,6 +46,7 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
  * @property {string | null} [to]                   The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
+ * @property {Uint8Array[]} [keys]                  The device keys of the member it is made `to`, handed the room's keys with it: a rotation before she comes is sealed to them.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
@@ -175,7 +176,9 @@ export class Pairing extends ReadyResource {
       expires: invite.expires,
       createdAt: Date.now(),
       secret,
-      to
+      to,
+      // only an invite with an address of its own is spent by a removal before its rotation is sealed
+      keys: to && secret && opts.keys ? b4a.concat(opts.keys) : null
     }
     invite.stamp = await this.db.write([['add-invite', row]])
     if (secret || invite.stamp > this.db.start) invite.version = STAMPED

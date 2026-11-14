@@ -1045,6 +1045,35 @@ test('rotate: divergent offline removals converge — no data loss, both targets
   t.absent((await texts(dPeer.db)).includes('final'), 'D (removed by B) cannot read post-heal data')
 })
 
+test('rotate: sealed to the devices a seat names while it is open, and to none of a seat a removal spent', async (t) => {
+  const {
+    a,
+    members: [b]
+  } = await makeRoom(t, ['member'])
+  const key = Identity.randomKeyPair().publicKey
+  const to = (await Identity.create()).id
+  const secret = Identity.randomBytes(32)
+  const seat = { role: 'member', createdAt: 1, to, secret }
+  await a.db.call('add-invite', { ...seat, id: 'seat', keys: key })
+  // one a removal would leave standing is how a member taken out would keep the keys coming
+  const planted = Identity.randomKeyPair().publicKey
+  const kept = { ...seat, id: 'kept', confirm: true, keys: planted }
+  t.is((await a.db.call('add-invite', kept).catch((err) => err))?.code, 'REFUSED')
+  const sealed = async () => {
+    const rows = await a.db.view.find('@cero/epochs', {}).toArray()
+    const top = rows.reduce((x, y) => (y.epoch > x.epoch ? y : x))
+    return c.decode(wraps, top.wrapped).map((w) => w.id)
+  }
+  await a.db.rotate()
+  t.ok((await sealed()).includes(hid.encode(key)), 'her devices get the key before she comes')
+
+  await a.db.call('del-member', { id: b.identity.id })
+  t.is(a.db.keyring.seq, 2, 'the removal carried its rotation')
+  const after = await sealed()
+  t.absent(after.includes(hid.encode(key)), 'which the seat it spent gets nothing of')
+  t.absent(after.includes(hid.encode(planted)), 'and no key rides an invite it leaves standing')
+})
+
 test('rotate: soft delete in a rotated room auto-rotates (healer)', async (t) => {
   const {
     a,

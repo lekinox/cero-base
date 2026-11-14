@@ -13,11 +13,14 @@ const versions = JSON.parse(
 )
 const version = versions.filter((v) => !v.includes('-') && below(v, own)).reduce(newest)
 const dir = join(root, version)
+const core = join(dir, 'node_modules', '@cero-base', 'core', 'package.json')
 
-if (!existsSync(join(dir, 'node_modules', '@cero-base', 'cero'))) {
+// the pair as it shipped: the old cero's range alone would take the newest core
+if (!existsSync(core) || JSON.parse(readFileSync(core, 'utf8')).version !== version) {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
-  execSync(`npm install --no-package-lock --no-audit --no-fund @cero-base/cero@${version}`, {
+  const pair = `@cero-base/cero@${version} @cero-base/core@${version}`
+  execSync(`npm install --no-package-lock --no-audit --no-fund ${pair}`, {
     cwd: dir,
     stdio: 'inherit'
   })

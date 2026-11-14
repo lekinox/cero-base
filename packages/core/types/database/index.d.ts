@@ -264,6 +264,8 @@ export declare class Database extends ReadyResource {
     /** @private */
     _landed;
     /** @private */
+    _hooked;
+    /** @private */
     _rebuilding;
     /** @private */
     _writes;

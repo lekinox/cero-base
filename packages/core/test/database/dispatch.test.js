@@ -22,6 +22,7 @@ import {
   unchecked
 } from '../helpers/index.js'
 import hid from 'hypercore-id-encoding'
+import { MAX_PASS } from '../../src/lib/constants.js'
 import { genId } from '../../src/lib/ids.js'
 import { admission, joining } from '../../src/lib/utils.js'
 import { getEncoding } from '../../src/lib/spec/index.js'
@@ -111,13 +112,14 @@ async function second(role, extra = {}) {
 const noHost = { addWriter: async () => {}, removeWriter: async () => {} }
 
 // applies an op as if `key` appended it, straight into the view: null, or the refusal
-function apply(db, key, verb, payload, host = noHost) {
+function apply(db, key, verb, payload, host = noHost, ts = 0) {
   return db.dispatcher
     .dispatch(db.spec.dispatch.encode(`@${db.ns}/${verb}`, payload), {
       view: db.view,
       host,
       key,
-      dbKey: db.key
+      dbKey: db.key,
+      ts
     })
     .then(
       () => null,
@@ -1580,6 +1582,36 @@ test('add-invite: a reader mints none, not even at its own rank', async (t) => {
   t.absent((await db.get('invites', 'mine')).data, 'no invite')
 })
 
+test('add-invite / set-invite: device keys ride only on a seat that lets in on its own, the kind a removal spends', async (t) => {
+  const { db, as } = await withMember(t)
+  const keys = Identity.randomKeyPair().publicKey
+  const seat = { to: (await Identity.create()).id, secret: Identity.randomBytes(32), keys }
+  t.absent(await as('add-invite', inviteRow('seat', seat)), 'a seat names her devices')
+  t.alike((await db.get('invites', 'seat')).data.keys, keys)
+
+  const refused = [
+    ['made to nobody', { ...seat, to: null }],
+    ['with no address of its own', { ...seat, secret: null }],
+    ['that waits for an accept', { ...seat, confirm: true }],
+    ['that lets in more than one', { ...seat, reuse: true }],
+    ['with more keys than a pass holds', { ...seat, keys: b4a.alloc(MAX_PASS + 32) }]
+  ]
+  for (const [what, row] of refused) {
+    t.is((await as('add-invite', inviteRow(what, row)))?.code, 'REFUSED', `one ${what} names none`)
+  }
+
+  const set = (extra) =>
+    apply(db, db.writerKey, 'set-invite', inviteRow('seat', { ...seat, ...extra }))
+  t.is(
+    (await set({ confirm: true }))?.code,
+    'REFUSED',
+    'nor is a seat made one a removal leaves standing'
+  )
+  await db.call('add-invite', inviteRow('plain'))
+  const named = await apply(db, db.writerKey, 'set-invite', inviteRow('plain', { keys }))
+  t.is(named?.code, 'REFUSED', 'nor another invite given keys')
+})
+
 test('del-invite / set-invite: revoking or altering a shared invite needs REMOVE', async (t) => {
   const { db, as } = await withMember(t)
   await db.call('add-invite', inviteRow('inv', { reuse: true }))
@@ -2905,16 +2937,30 @@ test('del-refusal: answering a refused join needs INVITE', async (t) => {
   t.absent(await refusal(db, id), 'answered by the owner')
 })
 
-test('del-invite: a spent invite is forgotten by a member who can remove', async (t) => {
+test('del-invite: a spent invite is forgotten once it ran out, by a member who can remove', async (t) => {
   const { db, as } = await withMember(t)
-  const invite = await minted(db, { reuse: true })
+  const expires = Date.now() + 60000
+  const invite = await minted(db, { reuse: true, expires })
   const id = b4a.toHex(invite.id)
   t.is(await apply(db, db.writerKey, 'del-invite', { id }), null)
   t.is((await spent(db, id))?.reason, 'revoked')
+  t.is(await apply(db, db.writerKey, 'del-invite', { id }, noHost, expires - 1), null)
+  t.is((await spent(db, id))?.reason, 'revoked', 'revoked again before it ran out, it is kept')
   t.is((await as('del-invite', { id }))?.code, 'REFUSED', 'a member cannot forget it')
   t.ok(await spent(db, id))
+  t.is(await apply(db, db.writerKey, 'del-invite', { id }, noHost, expires), null)
+  t.absent(await spent(db, id), 'the owner does once it ran out')
+})
+
+test('del-invite: a join under an invite revoked twice is still turned away as revoked', async (t) => {
+  const { db, identity } = await withRole(t, 'owner')
+  const invite = await minted(db, { expires: Date.now() + 60000 })
+  const id = b4a.toHex(invite.id)
   t.is(await apply(db, db.writerKey, 'del-invite', { id }), null)
-  t.absent(await spent(db, id), 'the owner does')
+  t.is(await apply(db, db.writerKey, 'del-invite', { id }, noHost, Date.now()), null)
+  const writer = crypto.randomBytes(32)
+  await apply(db, writer, 'join', joinOp(db, invite, { identity, writer }))
+  t.is((await refusal(db, hid.encode(writer)))?.reason, 'revoked', 'she hears why')
 })
 
 // ─── admission is one decision: no grant, no writer ───────────────────────

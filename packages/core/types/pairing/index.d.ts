@@ -41,6 +41,10 @@ export type InviteOpts = {
      * The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
      */
     to?: string | null;
+    /**
+     * The device keys of the member it is made `to`, handed the room's keys with it: a rotation before she comes is sealed to them.
+     */
+    keys?: Uint8Array[];
 };
 export type AcceptOpts = {
     /**
@@ -119,6 +123,7 @@ export type JoinResult = {
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
  * @property {string | null} [to]                   The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
+ * @property {Uint8Array[]} [keys]                  The device keys of the member it is made `to`, handed the room's keys with it: a rotation before she comes is sealed to them.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
