@@ -177,7 +177,8 @@ export class Pairing extends ReadyResource {
       createdAt: Date.now(),
       secret,
       to,
-      keys: to && opts.keys ? b4a.concat(opts.keys) : null
+      // only an invite with an address of its own is spent by a removal before its rotation is sealed
+      keys: to && secret && opts.keys ? b4a.concat(opts.keys) : null
     }
     invite.stamp = await this.db.write([['add-invite', row]])
     if (secret || invite.stamp > this.db.start) invite.version = STAMPED
