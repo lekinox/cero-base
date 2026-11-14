@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.0 (2026-11-14)
+
+### Bug Fixes
+
+- one close listener a room, and no error from one that closed
+- a seat into a room at the previous version
+- seats after a removal, a revoke or a rotation (#82)
+
 ## 3.1.0 (2026-11-13)
 
 ### Features
