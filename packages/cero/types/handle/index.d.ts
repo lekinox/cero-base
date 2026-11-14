@@ -191,6 +191,10 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _taking;
     /** @private */
+    _held;
+    /** @private */
+    _retries;
+    /** @private */
     _coreKeys;
     /** @private */
     _offJoins;
@@ -327,6 +331,8 @@ export declare class Handle extends ReadyResource {
     private _depart;
     /** @private */
     private _ousted;
+    /** @private */
+    private _repass;
     /**
      * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
      * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
@@ -455,6 +461,8 @@ export declare class Handle extends ReadyResource {
     private _take;
     /** @private */
     private _passes;
+    /** @private */
+    private _retry;
     /** @private */
     private _spent;
     /** @private */

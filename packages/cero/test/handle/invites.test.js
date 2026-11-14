@@ -679,6 +679,55 @@ test('seat: revoked and seated again before she comes, she takes the new seat wh
   t.pass('in on the new seat')
 })
 
+test('seat: a pass whose invite never shows in its room lets the next one for the room through', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  const { key, encryptionKey, address } = plans.store
+  const link = { key: Identity.randomBytes(32), length: 1 }
+  const nowhere = Invite.create({ key, address, own: true, link }).toString()
+  const hers = [{ key: b.me.identity.device.publicKey }]
+  const pass = Pass.seal(hers, { invite: nowhere, key, encryptionKey, data: b4a.from('team') })
+  await general.store.call('add-pass', {
+    id: b4a.toHex(Identity.randomBytes(16)),
+    to: b.me.id,
+    pass
+  })
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  // whichever she reads first: the one that never shows waits its time, then lets the other go
+  await waitUntil(async () => (await rowOf(me, plans.id))?.state === 'in' || null, 60000)
+  t.pass('in on the seat that shows')
+})
+
+test('seat: a seat she took on her device that never counted in the room does not keep her from the next', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.seat(plans, b.me.id, { from: general })
+  const me = await back(t, b)
+  // her root as a revoke that reached the room before her join leaves it: in, with no seat there and
+  // no removal, the race no single device can be made to lose on cue
+  const ts = Date.now()
+  const { key, encryptionKey } = plans.store
+  const invite = await cero.invite(plans)
+  await me.store.call('add-handle', {
+    id: plans.id,
+    type: 'team',
+    key,
+    encryptionKey,
+    epochs: null,
+    name: null,
+    createdAt: ts,
+    updatedAt: ts,
+    state: 'in',
+    invite
+  })
+  await open(me.team, { id: general.id })
+  await waitUntil(async () => (await devicesOf(plans, b.me.id)).length === 1 || null)
+  t.pass('she takes the seat')
+  await reaches(me, plans.id, 'in')
+})
+
 test('seat: taken out while the room is closed on her device and seated again, she takes the new seat', async (t) => {
   const errors = []
   const { b, general, plans } = await apart(t, { keepOpen: 0, onerror: (err) => errors.push(err) })
