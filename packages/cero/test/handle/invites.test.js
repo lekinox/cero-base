@@ -470,18 +470,24 @@ test('seat: spent by a removal of someone else before she comes, she is turned a
   t.is((await rowOf(me, plans.id)).reason, 'removed')
 })
 
-test('seat: the room rotated after the seat, she is let in and reads what was written since', async (t) => {
+test('seat: the room rotated after the seat and its other owner left as she came: she reads what was written since, with nobody to hand her the key', async (t) => {
   const { b, general, plans } = await apart(t)
   await b.me.close()
-  await cero.seat(plans, b.me.id, { from: general })
+  await cero.seat(plans, b.me.id, { from: general, role: 'owner' })
   await cero.rotate(plans)
   await cero.put(plans.notes, { text: 'after' })
   const me = await back(t, b)
   await open(me.team, { id: general.id })
+  const owners = async (room) => (await get(room.members)).data.filter((m) => m.role === 'owner')
+  await waitUntil(async () => (await owners(plans)).length === 2 || null)
+  // gone before her device could ask it for the key
+  await cero.leave(plans)
   await reaches(me, plans.id, 'in')
   const room = await open(me.team, { id: plans.id })
-  await waitUntil(async () => (await get(room.notes)).data.length === 1 || null)
-  t.pass('she reads what was written under the new key')
+  t.teardown(() => room.close().catch(() => {}))
+  await waitUntil(async () => (await get(room.members)).data.length === 1 || null)
+  t.pass('she reads that it left')
+  t.is((await get(room.notes)).data.length, 1, 'and what was written under the new key')
 })
 
 test('seat: the seater is offline when she comes, and she is let in through the mirror', async (t) => {

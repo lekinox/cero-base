@@ -59,7 +59,9 @@ export const main = {
     // their answers
     secret: bytes,
     // the member it was made for: nobody else joins with it
-    to: string
+    to: string,
+    // her device keys, 32 bytes each, back to back: a rotation before she comes is sealed to them
+    keys: bytes
   },
   handle: {
     id: required(string),

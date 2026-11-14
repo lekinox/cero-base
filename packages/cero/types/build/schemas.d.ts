@@ -46,6 +46,7 @@ export declare const main: {
         confirm: import("@cero-base/core").Prim;
         secret: import("@cero-base/core").Prim;
         to: import("@cero-base/core").Prim;
+        keys: import("@cero-base/core").Prim;
     };
     handle: {
         id: import("@cero-base/core").Prim;

@@ -527,7 +527,7 @@ export class Handle extends ReadyResource {
         `this room has too many keys to seal to her ${devices.length} devices`
       )
     }
-    const invite = await this._invite({ role, ttl, to: id })
+    const invite = await this._invite({ role, ttl, to: id, keys: devices.map((d) => d.key) })
     const pass = Pass.seal(devices, { ...fields, invite })
     const row = { id: b4a.toHex(Identity.randomBytes(16)), to: id, pass, createdAt: Date.now() }
     await store.call('add-pass', row)

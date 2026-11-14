@@ -98,8 +98,10 @@ export function seal(devices, secret) {
  * @returns {Generator<Uint8Array, void, unknown>}
  */
 export function* opened(identity, id, wrapped) {
+  // one sealed before this device had a writer is addressed by its device key
+  const device = hid.encode(identity.device.publicKey)
   for (const w of c.decode(wraps, wrapped)) {
-    if (w.id !== id) continue
+    if (w.id !== id && w.id !== device) continue
     const secret = identity.unseal(w.box)
     if (secret) yield secret
   }
