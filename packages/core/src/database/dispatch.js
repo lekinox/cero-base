@@ -1034,7 +1034,8 @@ export function makeDispatcher({
     if (!can(r, REMOVE) || !capped(r, next)) throw CeroError.REFUSED('invite')
     await save(ctx, 'set', 'invites', next)
   })
-  // a live invite is revoked; a spent one, deleted again, is forgotten
+  // a live invite is revoked; a spent one, deleted again once it ran out, is forgotten. Before, a
+  // second revoke, which two devices write as readily as one, keeps it: whoever holds it hears why
   add('del-invite', async (op, ctx) => {
     const r = await getSignerRole(ctx.view, ctx.key)
     const existing = await ctx.view.get(invites, { id: op.id })
@@ -1042,8 +1043,10 @@ export function makeDispatcher({
       if (!can(r, REMOVE) || !capped(r, existing)) throw CeroError.REFUSED('invite')
       return spend(ctx, existing, 'revoked')
     }
-    if (!(await ctx.view.get(spent, { id: op.id }))) return
+    const record = await ctx.view.get(spent, { id: op.id })
+    if (!record) return
     if (!can(r, REMOVE)) throw CeroError.REFUSED('invite')
+    if (!record.expires || !(record.expires <= (ctx.ts || 0))) return
     await ctx.view.delete(spent, { id: op.id })
   })
   // its joins still waiting for a member are turned away with it, and the promises made under it

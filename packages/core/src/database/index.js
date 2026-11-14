@@ -134,6 +134,8 @@ export class Database extends ReadyResource {
     /** @private */
     this._landed = false
     /** @private */
+    this._hooked = 0 // update hooks run: a view move none follows is announced on its own
+    /** @private */
     this._rebuilding = null
     /** @private */
     this._writes = new Set()
@@ -305,6 +307,15 @@ export class Database extends ReadyResource {
     this.bee.on('warning', this._onerror)
     const bee = this.bee
     this.bee.on('move-to', () => this._onmove(bee))
+    // autobee's update hook follows the view's moves as it applies, not those of a boot, a remap or
+    // an interrupted run: one no hook follows changes rows all the same, and anyone waiting hears it
+    bee.view.watch(() => {
+      const hooked = this._hooked
+      Promise.resolve().then(() => {
+        if (this._hooked !== hooked || this.bee !== bee || this.closing) return
+        this.emit('update', new Set(['*']))
+      })
+    })
 
     // with no mirror to hold the database, every member holds it: any member serves a joiner, offline
     if (this.network && !this.network.mirrors.length) {
@@ -1228,6 +1239,7 @@ export class Database extends ReadyResource {
   // One that landed ranks its database all the same, changed or not: its ops have to reach the others
   /** @private */
   async _update(db) {
+    this._hooked++
     await db.update()
     this._track(await this.dispatcher.version(db))
     const touched = this._touched
@@ -1541,7 +1553,9 @@ export class Database extends ReadyResource {
           key,
           dbKey: this.key,
           seed: crypto.hash([key, value]),
-          stamp
+          stamp,
+          // the time the append will carry, at least: what reads it decides as apply will
+          ts: Math.max(Date.now(), this.bee.system.timestamp || 0)
         })
         wrapped.push(wrap(stamp, value))
       }
