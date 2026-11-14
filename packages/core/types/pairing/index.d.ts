@@ -195,6 +195,8 @@ export declare class Pairing extends ReadyResource {
     invite(opts?: InviteOpts): Promise<string>;
     /** @private */
     private _secret;
+    /** @private */
+    private _has;
     /**
      * Revoke an invite, for every member. Needs the remove permission.
      *

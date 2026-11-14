@@ -178,7 +178,7 @@ export class Pairing extends ReadyResource {
       secret,
       to,
       // only an invite with an address of its own is spent by a removal before its rotation is sealed
-      keys: to && secret && opts.keys ? b4a.concat(opts.keys) : null
+      keys: to && secret && opts.keys && (await this._has('keys')) ? b4a.concat(opts.keys) : null
     }
     invite.stamp = await this.db.write([['add-invite', row]])
     if (secret || invite.stamp > this.db.start) invite.version = STAMPED
@@ -191,9 +191,15 @@ export class Pairing extends ReadyResource {
   // field, or the database's version has not reached it, and the invite carries the room's address
   /** @private */
   async _secret() {
-    const since = this.db.meta.since?.types[`@${this.db.ns}/invite`]?.secret
-    const version = await this.db.dispatcher.version(this.db.view)
-    return since <= version ? crypto.randomBytes(32) : null
+    return (await this._has('secret')) ? crypto.randomBytes(32) : null
+  }
+
+  // a field of an invite's row the built spec has and the database's version has reached: a write
+  // carrying one it has not is refused
+  /** @private */
+  async _has(field) {
+    const since = this.db.meta.since?.types[`@${this.db.ns}/invite`]?.[field]
+    return since <= (await this.db.dispatcher.version(this.db.view))
   }
 
   /**
