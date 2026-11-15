@@ -144,7 +144,9 @@ export function People({ seated, onError, avatar }) {
                 {addable.map((p) => (
                   <div key={`${p.from.id}/${p.id}`} className='flex items-center gap-2'>
                     <span className='flex-1 text-card-foreground'>{`${p.name || p.id.slice(0, 8)} · ${p.room}`}</span>
-                    <Button onClick={() => cero.seat(room, p.id, { from: p.from }).catch(onError)}>
+                    <Button
+                      onClick={() => cero.invite(room, { to: p.id, from: p.from }).catch(onError)}
+                    >
                       Add
                     </Button>
                   </div>

@@ -29,7 +29,9 @@ export declare const cero: {
         id?: string;
         name?: string;
     } | undefined): Promise<operators.Context>;
-    invite(ctx: operators.Context, opts?: import("@cero-base/core").InviteOpts): Promise<string>;
+    invite(ctx: operators.Context, opts?: import("@cero-base/core").InviteOpts & {
+        from?: operators.Context;
+    }): Promise<string>;
     revoke(ctx: operators.Context, code: string): Promise<boolean>;
     rotate(ctx: operators.Context): Promise<{
         epoch: number;
@@ -44,11 +46,6 @@ export declare const cero: {
         id: string;
     }, reason?: string): Promise<void>;
     removed(ctx: operators.Context, id: string): Promise<'removed' | 'left' | null>;
-    seat(ctx: operators.Context, id: string, opts: {
-        from: operators.Context;
-        role?: string;
-        ttl?: number | string;
-    }): Promise<void>;
     leave(ctx: operators.Context): Promise<void>;
     close(ctx: operators.Context): Promise<void>;
     cancel(me: operators.Context, code: string): Promise<boolean>;

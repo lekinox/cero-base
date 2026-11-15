@@ -71,6 +71,14 @@ export class Rotation {
     return this._queued(() => this._carry(ops))
   }
 
+  /**
+   * @returns {Promise<void>} Once every rotation asked of this device so far has ended: one asked
+   * after is sealed to the devices as they stand by then.
+   */
+  async settled() {
+    await this._queue.catch(() => {})
+  }
+
   /** @private */
   _queued(fn) {
     const run = this._queue.catch(() => {}).then(fn)

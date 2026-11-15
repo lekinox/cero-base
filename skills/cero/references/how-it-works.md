@@ -61,7 +61,7 @@ flowchart TB
 
 An invite made with `confirm: true` pauses at step 3: the join waits in `room.requests` until a member who can invite accepts it, at the invite's role or lower, or denies it and the joiner gets `DENIED`. The first answer settles it everywhere.
 
-`cero.seat` makes an invite for one member and leaves it, with the handle's keys, in the handle you both are in, for that member's devices alone to read. Their device, the next time it has that handle open, joins by the same steps with the keys already in hand: it reads the handle from any peer or mirror and takes its seat, with nothing to wait for at step 4. At step 3, a join with that invite by anyone else is turned away with the reason `'denied'`.
+An invite made `to` a member `from` a handle you both are in is left there, with the handle's keys, for that member's devices alone to read. Their device, the next time it has that handle open, joins by the same steps with the keys already in hand: it reads the handle from any peer or mirror and takes its seat, with nothing to wait for at step 4. At step 3, a join with that invite by anyone else is turned away with the reason `'denied'`.
 
 ## Your devices and recovery
 

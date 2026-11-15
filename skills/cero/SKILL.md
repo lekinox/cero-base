@@ -107,9 +107,9 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
    `cero.del(room.members, id)` removes a member and rotates the handle's key in the same step;
    `await cero.rotate(room)` rotates it at any other time. `cero.revoke(room, invite)` takes the code
-   or the `id` of its `room.invites` row. `cero.seat(room, id, { from, ttl })` lets in a member of
-   `from`, a handle you both are in, by member id: the room appears in their list with nothing
-   called on their side, and revoking the `room.invites` row whose `to` is that id takes it back.
+   or the `id` of its `room.invites` row. `cero.invite(room, { to, from, ttl })` lets in `to`, a member
+   of `from`, a handle you both are in, by member id: the room appears in their list with nothing
+   called on their side, and revoking the invite it returns takes it back.
    A join waiting for approval is ended from any device with `cero.cancel(me, invite)`; the latest
    ask stands, so asking again under another invite takes the older request back. A leave deletes
    the room's row; a row that ended otherwise (`denied`, `expired`, `removed`, `cancelled`) stays

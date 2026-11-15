@@ -8,3 +8,4 @@ export declare const ASKS = "owed";
 export declare const PASSES = "seats";
 export declare const TIMEOUT = 30000;
 export declare const KEEP_OPEN = 16;
+export declare const LOOKS = 16;

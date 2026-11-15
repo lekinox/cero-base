@@ -31,7 +31,6 @@ export const {
   deny,
   leave,
   removed,
-  seat,
   close,
   cancel,
   suspend,
@@ -350,9 +349,10 @@ const operators = {
 
   // the verbs in lib/operators.js land here, and cross to the worker, which runs the same operator
 
+  // the handle it is delivered `from` crosses as its id
   /** @private */
   _invite(opts) {
-    return this._verb('invite', opts)
+    return this._verb('invite', { ...opts, from: opts.from?.id ?? opts.from })
   },
 
   /** @private */
@@ -378,11 +378,6 @@ const operators = {
   /** @private */
   _removed(id) {
     return this._verb('removed', id)
-  },
-
-  /** @private */
-  _seat(id, { from, ...opts }) {
-    return this._verb('seat', id, { ...opts, from: from?.id ?? from })
   },
 
   /** @private */
