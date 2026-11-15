@@ -12,3 +12,6 @@ export const TIMEOUT = 30000
 
 // How many handles nobody holds stay open for a reopen.
 export const KEEP_OPEN = 16
+
+// How many passes left by one member a device looks at, at once.
+export const LOOKS = 16

@@ -869,6 +869,37 @@ test('seat: a pass whose invite ended waits while a newer one for the room has n
   t.alike(errors, [], 'and onerror hears nothing')
 })
 
+test('seat: of the passes one member leaves her, a device looks at the newest 16, and one from another member is held up by none', async (t) => {
+  const { testnet, b, general, plans } = await apart(t)
+  const c = await ceroOpen(t, { testnet })
+  const theirs = await open(c.me.team, await cero.invite(general))
+  await waitUntil(async () => (await devicesOf(general, c.me.id)).length > 0 || null)
+  await b.me.close()
+  const hers = [{ key: b.me.identity.device.publicKey }]
+  const link = { key: Identity.randomBytes(32), length: 1 }
+  const { address } = plans.store
+  for (let i = 0; i < 20; i++) {
+    const key = Identity.randomBytes(32)
+    const invite = Invite.create({ key, address, own: true, link }).toString()
+    const fields = { invite, key, encryptionKey: Identity.randomBytes(32), data: b4a.from('team') }
+    await theirs.store.call('add-pass', {
+      id: b4a.toHex(Identity.randomBytes(16)),
+      to: b.me.id,
+      pass: Pass.seal(hers, fields),
+      createdAt: Date.now() + 60000 + i
+    })
+  }
+  await waitUntil(async () => (await passesOf(general)).length === 20 || null)
+  await cero.invite(plans, { to: b.me.id, from: general })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  t.pass('in on the seat another member gave her')
+  const looks = () => [...me._looks.values()].reduce((n, { rooms }) => n + rooms.size, 0)
+  await waitUntil(() => looks() === 16 || null)
+  t.pass('with 16 of the 20 rooms the first one named looked at')
+})
+
 test('seat: a seat she took on her device that never counted in the room does not keep her from the next', async (t) => {
   const { b, general, plans } = await apart(t)
   await b.me.close()

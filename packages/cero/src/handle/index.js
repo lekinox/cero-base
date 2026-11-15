@@ -22,7 +22,7 @@ import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 import { FileServer } from '@cero-base/core/blobs/server'
 
-import { KEEP_OPEN, NS, PASSES, REFUSALS, SPENT, TIMEOUT } from '../lib/constants.js'
+import { KEEP_OPEN, LOOKS, NS, PASSES, REFUSALS, SPENT, TIMEOUT } from '../lib/constants.js'
 
 import { Ref } from '../lib/refs.js'
 import { box } from '../local/index.js'
@@ -1394,12 +1394,17 @@ export class Handle extends ReadyResource {
     const rows = await store.view.find(`@${store.ns}/${PASSES}`, {}).toArray()
     rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     const rooms = new Map()
+    const left = new Map()
     for (const row of rows) {
       if (row.to !== this.identity.id) continue
       const pass = opens(this.identity, row.pass)
       const type = pass?.data && b4a.toString(pass.data)
       if (!type || !this.spec.handles?.[type]) continue
       if (await this._spent(from, row, pass)) continue
+      // each opens a room: the newest of one member, so that none holds this device or another's passes up
+      const count = (left.get(row.by) || 0) + 1
+      left.set(row.by, count)
+      if (count > LOOKS) continue
       const id = hid.encode(pass.key)
       rooms.set(id, [...(rooms.get(id) || []), { row, pass, type }])
     }
