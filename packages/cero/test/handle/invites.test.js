@@ -532,6 +532,42 @@ test('seat: the room rotated after the seat and its other owner left as she came
   t.is((await get(room.notes)).data.length, 1, 'and what was written under the new key')
 })
 
+test('seat: a rotation under way as her invite goes in does not name her, and she reads what was written since, with nobody to hand her the key', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  // the rotation has read who it is sealed to, and waits to announce until the invite is in
+  const { rotation } = plans.store
+  const announce = rotation._announce.bind(rotation)
+  let reached = null
+  let go = null
+  const parked = new Promise((resolve) => (reached = resolve))
+  const held = new Promise((resolve) => (go = resolve))
+  rotation._announce = async (...args) => {
+    reached()
+    await held
+    return announce(...args)
+  }
+  const rotating = cero.rotate(plans)
+  await parked
+  const inviting = cero.invite(plans, { to: b.me.id, from: general, role: 'owner' })
+  await waitUntil(async () => (await get(plans.invites)).data.length === 1 || null)
+  go()
+  await Promise.all([rotating, inviting])
+  await cero.put(plans.notes, { text: 'after' })
+  const me = await back(t, b)
+  await open(me.team, { id: general.id })
+  const owners = async (room) => (await get(room.members)).data.filter((m) => m.role === 'owner')
+  await waitUntil(async () => (await owners(plans)).length === 2 || null)
+  // gone before her device could ask it for the key
+  await cero.leave(plans)
+  await reaches(me, plans.id, 'in')
+  const room = await open(me.team, { id: plans.id })
+  t.teardown(() => room.close().catch(() => {}))
+  await waitUntil(async () => (await get(room.members)).data.length === 1 || null)
+  t.pass('she reads that it left')
+  t.is((await get(room.notes)).data.length, 1, 'and what was written under the new key')
+})
+
 test('seat: the seater is offline when she comes, and she is let in through the mirror', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)

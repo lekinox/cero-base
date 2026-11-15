@@ -44,6 +44,11 @@ export declare class Rotation {
      * @returns {Promise<number | undefined>}  What the removal's write resolves.
      */
     carry(ops: Array<[string, unknown]>): Promise<number | undefined>;
+    /**
+     * @returns {Promise<void>} Once every rotation asked of this device so far has ended: one asked
+     * after is sealed to the devices as they stand by then.
+     */
+    settled(): Promise<void>;
     /** @private */
     private _queued;
     /**

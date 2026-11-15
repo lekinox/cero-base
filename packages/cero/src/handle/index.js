@@ -544,7 +544,9 @@ export class Handle extends ReadyResource {
       )
     }
     const invite = await this._invite({ ...opts, keys: devices.map((d) => d.key) })
-    const pass = Pass.seal(devices, { ...fields, invite })
+    // a rotation under way as the invite went in may not name her: its key is read once it ends
+    await this.store.rotation.settled()
+    const pass = Pass.seal(devices, { ...fields, epochs: keyring.all(), invite })
     const row = { id: b4a.toHex(Identity.randomBytes(16)), to: id, pass, createdAt: Date.now() }
     await store.call('add-pass', row)
     return invite
