@@ -193,6 +193,7 @@ test('invites: after a removal and a rotation, an invite minted before is turned
 
   const b = await joinAsRoot(t, testnet, await cero.invite(room))
   await waitForConnection(a.net)
+  await memberCount(room, 2)
   const before = await cero.invite(room)
 
   await del(room.members, b.identity.id)

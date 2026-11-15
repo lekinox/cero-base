@@ -58,7 +58,8 @@ test('rejoin: re-admission after removal while the room is still open', async (t
   await waitForConnection(a.net)
   await put(clinic.messages, { text: 'pre' })
 
-  // owner removes b; the room rotates its key by itself
+  // owner removes b, once the room holds him; the room rotates its key by itself
+  await waitUntil(async () => (await get(clinic.members, b.identity.id)).data)
   await del(clinic.members, b.identity.id)
   await waitUntil(async () => (await get(clinic.status)).data.epoch === 1 || null)
   await waitUntil(async () => {
@@ -157,6 +158,7 @@ test('rejoin: after leave() then re-join with a fresh invite', async (t) => {
   const joined = await open(b.me.team, await cero.invite(clinic))
   await waitForConnection(a.net)
 
+  await waitUntil(async () => (await get(clinic.members, b.me.identity.id)).data)
   // the app's self-kick does exactly this: forget the room locally
   await cero.leave(joined)
   // a code minted once the room holds her leaving lets her straight back in

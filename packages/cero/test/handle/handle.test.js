@@ -2771,9 +2771,11 @@ test('removed: a device removed from a room opens it with a new invite: the open
 
 test('leave: a room left is joined again with a new invite, and a row at removed is deleted by the app', async (t) => {
   const { room, a, onA } = await seatedTwins(t)
+  await waitUntil(async () => (await get(room.members, a.identity.id)).data)
   await cero.leave(onA)
   await waitUntil(async () => !(await get(a.me.team, room.id)).data)
-  // a code minted after she left brings her back
+  // a code minted after she left, as the room holds it, brings her back
+  await waitUntil(async () => !(await get(room.members, a.identity.id)).data)
   const back = await open(a.me.team, await cero.invite(room))
   t.teardown(() => back.close().catch(() => {}))
   t.is((await get(a.me.team, room.id)).data.state, 'in', 'in again')
