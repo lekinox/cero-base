@@ -459,6 +459,7 @@ export class Handle extends ReadyResource {
   // device checks its chain against
   /** @private */
   async _invite(opts = {}) {
+    if (opts.from != null) return this._seat(opts)
     if (this.parent) {
       const invite = await this._pair.invite(opts)
       // a close right after the invite must not drop the row that reopens this handle at boot
@@ -497,20 +498,24 @@ export class Handle extends ReadyResource {
   // an invite made to her, sealed with this room's keys to her devices in a room both are in, where
   // they find it. `from` crosses the bridge as its id
   /** @private */
-  async _seat(id, { from, role = 'member', ttl } = {}) {
-    if (!this.parent) throw CeroError.INVALID('a device is linked, not seated')
+  async _seat({ from, ...opts }) {
+    const id = opts.to
+    if (!this.parent) throw CeroError.INVALID("the root's invite links a device: no 'from'")
+    if (id == null) throw CeroError.INVALID("an invite 'from' a handle is made 'to' a member of it")
+    // its pass is sized before the invite is minted, as one that carries none
+    if (opts.data != null) throw CeroError.INVALID("an invite 'from' a handle carries no data")
     if (typeof from === 'string') {
       const { data: row } = await this.root.store.get('handles', from)
       if (!row) throw CeroError.UNKNOWN('handle', from)
       const shared = await this.root._load(row.type, from)
       try {
-        return await this._seat(id, { from: shared, role, ttl })
+        return await this._seat({ ...opts, from: shared })
       } finally {
         await shared.close()
       }
     }
     if (!(from instanceof Handle) || !from.parent) {
-      throw CeroError.INVALID('seat takes { from }: a room she is in')
+      throw CeroError.INVALID("'from' is a handle you both are in")
     }
     const { store } = from
     const { data: me } = await store.get('members', this.identity.id)
@@ -524,7 +529,7 @@ export class Handle extends ReadyResource {
     }
     const { data: invites } = await this.store.get('invites')
     if (invites.some((i) => i.to === id && !(i.expires && i.expires <= Date.now()))) {
-      throw CeroError.INVALID(`${id} has a seat already`)
+      throw CeroError.INVALID(`${id} has an invite here already`)
     }
     // what would keep its pass out of `from` is checked first: an invite minted is live
     const at = Math.min(store.version, await store.dispatcher.version(store.view))
@@ -538,10 +543,11 @@ export class Handle extends ReadyResource {
         `this room has too many keys to seal to her ${devices.length} devices`
       )
     }
-    const invite = await this._invite({ role, ttl, to: id, keys: devices.map((d) => d.key) })
+    const invite = await this._invite({ ...opts, keys: devices.map((d) => d.key) })
     const pass = Pass.seal(devices, { ...fields, invite })
     const row = { id: b4a.toHex(Identity.randomBytes(16)), to: id, pass, createdAt: Date.now() }
     await store.call('add-pass', row)
+    return invite
   }
 
   // the same context, its refs writing into one batch; a fn that ignores it would write outside

@@ -46,6 +46,8 @@ const invite = await cero.invite(room, { role: 'reader', ttl: '1d' })
 | `reuse`   | single use | `true` admits more than one joiner, at most as `member`.            |
 | `confirm` | `false`    | `true` makes each join wait for a member to accept it.              |
 | `data`    | `null`     | Bytes the joiner reads before joining. Unsigned: a hint, not proof. |
+| `to`      | anyone     | The id of the one member it lets in. Single use, never `confirm`.   |
+| `from`    | none       | A handle you share with `to`: the invite reaches them there.        |
 
 Options that are not a plain object, a role that is not a rank, a `ttl` that is not a duration, or
 `reuse` above `member` throw `INVALID`; a role above your own throws `DENIED`. On `me`, `cero.invite(me)`
@@ -74,44 +76,48 @@ Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and t
 still waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired
 or spent.
 
-## Seat someone you know
+## Invite someone you know
 
-`cero.seat` lets in someone you already share a handle with, by their member id.
+Someone you already share a handle with needs no invite sent to them: name them with `to`, and
+the handle you share with `from`.
 
 ```js
 // plans and general are handles you are in; ben is his row in general.members
-await cero.seat(plans, ben.id, { from: general, ttl: '7d' })
+await cero.invite(plans, { to: ben.id, from: general, ttl: '7d' })
 ```
 
 Nothing is called on Ben's side: `plans` shows up in his `me.room` on its own, the next time his
-device has `general` open. `cero.seat` returns nothing.
+device has `general` open. The call returns the invite as always: only Ben joins with it, so
+sending it to him works too.
 
-| option | default    | meaning                                               |
-| ------ | ---------- | ----------------------------------------------------- |
-| `from` | required   | The handle you share with them, where you can write.  |
-| `role` | `'member'` | The role they get, at most your own.                  |
-| `ttl`  | never      | How long the seat stays open: ms, or `'12h'`, `'2d'`. |
+| option | default    | meaning                                                 |
+| ------ | ---------- | ------------------------------------------------------- |
+| `to`   | required   | Their member id.                                        |
+| `from` | required   | The handle you share with them, where you can write.    |
+| `role` | `'member'` | The role they get, at most your own.                    |
+| `ttl`  | never      | How long the invite stays open: ms, or `'12h'`, `'2d'`. |
 
-Seating needs the invite permission in `plans`. It rejects `DENIED` for a role above your own or
-when you cannot write in `from`, `UNKNOWN` when they are not a member of `from` or none of their
-devices is there, `INVALID` when they are already a member of `plans`, already have a seat there or the call is on `me`, and
-`UNSUPPORTED` when `plans` is at an older version of the app.
+It needs the invite permission in `plans`. It rejects `DENIED` for a role above your own or when
+you cannot write in `from`, `UNKNOWN` when they are not a member of `from` or none of their
+devices is there, `INVALID` when they are already a member of `plans` or already have an invite
+there, with `data`, or on `me`, and `UNSUPPORTED` when `plans` is at an older version of the app.
 
 ```js
-const { data: seats } = await cero.get(plans.invites, { to: ben.id })
-await cero.revoke(plans, seats[0].id) // before Ben came: he never sees plans
+const { data: waiting } = await cero.get(plans.invites, { to: ben.id })
+await cero.revoke(plans, waiting[0].id) // before Ben came: he never sees plans
 ```
 
-A seat is a row of `plans.invites` whose `to` is Ben's member id, and `cero.revoke` takes it back,
-with the remove permission. It lets in only Ben: a join by anyone else with it rejects `DENIED`
-with `err.reason` `'denied'`.
+The invite is a row of `plans.invites` whose `to` is Ben's member id, and `cero.revoke` takes it
+back, with the remove permission. It lets in only Ben: a join by anyone else with it rejects
+`DENIED` with `err.reason` `'denied'`.
 
 - `plans` appears on his list without his app deciding. `cero.leave` removes it.
-- A removal in `plans` by an admin or the owner ends open seats, as it spends the invites that let
-  people in without `confirm`. Seat again.
+- A removal in `plans` by an admin or the owner ends these invites, as it spends the ones that let
+  people in without `confirm`. Invite again.
 - Without a mirror, his device and one device of `plans` must be online together once.
-- Give a seat a `ttl`: until Ben takes it, it stays open to the devices he had when it was made,
-  one he removed since included.
+- Give it a `ttl`: until Ben comes, it stays open to the devices he had when it was made, one he
+  removed since included.
+- With `to` alone the invite lets in only Ben, and you send it to him like any other.
 
 ## Join a handle
 
@@ -141,8 +147,8 @@ const { data: row } = await cero.get(me.room, id) // state: 'asking', 'joining',
 
 A join the handle turns away rejects `DENIED` once a member who can invite is online, with
 `err.reason` saying why: `'revoked'`, `'spent'` for a single-use invite someone already used,
-`'removed'` for an invite minted before your removal or spent by one, or `'denied'` for a seat
-made for someone else. An invite to a handle you already have returns
+`'removed'` for an invite minted before your removal or spent by one, or `'denied'` for an invite
+made `to` someone else. An invite to a handle you already have returns
 that handle; a newer invite to the same handle takes over. Once nobody waits on a join, a denial or
 expiry reaches `onerror`.
 

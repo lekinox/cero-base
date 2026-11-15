@@ -952,7 +952,7 @@ test('rpc: a removal made from the UI rotates the room key as it resolves, and t
   )
 })
 
-test('rpc: seat from the UI names the room both are in by its id, and she is let in with nothing called on her side', async (t) => {
+test('rpc: an invite from a room names it by its id from the UI, and she is let in with nothing called on her side', async (t) => {
   const { client, testnet } = await openPair(t)
   const general = await open(client.team, { name: 'general' })
   const other = await cero(await t.tmp(), spec, { bootstrap: testnet.bootstrap })
@@ -962,8 +962,10 @@ test('rpc: seat from the UI names the room both are in by its id, and she is let
   await waitUntil(async () => (await known()) || null)
 
   const plans = await open(client.team, { name: 'plans' })
-  t.is(await cero.seat(plans, other.id, { from: general }), undefined, 'nothing back')
-  t.is((await get(plans.invites)).data[0]?.to, other.id, 'an invite made to her')
+  const code = await cero.invite(plans, { to: other.id, from: general })
+  const [row] = (await get(plans.invites)).data
+  t.is(row?.to, other.id, 'an invite made to her')
+  t.is(b4a.toHex(Invite.parse(code).id), row.id, 'and its code comes back')
   await waitUntil(async () => (await get(other.handles, plans.id)).data?.state === 'in' || null)
   await waitUntil(async () => (await get(plans.members)).data.length === 2 || null)
   t.pass('she is in')
@@ -1073,10 +1075,13 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
     'invite with a function for options': (root, room) => cero.invite(room, () => {}),
     'device invite with null for options': (root) => cero.invite(root, null),
     'device invite with an array for options': (root) => cero.invite(root, []),
-    'seat on the root': (root, room) => cero.seat(root, root.id, { from: room }),
-    'seat with no options': (root, room) => cero.seat(room, root.id),
-    'seat from a room nobody here has': (root, room) => cero.seat(room, root.id, { from: 'nope' }),
-    'seat one who is in no room here': (root, room) => cero.seat(room, 'nobody', { from: room })
+    'invite from a room, on the root': (root, room) =>
+      cero.invite(root, { to: root.id, from: room }),
+    'invite from a room, to nobody': (root, room) => cero.invite(room, { from: room }),
+    'invite from a room nobody here has': (root, room) =>
+      cero.invite(room, { to: root.id, from: 'nope' }),
+    'invite from a room, to one who is in none here': (root, room) =>
+      cero.invite(room, { to: 'nobody', from: room })
   }
   // a TypeError has no code, and none crosses as ''
   const outcome = (run) =>
@@ -1094,13 +1099,26 @@ test('rpc: a verb answers in the UI as in the worker, results and refusals', asy
 test('rpc: the worker runs a verb only by its name in the list', async (t) => {
   const { server, client } = await openPair(t)
   const args = c.encode(c.any, [])
-  const unlisted = ['close', 'leave', 'open', 'put', 'tx', '_loadKeyPair', '_phrase', 'constructor']
+  const unlisted = [
+    'close',
+    'leave',
+    'open',
+    'put',
+    'tx',
+    'seat',
+    '_loadKeyPair',
+    '_phrase',
+    'constructor'
+  ]
   for (const verb of [...unlisted, '__proto__', 'toString']) {
     const err = await client.rpc.verb({ handle: client.id, verb, args }).catch((e) => e)
     t.is(err?.code, 'UNKNOWN', `${verb} is refused`)
   }
-  const seat = await client.rpc.verb({ handle: client.id, verb: 'seat', args }).catch((e) => e)
-  t.is(seat?.code, 'INVALID', 'seat is listed: it runs, and the root takes no seat')
+  const from = c.encode(c.any, [{ from: 'nope' }])
+  const listed = await client.rpc
+    .verb({ handle: client.id, verb: 'invite', args: from })
+    .catch((e) => e)
+  t.is(listed?.code, 'INVALID', 'invite is listed: it runs, and the root delivers none')
   t.absent(server.me.closing, 'the root is still open')
 })
 

@@ -306,7 +306,7 @@ test(
     await known(theirs, them.id)
     await known(mine, other.id)
 
-    await cero.seat(theirs, other.id, { from: mine })
+    await cero.invite(theirs, { to: other.id, from: mine })
     await waitUntil(async () => (await get(other.handles, theirs.id)).data?.state === 'in' || null)
     t.pass('she comes in')
     await waitUntil(async () => (await old.get(shared.members)).data.length === 3 || null)
