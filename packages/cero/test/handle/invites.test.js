@@ -807,7 +807,7 @@ test('seat: a pass whose invite ended, read while she holds the room under anoth
   t.is(row.invite, invite, 'under the invite she came in with')
 })
 
-test('seat: a pass whose invite never shows in its room lets the next one for the room through', async (t) => {
+test('seat: a pass whose invite never shows in its room, or whose keys open nothing of it, lets the next one for the room through', async (t) => {
   const { b, general, plans } = await apart(t)
   await b.me.close()
   const { key, encryptionKey, address } = plans.store
@@ -815,18 +815,27 @@ test('seat: a pass whose invite never shows in its room lets the next one for th
   const nowhere = Invite.create({ key, address, own: true, link }).toString()
   const hers = [{ key: b.me.identity.device.publicKey }]
   const pass = Pass.seal(hers, { invite: nowhere, key, encryptionKey, data: b4a.from('team') })
+  // one whose keys open nothing of the room
+  const locked = { invite: nowhere, key, encryptionKey: Identity.randomBytes(32) }
   await cero.invite(plans, { to: b.me.id, from: general })
-  // the newer of the two, read first
-  await general.store.call('add-pass', {
-    id: b4a.toHex(Identity.randomBytes(16)),
-    to: b.me.id,
+  // both newer than hers, read first
+  for (const [i, sealed] of [
     pass,
-    createdAt: Date.now() + 60000
-  })
-  const me = await back(t, b)
+    Pass.seal(hers, { ...locked, data: b4a.from('team') })
+  ].entries()) {
+    await general.store.call('add-pass', {
+      id: b4a.toHex(Identity.randomBytes(16)),
+      to: b.me.id,
+      pass: sealed,
+      createdAt: Date.now() + 60000 + i
+    })
+  }
+  const errors = []
+  const me = await back(t, b, { onerror: (err) => errors.push(err) })
   await open(me.team, { id: general.id })
   await reaches(me, plans.id, 'in')
   t.pass('in on the seat that shows')
+  t.alike(errors, [], 'and onerror hears nothing')
 })
 
 test('seat: a pass whose invite ended waits while a newer one for the room has not shown, and she is turned away by none', async (t) => {

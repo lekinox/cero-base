@@ -1425,25 +1425,28 @@ export class Handle extends ReadyResource {
     this._watch(from, id, passes, look).catch((err) => this.closing || this._onerror(err))
   }
 
-  // the room its passes name, open as nobody until each has its end: its invite is read there
-  // before anything is written. The newest she can still take is joined; one she sits in already,
-  // or whose invite ended with her in, goes; one that ended waits for every newer one to show
+  // the room its passes name, open as nobody until each has its end, each through the keys it
+  // holds: its invite is read there before anything is written. The newest she can still take is
+  // joined; one she sits in already, or whose invite ended with her in, goes; one that ended waits
+  // for every newer one to show; one that opens nothing keeps no other waiting
   /** @private */
   async _watch(from, id, passes, look) {
     const { signal } = look.stop
-    // the one that holds the most keys reads what any of them names
-    const most = passes.reduce((a, b) =>
-      (b.pass.epochs?.length || 0) > (a.pass.epochs?.length || 0) ? b : a
+    const readers = passes.map(({ type, pass }) =>
+      this._apart(type, pass, Identity.randomKeyPair())
     )
-    const reader = this._apart(most.type, most.pass, Identity.randomKeyPair())
-    const left = new Set(passes)
+    const left = new Map()
     let taken = null
     try {
-      await reader.ready()
-      const { store } = reader
+      const ready = await Promise.allSettled(readers.map((reader) => reader.ready()))
+      for (const [i, { status, reason }] of ready.entries()) {
+        if (status === 'fulfilled') left.set(passes[i], readers[i])
+        else if (!this.closing) this._onerror(reason)
+      }
       const read = async () => {
         let unseen = false
-        for (const entry of left) {
+        for (const [entry, reader] of left) {
+          const { store } = reader
           // a join of the room that ended since, under its invite, is its end
           if (await this._spent(from, entry.row, entry.pass)) {
             left.delete(entry)
@@ -1471,9 +1474,10 @@ export class Handle extends ReadyResource {
         }
         return left.size === 0
       }
-      await until(store, read, signal)
+      const stores = [...left.values()].map((reader) => reader.store)
+      await until(stores, read, signal)
     } finally {
-      await reader._end().catch(safetyCatch)
+      await Promise.all(readers.map((reader) => reader._end().catch(safetyCatch)))
     }
     if (!taken || signal.aborted) return
     const join = this._start(taken.pass.invite, taken.type, taken.pass)
@@ -2547,12 +2551,14 @@ function listed(rows, query = {}) {
   return { data, total: data.length, size: data.length }
 }
 
-// whether `check` comes to hold of a room as its view updates, read one at a time: false once stopped
-async function until(db, check, signal) {
+// whether `check` comes to hold as the views of these rooms update, read one at a time: false once stopped
+async function until(dbs, check, signal) {
   let wake = null
   const heard = () => wake?.()
-  db.on('update', heard)
-  db.on('close', heard)
+  for (const db of dbs) {
+    db.on('update', heard)
+    db.on('close', heard)
+  }
   signal.addEventListener('abort', heard)
   try {
     while (!signal.aborted) {
@@ -2563,8 +2569,10 @@ async function until(db, check, signal) {
     }
     return false
   } finally {
-    db.off('update', heard)
-    db.off('close', heard)
+    for (const db of dbs) {
+      db.off('update', heard)
+      db.off('close', heard)
+    }
     signal.removeEventListener('abort', heard)
   }
 }
