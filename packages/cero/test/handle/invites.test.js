@@ -313,6 +313,13 @@ test('seat: a pass the room both are in cannot keep, or that room below the vers
 const code = async (run) => (await run().catch((e) => e))?.code
 const stateOf = async (me, id) => (await rowOf(me, id))?.state
 const reaches = (me, id, state) => waitUntil(async () => (await stateOf(me, id)) === state || null)
+// her row once she is out: `denied` when her join was turned away, `removed` when her device had the
+// seat before it heard, which a slow link decides
+const out = (me, id) =>
+  waitUntil(async () => {
+    const row = await rowOf(me, id)
+    return ['denied', 'removed'].includes(row?.state) ? row : null
+  })
 
 test('seat: a reader, a rank above your own or a room you cannot write in is DENIED, what is no seat INVALID or UNKNOWN, and nothing is written', async (t) => {
   const testnet = await makeTestnet(t)
@@ -450,6 +457,16 @@ async function back(t, { dir, testnet }, opts = {}) {
   return me
 }
 
+// resolves once the mirror holds what this device wrote in each room
+async function mirrored(mirror, rooms) {
+  for (const { store } of rooms) {
+    const core = mirror.store.get({ key: store.writerKey })
+    await core.ready()
+    await waitUntil(() => core.contiguousLength >= store.bee.local.length || null)
+    await core.close()
+  }
+}
+
 test('seat: she is offline at the seat, and the room shows up once she opens the room both are in', async (t) => {
   const { b, general, plans } = await apart(t)
   await b.me.close()
@@ -473,14 +490,46 @@ test('seat: revoked before she comes, she is turned away, the pass goes and the 
   t.pass('her devices had its keys: the room rotates')
   const me = await back(t, b)
   await open(me.team, { id: general.id })
-  await reaches(me, plans.id, 'denied')
-  t.is((await rowOf(me, plans.id)).reason, 'revoked', 'with the reason')
+  t.is((await out(me, plans.id)).reason, 'revoked', 'out, with the reason')
   await waitUntil(async () => (await passesOf(general)).length === 0 || null)
   t.is((await get(plans.members)).data.length, 1, 'nobody let in')
 
   await cero.invite(plans, { to: b.me.id, from: general })
   await reaches(me, plans.id, 'in')
   t.pass('seated again after her row ended, she is in')
+})
+
+test('seat: revoked by a device her seat had not reached, she is out with the reason once the two meet; seated again, she is in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const mirrors = [b4a.toHex(mirror.publicKey)]
+  const { a, b, general, plans } = await apart(t, { testnet, mirrors })
+  await b.me.close()
+  await cero.invite(plans, { to: b.me.id, from: general })
+  await mirrored(mirror, [general, plans])
+  await a.me.close()
+  const seated = await back(t, b, { mirrors })
+  await open(seated.team, { id: general.id })
+  await reaches(seated, plans.id, 'in')
+  await seated.close()
+
+  const admin = await back(t, a)
+  const room = await open(admin.team, { id: plans.id })
+  const [{ id }] = (await get(room.invites)).data
+  t.ok(await cero.revoke(room, id), 'the invite still stands where her seat never came')
+  const me = await back(t, b)
+  await open(me.team, { id: plans.id })
+  await reaches(me, plans.id, 'removed')
+  const row = await rowOf(me, plans.id)
+  t.is(row.reason, 'revoked', 'with the reason')
+  t.is(row.by, null, 'and nobody as her remover')
+  t.is((await get(room.members)).data.length, 1, 'nobody let in')
+
+  await cero.invite(room, { to: b.me.id, from: await open(admin.team, { id: general.id }) })
+  await open(me.team, { id: general.id })
+  await reaches(me, plans.id, 'in')
+  await memberCount(room, 2)
+  t.pass('seated again, she is in')
 })
 
 test('seat: past its ttl before she comes, she is let into nothing and the pass goes', async (t) => {
@@ -504,8 +553,7 @@ test('seat: spent by a removal of someone else before she comes, she is turned a
   await del(plans.members, c.me.id)
   const me = await back(t, b)
   await open(me.team, { id: general.id })
-  await reaches(me, plans.id, 'denied')
-  t.is((await rowOf(me, plans.id)).reason, 'removed')
+  t.is((await out(me, plans.id)).reason, 'removed')
 })
 
 test('seat: the room rotated after the seat and its other owner left as she came: she reads what was written since, with nobody to hand her the key', async (t) => {
@@ -587,12 +635,7 @@ test('seat: the seater is offline when she comes, and she is let in through the 
   const { a, b, general, plans } = await apart(t, { testnet, mirrors })
   await b.me.close()
   await cero.invite(plans, { to: b.me.id, from: general })
-  for (const { store } of [general, plans]) {
-    const core = mirror.store.get({ key: store.writerKey })
-    await core.ready()
-    await waitUntil(() => core.contiguousLength >= store.bee.local.length || null)
-    await core.close()
-  }
+  await mirrored(mirror, [general, plans])
   await a.me.close()
   const me = await back(t, b, { mirrors })
   await open(me.team, { id: general.id })

@@ -272,7 +272,9 @@ await cero.leave(room) // its row reads leaving, then is gone on every device
 carries it: it takes you out of the handle's members, at any role, waits until another device or a
 mirror holds that, then deletes the row, keeps none of the handle's keys and closes it. An app
 closed on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with
-the remover's id in `by`. A removal, and a join that ended `denied` or `expired`, stays 30 days so
+the remover's id in `by`. A seat taken with an invite that had already ended, where this device
+could not see it yet, reads `removed` too, with no `by` and the `reason` its join would have been
+turned away with. A removal, and a join that ended `denied` or `expired`, stays 30 days so
 the app can show why, then goes at a launch; a cancelled join goes at a launch of the device that asked once the room holds the cancel, 30 days at most, and a leave
 leaves no row. The app deletes an ended row whenever it likes, with `cero.del(me.room, id)`, and a
 new code joins again; a row still `in`, `leaving`, `asking` or `joining` is `REFUSED`. The last

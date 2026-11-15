@@ -627,17 +627,19 @@ export class Handle extends ReadyResource {
   }
 
   // a device that applies its own identity's removal writes it on the row, with who removed her; `out`, a seat
-  // she holds no more with no removal to read, as a seat of hers that never counted there
+  // she holds no more with no removal to read, as a seat of hers that never counted there, with why
+  // the room turned it away
   /** @private */
   async _ousted(child, out = false) {
     const { data: row } = await this.store.get('handles', child.id)
     // only a seat held is lost: a row asking or joining is a rejoin under way, one ended is over
     if (!row || !['in', 'leaving'].includes(row.state || 'in')) return
-    const lost = out || (await refused(child.store, this.identity))
-    const removal = (await child.store.removal(this.identity.id)) ?? (lost ? { by: null } : null)
-    if (!removal) return
-    const fields = { by: removal.by, reason: null, encryptionKey: null, epochs: null }
-    await this.store.set('handles', { id: child.id, state: 'removed', ...fields })
+    const removal = await child.store.removal(this.identity.id)
+    const refusal = removal ? null : await refused(child.store, this.identity)
+    if (!removal && !refusal && !out) return
+    const fields = { by: removal?.by ?? null, reason: refusal?.reason || null }
+    const ended = { state: 'removed', ...fields, encryptionKey: null, epochs: null }
+    await this.store.set('handles', { id: child.id, ...ended })
   }
 
   /**
@@ -2588,10 +2590,10 @@ async function turned(db, invite = null) {
   return refusal && (!invite || !refusal.invite || refusal.invite === invite) ? refusal : null
 }
 
-// a seat this device took that never counted: no member row, and its writer turned away
+// how the room turned away a seat this device took that never counted: no member row, and its writer refused
 async function refused(db, identity) {
-  if ((await db.get('members', identity.id)).data) return false
-  return !!(await turned(db))
+  if ((await db.get('members', identity.id)).data) return null
+  return turned(db)
 }
 
 // whether a room let this identity in, by any of its devices
