@@ -100,7 +100,8 @@ sending it to him works too.
 It needs the invite permission in `plans`. It rejects `DENIED` for a role above your own or when
 you cannot write in `from`, `UNKNOWN` when they are not a member of `from` or none of their
 devices is there, `INVALID` when they are already a member of `plans` or already have an invite
-there, with `data`, or on `me`, and `UNSUPPORTED` when `plans` is at an older version of the app.
+there, with `data`, or on `me`, and `UNSUPPORTED` when `plans` or `general` is at an older version
+of the app.
 
 ```js
 const { data: waiting } = await cero.get(plans.invites, { to: ben.id })
