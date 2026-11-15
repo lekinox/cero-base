@@ -568,6 +568,22 @@ test('seat: a rotation under way as her invite goes in does not name her, and sh
   t.is((await get(room.notes)).data.length, 1, 'and what was written under the new key')
 })
 
+test('seat: a removal by this device as her invite goes in spends it, and no pass hands her the key that removal brought', async (t) => {
+  const { testnet, b, general, plans } = await sharing(t)
+  const c = await joinAsRoot(t, testnet, await cero.invite(plans))
+  await memberCount(plans, 2)
+  const mint = plans._invite.bind(plans)
+  plans._invite = async (opts) => {
+    const code = await mint(opts)
+    if (opts.keys) await cero.del(plans.members, c.identity.id)
+    return code
+  }
+  const code = await cero.invite(plans, { to: b.identity.id, from: general })
+  t.ok(code, 'the invite it made comes back')
+  t.is((await get(plans.invites)).data.length, 0, 'spent by the removal')
+  t.is((await passesOf(general)).length, 0, 'and nothing waits for her')
+})
+
 test('seat: the seater is offline when she comes, and she is let in through the mirror', async (t) => {
   const testnet = await makeTestnet(t)
   const mirror = await makeMirror(t, testnet)
