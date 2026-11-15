@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.0 (2026-11-15)
+
+### Features
+
+- cero.invite({ to, from }) replaces cero.seat (#83)
+
 ## 3.2.0 (2026-11-14)
 
 ### Bug Fixes
