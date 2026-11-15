@@ -1385,12 +1385,14 @@ export class Handle extends ReadyResource {
         throw signal.aborted ? CeroError.CLOSED('join') : CeroError.TIMEOUT('join')
       }
       // a seat lost, or one that never counted there, ends on the root before she asks again: the
-      // room holds neither her nor a promise to her at a seat made after she was out
+      // room holds neither her nor a promise to her at a seat made after she was out. Only an invite
+      // she can still take says so: one that ended is read in a room that may not hold her join yet
       const seated = await promised(store, this.identity)
-      await this._ousted(reader, !seated)
-      // a room she reads as in under another invite takes nothing now, read again in its turn
+      const live = !!(await store.get('invites', inviteId)).data
+      await this._ousted(reader, live && !seated)
+      // a room she reads as in takes nothing now, read again in its turn, nor from an invite that ended
       const { data: row } = await this.store.get('handles', id)
-      moot = seated && !!row && (row.state || 'in') === 'in'
+      moot = !!row && (row.state || 'in') === 'in' && (seated || !live)
     } finally {
       await reader._end().catch(safetyCatch)
     }

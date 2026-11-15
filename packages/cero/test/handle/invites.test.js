@@ -779,6 +779,45 @@ test('seat: revoked and seated again before she comes, she takes the new seat wh
   t.pass('in on the new seat')
 })
 
+test('seat: a pass whose invite ended, read while she holds the room under another, takes nothing and leaves her seat as it reads', async (t) => {
+  const { b, general, plans } = await apart(t)
+  await b.me.close()
+  await cero.invite(plans, { to: b.me.id, from: general })
+  const [{ id }] = (await get(plans.invites)).data
+  t.ok(await cero.revoke(plans, id))
+  const me = await back(t, b)
+  // her root in under another invite, which the room as her device reads it does not show yet
+  const ts = Date.now()
+  const { key, encryptionKey } = plans.store
+  const invite = await cero.invite(plans)
+  await me.store.call('add-handle', {
+    id: plans.id,
+    type: 'team',
+    key,
+    encryptionKey,
+    epochs: null,
+    name: null,
+    createdAt: ts,
+    updatedAt: ts,
+    state: 'in',
+    invite
+  })
+  const take = me._take.bind(me)
+  let taken = null
+  const read = new Promise((resolve) => {
+    me._take = (...args) =>
+      take(...args)
+        .then((child) => (taken = child))
+        .finally(resolve)
+  })
+  await open(me.team, { id: general.id })
+  await read
+  t.is(taken, false, 'nothing is taken')
+  const row = await rowOf(me, plans.id)
+  t.is(row.state, 'in', 'she stays in')
+  t.is(row.invite, invite, 'under the invite she came in with')
+})
+
 test('seat: a pass whose invite never shows in its room lets the next one for the room through', async (t) => {
   const { b, general, plans } = await apart(t)
   await b.me.close()
