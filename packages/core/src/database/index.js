@@ -265,8 +265,8 @@ export class Database extends ReadyResource {
     const known = !!this.key
     try {
       await this._boot()
-      const replayed = await this._replay()
-      if (replayed) await this._boot()
+      const heads = await this._replay()
+      if (heads) await this._boot({ heads })
 
       // before replication can deliver blocks at epochs we haven't learned yet
       await this.rotation.hydrate()
@@ -1149,7 +1149,7 @@ export class Database extends ReadyResource {
   }
 
   /** @private */
-  async _boot({ land = true } = {}) {
+  async _boot({ land = true, heads = null } = {}) {
     const bee = new EpochAutobee(this.store.namespace(this.namespace), this.key, {
       keyPair: this.keyPair,
       encryptionKey: this.encryptionKey,
@@ -1169,17 +1169,22 @@ export class Database extends ReadyResource {
     await bee.ready()
     this.key = bee.key
     await bee.update()
+    if (!heads) return
+    // a view wiped to apply its log again: nothing this device wrote names what the others wrote
+    // last, and peers announce their writers once, as they connect. It looks where they stood, and
+    // answers once that is applied
+    bee.hintWakeup(heads)
+    await bee.update()
   }
 
   // a view another build applied, one with ops skipped this build now reaches among them, fills
-  // from the log
+  // from the log: wiped, it hands back where its writers stood
   /** @private */
   async _replay() {
     // an empty view names no build: what was skipped and is now reached still has to be applied
     const caught = this._skipped !== null && this._skipped <= this.version
-    if (!caught && !(await this._foreign(this.view))) return false
-    await this._wipe()
-    return true
+    if (!caught && !(await this._foreign(this.view))) return null
+    return this._wipe()
   }
 
   // only an admin's or an owner's device hands over a view: anyone else holding the key could serve
@@ -1448,27 +1453,26 @@ export class Database extends ReadyResource {
   // a view again
   /** @private */
   async _rebuild() {
-    // peers announce their writers once, as they connect: the writers of the view it leaves are
-    // where the new bee starts looking
-    const heads = []
-    for await (const { key, length } of this.bee.system.list()) heads.push({ key, length })
     await Promise.allSettled(this._writes)
-    await this._wipe()
+    const heads = await this._wipe()
     if (this.closing) return
-    await this._boot({ land: false })
-    this.bee.hintWakeup(heads)
+    await this._boot({ land: false, heads })
     this._wire()
   }
 
-  // the bee closes first: open, a batch it applied meanwhile would store what it applied again
+  // the bee closes first: open, a batch it applied meanwhile would store what it applied again.
+  // Where its writers stood goes to the bee that applies the log again
   /** @private */
   async _wipe() {
+    const heads = []
+    for await (const { key, length } of this.bee.system.list()) heads.push({ key, length })
     await this.bee.close()
     await this._onWriter(async (writer) => {
       await writer.setUserData('autobee/head', null)
       await writer.setUserData('cero/skipped', null)
     })
     this._skipped = null
+    return heads
   }
 
   // the lowest version skipped: the replay runs once this device reaches it, whoever sent the highest
