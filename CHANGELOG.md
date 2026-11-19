@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.4.0 (2026-11-19)
+
+### Other
+
+- 🚀 deps: autobee 2.14, bare 1.38 and the rest on their latest releases (#85)
+
 ## 3.3.1 (2026-11-19)
 
 ### Bug Fixes
