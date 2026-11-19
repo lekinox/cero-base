@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.1 (2026-11-19)
+
+### Bug Fixes
+
+- a view applied again keeps what the others wrote (#84)
+
 ## 3.3.0 (2026-11-15)
 
 ### Features
