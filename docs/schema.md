@@ -183,8 +183,8 @@ The build throws `INVALID` on a name Cero takes, and says which one to rename:
   writes these on every row. In a single, and in a field added to a builtin, only `memberId` is
   taken.
 - A ref named like a builtin of its scope: `members`, `devices`, `invites`, `requests`,
-  `handles`, `files` and `status` at the root and in a handle type, and `joins`, `nearby` and
-  `topics` at the root. In `local`, the names listed [above](#keep-data-on-this-device).
+  `handles`, `files` and `status` at the root and in a handle type, and `nearby` and `topics`
+  at the root. In `local`, the names listed [above](#keep-data-on-this-device).
 - A ref named like something Cero stores or sends under that name, such as `member`, `invite`,
   `epochs` or `counters`.
 - A ref whose writes would take one of Cero's: an action named `accept`, or a collection named
