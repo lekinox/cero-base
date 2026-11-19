@@ -3403,6 +3403,48 @@ test('gate: upgrading past skipped ops rebuilds the view and applies them', asyn
   t.ok((await again.get('messages', after.id)).data, 'and the device writes again')
 })
 
+// a device holding what a member wrote after its own last write: nothing in its core names those
+// writes, and with the member gone no peer announces them
+async function unnamed(t) {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db)
+  await waitFor(() => b.db.writable)
+  for (let i = 0; i < 5; i++) await b.db.put('messages', { text: `b.${i}` })
+  await waitFor(async () => (await messages(a.db)) === 5)
+  await offline(b)
+  return a
+}
+
+test('gate: opened on another build with no peer in reach, a device holds what the others wrote as it opens', async (t) => {
+  const a = await unnamed(t)
+  const { key, keyPair, encryptionKey } = a.db
+  await offline(a)
+  const build = rebuilt({ rules: (spec.meta.rules || 1) + 1 })
+  const { store, identity } = a
+  const again = new Database({ store, identity, spec: build, key, keyPair, encryptionKey })
+  await again.ready()
+  t.teardown(() => again.close().catch(() => {}), { order: 4 })
+  t.is(await messages(again), 5, 'every row it held before')
+})
+
+test('gate: a landed view applied again with no peer in reach holds what the others wrote once it is', async (t) => {
+  const { db } = await unnamed(t)
+  const seen = new Set()
+  // a writer still open here may wake the new bee in time: each time has to find the rows
+  for (let i = 0; i < 8; i++) {
+    db.version += 1
+    db._onmove()
+    await db._rebuilding
+    seen.add(await messages(db))
+  }
+  t.alike([...seen], [5], 'every row it held before')
+})
+
 // what a marker in the local core holds
 async function marker(db, name) {
   const value = await db.bee.local.getUserData(name)

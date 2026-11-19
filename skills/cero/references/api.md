@@ -90,11 +90,10 @@ Every context carries these, undeclared. `t.extend` adds fields to the first six
 | `handles`  | every | `{ id, type, key, encryptionKey, name, createdAt, updatedAt, index, state, reason, by, invite, writer }`: on the root, your handles, which `me.room` reads by type. `state` is where you stand in it, `in` for one you are in. `writer` is the request of yours that stands while it asks, the id `requests` lists it under. A list holds the rows `in` unless the query names a `state`; a row read by id comes whatever its state. |
 | `files`    | every | `{ id, name, memberId, type, size, url, index }`, and `from` on a copy of another context's file: files put into the context. `url` is served on this device.                                                                                                                                                                                                                                                                        |
 | `status`   | every | One row, [below](#status). Read-only.                                                                                                                                                                                                                                                                                                                                                                                                |
-| `joins`    | root  | `{ id, type, invite }`: the joins this device still waits on. `id` is the handle's discovery key in hex, not its `room.id`. Read-only.                                                                                                                                                                                                                                                                                               |
 | `nearby`   | root  | `{ id, device, name, isMobile }`: the devices linked over Bluetooth, one row each: `id` is the person's identity (your own other devices carry yours), `device` a key that stays the same for that device. `name` is their `profile`'s, else theirs in a handle you share and have open here, else `null`; `isMobile` is their device's option. Read-only.                                                                           |
 | `topics`   | root  | `{ id, handle, type, name }`: the push topic of each handle, `id` the string a device subscribes to. Read-only.                                                                                                                                                                                                                                                                                                                      |
 
-`status`, `joins`, `nearby` and `topics` are computed on the device and never stored. A schema cannot declare `status` anywhere, nor `joins`, `nearby` or `topics` at the root.
+`status`, `nearby` and `topics` are computed on the device and never stored. A schema cannot declare `status` anywhere, nor `nearby` or `topics` at the root.
 
 Each row of your own collections carries `id`, `memberId` (its author), `index` (insertion order), `createdAt` and `updatedAt` (ms) next to its fields. A `local` row carries `id`, `createdAt` and `updatedAt`.
 
@@ -359,7 +358,7 @@ import { schema } from './schema.js' // your cero.schema({ ... })
 await build('./spec', schema, { extensions: '../extensions.js' })
 ```
 
-`build(specDir, schema, { ns, extensions })` compiles a schema into `specDir` and writes an `index.js` there exporting `spec` and `meta`. `schema` is a `cero.schema(...)` or its plain object; `ns` prefixes the schema ids, `'cero'` by default. It throws `INVALID` on a builtin name (`status` anywhere, `joins` or `nearby` at the root), on `t.extend` of anything but a builtin, and on a redeclared base field. Run it again after every schema change.
+`build(specDir, schema, { ns, extensions })` compiles a schema into `specDir` and writes an `index.js` there exporting `spec` and `meta`. `schema` is a `cero.schema(...)` or its plain object; `ns` prefixes the schema ids, `'cero'` by default. It throws `INVALID` on a builtin name (`status` anywhere, `nearby` or `topics` at the root), on `t.extend` of anything but a builtin, and on a redeclared base field. Run it again after every schema change.
 
 ## @cero-base/cero/server
 
@@ -384,7 +383,7 @@ const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
 `cero(ipc, spec, { onerror })`, also `cero.connect`, resolves a client root with the same refs as `me`, so app code runs on either side. On a new store, `cero(ipc, spec, opts)` takes what `cero(dir, spec, opts)` takes for a new device: `phrase` recovers, `invite` with `onrequest` links, neither creates. The facade carries every operator but `before`, `after` and `tx`, plus `t`, `schema`, `connect` and `restore(me, phrase)`. The operators are named exports too, with `Client`.
 
 - A client root has `id`, `device`, its refs and `local`. A handle has `id`, `type`, `name` and its refs.
-- `before`, `after`, `tx`, `peek` and `inbox` stay in the worker. `status`, `joins`, `nearby`, `requests` and `cero.phrase(me)` read as in process.
+- `before`, `after`, `tx`, `peek` and `inbox` stay in the worker. `status`, `nearby`, `requests` and `cero.phrase(me)` read as in process.
 - Every other verb runs in the worker as the same operator, on the context it is given: the same result, the same refusal. The worker runs only the operators, so nothing else on a context is reachable from the UI.
 - An error crosses with its `code` and `message`, and a denied join with its `reason`: match `err.code`, `err.rule` stays in the worker. The worker's background errors reach `onerror` with `code`, `message`, `stack` and `reason`.
 - Opening or joining a handle from inside a handle is `UNSUPPORTED`.
