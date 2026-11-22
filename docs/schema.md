@@ -259,8 +259,9 @@ found through it.
 
 The root and every handle each have a version of their own, `status.version`. A new one starts at the version its build asks for, and an owner's device on a newer build moves it there when
 it opens it. Until then every device writes as the handle's version: what a newer build added and the
-handle does not have yet is left alone, and a write naming it throws `UNSUPPORTED`. Once the handle
-has moved past a device's build, that device reads, `status.behind` says so, and its writes throw
+handle does not have yet is left alone, and a write naming it throws `UNSUPPORTED`. A field is
+named by a value: `null`, `false`, `0` and `''` are how it reads where nothing wrote it, so a row
+read and written back goes in. Once the handle has moved past a device's build, that device reads, `status.behind` says so, and its writes throw
 `BEHIND` until it updates. A device behind in its root is behind in every handle too.
 
 ### Hold back what a release adds

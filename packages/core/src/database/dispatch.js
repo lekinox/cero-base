@@ -334,13 +334,14 @@ export function makeDispatcher({
   }
 
   // a write naming what its stamp does not have is refused on its device: left out, it would be
-  // lost without a word
+  // lost without a word. A field is named by a value the encoding writes: nothing, false, 0 and ''
+  // are how it reads where it was never written, so a row read and written back names none
   function supported(route, value, stamp) {
     const name = things.get(route) ?? route
     if ((since?.routes[route] ?? 0) > stamp) throw CeroError.UNSUPPORTED(`'${name}'`)
     const fields = since?.types[routes.get(route)?.type] ?? {}
     for (const f of Object.keys(fields)) {
-      if (fields[f] > stamp && value?.[f] != null) {
+      if (fields[f] > stamp && value?.[f]) {
         throw CeroError.UNSUPPORTED(`'${f}' in '${name}'`)
       }
     }

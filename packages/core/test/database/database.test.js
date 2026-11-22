@@ -4535,6 +4535,35 @@ test('version: a write naming what the version does not have yet is refused with
   t.is((await db.get('messages')).data.length, 1, 'nor applied')
 })
 
+// where a field was never written a yes/no reads as no and a number as 0, so a row read back carries both
+test('version: a row read and written back is not refused for the yes/no and the number its version has none of', async (t) => {
+  const { db } = await bootstrapped(t, { spec: next })
+  const { data: row } = await db.put('messages', { text: 'kept' })
+  const read = (await db.get('messages', row.id)).data
+  t.alike([read.seen, read.stars], [false, 0], 'as they read where nothing wrote them')
+
+  await db.set('messages', { id: row.id, text: 'set' })
+  t.is(
+    (await db.get('messages', row.id)).data.text,
+    'set',
+    'a set merges the stored row, and goes in'
+  )
+  await db.put('messages', { ...read, text: 'put' })
+  t.is(
+    (await db.get('messages', row.id)).data.text,
+    'put',
+    'so does the row put back as it was read'
+  )
+
+  for (const [held, thing] of [
+    [{ seen: true }, "'seen' in 'messages'"],
+    [{ stars: 3 }, "'stars' in 'messages'"]
+  ]) {
+    const err = await db.set('messages', { id: row.id, ...held }).catch((e) => e)
+    t.is(err?.code, 'UNSUPPORTED', `${thing}: a value it would lose is refused still`)
+  }
+})
+
 test("version: after the owner's raise the same writes land with what they name", async (t) => {
   const { db, identity } = await bootstrapped(t, { spec: next })
   db.after('ping', (ctx) => ctx.put('messages', { text: ctx.row.x }))
