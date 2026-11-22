@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.4.1 (2026-11-22)
+
+### Bug Fixes
+
+- a row read and written back is not refused for a field its handle does not have yet (#86)
+
 ## 3.4.0 (2026-11-19)
 
 ### Other
