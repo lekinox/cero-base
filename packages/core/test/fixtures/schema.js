@@ -51,7 +51,13 @@ export const next = schema({
   ...defs,
   profile: t.single({ ...defs.profile.fields, bio: t.later(t.string) }),
   messages: t.collection(
-    { ...defs.messages.fields, tag: t.later(t.string), cover: t.later(t.file) },
+    {
+      ...defs.messages.fields,
+      tag: t.later(t.string),
+      cover: t.later(t.file),
+      seen: t.later(t.bool),
+      stars: t.later(t.uint)
+    },
     { indexes: { 'by-text': ['text'] }, push: true }
   ),
   members: t.extend({ alias: t.later(t.string) }),
