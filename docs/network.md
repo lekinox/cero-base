@@ -183,20 +183,34 @@ await cero.deactivate(room) // ranked last: on the swarm only while a slot is sp
 ```
 
 Handles are ranked by their last update, from anyone, and opening one counts: the latest 8 search
-and announce, the rest wait their turn. A handle moves up the moment something lands in it, and
-takes a slot as soon as one has been held 30 s, so handles at the edge do not churn the DHT. Your
-own data, on `me`, always searches.
+and announce, the rest wait their turn. A handle in use does not wait: it searches and announces
+the moment something lands in it or is written to it, and for 30 s after its last use, so handles
+at the edge do not churn the DHT. Your own data, on `me`, always searches.
 
 A handle off the swarm still reads, writes and watches. It still syncs over the connections other
 handles bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
 suspended app keeps its ranks.
 
+A handle keeps the network keys of the last 8 devices it synced with over the swarm, on this device
+only, and dials them by those keys when it goes on the swarm, when it is used and when the app
+resumes. A member who opens a handle and writes reaches your device at once, whether the handle is
+on the swarm on your side or not. A mirror is not kept, nor a device met over Bluetooth alone, and
+a device that leaves or is removed keeps none.
+
 ```js
-const me = await cero('./data', spec, { presence: { active: 8, idle: 30000 } })
+const me = await cero('./data', spec, {
+  presence: { active: 8, idle: 30000, known: 8, connections: 40 }
+})
 ```
 
-Those are the defaults: `active` handles search and announce at once, and `idle` is the ms a handle
-keeps its slot before a higher-ranked one may take it.
+Those are the defaults: `active` handles search and announce at once besides the ones in use,
+`idle` is the ms a handle stays on after its last use, or keeps its slot, and `known` is how many
+devices a handle keeps, 0 for none.
+
+`connections` is how many connections the device keeps at once. A device that dials in past it is
+told to try later, and the ones connected keep their place. Raise it on a device many others reach
+directly at the same moment, such as one that shares each of its handles with a different device;
+with a mirror, those devices sync through the mirror's one connection.
 
 ## Sync nearby over Bluetooth
 

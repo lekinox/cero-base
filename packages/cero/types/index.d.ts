@@ -58,11 +58,13 @@ export type CeroOpts = {
      */
     mirrors?: Array<string | Uint8Array>;
     /**
-     * How many handles announce and search at once, and the ms one keeps its slot before a touched one may take it.
+     * How many handles search and announce at once besides the ones in use, the ms one stays on after its last use, how many devices a handle keeps to dial by their keys, and how many connections the device keeps at once.
      */
     presence?: {
         active?: number;
         idle?: number;
+        known?: number;
+        connections?: number;
     };
     /**
      * Where background errors go; the console without one.
@@ -112,7 +114,7 @@ export type CeroOpts = {
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter: `true` refuses the connection.
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
- * @property {{ active?: number, idle?: number }} [presence]  How many handles announce and search at once, and the ms one keeps its slot before a touched one may take it.
+ * @property {{ active?: number, idle?: number, known?: number, connections?: number }} [presence]  How many handles search and announce at once besides the ones in use, the ms one stays on after its last use, how many devices a handle keeps to dial by their keys, and how many connections the device keeps at once.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.
  * @property {number} [keepOpen]                     How many handles stay open after their last close, for a reopen; one more closes the least recently used, 0 closes at once. Defaults to 16.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.

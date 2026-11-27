@@ -668,6 +668,26 @@ test('rotation: the budget caps what announces, a touch ranks in, a pin never le
   t.ok(rep.announcedSessions.length <= 3, `${rep.announcedSessions.length} announced`)
 })
 
+test('rotation: a topic just used announces at once, slot or not, until idle after its last use', async (t) => {
+  const testnet = await makeTestnet(t)
+  const net = await makeNet(t, testnet, { presence: { active: 1, idle: 600 } })
+  const first = net.join(randomTopic(), { pin: false })
+  await waitFor(() => first.state === 'autostarted')
+  const second = net.join(randomTopic(), { pin: false })
+  await net.flush()
+  t.is(second.state, 'inactive', 'the one slot is held')
+
+  second.touch()
+  t.is(second.state, 'pinned', 'in use, it does not wait for the slot')
+  const again = Date.now() + 300
+  await waitFor(() => Date.now() >= again)
+  second.touch()
+  const used = Date.now()
+  await waitFor(() => second.state !== 'pinned', { timeout: 5000 })
+  const up = Date.now() - used
+  t.ok(up >= 550, `it stayed up ${up} ms after its last use`)
+})
+
 test('rotation: release() ranks a topic last, the next one takes its slot', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet, { presence: { active: 1, idle: 0 } })
@@ -683,6 +703,107 @@ test('rotation: release() ranks a topic last, the next one takes its slot', asyn
   b.touch()
   await waitFor(() => b.state === 'autostarted')
   t.is(a.state, 'inactive', 'ranked back in')
+})
+
+test('presence.connections caps the connections a network keeps: a device past it is told to try later', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeNet(t, testnet, { presence: { connections: 1 } })
+  const first = await makeNet(t, testnet)
+  const { writer, reader } = await cores(t, host, first, ['alpha'])
+  await connectPair(t, host, first, writer.discoveryKey)
+  await reader.update({ wait: true })
+
+  const second = await makeNet(t, testnet)
+  const late = second.join(writer.discoveryKey)
+  t.teardown(() => late.destroy().catch(() => {}), { order: 2 })
+  await waitFor(() => host.replicator.stats.connects.server.refused > 0)
+  t.is(host.connections.size, 1, 'the one it holds stays')
+})
+
+test('known: a device a topic knows is dialed by its key once the topic is on the network, announced there or not', async (t) => {
+  const testnet = await makeTestnet(t)
+  const quiet = await makeNet(t, testnet, { presence: { active: 1 } })
+  const caller = await makeNet(t, testnet, { presence: { active: 1 } })
+  for (const net of [quiet, caller]) {
+    const other = net.join(randomTopic(), { pin: false })
+    await waitFor(() => other.state === 'autostarted')
+  }
+  const topic = randomTopic()
+  const far = quiet.join(topic, { pin: false })
+  const near = caller.join(topic, { pin: false })
+  await Promise.all([quiet.flush(), caller.flush()])
+  t.is(far.state, 'inactive', 'its one slot is held by another topic')
+  t.is(near.state, 'inactive')
+
+  near.know([quiet.replicator.keyPair.publicKey])
+  t.is(caller.peers.size, 0, 'off the network, the topic dials nobody')
+
+  near.touch()
+  await waitFor(() => quiet.connections.size === 1 && caller.connections.size === 1, {
+    timeout: 5000
+  })
+  t.is(far.state, 'inactive', 'the device reached never announced the topic')
+
+  const late = await makeNet(t, testnet)
+  const pinned = late.join(randomTopic())
+  await pinned.flush()
+  t.is(late.connections.size, 0, 'the topic alone finds nobody')
+  pinned.know([quiet.replicator.keyPair.publicKey])
+  await waitFor(() => late.connections.size === 1, { timeout: 5000 })
+  t.pass('on the network already, the topic dials the moment it is told')
+})
+
+test('known: a device the replicator forgot is dialed again when the network resumes, and when the topic is used', async (t) => {
+  const testnet = await makeTestnet(t)
+  const quiet = await makeNet(t, testnet, { presence: { active: 1 } })
+  const other = quiet.join(randomTopic(), { pin: false })
+  await waitFor(() => other.state === 'autostarted')
+  const topic = randomTopic()
+  const far = quiet.join(topic, { pin: false })
+  const caller = await makeNet(t, testnet)
+  // pinned: on the network for good, so the topic never starts again
+  const near = caller.join(topic)
+  near.know([quiet.replicator.keyPair.publicKey])
+  const met = () => caller.connections.size === 1 && quiet.connections.size === 1
+  const apart = () => caller.connections.size === 0 && quiet.connections.size === 0
+  await waitFor(met, { timeout: 5000 })
+  const dialed = Date.now()
+
+  // the replicator drops a device it has not seen for 15 minutes
+  const forget = () => {
+    const dialer = caller.replicator.dialer
+    for (const peer of dialer.peers.values()) dialer._orderedPeers.delete(peer)
+    dialer.peers.clear()
+  }
+
+  forget()
+  await caller.suspend()
+  await waitFor(apart)
+  await caller.resume()
+  await waitFor(met, { timeout: 5000 })
+  t.pass('dialed again at the resume')
+
+  forget()
+  for (const stream of caller.connections) stream.destroy()
+  await waitFor(apart)
+  await waitFor(() => Date.now() >= dialed + 2000)
+  near.touch()
+  await waitFor(met, { timeout: 5000 })
+  t.pass('dialed again at a use')
+
+  forget()
+  for (const stream of caller.connections) stream.destroy()
+  await waitFor(apart)
+  caller.dht.emit('network-update')
+  await waitFor(met, { timeout: 5000 })
+  t.is(far.state, 'inactive', 'dialed again at a new address: the device never announced the topic')
+})
+
+test('presence: a setting passed as undefined keeps its default', async (t) => {
+  const { store } = await makeStore(t)
+  const presence = { active: undefined, idle: undefined, known: undefined, connections: undefined }
+  const net = new Network({ store, presence })
+  t.alike(net.presence, { active: 8, idle: 30000, known: 8, connections: 40 })
 })
 
 // ─── offline: a DHT that went away ────────────────────────────────────────

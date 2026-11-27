@@ -372,6 +372,44 @@ async function twins(t) {
   return { testnet, room, invite, a, b, states }
 }
 
+test('join: a room past the budget of the network is joined at once, its invite puts it in use', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const rooms = []
+  for (let i = 0; i < 12; i++) rooms.push(await open(host.me.team, { name: 'room ' + i }))
+  const invite = await cero.invite(rooms[10])
+  const peer = await openHandle(t, { testnet })
+  const start = Date.now()
+  await open(peer.me.team, invite)
+  const took = Date.now() - start
+  t.ok(took < 10000, `joined in ${took} ms`)
+})
+
+test('a room off the network hears a device that held it before at once: the device dials it by its key', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await ceroOpen(t, { testnet, presence: { active: 1, idle: 500 } })
+  const quiet = await open(host.me.team, { name: 'quiet' })
+  const busy = await open(host.me.team, { name: 'busy' })
+
+  const guest = await ceroOpen(t, { testnet })
+  const theirs = await open(guest.me.team, await cero.invite(quiet))
+  const id = theirs.id
+  await waitUntil(() => theirs.store.known.length === 1)
+  await guest.me.close()
+
+  await put(busy.messages, { text: 'busy' })
+  await waitUntil(() => quiet.store._discovery.state === 'inactive', 20000)
+
+  const back = await cero(guest.dir, spec, { bootstrap: testnet.bootstrap })
+  t.teardown(() => back.close().catch(() => {}), { order: 5 })
+  const again = await open(back.team, { id })
+  await put(again.messages, { text: 'news' })
+  const start = Date.now()
+  const news = async () => (await get(quiet.messages)).data.some((m) => m.text === 'news')
+  await waitUntil(news, 10000)
+  t.pass(`arrived in ${Date.now() - start} ms`)
+})
+
 test('join: a second device reads asking, joining and in, and carries the join to in once the asking device closes after joining', async (t) => {
   const { room, invite, a, b, states } = await twins(t)
   // the asking device stops once the keys are on its row

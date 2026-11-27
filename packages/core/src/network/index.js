@@ -17,6 +17,8 @@ import { Discovery } from './discovery.js'
 const SILENT_TIMEOUT = 3000
 // the replicator runs a failed query again only in 10 min: after these, then the last over and over, while it keeps failing
 const RELOOKUPS = [1000, 5000, 20000, 60000]
+const DIALED = 30
+const REDIAL = 1000
 
 function toKey(k) {
   return typeof k === 'string' ? decodeKey(k) : k
@@ -36,7 +38,7 @@ export function channelTopic(topic, channel) {
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, idle?: number }} [presence]        The budget for topics in the rotation: how many announce at once, and the ms one keeps its slot before a touched one may take it.
+ * @property {{ active?: number, idle?: number, known?: number, connections?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none. `connections` is how many connections the network keeps at once: a device that dials in past it is told to try later.
  *
  * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
  * @property {string} id
@@ -44,6 +46,10 @@ export function channelTopic(topic, channel) {
  * @property {import('corestore')} store  The store session the replicator session lives on.
  * @property {number} refs  Joins holding the topic.
  * @property {number} pins  Joins pinning it.
+ * @property {number} used  When it was last touched.
+ * @property {ReturnType<typeof setTimeout> | null} held  Set while a touch keeps it announcing.
+ * @property {Uint8Array[]} known  Network keys of devices that held the topic before.
+ * @property {number} dialed  When they were last dialed.
  */
 
 /**
@@ -72,8 +78,11 @@ export class Network extends ReadyResource {
     this.store = store
     /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map(toKey)
-    /** @type {{ active: number, idle: number }} */
-    this.presence = { active: 8, idle: 30_000, ...presence }
+    /** @type {{ active: number, idle: number, known: number, connections: number }} */
+    this.presence = { active: 8, idle: 30_000, known: 8, connections: 40 }
+    for (const [name, value] of Object.entries(presence || {})) {
+      if (value !== undefined) this.presence[name] = value
+    }
 
     /** @private */
     this._replicator = null
@@ -142,6 +151,9 @@ export class Network extends ReadyResource {
       dht,
       slots: this.presence.active,
       minActiveTime: this.presence.idle,
+      maxConnections: this.presence.connections,
+      // it dials the peers it finds up to this many, or up to the cap when that is lower
+      minConnections: Math.min(DIALED, this.presence.connections),
       // a join owns its topic until it is destroyed
       gcIdleTime: Infinity,
       // dial a peer the moment it is found, where the replicator waits up to 500 ms
@@ -156,6 +168,7 @@ export class Network extends ReadyResource {
       if (!dht.online) return
       // the queries sent while it was away failed
       this._watch(this._lookup()).catch(safetyCatch)
+      this._redial()
       // a tick later: the dht's own wake-up in this event would clear a refresh made now
       setTimeout(() => this.closing || rep.server.refresh(), 0)
     })
@@ -328,6 +341,7 @@ export class Network extends ReadyResource {
     await this._blindPeering?.resume()
     // the queries the replicator runs at resume fail when they go out before the network is back
     this._watch(this._active()).catch(safetyCatch)
+    this._redial()
     this.emit('resume')
   }
 
@@ -361,7 +375,18 @@ export class Network extends ReadyResource {
       // a store session per topic: the root store collects no listener per topic
       const store = this.store.session()
       const session = this._replicator.join(store, key, { deferSwarming: false })
-      entry = { id, session, store, refs: 0, pins: 0 }
+      const made = (entry = {
+        id,
+        session,
+        store,
+        refs: 0,
+        pins: 0,
+        used: 0,
+        held: null,
+        known: [],
+        dialed: 0
+      })
+      session.on('activate', () => this._dial(made))
       this._sessions.set(id, entry)
     }
     entry.refs++
@@ -440,6 +465,60 @@ export class Network extends ReadyResource {
     } catch (err) {
       safetyCatch(err)
     }
+  }
+
+  // up at once, down only after idle: a topic just used does not wait for a slot, and one at the edge of the
+  // budget does not churn the DHT
+  /** @private */
+  _use(entry) {
+    entry.used = Date.now()
+    if (entry.held === null) {
+      this._hold(entry, this.presence.idle)
+      this._apply(entry)
+    }
+    // a topic in steady use, or pinned by a join, starts no more: the devices it knows are dialed again, a round a
+    // second at most
+    if (entry.used - entry.dialed >= REDIAL) this._dial(entry)
+  }
+
+  /** @private */
+  _hold(entry, ms) {
+    entry.held = setTimeout(() => {
+      const left = entry.used + this.presence.idle - Date.now()
+      if (left > 0) {
+        this._hold(entry, left)
+      } else {
+        entry.held = null
+        this._apply(entry)
+      }
+    }, ms)
+    entry.held.unref()
+  }
+
+  // pinned while a join pins it or a use holds it up
+  /** @private */
+  _apply(entry) {
+    const pinned = entry.pins > 0 || entry.held !== null
+    if (pinned === (entry.session.state === 'pinned')) return
+    if (pinned) entry.session.pin()
+    else entry.session.unpin()
+    this._refresh()
+  }
+
+  // a device that held the topic before is dialed by its key: its own slots may all be on other topics, so a
+  // lookup of this one finds nobody. The replicator has no public way to dial a key
+  /** @private */
+  _dial(entry) {
+    const dialer = this._replicator?.dialer
+    if (!dialer || !entry.session.active) return
+    const now = (entry.dialed = Date.now())
+    for (const publicKey of entry.known) dialer.seen({ publicKey }, entry.session.topic, now, true)
+  }
+
+  // the replicator drops a device it has not seen for 15 minutes, and a resume or a new address starts no topic
+  /** @private */
+  _redial() {
+    for (const entry of this._sessions.values()) this._dial(entry)
   }
 
   // an announce starts when the rotation runs, and only once the server listens
