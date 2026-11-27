@@ -17,6 +17,7 @@ import { Discovery } from './discovery.js'
 const SILENT_TIMEOUT = 3000
 // the replicator runs a failed query again only in 10 min: after these, then the last over and over, while it keeps failing
 const RELOOKUPS = [1000, 5000, 20000, 60000]
+const DIALED = 30
 
 function toKey(k) {
   return typeof k === 'string' ? decodeKey(k) : k
@@ -36,7 +37,7 @@ export function channelTopic(topic, channel) {
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, idle?: number, known?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none.
+ * @property {{ active?: number, idle?: number, known?: number, connections?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none. `connections` is how many connections the network keeps at once: a device that dials in past it is told to try later.
  *
  * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
  * @property {string} id
@@ -75,8 +76,8 @@ export class Network extends ReadyResource {
     this.store = store
     /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map(toKey)
-    /** @type {{ active: number, idle: number, known: number }} */
-    this.presence = { active: 8, idle: 30_000, known: 8, ...presence }
+    /** @type {{ active: number, idle: number, known: number, connections: number }} */
+    this.presence = { active: 8, idle: 30_000, known: 8, connections: 40, ...presence }
 
     /** @private */
     this._replicator = null
@@ -145,6 +146,9 @@ export class Network extends ReadyResource {
       dht,
       slots: this.presence.active,
       minActiveTime: this.presence.idle,
+      maxConnections: this.presence.connections,
+      // it dials the peers it finds up to this many: the rest of the cap is for those that dial in
+      minConnections: Math.min(DIALED, this.presence.connections),
       // a join owns its topic until it is destroyed
       gcIdleTime: Infinity,
       // dial a peer the moment it is found, where the replicator waits up to 500 ms

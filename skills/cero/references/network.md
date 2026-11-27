@@ -196,12 +196,19 @@ When a member is removed the list starts over from the devices connected then, a
 leaves or is removed keeps none.
 
 ```js
-const me = await cero('./data', spec, { presence: { active: 8, idle: 30000, known: 8 } })
+const me = await cero('./data', spec, {
+  presence: { active: 8, idle: 30000, known: 8, connections: 40 }
+})
 ```
 
 Those are the defaults: `active` handles search and announce at once besides the ones in use,
 `idle` is the ms a handle stays on after its last use, or keeps its slot, and `known` is how many
 devices a handle keeps, 0 for none.
+
+`connections` is how many connections the device keeps at once. A device that dials in past it is
+told to try later, and the ones connected keep their place. Raise it on a device many others reach
+directly at the same moment, such as one that shares each of its handles with a different device;
+with a mirror, those devices sync through the mirror's one connection.
 
 ## Sync nearby over Bluetooth
 

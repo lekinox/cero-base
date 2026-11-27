@@ -35,12 +35,13 @@ export type NetworkOpts = {
      */
     onerror?: (err: Error) => void;
     /**
-     * The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none.
+     * The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none. `connections` is how many connections the network keeps at once: a device that dials in past it is told to try later.
      */
     presence?: {
         active?: number;
         idle?: number;
         known?: number;
+        connections?: number;
     };
 };
 export type Entry = {
@@ -80,7 +81,7 @@ export type Entry = {
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, idle?: number, known?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none.
+ * @property {{ active?: number, idle?: number, known?: number, connections?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none. `connections` is how many connections the network keeps at once: a device that dials in past it is told to try later.
  *
  * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
  * @property {string} id
@@ -108,11 +109,12 @@ export declare class Network extends ReadyResource {
     store: import('corestore');
     /** @type {Uint8Array[]} */
     mirrors: Uint8Array[];
-    /** @type {{ active: number, idle: number, known: number }} */
+    /** @type {{ active: number, idle: number, known: number, connections: number }} */
     presence: {
         active: number;
         idle: number;
         known: number;
+        connections: number;
     };
     /** @private */
     _replicator;

@@ -28,7 +28,7 @@ npm test                  # the packages one at a time under Bare, four files at
 npm run test:node         # the same under Node
 npm run test:core         # one package
 npm run test:capacity     # outside the suite, about a minute: a launch, a change and memory from 1,000 to 100,000 handles; -- --max 1000000 adds a million
-npm run test:burst        # outside the suite, about three minutes: one device in 100 rooms, writes at random from 20 others, none may be lost; SCENARIO=lone runs one
+npm run test:burst        # outside the suite, about four minutes: one device in 100 rooms, writes at random from 20 others, then from 80 at once, none may be lost; SCENARIO=lone runs one
 npm run lint              # prettier + lunte + docs name only API the source has
 npm run outdated          # what is behind its latest release, by folder, in about a second
 npm run build:types --workspaces --if-present   # regenerate types/ from JSDoc, commit the result

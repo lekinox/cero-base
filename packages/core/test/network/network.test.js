@@ -705,6 +705,21 @@ test('rotation: release() ranks a topic last, the next one takes its slot', asyn
   t.is(a.state, 'inactive', 'ranked back in')
 })
 
+test('presence.connections caps the connections a network keeps: a device past it is told to try later', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await makeNet(t, testnet, { presence: { connections: 1 } })
+  const first = await makeNet(t, testnet)
+  const { writer, reader } = await cores(t, host, first, ['alpha'])
+  await connectPair(t, host, first, writer.discoveryKey)
+  await reader.update({ wait: true })
+
+  const second = await makeNet(t, testnet)
+  const late = second.join(writer.discoveryKey)
+  t.teardown(() => late.destroy().catch(() => {}), { order: 2 })
+  await waitFor(() => host.replicator.stats.connects.server.refused > 0)
+  t.is(host.connections.size, 1, 'the one it holds stays')
+})
+
 test('known: a device a topic knows is dialed by its key once the topic is on the network, announced there or not', async (t) => {
   const testnet = await makeTestnet(t)
   const quiet = await makeNet(t, testnet, { presence: { active: 1 } })

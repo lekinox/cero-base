@@ -13,7 +13,9 @@ const SCENARIOS = {
   // a few rooms written by apps that just started: no burst brings the device's other rooms on the network
   lone: { rooms: 100, peers: 20, writes: 10, only: 5, restart: true, within: 10000 },
   restart: { rooms: 100, peers: 20, writes: 200, restart: true, within: 60000 },
-  connected: { rooms: 100, peers: 20, writes: 200, within: 10000 }
+  connected: { rooms: 100, peers: 20, writes: 200, within: 10000 },
+  // more devices write at once than a device keeps connections by default: this one keeps more
+  crowd: { rooms: 160, peers: 80, writes: 160, restart: true, within: 30000, connections: 200 }
 }
 // the writes land at random moments over this long
 const SPREAD = 10000
@@ -46,13 +48,14 @@ for (const name of picked) {
     writes,
     only = 0,
     restart = false,
-    within
+    within,
+    connections = 40
   } = SCENARIOS[name]
 
   test(`${name}: ${writes} writes in ${only || count} of ${count} rooms, ${devices} devices${restart ? ', each app starts then writes' : ''}`, async (t) => {
     const random = rng(SEED)
     const testnet = await makeTestnet(t)
-    const hub = await ceroOpen(t, { testnet })
+    const hub = await ceroOpen(t, { testnet, presence: { connections } })
     const rooms = []
     for (let i = 0; i < count; i++) rooms.push(await open(hub.me.team, { name: `room ${i}` }))
     const ids = rooms.map((room) => room.id)
