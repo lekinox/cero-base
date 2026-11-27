@@ -908,8 +908,9 @@ test('push: the messaging service follows the topics, and a push activates the h
   await b.me.network.resume()
   await waitUntil(() => b.me.network.state(dk) === null)
   messaging.push(payloadOf(gateway.sent.at(-1)))
-  await waitUntil(() => b.me.network.state(dk) === 'autostarted')
-  t.pass('the push opened the handle and ranked it first')
+  // in use, it is on the network at once, slot or not
+  await waitUntil(() => b.me.network.state(dk) === 'pinned')
+  t.pass('the push opened the handle and put it on the network')
 
   await cero.suspend(b.client)
   messaging.push(payloadOf(gateway.sent.at(-1)))

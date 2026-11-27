@@ -372,6 +372,19 @@ async function twins(t) {
   return { testnet, room, invite, a, b, states }
 }
 
+test('join: a room past the budget of the network is joined at once, its invite puts it in use', async (t) => {
+  const testnet = await makeTestnet(t)
+  const host = await openHandle(t, { testnet })
+  const rooms = []
+  for (let i = 0; i < 12; i++) rooms.push(await open(host.me.team, { name: 'room ' + i }))
+  const invite = await cero.invite(rooms[10])
+  const peer = await openHandle(t, { testnet })
+  const start = Date.now()
+  await open(peer.me.team, invite)
+  const took = Date.now() - start
+  t.ok(took < 10000, `joined in ${took} ms`)
+})
+
 test('join: a second device reads asking, joining and in, and carries the join to in once the asking device closes after joining', async (t) => {
   const { room, invite, a, b, states } = await twins(t)
   // the asking device stops once the keys are on its row

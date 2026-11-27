@@ -41,8 +41,8 @@ export class Discovery {
     /** @private */
     this._destroyed = false
     this._pin(pin)
-    // opening counts as a touch
-    this.touch()
+    // an open ranks it first, and takes no slot from a topic in use
+    this._rank(stamp())
   }
 
   /** @returns {Session} */
@@ -90,9 +90,10 @@ export class Discovery {
     await this.network._rotate()
   }
 
-  /** Rank the topic first in the rotation, as just used. */
+  /** The topic was just used: it ranks first, and announces from now until `idle` ms after its last use, slot or not. */
   touch() {
     this._rank(stamp())
+    this.network._use(this.entry)
   }
 
   /** Rank the topic last: it keeps a slot only while one is spare. */
@@ -127,9 +128,8 @@ export class Discovery {
   _pin(pinned) {
     if (pinned === this._pinned) return
     this._pinned = pinned
-    if (pinned && this.entry.pins++ === 0) this.session.pin()
-    if (!pinned && --this.entry.pins === 0) this.session.unpin()
-    this.network._refresh()
+    this.entry.pins += pinned ? 1 : -1
+    this.network._apply(this.entry)
   }
 
   /** @private */

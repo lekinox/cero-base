@@ -668,6 +668,26 @@ test('rotation: the budget caps what announces, a touch ranks in, a pin never le
   t.ok(rep.announcedSessions.length <= 3, `${rep.announcedSessions.length} announced`)
 })
 
+test('rotation: a topic just used announces at once, slot or not, until idle after its last use', async (t) => {
+  const testnet = await makeTestnet(t)
+  const net = await makeNet(t, testnet, { presence: { active: 1, idle: 600 } })
+  const first = net.join(randomTopic(), { pin: false })
+  await waitFor(() => first.state === 'autostarted')
+  const second = net.join(randomTopic(), { pin: false })
+  await net.flush()
+  t.is(second.state, 'inactive', 'the one slot is held')
+
+  second.touch()
+  t.is(second.state, 'pinned', 'in use, it does not wait for the slot')
+  const again = Date.now() + 300
+  await waitFor(() => Date.now() >= again)
+  second.touch()
+  const used = Date.now()
+  await waitFor(() => second.state !== 'pinned', { timeout: 5000 })
+  const up = Date.now() - used
+  t.ok(up >= 550, `it stayed up ${up} ms after its last use`)
+})
+
 test('rotation: release() ranks a topic last, the next one takes its slot', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet, { presence: { active: 1, idle: 0 } })

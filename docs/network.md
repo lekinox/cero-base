@@ -183,9 +183,9 @@ await cero.deactivate(room) // ranked last: on the swarm only while a slot is sp
 ```
 
 Handles are ranked by their last update, from anyone, and opening one counts: the latest 8 search
-and announce, the rest wait their turn. A handle moves up the moment something lands in it, and
-takes a slot as soon as one has been held 30 s, so handles at the edge do not churn the DHT. Your
-own data, on `me`, always searches.
+and announce, the rest wait their turn. A handle in use does not wait: it searches and announces
+the moment something lands in it or is written to it, and for 30 s after its last use, so handles
+at the edge do not churn the DHT. Your own data, on `me`, always searches.
 
 A handle off the swarm still reads, writes and watches. It still syncs over the connections other
 handles bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
@@ -195,8 +195,8 @@ suspended app keeps its ranks.
 const me = await cero('./data', spec, { presence: { active: 8, idle: 30000 } })
 ```
 
-Those are the defaults: `active` handles search and announce at once, and `idle` is the ms a handle
-keeps its slot before a higher-ranked one may take it.
+Those are the defaults: `active` handles search and announce at once besides the ones in use, and
+`idle` is the ms a handle stays on after its last use, or keeps its slot.
 
 ## Sync nearby over Bluetooth
 
