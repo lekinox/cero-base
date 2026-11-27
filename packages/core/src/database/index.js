@@ -31,7 +31,8 @@ import {
   filter,
   checkFields,
   checkRequired,
-  stamp
+  stamp,
+  inTurn
 } from '../lib/utils.js'
 import { wrap, unwrap } from './envelope.js'
 import { EpochAutobee, Keyring, loadEpochs, plainId } from './encryption.js'
@@ -487,8 +488,7 @@ export class Database extends ReadyResource {
   // one after the other, past each other's failures so one does not wedge the rest
   /** @private */
   _chain(fn) {
-    const prev = this._txChain || Promise.resolve()
-    this._txChain = prev.then(fn, fn)
+    this._txChain = inTurn(this._txChain, fn)
     return this._txChain
   }
 

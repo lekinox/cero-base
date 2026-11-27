@@ -1,4 +1,5 @@
 import test from 'brittle'
+import process from 'process'
 import b4a from 'b4a'
 import z32 from 'z32'
 import c from 'compact-encoding'
@@ -215,6 +216,31 @@ test('replicate: N databases on one store replicate it once per connection', asy
   await new Promise((r) => setTimeout(r, 100))
 
   t.is(store.streamTracker.records.length, 1, 'one stream record despite two bees')
+})
+
+test('close: a write that waited its turn rejects CLOSED to its caller, and to nobody else', async (t) => {
+  const testnet = await makeTestnet(t)
+  const { db } = await bootstrapped(t)
+  const unheld = []
+  const onunheld = (err) => unheld.push(err)
+  process.on('unhandledRejection', onunheld)
+  t.teardown(() => process.off('unhandledRejection', onunheld))
+
+  const told = Promise.allSettled([
+    db.set('messages', { id: 'm1', text: 'one' }),
+    db.set('messages', { id: 'm2', text: 'two' })
+  ])
+  const closing = db.close()
+  // Bare reports a rejection nobody holds yet as uncaught when a stream is destroyed before its handler is attached
+  const [node] = testnet.nodes
+  for (let i = 0; i < 32; i++) {
+    node.createRawStream().destroy()
+    await null
+  }
+  const codes = (await told).map((write) => write.reason?.code)
+  t.alike(codes, ['CLOSED', 'CLOSED'], 'each caller is told')
+  await closing
+  t.alike(unheld, [], 'and no rejection is left for the runtime to report')
 })
 
 test('close is idempotent', async (t) => {
