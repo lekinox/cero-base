@@ -18,6 +18,7 @@ const SILENT_TIMEOUT = 3000
 // the replicator runs a failed query again only in 10 min: after these, then the last over and over, while it keeps failing
 const RELOOKUPS = [1000, 5000, 20000, 60000]
 const DIALED = 30
+const REDIAL = 1000
 
 function toKey(k) {
   return typeof k === 'string' ? decodeKey(k) : k
@@ -48,6 +49,7 @@ export function channelTopic(topic, channel) {
  * @property {number} used  When it was last touched.
  * @property {ReturnType<typeof setTimeout> | null} held  Set while a touch keeps it announcing.
  * @property {Uint8Array[]} known  Network keys of devices that held the topic before.
+ * @property {number} dialed  When they were last dialed.
  */
 
 /**
@@ -77,7 +79,10 @@ export class Network extends ReadyResource {
     /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map(toKey)
     /** @type {{ active: number, idle: number, known: number, connections: number }} */
-    this.presence = { active: 8, idle: 30_000, known: 8, connections: 40, ...presence }
+    this.presence = { active: 8, idle: 30_000, known: 8, connections: 40 }
+    for (const [name, value] of Object.entries(presence || {})) {
+      if (value !== undefined) this.presence[name] = value
+    }
 
     /** @private */
     this._replicator = null
@@ -147,7 +152,7 @@ export class Network extends ReadyResource {
       slots: this.presence.active,
       minActiveTime: this.presence.idle,
       maxConnections: this.presence.connections,
-      // it dials the peers it finds up to this many: the rest of the cap is for those that dial in
+      // it dials the peers it finds up to this many, or up to the cap when that is lower
       minConnections: Math.min(DIALED, this.presence.connections),
       // a join owns its topic until it is destroyed
       gcIdleTime: Infinity,
@@ -163,6 +168,7 @@ export class Network extends ReadyResource {
       if (!dht.online) return
       // the queries sent while it was away failed
       this._watch(this._lookup()).catch(safetyCatch)
+      this._redial()
       // a tick later: the dht's own wake-up in this event would clear a refresh made now
       setTimeout(() => this.closing || rep.server.refresh(), 0)
     })
@@ -335,6 +341,7 @@ export class Network extends ReadyResource {
     await this._blindPeering?.resume()
     // the queries the replicator runs at resume fail when they go out before the network is back
     this._watch(this._active()).catch(safetyCatch)
+    this._redial()
     this.emit('resume')
   }
 
@@ -376,7 +383,8 @@ export class Network extends ReadyResource {
         pins: 0,
         used: 0,
         held: null,
-        known: []
+        known: [],
+        dialed: 0
       })
       session.on('activate', () => this._dial(made))
       this._sessions.set(id, entry)
@@ -464,9 +472,13 @@ export class Network extends ReadyResource {
   /** @private */
   _use(entry) {
     entry.used = Date.now()
-    if (entry.held !== null) return
-    this._hold(entry, this.presence.idle)
-    this._apply(entry)
+    if (entry.held === null) {
+      this._hold(entry, this.presence.idle)
+      this._apply(entry)
+    }
+    // a topic in steady use, or pinned by a join, starts no more: the devices it knows are dialed again, a round a
+    // second at most
+    if (entry.used - entry.dialed >= REDIAL) this._dial(entry)
   }
 
   /** @private */
@@ -499,8 +511,14 @@ export class Network extends ReadyResource {
   _dial(entry) {
     const dialer = this._replicator?.dialer
     if (!dialer || !entry.session.active) return
-    const now = Date.now()
+    const now = (entry.dialed = Date.now())
     for (const publicKey of entry.known) dialer.seen({ publicKey }, entry.session.topic, now, true)
+  }
+
+  // the replicator drops a device it has not seen for 15 minutes, and a resume or a new address starts no topic
+  /** @private */
+  _redial() {
+    for (const entry of this._sessions.values()) this._dial(entry)
   }
 
   // an announce starts when the rotation runs, and only once the server listens

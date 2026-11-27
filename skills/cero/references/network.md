@@ -189,11 +189,11 @@ A handle off the swarm still reads, writes and watches. It still syncs over the 
 handles bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
 suspended app keeps its ranks.
 
-A handle keeps the network keys of the last 8 devices it synced with, on this device only, and dials
-them by those keys each time it goes on the swarm. A member who opens a handle and writes reaches
-your device at once, whether the handle is on the swarm on your side or not. A mirror is not kept.
-When a member is removed the list starts over from the devices connected then, and a device that
-leaves or is removed keeps none.
+A handle keeps the network keys of the last 8 devices it synced with over the swarm, on this device
+only, and dials them by those keys when it goes on the swarm, when it is used and when the app
+resumes. A member who opens a handle and writes reaches your device at once, whether the handle is
+on the swarm on your side or not. A mirror is not kept, nor a device met over Bluetooth alone, and
+a device that leaves or is removed keeps none.
 
 ```js
 const me = await cero('./data', spec, {

@@ -753,6 +753,59 @@ test('known: a device a topic knows is dialed by its key once the topic is on th
   t.pass('on the network already, the topic dials the moment it is told')
 })
 
+test('known: a device the replicator forgot is dialed again when the network resumes, and when the topic is used', async (t) => {
+  const testnet = await makeTestnet(t)
+  const quiet = await makeNet(t, testnet, { presence: { active: 1 } })
+  const other = quiet.join(randomTopic(), { pin: false })
+  await waitFor(() => other.state === 'autostarted')
+  const topic = randomTopic()
+  const far = quiet.join(topic, { pin: false })
+  const caller = await makeNet(t, testnet)
+  // pinned: on the network for good, so the topic never starts again
+  const near = caller.join(topic)
+  near.know([quiet.replicator.keyPair.publicKey])
+  const met = () => caller.connections.size === 1 && quiet.connections.size === 1
+  const apart = () => caller.connections.size === 0 && quiet.connections.size === 0
+  await waitFor(met, { timeout: 5000 })
+  const dialed = Date.now()
+
+  // the replicator drops a device it has not seen for 15 minutes
+  const forget = () => {
+    const dialer = caller.replicator.dialer
+    for (const peer of dialer.peers.values()) dialer._orderedPeers.delete(peer)
+    dialer.peers.clear()
+  }
+
+  forget()
+  await caller.suspend()
+  await waitFor(apart)
+  await caller.resume()
+  await waitFor(met, { timeout: 5000 })
+  t.pass('dialed again at the resume')
+
+  forget()
+  for (const stream of caller.connections) stream.destroy()
+  await waitFor(apart)
+  await waitFor(() => Date.now() >= dialed + 2000)
+  near.touch()
+  await waitFor(met, { timeout: 5000 })
+  t.pass('dialed again at a use')
+
+  forget()
+  for (const stream of caller.connections) stream.destroy()
+  await waitFor(apart)
+  caller.dht.emit('network-update')
+  await waitFor(met, { timeout: 5000 })
+  t.is(far.state, 'inactive', 'dialed again at a new address: the device never announced the topic')
+})
+
+test('presence: a setting passed as undefined keeps its default', async (t) => {
+  const { store } = await makeStore(t)
+  const presence = { active: undefined, idle: undefined, known: undefined, connections: undefined }
+  const net = new Network({ store, presence })
+  t.alike(net.presence, { active: 8, idle: 30000, known: 8, connections: 40 })
+})
+
 // ─── offline: a DHT that went away ────────────────────────────────────────
 
 test('close() settles when the DHT is gone', async (t) => {

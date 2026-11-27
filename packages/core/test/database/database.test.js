@@ -28,7 +28,8 @@ import {
   makeBlindPeer,
   waitForMirrored,
   admit,
-  withRole
+  withRole,
+  pair
 } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 import { spec as next } from '../fixtures/spec/next/index.js'
@@ -2845,7 +2846,7 @@ test('known: a database remembers the devices it replicated with, and dials them
   await offline(a)
   const db = await reopen(t, testnet, b, room)
   t.alike(db.known, [theirs], 'read back from its own writer core, with nobody to meet')
-  await waitFor(() => db.network.peers.has(b4a.toHex(theirs)))
+  await waitFor(() => db.network.peers.get(b4a.toHex(theirs))?.attemptedAt > 0)
   t.pass('dialed by its key: no topic finds a device that is away')
 })
 
@@ -2868,7 +2869,7 @@ test('known: the list keeps the latest devices up to presence.known, and none at
   t.is(b.db.known.length, 0, 'none kept')
 })
 
-test('known: a rotation starts the list over from the devices connected, and a device that lost its seat keeps none', async (t) => {
+test('known: a device that lost its seat keeps none, and starts again when the seat comes back', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
   const a = await makePeer(t, testnet, { topic })
@@ -2878,19 +2879,73 @@ test('known: a rotation starts the list over from the devices connected, and a d
   await admit(a.db, b.db)
   const c = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
   await admit(a.db, c.db)
-  await waitFor(() => knows(a.db, b) && knows(a.db, c) && knows(b.db, c) && knows(b.db, a))
+  await waitFor(() => knows(c.db, a) && knows(a.db, c) && knows(a.db, b))
 
-  const gone = networkKey(c)
-  await offline(c)
-  await a.db.del('members', c.identity.id)
-  const dropped = (db) => !db.known.some((k) => b4a.equals(k, gone))
-  await waitFor(() => dropped(a.db) && dropped(b.db))
-  t.ok(knows(a.db, b) && knows(b.db, a), 'the devices connected are kept')
+  // a reorder takes a seat back, then gives it again
+  c.db.bee.emit('unwritable')
+  await waitFor(() => c.db.known.length === 0)
+  c.db.bee.emit('writable')
+  await waitFor(() => knows(c.db, a))
+  t.pass('the seat back, it keeps the devices connected')
 
   await a.db.del('members', b.identity.id)
   await waitFor(() => b.db.known.length === 0)
   await waitFor(async () => !(await b.db.bee.local.getUserData('cero/known')))
   t.pass('nothing left on its writer core')
+  t.ok(knows(a.db, b), 'a rotation leaves the list of the others as it is')
+})
+
+test('known: a device met over an injected stream is not kept: its key there may be none the network dials', async (t) => {
+  const a = await makePeer(t, await makeTestnet(t))
+  await a.db.bootstrap({ name: 'a' })
+  const room = { key: a.db.key, encryptionKey: a.db.encryptionKey }
+  // a network of its own: the stream is the only way between them
+  const b = await makePeer(t, await makeTestnet(t), { ...room, identity: await Identity.create() })
+  const [s1, s2] = pair()
+  a.network.inject(s1, { isInitiator: true })
+  b.network.inject(s2, { isInitiator: false })
+  await admit(a.db, b.db)
+  await waitFor(() => a.network.wakeup.getSessions(a.db.key)[0]?.peers.length === 1)
+  t.alike(a.db.known, [], 'on the channel, and not kept')
+  t.alike(b.db.known, [])
+})
+
+test('known: a list that changes while the database re-boots throws nothing, and is written at its next change', async (t) => {
+  const testnet = await makeTestnet(t)
+  const topic = randomTopic()
+  const a = await makePeer(t, testnet, { topic })
+  await a.db.bootstrap({ name: 'a' })
+  const room = { topic, key: a.db.key, encryptionKey: a.db.encryptionKey }
+  const b = await makePeer(t, testnet, { ...room, identity: await Identity.create() })
+  await admit(a.db, b.db)
+  await waitFor(() => knows(a.db, b))
+
+  // a re-boot holds a bee with no writer core until it is ready
+  const bee = a.db.bee
+  const booting = { local: null, ready: async () => (booting.local = bee.local) }
+  a.db.bee = booting
+  t.execution(() => a.db._keep([]))
+  a.db.bee = bee
+  await waitFor(async () => !(await bee.local.getUserData('cero/known')))
+  t.pass('written once the bee is ready')
+
+  // one replaced before it was ready fails the write
+  let failed = false
+  const replaced = {
+    get local() {
+      failed = true
+      return null
+    },
+    ready: async () => {}
+  }
+  a.db.bee = replaced
+  a.db._keep([networkKey(b)])
+  a.db.bee = bee
+  await waitFor(() => failed)
+  t.alike(a.errors, [], 'nothing is reported')
+  a.db._keep([networkKey(b)])
+  await waitFor(async () => await bee.local.getUserData('cero/known'))
+  t.pass('the same list is written at its next change')
 })
 
 test('known: a mirror is not kept among the devices', async (t) => {

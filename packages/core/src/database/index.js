@@ -1031,6 +1031,8 @@ export class Database extends ReadyResource {
     }
     if (this._writable || !this.bee.writable || this.closing || this.closed) return
     this._writable = true
+    // the seat back after a reorder took it
+    if (this.opened && this.network && !this._meeting) this._meet()
     this.emit('writable')
   }
 
@@ -1278,27 +1280,31 @@ export class Database extends ReadyResource {
     this._discovery ??= this.network.join(discoveryKey, { pin: this.pinned })
   }
 
-  // a device on the database's wakeup channel proved it holds the key. The latest are kept on this device's
-  // writer core and dialed by their own keys: a device with many databases announces only a few of them
   /** @private */
   async _recall() {
     const stored = await this.bee.local.getUserData(KNOWN)
     if (stored) this._known = c.decode(keys, stored)
     this._saved = signature(this._known)
+    this._meet()
+  }
+
+  // a device on the database's wakeup channel proved it holds the key. The latest are kept on this device's
+  // writer core and dialed by their own keys: a device with many databases announces only a few of them
+  /** @private */
+  _meet() {
     const { key, discoveryKey } = this.bee.wakeupCapability
     const onpeeradd = (peer) => this._keep(this._met(this._known, [peer]))
     this._meeting = this.network.wakeup.session(key, { discoveryKey, active: false, onpeeradd })
     this._keep(this._met(this._known, this._meeting.peers))
-    // a rotation follows a removal, and no key here says whose device it is: the list starts over from the
-    // devices connected now
-    this.on('epoch', () => this._meeting && this._keep(this._met([], this._meeting.peers)))
   }
 
-  // the devices of these peers ahead of the ones known, the latest first; a mirror is reached as a mirror
+  // the devices of these peers ahead of the ones known, the latest first. Only a connection the replicator made
+  // proves a key it can dial: an injected stream may carry another, and a mirror is reached as a mirror
   /** @private */
   _met(known, peers) {
     for (const { stream } of peers) {
       const key = stream.remotePublicKey
+      if (!this.network.replicator?.hasConnection(key)) continue
       if (this.network.mirrors.some((mirror) => b4a.equals(mirror, key))) continue
       known = [key, ...known.filter((k) => !b4a.equals(k, key))]
     }
@@ -1313,8 +1319,20 @@ export class Database extends ReadyResource {
     const saved = signature(known)
     if (saved === this._saved || this.closing || !this.bee) return
     this._saved = saved
-    const value = known.length ? c.encode(keys, known) : null
-    this.bee.local.setUserData(KNOWN, value).catch((err) => this.closing || this._onerror(err))
+    this._store(this.bee, known.length ? c.encode(keys, known) : null)
+  }
+
+  // a bee has no writer core until it is ready. One replaced or closed under the write fails it: the next change
+  // writes the list again
+  /** @private */
+  async _store(bee, value) {
+    try {
+      await bee.ready()
+      await bee.local.setUserData(KNOWN, value)
+    } catch (err) {
+      this._saved = null
+      if (bee === this.bee && !this.closing) this._onerror(err)
+    }
   }
 
   // a device that lost its seat keeps no key of the others

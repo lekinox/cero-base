@@ -71,6 +71,10 @@ export type Entry = {
      * Network keys of devices that held the topic before.
      */
     known: Uint8Array[];
+    /**
+     * When they were last dialed.
+     */
+    dialed: number;
 };
 /**
  * @typedef {object} NetworkOpts
@@ -92,6 +96,7 @@ export type Entry = {
  * @property {number} used  When it was last touched.
  * @property {ReturnType<typeof setTimeout> | null} held  Set while a touch keeps it announcing.
  * @property {Uint8Array[]} known  Network keys of devices that held the topic before.
+ * @property {number} dialed  When they were last dialed.
  */
 /**
  * Peer discovery and connections on hyperjoin, plus a shared wakeup channel. Every connection,
@@ -256,6 +261,8 @@ export declare class Network extends ReadyResource {
     private _apply;
     /** @private */
     private _dial;
+    /** @private */
+    private _redial;
     /** @private */
     private _settle;
     /** @private */

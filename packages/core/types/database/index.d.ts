@@ -687,9 +687,13 @@ export declare class Database extends ReadyResource {
     /** @private */
     private _recall;
     /** @private */
+    private _meet;
+    /** @private */
     private _met;
     /** @private */
     private _keep;
+    /** @private */
+    private _store;
     /** @private */
     private _forget;
     /** @private */
