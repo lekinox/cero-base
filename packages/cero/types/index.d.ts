@@ -50,10 +50,6 @@ export type CeroOpts = {
      */
     firewall?: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     /**
-     * Swarm reconnect backoff tiers in ms (testing/tuning).
-     */
-    backoffs?: number[];
-    /**
      * Optional network-isolation label; only same-channel peers connect.
      */
     channel?: string;
@@ -62,11 +58,10 @@ export type CeroOpts = {
      */
     mirrors?: Array<string | Uint8Array>;
     /**
-     * How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
+     * How many handles announce and search at once, and the ms one keeps its slot before a touched one may take it.
      */
     presence?: {
         active?: number;
-        announced?: number;
         idle?: number;
     };
     /**
@@ -115,10 +110,9 @@ export type CeroOpts = {
  * @property {Array<{ host: string, port: number }>} [bootstrap]  Custom DHT bootstrap nodes.
  * @property {Array<string | Uint8Array>} [relayThrough]  Blind relay public keys. Two devices that cannot connect direct, as on mobile carriers, connect through one; the relay forwards encrypted bytes and reads nothing. Direct connections stay direct.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter: `true` refuses the connection.
- * @property {number[]} [backoffs]                     Swarm reconnect backoff tiers in ms (testing/tuning).
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
- * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
+ * @property {{ active?: number, idle?: number }} [presence]  How many handles announce and search at once, and the ms one keeps its slot before a touched one may take it.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.
  * @property {number} [keepOpen]                     How many handles stay open after their last close, for a reopen; one more closes the least recently used, 0 closes at once. Defaults to 16.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.

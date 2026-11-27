@@ -56,7 +56,7 @@ Hypercore.setRecoveryPeers(recovery)
  * @property {Uint8Array} encryptionKey                               Encrypts it; a join hands it out, so never the identity's on a database you pair.
  * @property {Array<{ epoch: number, entropy: Uint8Array }> | null} [epochs]  Rotation epochs to prime the keyring with (delivered at join).
  * @property {Uint8Array | null} [key]                                Existing autobee key to reopen.
- * @property {boolean} [pinned]                                       Always search and announce, outside the network's presence budget. The root.
+ * @property {boolean} [pinned]                                       Always announce and look up, outside the network's presence budget. The root.
  * @property {boolean} [root]                                         The identity's own database: a device key past a removed one stands while a device of the identity is seated on it.
  * @property {boolean} [push]                                         Push a notification through the mirrors after a local write to a ref whose meta declares `push`, naming the ref, so members learn of it while their app is dead.
  * @property {import('../identity/index.js').KeyPair} [keyPair]       This device's writer keypair; a fresh random one by default. Never the identity's, never the database key.
@@ -167,7 +167,7 @@ export class Database extends ReadyResource {
     this.bee = null
     this.dispatcher = null
     /** @private */
-    this._presence = null
+    this._discovery = null
     /** @private */
     this._pushing = null
     /** @private */
@@ -328,10 +328,8 @@ export class Database extends ReadyResource {
   async _close() {
     this.rotation.close()
     this.network?.off('resume', this._onResume)
-    if (this._presence) {
-      this._presence.remove()
-      this._presence = null
-    }
+    this._discovery?.destroy().catch(safetyCatch)
+    this._discovery = null
     const held = [...this._held.values()]
     this._held.clear()
     for (const { range } of held) range.destroy()
@@ -343,15 +341,15 @@ export class Database extends ReadyResource {
   }
 
   /**
-   * `true` ranks this database as just touched, `false` takes it out of the swarm until the
-   * next update lands in it.
+   * `true` ranks this database as just touched, `false` ranks it last: it keeps its slot on the
+   * swarm only while one is spare, until the next update lands in it.
    *
    * @param {boolean} active
    */
   setActive(active) {
-    if (!this._presence) return
-    if (active) this._presence.touch()
-    else this._presence.off()
+    if (!this._discovery) return
+    if (active) this._discovery.touch()
+    else this._discovery.release()
   }
 
   /**
@@ -1254,15 +1252,15 @@ export class Database extends ReadyResource {
     this._applied = false
     this._landed = false
     if (!quiet) this.emit('update', touched.size === 0 ? new Set(['*']) : touched)
-    if (!quiet || landed) this._presence?.touch()
+    if (!quiet || landed) this._discovery?.touch()
   }
 
   // every bee a boot opens is attached, but the topic is joined once: close leaves it once
   /** @private */
   _joinSwarm(bee, discoveryKey) {
     this.network.attach(bee)
-    if (this.push && !this._presence) this.network.on('resume', this._onResume)
-    this._presence ??= this.network.presence.add(discoveryKey, { pinned: this.pinned })
+    if (this.push && !this._discovery) this.network.on('resume', this._onResume)
+    this._discovery ??= this.network.join(discoveryKey, { pin: this.pinned })
   }
 
   // every writer the database ever had and every core its views read; only the system bee, an autobee

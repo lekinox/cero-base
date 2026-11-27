@@ -77,6 +77,8 @@ export declare class Inbox extends ReadyResource {
     _session;
     /** @private */
     _discovery;
+    /** @private */
+    _core;
     /**
      * @param {import('../network/index.js').Network} network
      * @param {Uint8Array} secret

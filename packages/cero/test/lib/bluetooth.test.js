@@ -402,8 +402,8 @@ test('nearby: a Wi-Fi connection carries none of it', async (t) => {
     const { data } = await get(roomB.messages)
     return data.find((m) => m.text === 'after-open') ?? null
   })
-  const heard = [...b.network.swarm.connections].map(
-    (c) => b._bluetooth._heard.get(b4a.toHex(c.remotePublicKey)) ?? null
+  const heard = [...b.network.replicator.connections].map(
+    ({ stream }) => b._bluetooth._heard.get(b4a.toHex(stream.remotePublicKey)) ?? null
   )
   t.ok(heard.length > 0, 'connected over the DHT')
   t.alike(

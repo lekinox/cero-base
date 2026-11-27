@@ -249,7 +249,7 @@ export declare function resume(me: Context): Promise<void>;
  */
 export declare function activate(ctx: Context): Promise<void>;
 /**
- * Take a handle off the swarm until something lands in it.
+ * Rank a handle last: it is on the swarm only while a slot is spare, until something lands in it.
  *
  * @param {Context} ctx
  * @returns {Promise<void>}

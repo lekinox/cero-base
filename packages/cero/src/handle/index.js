@@ -711,7 +711,7 @@ export class Handle extends ReadyResource {
     return this._sus
   }
 
-  // true ranks a handle as just used, false takes it off the swarm until something lands in it
+  // true ranks a handle as just used, false ranks it last until something lands in it
   /** @private */
   _active(on) {
     this.store.setActive(on)

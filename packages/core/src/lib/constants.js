@@ -3,9 +3,6 @@ export const COLLECTION = 'collection'
 export const HANDLE = 'handle'
 export const ACTION = 'action'
 
-export const ACTIVE = 'active'
-export const PASSIVE = 'passive'
-
 export const ROCKS = 'rocks'
 export const BEE = 'bee'
 
