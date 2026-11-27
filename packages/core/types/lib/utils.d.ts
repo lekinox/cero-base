@@ -51,7 +51,19 @@ export declare function filter<T extends Record<string, unknown>>(rows: T[], que
  * @param {() => void} cb
  * @returns {(() => void) | undefined}
  */
-export declare function onAbort(signal: AbortSignal | undefined, cb: () => void): (() => void) | undefined;
+/**
+ * Run `fn` once `prev` has ended, however it ended: one after the other. `fn` is awaited as it starts, so when
+ * it fails at once, as a write on a database that closed while it waited, the promise that rejects is the one the
+ * caller already holds. Returned from a `then`, it would be rejected for a turn with nobody holding it, and Bare
+ * reports that as uncaught when a stream is destroyed in that turn.
+ *
+ * @template T
+ * @param {Promise<unknown> | null | undefined} prev
+ * @param {() => Promise<T> | T} fn
+ * @returns {Promise<T>}
+ */
+export declare function inTurn<T>(prev: Promise<unknown> | null | undefined, fn: () => Promise<T> | T): Promise<T>;
+export declare function onAbort(signal: any, cb: any): () => any;
 /** @type {<T>(row: T, createdAt?: number | null, ts?: number) => T & { createdAt: number, updatedAt: number }} */
 export declare function stamp<T>(row: T, createdAt: number, ts?: number): T & {
     createdAt: number;

@@ -191,6 +191,22 @@ function valueEq(a, b) {
  * @param {() => void} cb
  * @returns {(() => void) | undefined}
  */
+/**
+ * Run `fn` once `prev` has ended, however it ended: one after the other. `fn` is awaited as it starts, so when
+ * it fails at once, as a write on a database that closed while it waited, the promise that rejects is the one the
+ * caller already holds. Returned from a `then`, it would be rejected for a turn with nobody holding it, and Bare
+ * reports that as uncaught when a stream is destroyed in that turn.
+ *
+ * @template T
+ * @param {Promise<unknown> | null | undefined} prev
+ * @param {() => Promise<T> | T} fn
+ * @returns {Promise<T>}
+ */
+export async function inTurn(prev, fn) {
+  await prev?.catch(() => {})
+  return await fn()
+}
+
 export function onAbort(signal, cb) {
   if (!signal) return
   if (signal.aborted) return void cb()

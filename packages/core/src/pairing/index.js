@@ -22,7 +22,7 @@ import { wrap } from '../database/envelope.js'
 import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
-import { can, grants, isRank, isOptions, joining, INVITE, REMOVE } from '../lib/utils.js'
+import { can, grants, isRank, isOptions, joining, inTurn, INVITE, REMOVE } from '../lib/utils.js'
 import { NAMESPACE, MEMBER, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
 
 export { Pass } from './pass.js'
@@ -773,7 +773,7 @@ function coreOf(store, writer) {
 function written(core, spec, stamp, invite, identity, writer) {
   const id = b4a.toHex(writer.publicKey)
   const run = () => write(core, spec, stamp, invite, identity, writer)
-  const last = (writing.get(id) ?? Promise.resolve()).then(run, run)
+  const last = inTurn(writing.get(id), run)
   writing.set(id, last)
   const done = () => writing.get(id) === last && writing.delete(id)
   last.then(done, done)

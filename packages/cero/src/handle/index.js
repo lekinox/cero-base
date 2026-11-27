@@ -16,7 +16,7 @@ import { Invite } from '@cero-base/core/invite'
 import { Mailbox } from '@cero-base/core/mailbox'
 import { seal, unseal, decodeAddress } from '../lib/mail.js'
 import hid from 'hypercore-id-encoding'
-import { admission, onAbort, filter, can, WRITE } from '@cero-base/core/utils'
+import { admission, onAbort, filter, can, inTurn, WRITE } from '@cero-base/core/utils'
 import { CeroError } from '@cero-base/core/errors'
 import { Blobs } from '@cero-base/core/blobs'
 import { decodeId, servedType } from '@cero-base/core/blobs/codec'
@@ -833,7 +833,7 @@ export class Handle extends ReadyResource {
         for (const child of queued.children) await this._topic(child).catch(this._onerror)
       }
     }
-    this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
+    this._indexing = inTurn(this._indexing, run)
     return this._indexing
   }
 
@@ -842,7 +842,7 @@ export class Handle extends ReadyResource {
   /** @private */
   _seal(child) {
     const run = () => this._topic(child, true)
-    this._indexing = (this._indexing ?? Promise.resolve()).then(run, run)
+    this._indexing = inTurn(this._indexing, run)
     return this._indexing
   }
 

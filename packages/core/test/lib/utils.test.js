@@ -1,6 +1,6 @@
 import test from 'brittle'
 
-import { can, filter, WRITE, INVITE, ASSIGN, REMOVE } from '../../src/lib/utils.js'
+import { can, filter, WRITE, INVITE, ASSIGN, REMOVE, inTurn } from '../../src/lib/utils.js'
 
 test('can: the permissions each role has, as the docs list them', (t) => {
   const table = {
@@ -39,4 +39,23 @@ test('filter: fields is a list of names, anything else is INVALID', (t) => {
   for (const fields of ['text', { text: true }, 1]) {
     t.exception(() => filter(rows, { search: 'hel', fields }), /INVALID/, JSON.stringify(fields))
   }
+})
+
+test('inTurn: one after the other, past a failure, each failure to its own caller', async (t) => {
+  const order = []
+  const first = inTurn(null, async () => {
+    order.push('first')
+    throw new Error('first')
+  })
+  const second = inTurn(first, async () => {
+    order.push('second')
+    return 2
+  })
+  const third = inTurn(second, () => {
+    throw new Error('third')
+  })
+  await t.exception(first, /first/)
+  t.is(await second, 2)
+  await t.exception(third, /third/)
+  t.alike(order, ['first', 'second'])
 })

@@ -3442,7 +3442,8 @@ test('devices: a room this device holds no writer in is opened by its pass, whic
   })
   t.is(seen.opened, 1, 'the device without a writer there opens it')
   t.is(seen.lists, 0, 'through the index by state')
-  t.ok(await sits(room, b), 'and takes a seat')
+  // the seat is written on that device and gets to this one by replication
+  t.ok(await waitUntil(() => sits(room, b)), 'and takes a seat')
   await b.me.close()
   const again = await tally(async () => {
     const next = await relaunch(t, b)
@@ -3673,10 +3674,9 @@ test('join: a cancel made just before the app closes takes the request back afte
   await waitUntil(async () => (await get(room.requests)).data.length === 0, 10000).catch(() => {})
   t.is((await accept(room, request).catch((e) => e))?.code, 'UNKNOWN', 'nothing left to approve')
   await waitUntil(async () => !(await again.local.store.get('handle-keypairs', room.id)).data)
-  t.absent(
-    (await get(again.team, room.id)).data,
-    'and its row and writer go once the room holds it'
-  )
+  // the writer goes first, then the row: a join that took them over meanwhile keeps its row
+  await waitUntil(async () => !(await get(again.team, room.id)).data)
+  t.pass('and its row and writer go once the room holds it')
 })
 
 test('join: asked again under another invite before the room holds a cancel, a launch takes the first request back and the join under the other invite lands', async (t) => {
