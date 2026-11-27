@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.5.0 (2026-11-27)
+
+### Bug Fixes
+
+- no uncaught rejection from a write queued on a closing database (#89)
+- an app closed as a rotation is carried to the root reports no error (#88)
+
+### Other
+
+- 🚀 test: the leave test allows an update that lands before the leaving (#87)
+- network: hyperjoin replaces hyperswarm (#5)
+
 ## 3.4.1 (2026-11-22)
 
 ### Bug Fixes
