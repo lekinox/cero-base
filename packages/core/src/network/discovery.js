@@ -1,40 +1,63 @@
-import safetyCatch from 'safety-catch'
-
-import { ACTIVE, PASSIVE } from '../lib/constants.js'
 import { CeroError } from '../lib/errors.js'
 
+let last = 0
+// strictly increasing: topics at the same rank swap slots every rotation, the active one always ranks lower
+function stamp() {
+  return (last = Math.max(Date.now(), last + 1))
+}
+
 /**
- * Handle for a single topic membership on a {@link Network}. Wraps a hyperswarm
- * PeerDiscovery session and lets it switch between active/passive announce/lookup.
- */
-/**
- * @typedef {{ refresh(opts?: object): Promise<void>, flushed(): Promise<boolean>, destroy(): Promise<void> }} Session
- *   The hyperswarm session `swarm.join()` returns, as far as this file uses it.
+ * @typedef {object} Session  The hyperjoin session a topic has, as far as cero uses it.
+ * @property {'inactive' | 'pinned' | 'autostarted' | 'discovering' | 'destroyed'} state
+ * @property {boolean} active
+ * @property {number} priority
+ * @property {Promise<void> | null} closing
+ * @property {{ refresh(): void } | null} discovery
+ * @property {() => void} pin
+ * @property {() => void} unpin
+ * @property {() => void} discover
+ * @property {() => Promise<void>} flush
+ * @property {() => Promise<void>} destroy
+ * @property {(event: string, listener: (session: Session) => void) => void} on
  */
 
+/**
+ * Handle for one topic membership on a {@link Network}: a view on the session the topic has,
+ * shared by every join of it. Pinned, it announces and looks up until released; in the
+ * rotation, it announces while it holds a slot, ranked by its last touch.
+ */
 export class Discovery {
   /**
    * @param {import('./index.js').Network} network  Owning network.
-   * @param {Session} session  Hyperswarm PeerDiscovery session from `swarm.join()`.
-   * @param {'active' | 'passive'} mode
+   * @param {import('./index.js').Entry} entry  The topic's session, shared by every join of it.
+   * @param {boolean} pin
    */
-  constructor(network, session, mode) {
+  constructor(network, entry, pin) {
     this.network = network
-    /** @type {Session} */
-    this.session = session
     /** @private */
-    this._mode = mode
+    this.entry = entry
+    /** @private */
+    this._pinned = false
     /** @private */
     this._destroyed = false
-    /** @private */
-    this._timer = null
-    // a passive join only announces: the active peer's second lookup finds it
-    if (mode === ACTIVE) this._requery().catch(safetyCatch)
+    this._pin(pin)
+    // opening counts as a touch
+    this.touch()
   }
 
-  /** @returns {'active' | 'passive'} */
-  get mode() {
-    return this._mode
+  /** @returns {Session} */
+  get session() {
+    return this.entry.session
+  }
+
+  /** @returns {'inactive' | 'pinned' | 'autostarted' | 'discovering' | 'destroyed'} */
+  get state() {
+    return this.session.state
+  }
+
+  /** @returns {boolean} Whether the topic announces or looks up right now. */
+  get active() {
+    return this.session.active
   }
 
   /** @returns {boolean} */
@@ -43,63 +66,75 @@ export class Discovery {
   }
 
   /**
-   * Switch to active (client+server) announce/lookup.
+   * Pin the topic and look up now: it announces and looks up until `deactivate()`, outside the
+   * rotation's budget.
    *
    * @returns {Promise<void>}
    */
   async activate() {
     if (this._destroyed) throw CeroError.DESTROYED('Discovery')
-    this._mode = ACTIVE
-    await this.session.refresh({ client: true, server: true })
+    this._pin(true)
+    // on a pinned session this asks for a fresh query
+    this.session.discover()
+    await this.network._rotate()
   }
 
   /**
-   * Switch to passive announce.
+   * Unpin the topic: the rotation decides, by its last touch.
    *
    * @returns {Promise<void>}
    */
   async deactivate() {
     if (this._destroyed) throw CeroError.DESTROYED('Discovery')
-    this._mode = PASSIVE
-    await this.session.refresh({ client: false, server: true })
+    this._pin(false)
+    await this.network._rotate()
+  }
+
+  /** Rank the topic first in the rotation, as just used. */
+  touch() {
+    this._rank(stamp())
+  }
+
+  /** Rank the topic last: it keeps a slot only while one is spare. */
+  release() {
+    this._rank(0)
   }
 
   /**
-   * Wait for the current announce/lookup to settle.
+   * Wait for the current announce or lookup to settle.
    *
    * @returns {Promise<void>}
    */
   async flush() {
     if (this._destroyed) return
-    await this.session.flushed()
-  }
-
-  // peers joining at once look up before either announce lands; hyperswarm looks again in 10 min
-  /** @private */
-  async _requery() {
-    await this.session.flushed()
-    if (this._destroyed) return
-    this._timer = setTimeout(
-      () => this.session.refresh().catch(safetyCatch),
-      1000 + Math.random() * 2000
-    )
-    this._timer.unref()
+    await this.network._settle(this.session)
   }
 
   /**
-   * Leave the topic and tear down the session. Idempotent.
+   * Leave the topic, once every join of it has. Idempotent.
    *
    * @returns {Promise<void>}
    */
   async destroy() {
     if (this._destroyed) return
     this._destroyed = true
-    clearTimeout(this._timer)
-    this.network._discoveries.delete(this)
-    try {
-      await this.session.destroy()
-    } catch (err) {
-      safetyCatch(err)
-    }
+    this._pin(false)
+    await this.network._leave(this)
+  }
+
+  // the session stays pinned while any join of the topic pins it
+  /** @private */
+  _pin(pinned) {
+    if (pinned === this._pinned) return
+    this._pinned = pinned
+    if (pinned && this.entry.pins++ === 0) this.session.pin()
+    if (!pinned && --this.entry.pins === 0) this.session.unpin()
+    this.network._refresh()
+  }
+
+  /** @private */
+  _rank(priority) {
+    this.session.priority = priority
+    if (!this.active) this.network._refresh()
   }
 }

@@ -537,7 +537,7 @@ export async function activate(ctx) {
 }
 
 /**
- * Take a handle off the swarm until something lands in it.
+ * Rank a handle last: it is on the swarm only while a slot is spare, until something lands in it.
  *
  * @param {Context} ctx
  * @returns {Promise<void>}

@@ -62,7 +62,11 @@ test('relayThrough and firewall: opts thread to the network', async (t) => {
   const { me } = await ceroOpen(t, { relayThrough: [b4a.toHex(b4a.alloc(32, 7))], firewall })
   t.alike(me.network.relayThrough, [b4a.alloc(32, 7)], 'relay key decoded from hex')
   t.is(me.network.firewall, firewall, 'firewall reached Network')
-  t.is(typeof me.network.swarm.relayThrough, 'function', 'the swarm relays only when needed')
+  t.is(
+    typeof me.network.replicator.relayThrough,
+    'function',
+    'the replicator relays only when needed'
+  )
 })
 
 test('mirrors: opt threads to the network and survives restore', async (t) => {
@@ -265,7 +269,7 @@ test('invites: a join opening its room when the root closes rejects with CLOSED,
   // back with no member online: the resumed join opens the room and waits on its admission
   const again = await reopen(t, joiner.dir, testnet)
   const joining = open(again.team, invite).catch((err) => err)
-  await waitUntil(() => again.network.presence.mode(topic) !== null)
+  await waitUntil(() => again.network.state(topic) !== null)
   await again.close()
   t.is((await joining).code, 'CLOSED', 'the waiting open hears CLOSED')
 
@@ -2006,16 +2010,16 @@ test('cero(): a phrase alone recovers a second device — no flag, no new histor
 test('cero(): suspend()/resume() flips swarm + corestore state', async (t) => {
   const { me } = await ceroOpen(t)
   t.absent((await get(me.status)).data.suspended, 'starts not suspended')
-  t.absent(me.network.swarm.suspended)
+  t.absent(me.network.suspended)
   t.absent(me.store.opened === false && me.store.suspended)
 
   await cero.suspend(me)
   t.ok((await get(me.status)).data.suspended, 'composer reports suspended')
-  t.ok(me.network.swarm.suspended, 'swarm suspended')
+  t.ok(me.network.suspended, 'network suspended')
 
   await cero.resume(me)
   t.absent((await get(me.status)).data.suspended)
-  t.absent(me.network.swarm.suspended)
+  t.absent(me.network.suspended)
 })
 
 test('status: a room reports its role, writability, epoch and suspension, live', async (t) => {
@@ -2125,7 +2129,7 @@ test('cero(): a suspend() racing an in-flight resume() serializes — last call 
 
   t.ok((await get(me.status)).data.suspended, 'handle reports suspended')
   t.is(calls[calls.length - 1], 'suspend', 'network ops ran in call order')
-  t.ok(me.network.swarm.suspended, 'swarm actually ended suspended')
+  t.ok(me.network.suspended, 'network actually ended suspended')
 })
 
 test('cero(): a blob core resolving after close does not re-register its key', async (t) => {
@@ -2242,7 +2246,7 @@ test('open: an open by id that fails closes the room it opened', async (t) => {
   await a.me.close()
 
   await t.exception(open(b.me.team, { id: room.id }), /TIMEOUT/)
-  t.is(b.me.network.presence.mode(topic), null, 'the half-opened room left the swarm')
+  t.is(b.me.network.state(topic), null, 'the half-opened room left the swarm')
 })
 
 test('open: a room created while the root closes rejects with CLOSED', async (t) => {
@@ -2265,7 +2269,7 @@ test('open: an open by id waiting on its seat when the root closes rejects with 
 
   // a new device of the identity claims a seat, and no device is online to admit it
   const opening = open(b.me.team, { id: room.id }).catch((err) => err)
-  await waitUntil(() => b.me.network.presence.mode(topic) !== null)
+  await waitUntil(() => b.me.network.state(topic) !== null)
   await b.me.close()
   const err = await opening
   t.is(err?.code, 'CLOSED', `rejected with ${err?.code}: ${err?.message}`)

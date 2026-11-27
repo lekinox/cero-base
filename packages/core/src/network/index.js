@@ -7,17 +7,18 @@ import safetyCatch from 'safety-catch'
 import { decode as decodeKey } from 'hypercore-id-encoding'
 import { hash } from 'hypercore-crypto'
 import HyperDHT from 'hyperdht'
-import Hyperswarm from 'hyperswarm'
+import Replicator from 'hyperjoin'
 import b4a from 'b4a'
 
-import { ACTIVE, PASSIVE } from '../lib/constants.js'
 import { CeroError } from '../lib/errors.js'
 import { Discovery } from './discovery.js'
-import { Presence } from './presence.js'
 
 // a live remote answers our header in milliseconds; udx gives up on a silent one only after ~13 s
 const SILENT_TIMEOUT = 3000
+// the replicator re-queries a topic every 10 min on its own: too slow for a device that resumed before its network was back
 const RELOOKUPS = [5000, 20000, 60000]
+// peers joining at once look up before either announce lands, and the replicator looks again only in 10 min
+const REQUERY = [1000, 3000]
 
 function toKey(k) {
   return typeof k === 'string' ? decodeKey(k) : k
@@ -33,17 +34,23 @@ export function channelTopic(topic, channel) {
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Array<string | Uint8Array>} [relayThrough]           Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
- * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
+ * @property {{ active?: number, idle?: number }} [presence]        The budget for topics in the rotation: how many announce at once, and the ms one keeps its slot before a touched one may take it.
+ *
+ * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
+ * @property {string} id
+ * @property {import('./discovery.js').Session} session
+ * @property {import('corestore')} store  The store session the replicator session lives on.
+ * @property {number} refs  Joins holding the topic.
+ * @property {number} pins  Joins pinning it.
  */
 
 /**
- * Hyperswarm peer discovery plus a shared wakeup channel. Every connection, swarm or injected,
- * replicates the store.
+ * Peer discovery and connections on hyperjoin, plus a shared wakeup channel. Every connection,
+ * the replicator's or injected, replicates the store.
  */
 export class Network extends ReadyResource {
   /** @param {NetworkOpts} opts */
@@ -51,7 +58,6 @@ export class Network extends ReadyResource {
     bootstrap,
     firewall,
     relayThrough,
-    backoffs,
     channel,
     store,
     mirrors,
@@ -63,20 +69,24 @@ export class Network extends ReadyResource {
     this.bootstrap = bootstrap || null
     this.firewall = firewall || null
     this.relayThrough = relayThrough?.map(toKey) || null
-    this.backoffs = backoffs || null
     this.channel = channel || null
     /** @type {import('corestore')} */
     this.store = store
     /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map(toKey)
+    /** @type {{ active: number, idle: number }} */
+    this.presence = { active: 8, idle: 30_000, ...presence }
 
     /** @private */
-    this._swarm = null
+    this._replicator = null
+    /** @private */
+    this._dht = null
     /** @type {import('protomux-wakeup')} */
     this.wakeup = new ProtomuxWakeup()
-    this.presence = new Presence(this, presence)
 
-    /** @private */
+    /** @private @type {Map<string, Entry>} */
+    this._sessions = new Map()
+    /** @private @type {Set<Discovery>} */
     this._discoveries = new Set()
     /** @private */
     this._injected = new Set()
@@ -85,61 +95,80 @@ export class Network extends ReadyResource {
     /** @private */
     this._peeringClosed = false
     /** @private */
-    this._lost = new Set()
+    this._listening = null
+    /** @private */
+    this._refreshing = false
+    /** @private */
+    this._resuming = null
     /** @private */
     this._relookup = null
     /** @private */
     this._onerror = onerror
   }
 
-  /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
-  get swarm() {
-    return this._swarm
+  /** @returns {import('hyperjoin') | null} The underlying hyperjoin replicator, or null before ready / after close. */
+  get replicator() {
+    return this._replicator
   }
 
-  /** @returns {Map<string, object>} Known peers keyed by public-key string. */
+  /** @returns {import('hyperdht') | null} The DHT the replicator and the mirrors share. */
+  get dht() {
+    return this._dht
+  }
+
+  /** @returns {Map<string, object>} Known peers keyed by public-key hex. */
   get peers() {
-    return this.swarm ? this.swarm.peers : new Map()
+    return this._replicator ? this._replicator.peers : new Map()
   }
 
-  /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — swarm and injected. */
+  /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — the replicator's and injected. */
   get connections() {
-    if (!this._injected.size) return this.swarm ? this.swarm.connections : new Set()
-    return new Set([...(this.swarm ? this.swarm.connections : []), ...this._injected])
+    const streams = new Set(this._injected)
+    if (this._replicator) for (const c of this._replicator.connections) streams.add(c.stream)
+    return streams
   }
 
   /** @returns {boolean} */
   get suspended() {
-    return this.swarm?.suspended === true
+    return this._replicator?.suspended === true
   }
 
   /** @private */
   async _open() {
-    // timeouts follow each node's measured round trip, not a flat second a try; the swarm destroys it
-    const dht = new HyperDHT({
+    // timeouts follow each node's measured round trip, not a flat second a try
+    const dht = (this._dht = new HyperDHT({
       bootstrap: this.bootstrap,
       adaptiveTimeout: { min: 150, max: 1000 }
-    })
-    const opts = { dht }
+    }))
+    const opts = {
+      dht,
+      slots: this.presence.active,
+      minActiveTime: this.presence.idle,
+      // a join owns its topic until it is destroyed
+      gcIdleTime: Infinity,
+      // dial a peer the moment it is found, where the replicator waits up to 500 ms
+      jitter: 0
+    }
     if (this.firewall) opts.firewall = this.firewall
     if (this.relayThrough) opts.relayThrough = this.relayThrough
-    if (this.backoffs) opts.backoffs = this.backoffs
 
-    const swarm = (this._swarm = new Hyperswarm(opts))
+    const rep = (this._replicator = new Replicator(this.store, opts))
     // back online after a NAT rebind or a router restart, peers may hold a stale address for us
     dht.on('network-update', () => {
       // a tick later: the dht's own wake-up in this event would clear a refresh made now
-      if (dht.online) setTimeout(() => this.closing || swarm.server.refresh(), 0)
+      if (dht.online) setTimeout(() => this.closing || rep.server.refresh(), 0)
     })
-    swarm.on('connection', (stream, info) => {
+    rep.on('connected', ({ stream, info }) => {
       if (this.closing || this.closed) {
         stream.destroy()
         return
       }
       dropIfSilent(stream)
-      stream.on('close', () => this._lose(stream.remotePublicKey))
       this._add(stream, info)
     })
+    await rep.ready()
+    // the server listens in the background and a topic announces only once it does; with nothing joined, a flush ends there
+    this._listening = rep.flush()
 
     if (this.mirrors.length) this.peering()
   }
@@ -147,7 +176,6 @@ export class Network extends ReadyResource {
   /** @private */
   async _close() {
     clearTimeout(this._relookup)
-    this._lost.clear()
     for (const conn of [...this._injected]) {
       try {
         conn.destroy()
@@ -157,18 +185,16 @@ export class Network extends ReadyResource {
     }
     this._injected.clear()
 
-    // stop discovery now, never await the DHT unannounce round-trips
-    this.presence.close()
+    // leave every topic now, never await the DHT unannounce round-trips
     for (const d of [...this._discoveries]) d.destroy().catch(safetyCatch)
-    this._discoveries.clear()
 
-    // the swarm dies first with force, so per-topic unannounces become no-ops
-    const swarm = this._swarm
-    this._swarm = null
-    if (swarm) {
-      // force destroy still awaits a server.close round-trip; cap it
-      await capped(swarm.destroy({ force: true }).catch(safetyCatch), 750)
-    }
+    // close still awaits the unannounces and a server.close round-trip; cap it
+    const rep = this._replicator
+    this._replicator = null
+    if (rep) await capped(rep.close().catch(safetyCatch), 750)
+    const dht = this._dht
+    this._dht = null
+    if (dht) await dht.destroy().catch(safetyCatch)
 
     if (this._blindPeering) {
       try {
@@ -199,8 +225,8 @@ export class Network extends ReadyResource {
   inject(stream, { isInitiator } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
     if (!stream) throw CeroError.REQUIRED('stream')
-    // a raw duplex handshakes as the swarm does
-    const keyPair = this.swarm?.keyPair ?? undefined
+    // a raw duplex handshakes as the replicator does
+    const keyPair = this._replicator?.keyPair ?? undefined
     const conn =
       stream.noiseStream === stream
         ? stream
@@ -210,6 +236,8 @@ export class Network extends ReadyResource {
     conn.on('close', () => this._injected.delete(conn))
     conn.on('error', safetyCatch) // a dropped radio link must not crash the host
 
+    // the replicator replicates the store on its own connections only
+    this.store.replicate(conn)
     this._add(conn, { injected: true })
     return conn
   }
@@ -217,7 +245,6 @@ export class Network extends ReadyResource {
   /** @private */
   _add(conn, info) {
     this.wakeup.addStream(conn)
-    this.store.replicate(conn)
     this.emit('connection', conn, info)
   }
 
@@ -242,7 +269,7 @@ export class Network extends ReadyResource {
   peering() {
     if (this.closing || this.closed || this._peeringClosed) throw CeroError.CLOSED('Network')
     if (!this._blindPeering) {
-      this._blindPeering = new BlindPeering(this.swarm.dht, this.store, {
+      this._blindPeering = new BlindPeering(this._dht, this.store, {
         blindPeers: this.mirrors.map((key) => ({ key })),
         wakeup: this.wakeup,
         pick: 2
@@ -252,65 +279,106 @@ export class Network extends ReadyResource {
   }
 
   /**
-   * Wait for pending DHT announces and lookups to settle, bounded by timeout.
+   * Wait for pending DHT announces, lookups and dials to settle, bounded by timeout.
    *
    * @param {{ timeout?: number }} [opts]
    * @returns {Promise<void>}
    */
   async flush({ timeout = 500 } = {}) {
-    if (!this._swarm) return
-    await capped(this._swarm.flush(), timeout)
+    const rep = this._replicator
+    if (!rep) return
+    await capped(this._flush(rep), timeout)
+  }
+
+  /** @private */
+  async _flush(rep) {
+    // a join queues its announce only when the rotation runs
+    await this._rotate()
+    await rep.flush()
   }
 
   /**
-   * Pause the swarm — keeps state, drops sockets. Idempotent.
+   * Pause the network — keeps state, drops sockets. Idempotent.
    *
    * @returns {Promise<void>}
    */
   async suspend() {
     if (this.closing || this.closed) return
     await this._blindPeering?.suspend()
-    await this._swarm?.suspend()
+    await this._replicator?.suspend()
+    await this._dht?.suspend()
     clearTimeout(this._relookup)
   }
 
   /**
-   * Resume a suspended swarm. Idempotent.
+   * Resume a suspended network. Idempotent.
    *
    * @returns {Promise<void>}
    */
   async resume() {
     if (this.closing || this.closed || !this.suspended) return
-    await this._swarm?.resume()
+    this._resuming = this._resume()
+    try {
+      await this._resuming
+    } finally {
+      this._resuming = null
+    }
     await this._blindPeering?.resume()
-    // the lookups hyperswarm runs at resume can go out before the network is back
+    // the queries the replicator runs at resume can go out before the network is back
     this._relook(0)
     this.emit('resume')
   }
 
+  // the replicator resumes every session it holds and a destroyed one throws there: a leave in
+  // flight finishes first, and one that starts meanwhile waits in _leave
+  /** @private */
+  async _resume() {
+    await this._dht.resume()
+    const rep = this._replicator
+    await Promise.all([...rep.sessions.values()].map((session) => session.closing))
+    await rep.resume()
+  }
+
   /**
-   * Announce/lookup on a 32-byte topic and return a Discovery handle.
+   * Join a 32-byte topic and return a Discovery handle. Pinned by default: it announces and
+   * looks up now; `pin: false` leaves it to the rotation.
    *
    * @param {Uint8Array} topic
-   * @param {{ mode?: 'active' | 'passive' }} [opts]  `active` = client+server, `passive` = server-only
+   * @param {{ pin?: boolean }} [opts]
    * @returns {Discovery}
    */
-  join(topic, { mode = ACTIVE } = {}) {
-    if (mode !== ACTIVE && mode !== PASSIVE) {
-      throw CeroError.INVALID('mode must be "active" or "passive"')
-    }
+  join(topic, { pin = true } = {}) {
     if (this.closing || this.closed) throw CeroError.CLOSED('Network')
-    if (!this.swarm) throw CeroError.NOT_READY('Network', 'network')
+    if (!this._replicator) throw CeroError.NOT_READY('Network', 'network')
     if (!isTopic(topic)) throw CeroError.INVALID('topic must be a 32-byte buffer')
 
-    const session = this.swarm.join(channelTopic(topic, this.channel), {
-      client: mode === ACTIVE,
-      server: true
-    })
+    const key = channelTopic(topic, this.channel)
+    const id = b4a.toHex(key)
+    let entry = this._sessions.get(id)
+    if (!entry) {
+      // a store session per topic: the root store collects no listener per topic
+      const store = this.store.session()
+      const session = this._replicator.join(store, key, { deferSwarming: false })
+      session.on('activate', requery)
+      entry = { id, session, store, refs: 0, pins: 0 }
+      this._sessions.set(id, entry)
+    }
+    entry.refs++
 
-    const discovery = new Discovery(this, session, mode)
+    const discovery = new Discovery(this, entry, pin)
     this._discoveries.add(discovery)
     return discovery
+  }
+
+  /**
+   * Where a topic stands on this network.
+   *
+   * @param {Uint8Array} topic
+   * @returns {'inactive' | 'pinned' | 'autostarted' | 'discovering' | null} Its session's state, null when not joined.
+   */
+  state(topic) {
+    const entry = this._sessions.get(b4a.toHex(channelTopic(topic, this.channel)))
+    return entry ? entry.session.state : null
   }
 
   /**
@@ -352,28 +420,71 @@ export class Network extends ReadyResource {
     })
   }
 
-  // hyperswarm stops redialing a peer after a few failed tries and looks it up again only every 10 min
   /** @private */
-  _lose(key) {
-    if (this.closing || this.closed) return
-    this._lost.add(b4a.toHex(key))
-    this._relook(0)
+  async _leave(discovery) {
+    this._discoveries.delete(discovery)
+    const { entry } = discovery
+    if (--entry.refs > 0) return
+    try {
+      await this._resuming
+    } catch (err) {
+      safetyCatch(err)
+    }
+    // joined again meanwhile and the same session carries on, or another leave of it got here first
+    if (entry.refs > 0 || this._sessions.get(entry.id) !== entry) return
+    this._sessions.delete(entry.id)
+    try {
+      await entry.session.destroy()
+      await entry.store.close()
+    } catch (err) {
+      safetyCatch(err)
+    }
+  }
+
+  // an announce starts when the rotation runs, and only once the server listens
+  /** @private */
+  async _settle(session) {
+    await this._listening
+    await this._rotate()
+    await session.flush()
+  }
+
+  // many joins and touches in one tick make one rotation
+  /** @private */
+  _refresh() {
+    if (this._refreshing) return
+    this._refreshing = true
+    queueMicrotask(() => {
+      this._refreshing = false
+      this._rotate()
+    })
+  }
+
+  // a topic leaving mid-rotation rejects it; the others had their state applied
+  /** @private */
+  async _rotate() {
+    await this._replicator?.refresh().catch(safetyCatch)
   }
 
   /** @private */
   _relook(i) {
     clearTimeout(this._relookup)
     this._relookup = setTimeout(() => {
-      for (const conn of this.swarm.connections) this._lost.delete(b4a.toHex(conn.remotePublicKey))
-      if (!this._lost.size && this.swarm.connections.size) return
-      for (const d of this._discoveries) {
-        if (d.mode === ACTIVE) d.session.refresh().catch(safetyCatch)
-      }
+      if (!this._replicator || this.connections.size) return
+      for (const { session } of this._sessions.values()) lookup(session)
       if (i + 1 < RELOOKUPS.length) this._relook(i + 1)
-      else this._lost.clear()
     }, RELOOKUPS[i])
     this._relookup.unref()
   }
+}
+
+function lookup(session) {
+  if (session.active) session.discovery.refresh()
+}
+
+function requery(session) {
+  const delay = REQUERY[0] + Math.random() * (REQUERY[1] - REQUERY[0])
+  setTimeout(() => lookup(session), delay).unref()
 }
 
 // data, not packets: a peer that acked our opener and froze has answered nothing

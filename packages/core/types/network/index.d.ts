@@ -1,6 +1,5 @@
 import ReadyResource from 'ready-resource';
 import { Discovery } from './discovery.js';
-import { Presence } from './presence.js';
 /** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
 export declare function channelTopic(topic: Uint8Array<ArrayBufferLike>, channel: string): Uint8Array<ArrayBufferLike>;
 export type NetworkOpts = {
@@ -20,10 +19,6 @@ export type NetworkOpts = {
      */
     relayThrough?: Array<string | Uint8Array>;
     /**
-     * Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
-     */
-    backoffs?: number[];
-    /**
      * Optional network-isolation label; only same-channel peers meet.
      */
     channel?: string;
@@ -40,29 +35,50 @@ export type NetworkOpts = {
      */
     onerror?: (err: Error) => void;
     /**
-     * Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
+     * The budget for topics in the rotation: how many announce at once, and the ms one keeps its slot before a touched one may take it.
      */
     presence?: {
         active?: number;
-        announced?: number;
         idle?: number;
     };
+};
+export type Entry = {
+    id: string;
+    session: import('./discovery.js').Session;
+    /**
+     * The store session the replicator session lives on.
+     */
+    store: import('corestore');
+    /**
+     * Joins holding the topic.
+     */
+    refs: number;
+    /**
+     * Joins pinning it.
+     */
+    pins: number;
 };
 /**
  * @typedef {object} NetworkOpts
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
  * @property {Array<string | Uint8Array>} [relayThrough]           Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
- * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
+ * @property {{ active?: number, idle?: number }} [presence]        The budget for topics in the rotation: how many announce at once, and the ms one keeps its slot before a touched one may take it.
+ *
+ * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
+ * @property {string} id
+ * @property {import('./discovery.js').Session} session
+ * @property {import('corestore')} store  The store session the replicator session lives on.
+ * @property {number} refs  Joins holding the topic.
+ * @property {number} pins  Joins pinning it.
  */
 /**
- * Hyperswarm peer discovery plus a shared wakeup channel. Every connection, swarm or injected,
- * replicates the store.
+ * Peer discovery and connections on hyperjoin, plus a shared wakeup channel. Every connection,
+ * the replicator's or injected, replicates the store.
  */
 export declare class Network extends ReadyResource {
     bootstrap: {
@@ -71,18 +87,25 @@ export declare class Network extends ReadyResource {
     }[];
     firewall: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     relayThrough: any[];
-    backoffs: number[];
     channel: string;
     /** @type {import('corestore')} */
     store: import('corestore');
     /** @type {Uint8Array[]} */
     mirrors: Uint8Array[];
+    /** @type {{ active: number, idle: number }} */
+    presence: {
+        active: number;
+        idle: number;
+    };
     /** @private */
-    _swarm;
+    _replicator;
+    /** @private */
+    _dht;
     /** @type {import('protomux-wakeup')} */
     wakeup: import('protomux-wakeup');
-    presence: Presence;
-    /** @private */
+    /** @private @type {Map<string, Entry>} */
+    _sessions;
+    /** @private @type {Set<Discovery>} */
     _discoveries;
     /** @private */
     _injected;
@@ -91,18 +114,24 @@ export declare class Network extends ReadyResource {
     /** @private */
     _peeringClosed;
     /** @private */
-    _lost;
+    _listening;
+    /** @private */
+    _refreshing;
+    /** @private */
+    _resuming;
     /** @private */
     _relookup;
     /** @private */
     _onerror;
     /** @param {NetworkOpts} opts */
-    constructor({ bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
-    /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
-    get swarm(): import('hyperswarm') | null;
-    /** @returns {Map<string, object>} Known peers keyed by public-key string. */
+    constructor({ bootstrap, firewall, relayThrough, channel, store, mirrors, presence, onerror }?: NetworkOpts);
+    /** @returns {import('hyperjoin') | null} The underlying hyperjoin replicator, or null before ready / after close. */
+    get replicator(): import('hyperjoin') | null;
+    /** @returns {import('hyperdht') | null} The DHT the replicator and the mirrors share. */
+    get dht(): import('hyperdht') | null;
+    /** @returns {Map<string, object>} Known peers keyed by public-key hex. */
     get peers(): Map<string, object>;
-    /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — swarm and injected. */
+    /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — the replicator's and injected. */
     get connections(): Set<import('@hyperswarm/secret-stream')>;
     /** @returns {boolean} */
     get suspended(): boolean;
@@ -139,7 +168,7 @@ export declare class Network extends ReadyResource {
      */
     peering(): import('blind-peering');
     /**
-     * Wait for pending DHT announces and lookups to settle, bounded by timeout.
+     * Wait for pending DHT announces, lookups and dials to settle, bounded by timeout.
      *
      * @param {{ timeout?: number }} [opts]
      * @returns {Promise<void>}
@@ -147,28 +176,40 @@ export declare class Network extends ReadyResource {
     flush({ timeout }?: {
         timeout?: number;
     }): Promise<void>;
+    /** @private */
+    private _flush;
     /**
-     * Pause the swarm — keeps state, drops sockets. Idempotent.
+     * Pause the network — keeps state, drops sockets. Idempotent.
      *
      * @returns {Promise<void>}
      */
     suspend(): Promise<void>;
     /**
-     * Resume a suspended swarm. Idempotent.
+     * Resume a suspended network. Idempotent.
      *
      * @returns {Promise<void>}
      */
     resume(): Promise<void>;
+    /** @private */
+    private _resume;
     /**
-     * Announce/lookup on a 32-byte topic and return a Discovery handle.
+     * Join a 32-byte topic and return a Discovery handle. Pinned by default: it announces and
+     * looks up now; `pin: false` leaves it to the rotation.
      *
      * @param {Uint8Array} topic
-     * @param {{ mode?: 'active' | 'passive' }} [opts]  `active` = client+server, `passive` = server-only
+     * @param {{ pin?: boolean }} [opts]
      * @returns {Discovery}
      */
-    join(topic: Uint8Array, { mode }?: {
-        mode?: 'active' | 'passive';
+    join(topic: Uint8Array, { pin }?: {
+        pin?: boolean;
     }): Discovery;
+    /**
+     * Where a topic stands on this network.
+     *
+     * @param {Uint8Array} topic
+     * @returns {'inactive' | 'pinned' | 'autostarted' | 'discovering' | null} Its session's state, null when not joined.
+     */
+    state(topic: Uint8Array): 'inactive' | 'pinned' | 'autostarted' | 'discovering' | null;
     /**
      * Whether `store` replicates on this network's connections: the network's store or a session of it.
      *
@@ -187,7 +228,13 @@ export declare class Network extends ReadyResource {
     /** @private */
     private _mirror;
     /** @private */
-    private _lose;
+    private _leave;
+    /** @private */
+    private _settle;
+    /** @private */
+    private _refresh;
+    /** @private */
+    private _rotate;
     /** @private */
     private _relook;
 }
