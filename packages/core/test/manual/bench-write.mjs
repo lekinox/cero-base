@@ -9,7 +9,7 @@ import test from 'brittle'
 
 import { Database } from '../../src/database/index.js'
 import { Identity } from '../../src/identity/index.js'
-import { makeStore } from '../helpers/index.js'
+import { makeStore, unchecked } from '../helpers/index.js'
 import { spec } from '../fixtures/spec/index.js'
 
 const N = Number(process.env.N || 300)
@@ -31,7 +31,7 @@ const ms = (t0) => Number(process.hrtime.bigint() - t0) / 1e6
 // one arm = a fresh db, N single-row writes, dry-run live or stubbed
 async function arm(t, { dry }) {
   const db = await open(t)
-  if (!dry) db._dryRun = async () => {}
+  if (!dry) unchecked(db)
   for (let i = 0; i < 20; i++) await db.put('messages', { text: `warm${i}` })
   const t0 = process.hrtime.bigint()
   for (let i = 0; i < N; i++) await db.put('messages', { text: `row${i}` })

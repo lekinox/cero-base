@@ -18,6 +18,7 @@ export declare const cero: {
         signal?: AbortSignal;
     }): () => void;
     get(ref: operators.Ref, q?: string | Record<string, unknown>): Promise<operators.SingleResult | operators.ListResult>;
+    supports(ref: operators.Ref, field?: string): Promise<boolean>;
     watch(ref: operators.Ref, query?: string | (Record<string, unknown> & {
         changes?: boolean;
     }), opts?: {
@@ -28,7 +29,9 @@ export declare const cero: {
         id?: string;
         name?: string;
     } | undefined): Promise<operators.Context>;
-    invite(ctx: operators.Context, opts?: import("@cero-base/core").InviteOpts): Promise<string>;
+    invite(ctx: operators.Context, opts?: import("@cero-base/core").InviteOpts & {
+        from?: operators.Context;
+    }): Promise<string>;
     revoke(ctx: operators.Context, code: string): Promise<boolean>;
     rotate(ctx: operators.Context): Promise<{
         epoch: number;
@@ -42,6 +45,7 @@ export declare const cero: {
     deny(ctx: operators.Context, request: {
         id: string;
     }, reason?: string): Promise<void>;
+    removed(ctx: operators.Context, id: string): Promise<'removed' | 'left' | null>;
     leave(ctx: operators.Context): Promise<void>;
     close(ctx: operators.Context): Promise<void>;
     cancel(me: operators.Context, code: string): Promise<boolean>;
@@ -49,6 +53,24 @@ export declare const cero: {
     resume(me: operators.Context): Promise<void>;
     activate(ctx: operators.Context): Promise<void>;
     deactivate(ctx: operators.Context): Promise<void>;
+    receive(me: operators.Context, payload: Uint8Array): Promise<{
+        id: string;
+        type: string;
+        name: string | null;
+        newer: boolean;
+        ref: string | null;
+        row: object | null;
+    } | null>;
+    send(me: operators.Context, address: string, data: unknown, opts?: {
+        keep?: boolean;
+    }): Promise<void>;
+    inbox(me: operators.Context, secret: Uint8Array, fn: (data: unknown, mail: {
+        id: string;
+        from: string;
+        device: string;
+    }) => unknown, opts?: {
+        keep?: boolean;
+    }): () => Promise<void>;
     phrase(me: operators.Context): Promise<string>;
     nearby(ctx: operators.Context, on: boolean, opts?: {
         topic?: string;
@@ -64,12 +86,18 @@ export declare const cero: {
         fixed64: import("@cero-base/core").Prim;
         file: import("@cero-base/core").Prim;
         required: (marker: import("@cero-base/core").Prim) => import("@cero-base/core").Prim;
-        single(fields: Record<string, import("@cero-base/core").Prim>): import("@cero-base/core").TypeDef;
+        later: <T extends import("@cero-base/core").Prim | import("@cero-base/core").TypeDef>(def: T) => T;
+        single(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
+            push?: boolean;
+        }): import("@cero-base/core").TypeDef;
         collection(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
             indexes?: Record<string, string[]>;
             own?: boolean;
+            push?: boolean;
         }): import("@cero-base/core").TypeDef;
-        action(fields: Record<string, import("@cero-base/core").Prim>): import("@cero-base/core").TypeDef;
+        action(fields: Record<string, import("@cero-base/core").Prim>, opts?: {
+            push?: boolean;
+        }): import("@cero-base/core").TypeDef;
         extend(fields: Record<string, import("@cero-base/core").Prim>): {
             kind: 'extend';
             fields: Record<string, import("@cero-base/core").Prim>;

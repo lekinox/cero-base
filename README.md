@@ -16,7 +16,7 @@ Cero Base is the repository: [Cero](packages/cero), the SDK your app uses, and [
 - **Nothing to host.** Data lives on the device and syncs peer to peer. No backend, no accounts.
 - **Schema in, API out.** Declare collections and fields; Cero gives you `put`, `get`, `watch` and the rest.
 - **Sharing built in.** Every handle has its own members: invite people and give them roles (owner, admin, member, reader), enforced by every peer.
-- **Encryption built in.** Every handle has its own key, re-keyed when someone is removed.
+- **Encryption built in.** Every handle has its own key, rotated when someone is removed.
 - **Recovery built in.** A twelve-word phrase brings the account to a new device.
 - **Mirrors and Bluetooth.** Optional always-on peers so devices sync without being online together, and nearby sync with no internet.
 - **Ready for real apps.** Run the data in a worker and use the same calls from an Electron or Expo UI.
@@ -80,7 +80,7 @@ That is a working, encrypted, offline-first, peer-to-peer chat. The [quickstart]
 
 ## Built on Pear
 
-Under the hood Cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), the [replicator](https://github.com/holepunchto/replicator) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
+Under the hood Cero composes [Hypercore](https://github.com/holepunchto/hypercore), [Autobee](https://github.com/holepunchto/autobee), [HyperDB](https://github.com/holepunchto/hyperdb), [Hyperblobs](https://github.com/holepunchto/hyperblobs), [Hyperswarm](https://github.com/holepunchto/hyperswarm) and [blind-peering](https://github.com/holepunchto/blind-peering), and runs on [Bare](https://github.com/holepunchto/bare) and Node, so the same code runs on desktop and mobile. TypeScript declarations ship with the packages.
 
 ## Docs
 

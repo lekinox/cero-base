@@ -1,34 +1,50 @@
 import { CeroError } from '@cero-base/core/errors'
-import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT } from '../lib/constants.js'
+import { COUNTERS, EPOCHS, REMOVALS, REFUSALS, SPENT, ASKS, PASSES } from '../lib/constants.js'
 import * as schemas from './schemas.js'
 
 // internal refs by scope; kind defaults to collection
+export const { contract } = schemas
+
 export const defs = {
   main: {
     members: { type: 'member' },
     devices: { type: 'device' },
     invites: { type: 'invite' },
-    handles: { type: 'handle' },
+    // the handles of one state, and a page of one type and state in list order, are read through them
+    handles: { type: 'handle', indexes: { state: ['state'], type: ['type', 'state', 'index'] } },
     files: { type: 'file' },
     requests: { type: 'request' }
   },
   local: {
     master: { type: 'master', kind: 'single' },
+    device: { type: 'device', kind: 'single' },
     keypair: { type: 'keypair', kind: 'single' },
     'handle-keypairs': { type: 'handle-keypair' },
     joins: { type: 'join' },
     inbox: { type: 'mail' },
     outbox: { type: 'mail' },
     environment: { type: 'environment', kind: 'single' },
-    serving: { type: 'serving' }
+    serving: { type: 'serving' },
+    topics: { type: 'subscription' },
+    told: { type: 'told', kind: 'single' },
+    asks: { type: 'ask' }
   }
 }
+
+// the fields Cero writes on every collection row, ahead of the app's
+export const base = [
+  { name: 'id', type: 'string', required: true },
+  { name: 'memberId', type: 'string', required: false },
+  { name: 'index', type: 'uint', required: false },
+  { name: 'createdAt', type: 'int', required: false },
+  { name: 'updatedAt', type: 'int', required: false }
+]
 
 // computed on the device, never stored: `get` and `watch` read them like any other ref
 const LIVE = {
   status: { type: 'status', kind: 'single' },
-  joins: { type: 'joining', root: true },
-  nearby: { type: 'peer', root: true }
+  nearby: { type: 'peer', root: true },
+  topics: { type: 'topic', root: true }
 }
 
 /**
@@ -107,6 +123,7 @@ export function refs(ns, scope) {
         path: [name],
         internal: true,
         ...(scope === 'main' && declare({ verb: def.type }, schemas.main[def.type])),
+        ...(def.indexes && { indexes: def.indexes }),
         schema: `@${ns}/${def.type}`
       }
     ])
@@ -153,9 +170,37 @@ export function collections(ns, scope) {
 
 /**
  * @param {string} ns
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
+// collections cero added once apps shipped: numbered after the app's collections and indexes, so
+// a new spec gives each of those the id an older release gave it
+export function added(ns) {
+  return [
+    { name: ASKS, schema: `@${ns}/owed`, key: ['id'] },
+    { name: PASSES, schema: `@${ns}/pass`, key: ['id'] }
+  ]
+}
+
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, collection: string, key: string[] }>}
+ */
+export function indexes(ns, scope) {
+  return Object.entries(defs[scope]).flatMap(([name, def]) =>
+    Object.entries(def.indexes || {}).map(([idx, key]) => ({
+      name: `${name}-${idx}`,
+      collection: `@${ns}/${name}`,
+      key
+    }))
+  )
+}
+
+/**
+ * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
-// frozen once an app ships: routes number by position, so a new one goes after the app's
+// a route keeps the id a built spec gave it, and one added here takes the next free id there
 export function dispatches(ns) {
   return [
     { name: 'add-writer', requestType: `@${ns}/writer` },
@@ -171,6 +216,46 @@ export function dispatches(ns) {
     { name: 'rotate-key', requestType: `@${ns}/epoch` },
     { name: 'del-refusal', requestType: `@${ns}/del-by-id` }
   ]
+}
+
+/**
+ * @param {string} ns
+ * @returns {Array<{ name: string, requestType: string }>}
+ */
+// routes cero added once apps shipped: numbered after the app's, so a new spec gives the app's
+// routes the ids an older release gave them
+export function appended(ns) {
+  return [
+    { name: 'upgrade', requestType: `@${ns}/upgrade` },
+    { name: 'revoke', requestType: `@${ns}/revoke` },
+    { name: 'ask-key', requestType: `@${ns}/owed` },
+    { name: 'del-owed', requestType: `@${ns}/del-by-id` },
+    { name: 'cancel-join', requestType: `@${ns}/del-by-id` },
+    { name: 'add-pass', requestType: `@${ns}/pass` },
+    { name: 'del-pass', requestType: `@${ns}/del-by-id` }
+  ]
+}
+
+/**
+ * The names Cero takes in a scope, which an app ref would shadow: its refs and collections, its
+ * types and its routes.
+ *
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @param {boolean} root
+ * @returns {{ refs: Set<string>, types: Set<string>, routes: Set<string> }}
+ */
+export function reserved(ns, scope, root) {
+  const main = scope === 'main'
+  return {
+    refs: new Set([
+      ...collections(ns, scope).map((c) => c.name),
+      ...(main ? added(ns) : []).map((c) => c.name),
+      ...Object.keys(main ? live(ns, root) : {})
+    ]),
+    types: new Set(Object.keys({ ...schemas[scope], ...(main && schemas.rpc) })),
+    routes: new Set(main ? [...dispatches(ns), ...appended(ns)].map((d) => d.name) : [])
+  }
 }
 
 // hrpc commands: name, request type, response type, streaming response
@@ -191,7 +276,8 @@ const COMMANDS = [
   ['close-handle', 'req-handle', 'res-ok'],
   // not a verb: it ends the handle on both sides
   ['leave', 'req-handle', 'res-ok'],
-  ['verb', 'req-verb', 'res-data']
+  ['verb', 'req-verb', 'res-data'],
+  ['link', 'req-link', 'res-link', true]
 ]
 
 /**

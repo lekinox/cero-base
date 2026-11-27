@@ -67,14 +67,14 @@ await cero.get(me.todos, { search: 'milk', fields: ['text'] })
 
 Any key not in this table is an equality filter on that field.
 
-| Key                      | Does                                                                                         |
-| ------------------------ | -------------------------------------------------------------------------------------------- |
-| `limit`                  | At most this many rows.                                                                      |
-| `reverse`                | The other way round: newest first on a plain list.                                           |
-| `total`                  | `true` counts every match even when `limit` filled the page.                                 |
-| `search`                 | Case and accent insensitive; every word must appear in a string field other than `memberId`. |
-| `fields`                 | The string fields `search` looks at.                                                         |
-| `gt`, `gte`, `lt`, `lte` | Bounds on `id`, compared as strings.                                                         |
+| Key                      | Does                                                                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limit`                  | At most this many rows.                                                                                                                         |
+| `reverse`                | The other way round: newest first on a plain list.                                                                                              |
+| `total`                  | `true` counts every match even when `limit` filled the page.                                                                                    |
+| `search`                 | Case and accent insensitive; every word must appear in a string field other than `id` and `memberId`; name `id` in `fields` when ids are codes. |
+| `fields`                 | The string fields `search` looks at.                                                                                                            |
+| `gt`, `gte`, `lt`, `lte` | Bounds on `id`, compared as strings.                                                                                                            |
 
 `total` is how many rows matched and `size` how many came back. When `limit` filled the page,
 `total` can be `null`; ask with `total: true` to count. There is no sort and no range on fields
@@ -159,10 +159,31 @@ and take `{ signal }` as a third argument. Hooks fire on the builtins too, such 
 
 The `cero.` operators throw inside a hook: use the ones on ctx. `ctx.put` mints the same id on
 every device, `ctx.set` needs an id on a collection, and `ctx.get` returns `t.file` fields as bare
-ids. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
+ids. A row written through ctx carries the time of the write that ran the hook. A write through ctx is judged as the writer's own, rank and `own` included, and one they may
 not make refuses the whole write: a hook that writes on every join checks `ctx.role` first, or a
 reader's join is refused. A hook reads only ctx, never a clock, random numbers or local state, or
 devices store different rows; the writing device runs it twice, to check the write and to store it.
+
+### Who may remove a member, or change her rank
+
+By default the rank decides: a writer removes or re-ranks only someone she outranks, and an owner is
+above all. An app whose own records say who may act (a team list, an admin chosen by role) decides
+in a rule on `members` instead: on a `del`, or a `set` that changes `role`, `ctx.ranked` says
+whether rank alone allows it. Return `'grant'` to allow it anyway, or `false` to refuse it. A bare
+`true` grants nothing, since every rule returns it for "no objection", and one rule refusing wins
+over another granting. It is decided before anything moves, so a refused removal leaves the member,
+her devices and her seat as they were. A grant counts only for a member who writes, never a reader,
+and a rank must be one cero names. The last owner is never removed nor demoted, whatever a rule
+grants.
+
+```js
+cero.before(me.room.members, async ({ op, row, existing, ranked, memberId, get }) => {
+  if (op !== 'del' && row?.role === existing?.role) return // a name, a profile: not this rule's
+  const { data: team } = await get(me.room.team, memberId)
+  if (team?.role === 'admin') return 'grant' // an admin by the app's own record
+  if (!ranked) return false
+})
+```
 
 ## Batch writes
 
@@ -191,8 +212,9 @@ const { data: file } = await cero.put(me.files, {
 ```
 
 The root and every handle have a `files` builtin. `data` is bytes, or a Readable in the worker
-process; `type` is required, `name` optional. To put a file on a row, store its id in a `t.file`
-field, which reads back as `{ id, type, size, url }`:
+process; `type` is required, a media type such as `image/jpeg` in printable ASCII, `name`
+optional. To put a file on a row, store its id in a `t.file` field, which reads back as
+`{ id, type, size, url }`:
 
 ```js
 // room from cero.open(me.room), bytes a Buffer of the photo
@@ -206,11 +228,11 @@ const { data: messages } = await cero.get(room.messages) // messages[0].photo.ur
   the row again for a fresh url.
 - A `t.file` field resolves only for a file in the same handle's `files`, or the root's for a root
   row: to use a file in another handle, put its bytes there. profileSync and handleSync do that for
-  a `t.file` avatar. A string that is not a file id makes every read of that row throw `INVALID`.
+  a `t.file` avatar. A string that is not a file id is refused: the write rejects with `REFUSED`.
 - Files have no timestamps, they read `0`: order them by `index`.
 - `cero.del(me.files, id)` removes the row, not the bytes. Files are `own`: only the uploader, an
   admin or an owner deletes one.
-- A member removed from a handle can't read files added after the handle re-keys. See
+- A member removed from a handle can't read files added after the handle rotates its key. See
   [How it works](how-it-works.md).
 
 ## Handle errors
@@ -224,12 +246,14 @@ try {
 }
 ```
 
-| Code           | When                                                                    | Do                                                                                   |
-| -------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader. | Show the handle read-only; `room.status` has `writable`.                             |
-| `REFUSED`      | Your role, `own`, or a `before` hook said no.                           | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
-| `INVALID`      | An unknown field, a missing required one, or a bad value.               | Fix the call.                                                                        |
-| `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                   | Read the list again.                                                                 |
+| Code           | When                                                                                  | Do                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `NOT_WRITABLE` | This device may not write here: not admitted yet, removed, or a reader.               | Show the handle read-only; `room.status` has `writable`.                             |
+| `BEHIND`       | The handle is at a newer version of the app than this one.                            | Ask for the update; `room.status` has `behind`. Reads go on.                         |
+| `UNSUPPORTED`  | The write names something held back with `t.later` that the handle has not turned on. | Leave it out; `cero.supports` says when it is on.                                    |
+| `REFUSED`      | Your role, `own`, or a `before` hook said no.                                         | Say the write is not allowed. `err.message` starts with the code: don't show it raw. |
+| `INVALID`      | An unknown field, a missing required one, or a bad value.                             | Fix the call.                                                                        |
+| `UNKNOWN`      | `cero.open(ref, { id })` with an id not in your list.                                 | Read the list again.                                                                 |
 
 [Errors](errors.md) lists every code.
 

@@ -1,7 +1,7 @@
 import { Duplex } from 'streamx'
 
-export function getIPC(path, extraArgs = []) {
-  window.bridge.startWorker(path, extraArgs)
+export function getIPC(path) {
+  window.bridge.startWorker(path)
 
   let bootError = null
   const stream = new Duplex({

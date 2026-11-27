@@ -1,11 +1,23 @@
-import { useState } from 'react'
-import { Text, View, TextInput } from 'react-native'
+import { useEffect, useState } from 'react'
+import { Text, View, TextInput, Linking } from 'react-native'
 import { Button, Input, Page, ErrorBox } from './ui'
 import { styles, colors } from '../styles'
 
-export function Setup({ onCreate, onRecover }) {
+export function Setup({ onCreate, onRecover, onLink }) {
   const [name, setName] = useState('')
   const [phrase, setPhrase] = useState('')
+  const [invite, setInvite] = useState('')
+  // a device invite can arrive as a link too, scanned or tapped: <scheme>://link?invite=<invite>.
+  // It only fills the field: the user taps to link
+  useEffect(() => {
+    const onUrl = ({ url }) => {
+      const code = /[?&]invite=([a-z0-9]+)/.exec(url)?.[1]
+      if (code) setInvite(code)
+    }
+    Linking.getInitialURL().then((url) => url && onUrl({ url }))
+    const sub = Linking.addEventListener('url', onUrl)
+    return () => sub.remove()
+  }, [])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -56,6 +68,23 @@ export function Setup({ onCreate, onRecover }) {
           variant='secondary'
           onPress={() => run(() => onRecover(phrase.trim().replace(/\s+/g, ' ')))}
           disabled={!phrase.trim() || busy}
+        />
+      </View>
+
+      <View style={{ borderTopColor: colors.border, borderTopWidth: 1, paddingTop: 12, gap: 8 }}>
+        <Text style={styles.muted}>Or link this device from one you have</Text>
+        <Input
+          placeholder='Device invite from your other device'
+          value={invite}
+          onChangeText={setInvite}
+          autoCapitalize='none'
+          autoCorrect={false}
+        />
+        <Button
+          title={busy ? '…' : 'Link Device'}
+          variant='secondary'
+          onPress={() => run(() => onLink(invite.trim()))}
+          disabled={!invite.trim() || busy}
         />
       </View>
     </Page>

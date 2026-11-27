@@ -7,6 +7,12 @@ import Autobee from 'autobee';
  */
 export declare function blobEpochKey(entropy: Uint8Array): Uint8Array;
 /**
+ * @param {Uint8Array} key  The writer core's key.
+ * @param {number} index
+ * @returns {string}
+ */
+export declare function plainId(key: Uint8Array, index: number): string;
+/**
  * Prime a keyring from a local core's persisted epoch stash.
  *
  * @param {Keyring} keyring
@@ -15,25 +21,27 @@ export declare function blobEpochKey(entropy: Uint8Array): Uint8Array;
  */
 export declare function loadEpochs(keyring: Keyring, local: import('hypercore')): Promise<void>;
 /**
- * Wire codec for a rotation announcement's envelope list — one sealed box
- * per remaining member, addressed by member id.
+ * A rotation announcement's envelope list — one box per device row, sealed to its device key and
+ * addressed by its writer id.
  *
- * @param {Array<{ id: string }>} members
+ * @param {Array<{ id: string, key: Uint8Array }>} devices
  * @param {Uint8Array} secret
  * @returns {Array<{ id: string, box: Uint8Array }>}
  */
-export declare function seal(members: Array<{
+export declare function seal(devices: Array<{
     id: string;
+    key: Uint8Array;
 }>, secret: Uint8Array): Array<{
     id: string;
     box: Uint8Array;
 }>;
 /**
- * @param {import('../identity/index.js').Identity} identity
+ * @param {import('../identity/index.js').Identity} identity  Whose device key opens the box.
+ * @param {string} id  This device's writer id in the database.
  * @param {Uint8Array} wrapped
  * @returns {Generator<Uint8Array, void, unknown>}
  */
-export declare function opened(identity: import('../identity/index.js').Identity, wrapped: Uint8Array): Generator<Uint8Array, void, unknown>;
+export declare function opened(identity: import('../identity/index.js').Identity, id: string, wrapped: Uint8Array): Generator<Uint8Array, void, unknown>;
 /** @type {import('compact-encoding').Encoder<Array<{ id: string, box: Uint8Array }>>} */
 export declare const wraps: import('compact-encoding').Encoder<Array<{
     id: string;
@@ -57,14 +65,14 @@ export declare class Keyring {
     entropies: Map<number, Uint8Array>;
     /** @type {Map<number, number>} stamp → apply-order sequence */
     seqs: Map<number, number>;
-    /** stamp used for new blocks — the adopted epoch with the highest seq */
+    /** stamp used for new blocks, picked from the epoch rows (rotation.js) */
     current: number;
-    /** highest adopted apply-order sequence (0 = base era) */
+    /** sequence of the current epoch (0 = base era) */
     seq: number;
-    /** bumped on every add/remove — cheap change detection */
-    version: number;
     /** @type {(() => void) | null} called when an epoch is learned or dropped */
     onchange: (() => void) | null;
+    /** @type {((stamp: number) => Uint8Array | null) | null} asked for a key a block needs and it lacks */
+    onmiss: ((stamp: number) => Uint8Array | null) | null;
     constructor();
     /** @returns {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} ascending by seq */
     all(): Array<{
@@ -75,7 +83,7 @@ export declare class Keyring {
     /**
      * @param {number} stamp
      * @param {Uint8Array} entropy
-     * @param {number} [seq]  Apply-order sequence; drives `current` selection.
+     * @param {number} [seq]  Apply-order sequence.
      */
     add(stamp: number, entropy: Uint8Array, seq?: number): void;
     /**
@@ -98,6 +106,8 @@ export declare class Keyring {
 export declare class EpochAutobee extends Autobee {
     /** @type {Keyring | null} */
     keyring: Keyring | null;
+    /** @type {Set<string>} the writer blocks read in plain, by `plainId` */
+    plain: Set<string>;
     /** @private */
     _epochStalled;
     /** @private */

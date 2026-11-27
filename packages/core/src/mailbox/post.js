@@ -6,22 +6,25 @@ import b4a from 'b4a'
 /**
  * One sealed message on its way to an address: written to a fresh core, announced to peers
  * receiving at the address, and deposited on `mirrors` for an owner who is offline.
- * `delivered` resolves on the first read, by the owner or by a mirror holding it for them.
- * Given a `core` instead, it announces that core as it is.
+ * `delivered` resolves once it is stored, by the owner or by a mirror holding it for them.
+ * Given a `core` instead, it announces that core as it is; given a `name`, the core is the
+ * store's core of that name, and a message it already holds is not written twice. `sealed` says
+ * the message is sealed to the address already.
  */
 export class Post extends ReadyResource {
   /**
    * @param {import('../network/index.js').Network} network
    * @param {Uint8Array} address
    * @param {Uint8Array | null} message
-   * @param {{ mirrors?: Uint8Array[], core?: import('hypercore') }} [opts]
+   * @param {{ mirrors?: Uint8Array[], core?: import('hypercore'), name?: string, sealed?: boolean }} [opts]
    */
-  constructor(network, address, message, { mirrors = [], core = null } = {}) {
+  constructor(network, address, message, { mirrors = [], core = null, name, sealed = false } = {}) {
     super()
     this.network = network
     this.address = address
-    this.message = message
+    this.message = message && !sealed ? crypto.encrypt(message, address) : message
     this.mirrors = mirrors
+    this.name = name || b4a.toHex(crypto.randomBytes(32))
     /** @type {Promise<void>} */
     this.delivered = new Promise((resolve) => {
       /** @private */
@@ -38,16 +41,20 @@ export class Post extends ReadyResource {
   /** @private */
   async _open() {
     const { network, address } = this
-    const core = this._core || network.store.get({ name: b4a.toHex(crypto.randomBytes(32)) })
+    const core = this._core || network.store.get({ name: this.name })
     this._core = core
     await core.ready()
-    core.once('upload', () => this._ondelivered())
-    if (this.message) await core.append(crypto.encrypt(this.message, address))
+    if (this.message && core.length === 0) await core.append(this.message)
+    // a peer, the owner or a mirror, says it holds every block only once they are on its disk
+    const held = () => core.remoteContiguousLength >= core.length && this._ondelivered()
+    core.on('remote-contiguous-length', held)
+    held()
 
     const wakeup = [{ key: core.key, length: core.length }]
     const session = network.wakeup.session(address, {
       discoveryKey: crypto.discoveryKey(address),
-      onpeeractive: (peer) => session.announce(peer, wakeup)
+      onpeeractive: (peer) => session.announce(peer, wakeup),
+      onlookup: (req, peer) => session.announce(peer, wakeup)
     })
     this._session = session
     // a topic this network already joined has active peers that will not fire onpeeractive again
@@ -57,6 +64,11 @@ export class Post extends ReadyResource {
       const opts = { keys: this.mirrors, pick: this.mirrors.length, referrer: address }
       network.peering().addCoreBackground(core, opts)
     }
+  }
+
+  /** The key of the core it travels in, once opened. */
+  get key() {
+    return this._core?.key ?? null
   }
 
   /** @private */

@@ -7,7 +7,7 @@ A p2p chat CLI on `@cero-base/cero` and `chat-backend`. One file, no transport, 
 ```
 node index.js [--name <name>] [--storage <dir>]                 create a room and print an invite
 node index.js --join <invite> [--name <name>] [--storage <dir>]  join a room
-node index.js --phrase "<words>" --storage <dir>                   recover your identity on this machine
+node index.js --phrase --storage <dir>                             recover your identity, reading the phrase from stdin
 node index.js --help
 ```
 
@@ -39,10 +39,12 @@ The first run prints your phrase:
 # phrase (keep it, it recovers you on another machine): word word word ...
 ```
 
-On another machine, with the first one still running, that phrase makes it your device too. It gets its own writer, pulls your rooms and messages, and reopens your room:
+On another machine, with the first one still running, that phrase makes it your device too. It gets its own writer, pulls your rooms and messages, and reopens your room. Type the phrase at the `# phrase:` prompt, so it never lands in your shell history or the process list:
 
 ```
-node index.js --phrase "word word word ..." --storage ./me --name alice
+node index.js --phrase --storage ./me --name alice
+# phrase:
+word word word ...
 ```
 
 Keep the same `--name`: it is your name in the chat, on every device, not the machine's.

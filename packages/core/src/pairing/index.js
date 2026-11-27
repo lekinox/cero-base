@@ -6,17 +6,30 @@ import crypto from 'hypercore-crypto'
 import hid from 'hypercore-id-encoding'
 import Autobee from 'autobee'
 
-import { Invite } from './invite.js'
-import { Response, STATUS_ACCEPTED, STATUS_DENIED } from './response.js'
+import { Invite, STAMPED } from './invite.js'
+import {
+  Response,
+  STATUS_ACCEPTED,
+  STATUS_DENIED,
+  tag,
+  proven,
+  signed,
+  signer
+} from './response.js'
 import { Mailbox } from '../mailbox/index.js'
 import { Post } from '../mailbox/post.js'
 import { wrap } from '../database/envelope.js'
+import { chainOf, linkOf } from '../database/dispatch.js'
 import { getEncoding } from '../lib/spec/index.js'
 import { CeroError } from '../lib/errors.js'
-import { can, grants, isRank, joining, INVITE, REMOVE } from '../lib/utils.js'
-import { NAMESPACE, MEMBER, REFUSALS, SPENT } from '../lib/constants.js'
+import { can, grants, isRank, isOptions, joining, INVITE, REMOVE } from '../lib/utils.js'
+import { NAMESPACE, MEMBER, REFUSALS, SPENT, ASKS } from '../lib/constants.js'
+
+export { Pass } from './pass.js'
 
 const Join = getEncoding('@cero/join')
+// what a sync follows in the log
+const WATCHED = ['*', 'invites', 'requests', 'members', 'devices', ASKS]
 const MAX_DELAY = 2 ** 31 - 1
 
 /**
@@ -32,13 +45,16 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise spent by the first.
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
+ * @property {string | null} [to]                   The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
+ * @property {Uint8Array[]} [keys]                  The device keys of the member it is made `to`, handed the room's keys with it: a rotation before she comes is sealed to them.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
+ * @property {Uint8Array | null} [proof]            The joiner's chain to your identity, from `identity.link`: it joins as a device of yours, not as a member.
  *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
- * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
+ * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number, start?: number, encoding?: Record<string, number> } }} spec  The database's spec: the join is one of its ops.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
@@ -49,16 +65,24 @@ const MAX_DELAY = 2 ** 31 - 1
  * @property {Uint8Array | null} encryptionKey
  * @property {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
  * @property {KeyPair} writer                       The writer the join admitted: open the database with it.
+ * @property {Uint8Array | null} proof              A device's chain to the identity it was linked under, null for a member.
  */
 
 /**
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A join
+ * that may invite offers them while online, and the first one read settles it for all. Under an
+ * invite with an address of its own, being let in is a promise: no member and no seat until a device
+ * of the joiner, holding the keys, claims its seat. Its keys are offered until a member that may
+ * invite sees that device seated and settles the promise, or until the invite expires, whoever
+ * reads them. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
+ * Where the database's version keeps an invite's secret on its record, the invite has an address
+ * of its own: its joins are sealed to it, and its answers follow the tag only that secret and the
+ * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export class Pairing extends ReadyResource {
@@ -78,13 +102,17 @@ export class Pairing extends ReadyResource {
     /** @private */
     this._denials = new Map() // writer id → the Post telling why its join was turned away
     /** @private */
+    this._keys = new Map() // writer id → the Post sending a device the keys it asked for
+    /** @private */
+    this._inbox = null
+    /** @private */
     this._expiry = null
     /** @private */
     this._onupdate = (touched) => {
-      if (['*', 'invites', 'requests', 'members'].some((name) => touched.has(name))) {
-        this._sync().catch(safetyCatch)
-      }
+      if (WATCHED.some((name) => touched.has(name))) this._sync().catch(safetyCatch)
     }
+    /** @private */
+    this._onepoch = () => this._sync().catch(safetyCatch)
   }
 
   /** @private */
@@ -93,15 +121,21 @@ export class Pairing extends ReadyResource {
     await this.db.ready()
     await this._sync()
     this.db.on('update', this._onupdate)
+    this.db.on('epoch', this._onepoch)
   }
 
   /** @private */
   async _close() {
     this.db.off('update', this._onupdate)
+    this.db.off('epoch', this._onepoch)
     clearTimeout(this._expiry)
-    const posts = [...this._replies.values(), ...this._denials.values()]
+    this._expiry = null
+    const posts = [...this._replies.values(), ...this._denials.values(), ...this._keys.values()]
+    if (this._inbox) posts.push(this._inbox)
     this._replies.clear()
     this._denials.clear()
+    this._keys.clear()
+    this._inbox = null
     await Promise.allSettled(posts.map((post) => post.close()))
   }
 
@@ -111,9 +145,19 @@ export class Pairing extends ReadyResource {
    * @param {InviteOpts} [opts]
    * @returns {Promise<string>}
    */
-  async invite({ role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = {}) {
+  async invite(opts = {}) {
+    if (!isOptions(opts)) throw CeroError.INVALID('invite options are an object')
+    const { role = MEMBER, ttl = 0, reuse = false, confirm = false, data = null } = opts
+    const to = opts.to == null ? null : memberId(opts.to)
+    if (to && (reuse || confirm)) {
+      throw CeroError.INVALID("an invite made 'to' a member is single-use and waits for no accept")
+    }
     if (this.closing || this.closed) throw CeroError.CLOSED('Pairing')
     if (!this.opened) await this.ready()
+    // the encoder drops a field the built spec lacks: the invite would let anyone in
+    if (to && !('to' in (this.db.meta.since?.types[`@${this.db.ns}/invite`] ?? {}))) {
+      throw CeroError.UNSUPPORTED("'to' in 'invites'")
+    }
     // an invite is a capability: capped at our own rank, or apply would drop the mismatch silently
     await this._checkGrant(role)
     // a rank above member is handed out once
@@ -121,24 +165,47 @@ export class Pairing extends ReadyResource {
       throw CeroError.INVALID(`a reusable invite admits at most member, not '${role}'`)
     }
 
-    const invite = Invite.create({ ttl, data, key: this.db.key, address: this.db.address })
-    await this.db.call('add-invite', {
+    const secret = await this._secret()
+    const address = secret ? Mailbox.getAddress(secret) : this.db.address
+    const invite = Invite.create({ ttl, data, key: this.db.key, address, own: !!secret })
+    const row = {
       id: b4a.toHex(invite.id),
       role,
       reuse,
       confirm,
       expires: invite.expires,
-      createdAt: Date.now()
-    })
+      createdAt: Date.now(),
+      secret,
+      to,
+      // only an invite with an address of its own is spent by a removal before its rotation is sealed
+      keys: to && secret && opts.keys && (await this._has('keys')) ? b4a.concat(opts.keys) : null
+    }
+    invite.stamp = await this.db.write([['add-invite', row]])
+    if (secret || invite.stamp > this.db.start) invite.version = STAMPED
     invite.link = { key: this.db.writerKey, length: this.db.length }
     await this._sync()
     return invite.toString()
   }
 
+  // an invite's own address needs its secret on its row: none where the built spec has no such
+  // field, or the database's version has not reached it, and the invite carries the room's address
+  /** @private */
+  async _secret() {
+    return (await this._has('secret')) ? crypto.randomBytes(32) : null
+  }
+
+  // a field of an invite's row the built spec has and the database's version has reached: a write
+  // carrying one it has not is refused
+  /** @private */
+  async _has(field) {
+    const since = this.db.meta.since?.types[`@${this.db.ns}/invite`]?.[field]
+    return since <= (await this.db.dispatcher.version(this.db.view))
+  }
+
   /**
    * Revoke an invite, for every member. Needs the remove permission.
    *
-   * @param {string} invite
+   * @param {string} invite  The code, or the id its `invites` row holds.
    * @returns {Promise<boolean>}  Whether it was live.
    */
   async revoke(invite) {
@@ -149,7 +216,7 @@ export class Pairing extends ReadyResource {
     if (me && !can(me.role, REMOVE)) {
       throw CeroError.DENIED(null, 'revoking an invite needs the remove permission')
     }
-    const id = getInviteId(invite)
+    const id = (await this.db.get('invites', invite)).data ? invite : getInviteId(invite)
     if (!id || !(await this.db.get('invites', id)).data) return false
     await this.db.call('del-invite', { id })
     await this._sync()
@@ -164,7 +231,7 @@ export class Pairing extends ReadyResource {
    * @param {AcceptOpts} [opts]
    * @returns {Promise<void>}
    */
-  async accept(id, { role } = {}) {
+  async accept(id, { role, proof = null } = {}) {
     const invite = await this._waiting(id)
     // apply has no clock: it would admit past the expiry
     if (expired(invite)) throw CeroError.EXPIRED()
@@ -175,18 +242,21 @@ export class Pairing extends ReadyResource {
     if (!grants(invite.role, role)) {
       throw CeroError.INVALID(`role '${role}' exceeds the invite role '${invite.role}'`)
     }
-    await this.db.call('accept', { id, role })
+    await this.db.call('accept', { id, role, proof })
   }
 
   /**
    * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+   * On a join already let in by a promise, it withdraws the promise: that needs the remove
+   * permission.
    *
    * @param {string} id
    * @param {string} [reason]
    * @returns {Promise<void>}
    */
   async deny(id, reason = '') {
-    await this._waiting(id)
+    const { data: row } = await this.db.get('requests', id)
+    if (!row?.promised) await this._waiting(id)
     await this.db.call('deny', { id, reason })
   }
 
@@ -209,27 +279,67 @@ export class Pairing extends ReadyResource {
     const spent = await this._list(SPENT)
     if (this.closing || this.closed) return
     const role = me?.role
-    // apply has no clock: past its expiry an invite is dropped here, so the log stops admitting,
-    // and a spent one forgotten, since no joiner uses it past then
+    // behind, this device's view of the room is stale: it answers no join until it updates
+    const inviter = can(role, INVITE) && this.db.behind === null
+    // a promise is settled here once it is kept or void, never by a read of its keys
+    const done = inviter ? await this._done(requests) : []
+    for (const { id } of done) await this.db.call('del-request', { id }).catch(safetyCatch)
+    // apply has no clock: past its invite, a promise nobody kept is withdrawn here
+    if (inviter && can(role, REMOVE)) {
+      for (const row of requests) {
+        if (!row.promised || !expired(row)) continue
+        await this.db.call('deny', { id: row.id, reason: 'expired' }).catch(safetyCatch)
+      }
+    }
+    // past its expiry an invite is dropped, so the log stops admitting, and a spent one
+    // forgotten, since no joiner uses it past then
     if (can(role, REMOVE)) {
       for (const row of [...invites, ...spent].filter(expired)) {
         await this.db.call('del-invite', { id: row.id }).catch(safetyCatch)
       }
     }
     this._arm([...invites, ...requests, ...spent])
-    const inviter = can(role, INVITE)
-    const owed = inviter ? requests.filter((row) => row.admitted) : []
+    // an admission is owed its keys until they are read; a promise, until done or past its invite
+    const over = (row) => row.promised && (done.includes(row) || expired(row))
+    const owed = inviter ? requests.filter((row) => row.admitted && !over(row)) : []
     const refused = inviter ? refusals : []
-    await this._answer(owed, refused, role)
-    const live = invites.some((row) => !expired(row))
+    const secrets = new Map([...invites, ...spent].map((row) => [row.id, row.secret]))
+    await this._answer(owed, refused, role, secrets)
+    await this._deliver(await this._list(ASKS))
+    // one made for a member owes no answer: her device joins with the keys it was handed
+    const live = invites.some((row) => !row.to && !expired(row))
     this.serving = inviter && (live || owed.length > 0 || refused.length > 0)
     this.emit('serving', this.serving)
+  }
+
+  // the promises kept, the device each was made to sits under the member it was made to, and
+  // those void, their chain standing no more as the log reads it
+  /** @private */
+  async _done(requests) {
+    const promised = requests.filter((row) => row.promised)
+    if (promised.length === 0) return []
+    const { data: devices } = await this.db.get('devices')
+    const seated = ({ identity, key }) => {
+      const id = hid.encode(identity)
+      return devices.some((d) => d.memberId === id && d.key && b4a.equals(d.key, key))
+    }
+    this.db.guard()
+    const { dispatcher, view } = this.db
+    const done = []
+    for (const row of promised) {
+      const stands = await dispatcher.stands(view, [row.identity, ...chainOf(row)])
+      if (!stands || seated(row)) done.push(row)
+    }
+    return done
   }
 
   // wakes the next _sync just past the nearest expiry: expired() only holds after it
   /** @private */
   _arm(rows) {
     clearTimeout(this._expiry)
+    this._expiry = null
+    // a sync that awaited past close arms nothing: _close cleared the timer already
+    if (this.closing || this.closed) return
     const live = rows.filter((row) => row.expires > 0 && !expired(row))
     const next = Math.min(...live.map((row) => row.expires))
     if (!Number.isFinite(next)) return
@@ -240,16 +350,25 @@ export class Pairing extends ReadyResource {
   }
 
   // an admitted joiner is offered its keys, and a refused one the reason, by every inviter device
-  // online, until one is read. Past the invite's expiry the joiner has given up: a member who can
-  // remove drops an admitted one instead, and a refused one is forgotten
+  // online, until one is read. Past the invite's expiry the joiner has given up: the answer owed to
+  // an extra device of a member is dropped, a member who can remove drops a new one, and a refused
+  // one is forgotten. A promised joiner is offered its keys until its device has seated itself: a
+  // read settles nothing. An answer under an invite that has a secret is tagged with it
   /** @private */
-  async _answer(owed, refused, role) {
-    const keys = () => ({
+  async _answer(owed, refused, role, secrets) {
+    // a device linked under a member reads its chain off its seat, or off the promise of one
+    const proofs = new Map()
+    for (const { id, promised, proof } of owed) {
+      const chain = promised ? linkOf(proof) : (await this.db.get('devices', id)).data?.proof
+      proofs.set(id, chain ?? null)
+    }
+    const keys = ({ id }) => ({
       status: STATUS_ACCEPTED,
       reason: '',
       key: this.db.key,
       encryptionKey: this.db.encryptionKey,
-      epochs: this.db.keyring.all()
+      epochs: this.db.keyring.all(),
+      proof: proofs.get(id)
     })
     const denied = ({ reason }) => ({
       status: STATUS_DENIED,
@@ -258,28 +377,107 @@ export class Pairing extends ReadyResource {
       encryptionKey: null,
       epochs: null
     })
-    for (const row of this._offer(this._replies, owed, keys, 'del-request')) {
-      if (!can(role, REMOVE)) continue
-      await this.db.call('del-member', { id: hid.encode(row.identity) }).catch(safetyCatch)
+    const sealed = (answer) => (row) => seal(answer(row), secrets.get(row.invite), row.reply)
+    // only a device that read its keys covers another: unread ones would keep each other in
+    const unread = new Map(owed.map((row) => [row.id, row]))
+    for (const row of this._offer(this._replies, owed, sealed(keys), 'del-request')) {
+      const id = hid.encode(row.identity)
+      const { data: devices } = await this.db.get('devices')
+      const others = devices.filter((d) => d.memberId === id && d.id !== row.id)
+      if (others.some((d) => !unread.has(d.id))) {
+        await this.db.call('del-request', { id: row.id }).catch(safetyCatch)
+      } else if (others.every((d) => expired(unread.get(d.id))) && can(role, REMOVE)) {
+        await this.db.call('del-member', { id }).catch(safetyCatch)
+      }
     }
-    for (const row of this._offer(this._denials, refused, denied, 'del-refusal')) {
+    for (const row of this._offer(this._denials, refused, sealed(denied), 'del-refusal')) {
       await this.db.call('del-refusal', { id: row.id }).catch(safetyCatch)
     }
   }
 
-  // posts each live row its answer once, closes those settled elsewhere, returns those past expiry
+  // a device that asked for the keys it lacks is sent them by every seated device that holds any,
+  // inviter or not, and again once that one learns another. Nothing is settled by it: the device
+  // that asked closes its own row, once it opens the newest key
+  /** @private */
+  async _deliver(asks) {
+    // a sync that awaited past close sends and receives nothing: _close closed them already
+    if (this.closing || this.closed) return
+    const { db } = this
+    const me = hid.encode(db.writerKey)
+    const epochs = db.keyring.all()
+    const seats = asks.length > 0 && db.behind === null ? await this._seats() : new Set()
+    const sends = epochs.length > 0 && seats.has(me)
+    const rows = asks
+      .filter((row) => sends && row.id !== me && seats.has(row.id))
+      // offered again when what this device holds changed
+      .map(({ id, reply }) => ({ id, reply, invite: epochs.length, promised: true, expires: 0 }))
+    const keys = { status: STATUS_ACCEPTED, reason: '', key: db.key, encryptionKey: null, epochs }
+    const answer = c.encode(Response, keys)
+    const { secretKey } = db.identity.device
+    const sign = (row) =>
+      signed(answer, { room: db.key, to: hid.decode(row.id), writer: db.writerKey, secretKey })
+    this._offer(this._keys, rows, sign, null)
+
+    const mine = asks.some((row) => row.id === me)
+    if (mine && !this._inbox) {
+      const onkeys = (message) => this._onkeys(message)
+      this._inbox = this.mailbox.receive(db.keyPair.secretKey, onkeys, { keep: false })
+    } else if (!mine && this._inbox) {
+      this._inbox.close().catch(safetyCatch)
+      this._inbox = null
+    }
+    if (mine && !(await db.rotation.lacks())) {
+      await db.call('del-owed', { id: me }).catch(safetyCatch)
+    }
+  }
+
+  // the device key of a writer seated here, of a member who stands, or null
+  /** @private */
+  async _seat(writer) {
+    const { data: device } = await this.db.get('devices', hid.encode(writer))
+    if (!device?.memberId) return null
+    const { data: member } = await this.db.get('members', device.memberId)
+    return member ? device.key : null
+  }
+
+  // the devices of the members who stand, by id, to the device key each was admitted with
+  /** @private */
+  async _seats() {
+    const { data: members } = await this.db.get('members')
+    const { data: devices } = await this.db.get('devices')
+    const standing = new Set(members.map((m) => m.id))
+    return new Map(devices.filter((d) => standing.has(d.memberId)).map((d) => [d.id, d.key]))
+  }
+
+  // the keys this device asked for, signed by a device seated here: anyone with the address can
+  // send to it. Each secret is held to its commitment in the log and saved, and the row is closed
+  // once the newest opens
+  /** @private */
+  async _onkeys(message) {
+    const { db } = this
+    // one row, the sender's own: a stranger who sends to the address costs no read of every seat
+    const seated = message.byteLength > 32 ? await this._seat(message.subarray(0, 32)) : null
+    const sent = signer(message, { room: db.key, to: db.writerKey }, () => seated)
+    const answer = sent && decode(Response, sent.answer)
+    if (!answer?.epochs) return false
+    await db.learn(answer.epochs, hid.encode(sent.writer))
+    await this._sync()
+  }
+
+  // posts each live row its answer once, closes those settled elsewhere or made for a row since
+  // written again under another invite, returns those past expiry
   /** @private */
   _offer(posts, rows, answer, settled) {
-    const live = new Set(rows.map((row) => row.id))
+    const live = new Map(rows.map((row) => [row.id, row.invite]))
     for (const [id, post] of posts) {
-      if (live.has(id)) continue
+      if (live.has(id) && live.get(id) === post.invite) continue
       posts.delete(id)
       post.close().catch(safetyCatch)
     }
     const gone = []
     for (const row of rows) {
       if (!expired(row)) {
-        if (!posts.has(row.id)) this._post(posts, row, answer(row), settled)
+        if (!posts.has(row.id)) this._post(posts, row, answer(row), row.promised ? null : settled)
         continue
       }
       // a device already offering it stops: nobody waits for it any more
@@ -292,12 +490,16 @@ export class Pairing extends ReadyResource {
 
   // kept in memory, not in the outbox: the row in the log is what outlives a restart
   /** @private */
-  _post(posts, { id, reply }, answer, settled) {
+  _post(posts, { id, reply, invite }, answer, settled) {
     const { network } = this.mailbox
-    const post = new Post(network, reply, c.encode(Response, answer), { mirrors: network.mirrors })
+    const post = new Post(network, reply, answer, { mirrors: network.mirrors })
+    // the invite its answer is tagged under
+    post.invite = invite
     posts.set(id, post)
     const settle = async () => {
       await post.ready()
+      // a promise is kept by its device's own claim: whoever reads the keys, nothing is settled
+      if (!settled) return
       await post.delivered
       await this.db.call(settled, { id })
     }
@@ -306,6 +508,8 @@ export class Pairing extends ReadyResource {
 
   /** @private */
   _list(name) {
+    // a sync still running once its database closed ends as closed, as its other reads do
+    this.db.guard()
     return this.db.view.find(`@${this.db.ns}/${name}`, {}).toArray()
   }
 
@@ -348,14 +552,9 @@ export class Pairing extends ReadyResource {
       keep = async () => {}
     } = {}
   ) {
-    if (!mailbox) throw CeroError.REQUIRED('mailbox')
-    if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
-    if (!spec?.dispatch) throw CeroError.REQUIRED('spec')
-    if (writer?.publicKey?.byteLength !== 32 || writer.secretKey?.byteLength !== 64) {
-      throw CeroError.INVALID('writer must be a keypair')
-    }
-    const parsed = Invite.parse(invite)
-    if (parsed.expired) throw CeroError.EXPIRED()
+    const { parsed, stamp } = joinable(mailbox, invite, { identity, spec, writer })
+    // an invite with its own address proves its answers: one without a valid tag is nobody's
+    const mine = parsed.own ? Mailbox.keyPair(writer.secretKey) : null
     if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
     if (!mailbox.opened) await mailbox.ready()
 
@@ -364,41 +563,68 @@ export class Pairing extends ReadyResource {
       resolve = res
       fail = rej
     })
+    let settling = false
+    let expired = false
     const settle = async (answer, done) => {
-      await keep(answer)
+      settling = true
+      try {
+        await keep(answer)
+      } catch (err) {
+        settling = false
+        if (expired) stop(CeroError.EXPIRED())
+        throw err
+      }
       done(answer)
     }
+    // anything else sealed to the reply address, a second answer too, is turned away: the inbox
+    // keeps no row of it, and its core only when it was read back from a row kept across a restart
     const onreply = async (message) => {
-      const response = decode(Response, message)
+      if (settling) return false
+      const answer = mine ? proven(message, mine.secretKey, parsed.address) : message
+      const response = answer && decode(Response, answer)
       if (response?.status === STATUS_DENIED) {
         await settle(CeroError.DENIED(response.reason || null), fail)
-      } else if (response?.key && b4a.equals(response.key, parsed.key)) {
-        const { key, encryptionKey, epochs } = response
-        await settle({ key, encryptionKey, epochs: epochs || [], writer }, resolve)
+      } else if (
+        response?.key &&
+        b4a.equals(response.key, parsed.key) &&
+        (mine || owns(response, parsed))
+      ) {
+        const { key, encryptionKey, epochs, proof = null } = response
+        await settle({ key, encryptionKey, epochs: epochs || [], writer, proof }, resolve)
+      } else {
+        return false
       }
     }
 
     // in the network's store, which every connection replicates: open the database from it
     const { network } = mailbox
-    const { store } = network
-    const core = store.get({
-      keyPair: writer,
-      manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
-    })
-    const inbox = mailbox.receive(writer.secretKey, onreply)
+    const core = coreOf(network.store, writer)
+    // a reply read no longer than the join waits for it
+    const reads = timeout > 0 ? { timeout: Math.min(timeout, 30000) } : {}
+    const inbox = mailbox.receive(writer.secretKey, onreply, { keep: false, ...reads })
     // the database pulls the join in like any optimistic append, from us or from a mirror
     const post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
 
-    const onabort = () => fail(CeroError.CLOSED('join'))
+    // its inbox closes the moment it stops, so one that joins again at once with this writer waits for the row
+    // a reply being read may yet leave
+    const stop = (err) => {
+      inbox.close().catch(safetyCatch)
+      fail(err)
+    }
+    const onabort = () => stop(CeroError.CLOSED('join'))
     if (signal?.aborted) onabort()
     signal?.addEventListener('abort', onabort)
     mailbox.once('close', onabort)
-    const timer = timeout > 0 ? setTimeout(() => fail(CeroError.TIMEOUT('join')), timeout) : null
+    const timer = timeout > 0 ? setTimeout(() => stop(CeroError.TIMEOUT('join')), timeout) : null
+    // a reply being kept as the invite runs out settles the join: the device it answers is let in
+    const expire = () => {
+      expired = true
+      if (!settling) stop(CeroError.EXPIRED())
+    }
     const left = parsed.expires - Date.now()
     // Node's setTimeout overflows past ~24.8 days: a longer ttl expires at the next resume
-    const expiry =
-      parsed.expires && left < MAX_DELAY ? setTimeout(() => fail(CeroError.EXPIRED()), left) : null
-    write(core, spec, parsed, identity, writer)
+    const expiry = parsed.expires && left < MAX_DELAY ? setTimeout(expire, left) : null
+    written(core, spec, stamp, parsed, identity, writer)
       .then(() => post.ready())
       .catch((err) => fail(CeroError.NETWORK_ERROR(err.message)))
     try {
@@ -411,43 +637,182 @@ export class Pairing extends ReadyResource {
       await Promise.allSettled([inbox.close(), post.close()])
     }
   }
+
+  /**
+   * Write the join into the writer's own core and stop there: nothing is announced and no reply
+   * is waited for. A device that holds the database's keys opens it with this writer and applies
+   * its own join; `Pairing.join` with the same writer goes on from it and writes nothing more.
+   *
+   * @param {Mailbox} mailbox
+   * @param {string} invite
+   * @param {{ identity: JoinOpts['identity'], spec: JoinOpts['spec'], writer: KeyPair }} opts
+   * @returns {Promise<void>}
+   */
+  static async write(mailbox, invite, { identity, spec, writer } = {}) {
+    const { parsed, stamp } = joinable(mailbox, invite, { identity, spec, writer })
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('join')
+    if (!mailbox.opened) await mailbox.ready()
+    const core = coreOf(mailbox.network.store, writer)
+    try {
+      await written(core, spec, stamp, parsed, identity, writer)
+    } finally {
+      await core.close()
+    }
+  }
+
+  /**
+   * Take back a join that waits for a member: the writer's own core says so after its join, and
+   * the database drops the request unless a member let it in first. Announced as the join was.
+   * Called again with the same writer, it announces the cancel already written.
+   *
+   * @param {Mailbox} mailbox
+   * @param {string} invite
+   * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
+   * @returns {Promise<void>}  Resolves once a peer or a mirror holds it, rejects `CLOSED` when the mailbox closes first.
+   */
+  static async cancel(mailbox, invite, { spec, writer }) {
+    if (mailbox.closing || mailbox.closed) throw CeroError.CLOSED('cancel')
+    const { network } = mailbox
+    const { store } = network
+    let onclose = null
+    const closed = new Promise((resolve, reject) => {
+      onclose = () => reject(CeroError.CLOSED('cancel'))
+    })
+    closed.catch(safetyCatch)
+    mailbox.once('close', onclose)
+    const core = store.get({
+      keyPair: writer,
+      manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+    })
+    let post = null
+    try {
+      await core.ready()
+      // a writer that wrote no join has nothing to take back
+      if (core.length === 0) return
+      // stamped as the join was: a room older than the cancel skips it on every build, and none
+      // of its devices is put behind
+      const { ns = NAMESPACE, start = 1, encoding } = spec.meta || {}
+      const parsed = Invite.parse(invite)
+      const stamp = parsed.stamp || start
+      const id = hid.encode(core.key)
+      let appending = cancels.get(id)
+      if (!appending) {
+        const body = spec.dispatch.encode(
+          `@${ns}/cancel-join`,
+          { id },
+          { version: encoding?.[stamp] }
+        )
+        appending = retract(core, wrap(stamp, body)).finally(() => cancels.delete(id))
+        cancels.set(id, appending)
+      }
+      await appending
+      post = new Post(network, parsed.key, null, { core, mirrors: network.mirrors })
+      await Promise.race([post.ready().then(() => post.delivered), closed])
+    } finally {
+      mailbox.off('close', onclose)
+      await (post || core).close().catch(safetyCatch)
+    }
+  }
 }
 
 /**
- * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ * A join's payload: sealed to the invite's address, so only those who hold its row read who joins,
+ * every member for an invite that carries the database's address; proven by the invite over the
+ * writer; signed by the joiner's device, under its chain to the identity, for this writer and reply
+ * address. An invite with an address of its own is named in the clear, so apply finds its secret.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
  * @param {Uint8Array} writer
  * @param {Uint8Array} reply
- * @returns {{ box: Uint8Array }}
+ * @returns {{ box: Uint8Array, invite?: Uint8Array }}
  */
 export function sealJoin(invite, identity, writer, reply) {
   const join = {
     invite: invite.id,
     reply,
-    proof: invite.prove(writer),
-    identity: identity.publicKey,
-    signature: identity.sign(joining(invite.key, invite.id, writer, reply)),
+    signature: invite.prove(writer),
+    proof: identity.sign(joining(invite.key, invite.id, writer, reply)),
     ts: Date.now()
   }
-  return { box: crypto.encrypt(c.encode(Join, join), invite.address) }
+  const box = crypto.encrypt(c.encode(Join, join), invite.address)
+  return invite.own ? { box, invite: invite.id } : { box }
+}
+
+// the cancel being appended, by writer: two at once on one writer append it once
+const cancels = new Map()
+
+// the join being written, by writer: two at once on one writer write it once
+const writing = new Map()
+
+// what a join is made with, checked before anything is written: its invite, and the stamp it takes
+function joinable(mailbox, invite, { identity, spec, writer }) {
+  if (!mailbox) throw CeroError.REQUIRED('mailbox')
+  if (typeof identity?.sign !== 'function') throw CeroError.REQUIRED('identity')
+  if (!spec?.dispatch) throw CeroError.REQUIRED('spec')
+  if (writer?.publicKey?.byteLength !== 32 || writer.secretKey?.byteLength !== 64) {
+    throw CeroError.INVALID('writer must be a keypair')
+  }
+  const parsed = Invite.parse(invite)
+  if (parsed.expired) throw CeroError.EXPIRED()
+  // an invite with no stamp was minted before invites carried one: at the start
+  const { version = 1, start = 1 } = spec.meta || {}
+  const stamp = parsed.stamp || start
+  if (stamp > version) throw CeroError.BEHIND(stamp)
+  return { parsed, stamp }
+}
+
+// a writer's core in the network's store, which every connection replicates
+function coreOf(store, writer) {
+  return store.get({
+    keyPair: writer,
+    manifest: { version: store.manifestVersion, signers: [{ publicKey: writer.publicKey }] }
+  })
+}
+
+function written(core, spec, stamp, invite, identity, writer) {
+  const id = b4a.toHex(writer.publicKey)
+  const run = () => write(core, spec, stamp, invite, identity, writer)
+  const last = (writing.get(id) ?? Promise.resolve()).then(run, run)
+  writing.set(id, last)
+  const done = () => writing.get(id) === last && writing.delete(id)
+  last.then(done, done)
+  return last
+}
+
+async function retract(core, op) {
+  const at = await core.getUserData('cero/cancel')
+  if (at && c.decode(c.uint, at) === core.length) return
+  await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true }))
+  await core.setUserData('cero/cancel', c.encode(c.uint, core.length))
 }
 
 // one join per invite in the writer's core: a resumed join finds its own, a fresh invite adds
 // another. Plain, since the joiner has no key yet, and linked to the invite's node, so no member
-// applies it before the invite
-async function write(core, spec, invite, identity, writer) {
+// applies it before the invite. Written as of its invite's stamp
+async function write(core, spec, stamp, invite, identity, writer) {
   await core.ready()
   const last = await core.getUserData('cero/join')
   if (last && b4a.equals(last, invite.id)) return
-  const { ns = NAMESPACE, version = 1 } = spec.meta || {}
+  const { ns = NAMESPACE, encoding } = spec.meta || {}
   const payload = sealJoin(invite, identity, core.key, Mailbox.getAddress(writer.secretKey))
-  const op = wrap(version, spec.dispatch.encode(`@${ns}/join`, payload))
+  const body = spec.dispatch.encode(`@${ns}/join`, payload, { version: encoding?.[stamp] })
+  const op = wrap(stamp, body)
   const links = [invite.link]
   await core.append(Autobee.encodeValue(op, { optimistic: true, encrypted: true, links }))
   await core.setUserData('cero/join', invite.id)
+}
+
+// the database key is no secret, every mirror holds it: the encryption key must own the invite's address
+function owns({ encryptionKey }, invite) {
+  return !!encryptionKey && b4a.equals(Mailbox.getAddress(encryptionKey), invite.address)
+}
+
+// an answer under an invite with a secret follows the tag it makes with the reply address
+function seal(answer, secret, reply) {
+  const message = c.encode(Response, answer)
+  const proof = secret ? tag(message, Mailbox.keyPair(secret).secretKey, reply) : null
+  return proof ? b4a.concat([proof, message]) : message
 }
 
 function expired({ expires }) {
@@ -468,5 +833,14 @@ function getInviteId(invite) {
     return b4a.toHex(Invite.parse(invite).id)
   } catch {
     return null
+  }
+}
+
+// a member's id as its row has it, from any form of the identity's key
+function memberId(to) {
+  try {
+    return hid.normalize(to)
+  } catch {
+    throw CeroError.INVALID("'to' is a member's id")
   }
 }

@@ -11,6 +11,7 @@ declare const remote: {
     del(ref: verbs.Ref, id?: string): Promise<void>;
     call(ref: verbs.Ref, d?: verbs.Row): Promise<void>;
     get(ref: verbs.Ref, q?: string | Record<string, unknown>): Promise<verbs.SingleResult | verbs.ListResult>;
+    supports(ref: verbs.Ref, field?: string): Promise<boolean>;
     watch(ref: verbs.Ref, query?: string | (Record<string, unknown> & {
         changes?: boolean;
     }), opts?: {
@@ -21,7 +22,9 @@ declare const remote: {
         id?: string;
         name?: string;
     } | undefined): Promise<verbs.Context>;
-    invite(ctx: verbs.Context, opts?: import("@cero-base/core").InviteOpts): Promise<string>;
+    invite(ctx: verbs.Context, opts?: import("@cero-base/core").InviteOpts & {
+        from?: verbs.Context;
+    }): Promise<string>;
     revoke(ctx: verbs.Context, code: string): Promise<boolean>;
     rotate(ctx: verbs.Context): Promise<{
         epoch: number;
@@ -34,6 +37,7 @@ declare const remote: {
     deny(ctx: verbs.Context, request: {
         id: string;
     }, reason?: string): Promise<void>;
+    removed(ctx: verbs.Context, id: string): Promise<'removed' | 'left' | null>;
     leave(ctx: verbs.Context): Promise<void>;
     close(ctx: verbs.Context): Promise<void>;
     cancel(me: verbs.Context, code: string): Promise<boolean>;
@@ -41,12 +45,30 @@ declare const remote: {
     resume(me: verbs.Context): Promise<void>;
     activate(ctx: verbs.Context): Promise<void>;
     deactivate(ctx: verbs.Context): Promise<void>;
+    receive(me: verbs.Context, payload: Uint8Array): Promise<{
+        id: string;
+        type: string;
+        name: string | null;
+        newer: boolean;
+        ref: string | null;
+        row: object | null;
+    } | null>;
+    send(me: verbs.Context, address: string, data: unknown, opts?: {
+        keep?: boolean;
+    }): Promise<void>;
+    inbox(me: verbs.Context, secret: Uint8Array, fn: (data: unknown, mail: {
+        id: string;
+        from: string;
+        device: string;
+    }) => unknown, opts?: {
+        keep?: boolean;
+    }): () => Promise<void>;
     phrase(me: verbs.Context): Promise<string>;
     nearby(ctx: verbs.Context, on: boolean, opts?: {
         topic?: string;
     }): Promise<void>;
 };
-export declare const put: typeof verbs.put, set: typeof verbs.set, get: typeof verbs.get, del: typeof verbs.del, watch: typeof verbs.watch, call: typeof verbs.call, open: typeof verbs.open, invite: typeof verbs.invite, revoke: typeof verbs.revoke, rotate: typeof verbs.rotate, accept: typeof verbs.accept, deny: typeof verbs.deny, leave: typeof verbs.leave, close: typeof verbs.close, cancel: typeof verbs.cancel, suspend: typeof verbs.suspend, resume: typeof verbs.resume, activate: typeof verbs.activate, deactivate: typeof verbs.deactivate, phrase: typeof verbs.phrase, nearby: typeof verbs.nearby;
+export declare const put: typeof verbs.put, set: typeof verbs.set, get: typeof verbs.get, del: typeof verbs.del, watch: typeof verbs.watch, call: typeof verbs.call, supports: typeof verbs.supports, open: typeof verbs.open, invite: typeof verbs.invite, revoke: typeof verbs.revoke, rotate: typeof verbs.rotate, accept: typeof verbs.accept, deny: typeof verbs.deny, leave: typeof verbs.leave, removed: typeof verbs.removed, close: typeof verbs.close, cancel: typeof verbs.cancel, suspend: typeof verbs.suspend, resume: typeof verbs.resume, activate: typeof verbs.activate, deactivate: typeof verbs.deactivate, phrase: typeof verbs.phrase, nearby: typeof verbs.nearby;
 export { t, schema };
 export type BaseRPCClient = import('@cero-base/core/rpc').RPCClient;
 export type RefInfo = import('../lib/spec.js').RefInfo;
@@ -60,15 +82,49 @@ export type HandleStub = {
     name: string | null;
 };
 export type Context = (Client | Handle) & Record<string, Ref>;
+export type ClientOpts = {
+    /**
+     * Where the worker's background errors go, the console without one.
+     */
+    onerror?: (err: Error) => void;
+    /**
+     * The platform's messaging service, to follow the handles' push topics.
+     */
+    push?: import('./push.js').Messaging;
+    /**
+     * On a worker whose store is new, it recovers the identity of this phrase, as `cero(dir, spec, { phrase })`.
+     */
+    phrase?: string;
+    /**
+     * On a worker whose store is new, it links to the identity of this device invite, as `cero(dir, spec, { invite })`.
+     */
+    invite?: string;
+    /**
+     * With `invite`: the request's id as it is sent.
+     */
+    onrequest?: (id: string) => void;
+};
 /**
- * Re-initialize a `Client` from a recovery phrase. Closes the existing
- * local state and reseeds identity from the phrase.
+ * Switch the app to the identity of a recovery phrase, as `cero.restore` does in the worker: the
+ * client is then that identity.
  *
  * @param {Client} me
  * @param {string} phrase
  * @returns {Promise<Client>}
  */
 export declare function restore(me: Client, phrase: string): Promise<Client>;
+/**
+ * Link the app to the identity behind a device invite, as `cero.link` does in the worker: the
+ * client is then that identity. `onrequest` gets the request's id as it is sent.
+ *
+ * @param {Client} me
+ * @param {string} invite
+ * @param {{ onrequest?: (id: string) => void }} [opts]
+ * @returns {Promise<Client>}
+ */
+export declare function link(me: Client, invite: string, { onrequest }?: {
+    onrequest?: (id: string) => void;
+}): Promise<Client>;
 /**
  * Per-device `local`-namespace surface on a Client.
  */
@@ -96,6 +152,10 @@ declare class LocalRefs {
  */
 export declare class Client extends RPCClient {
     /** @private */
+    _how;
+    /** @private */
+    _push;
+    /** @private */
     _onerror;
     /** @type {string | null} */
     id: string | null;
@@ -106,6 +166,7 @@ export declare class Client extends RPCClient {
     } | null;
     store: this;
     local: LocalRefs;
+    _unfollow: () => void;
     /** @private */
     _fileBase;
     /** @private */
@@ -113,15 +174,15 @@ export declare class Client extends RPCClient {
     /**
      * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-     * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
+     * @param {ClientOpts} [opts]
      */
-    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror }?: {
-        onerror?: (err: Error) => void;
-    });
+    constructor(ipc: import('streamx').Duplex, spec: Spec, { onerror, push, phrase, invite, onrequest }?: ClientOpts);
     /** @private */
     private _pumpErrors;
     /** @private */
     private _open;
+    /** @private */
+    private _close;
     /** @private */
     private _identify;
     /**
@@ -180,28 +241,25 @@ declare class Handle {
  *
  * @param {import('streamx').Duplex} ipc
  * @param {Spec} spec
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Client>}
  */
-export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?: {
-    onerror?: (err: Error) => void;
-}): Promise<Client>;
+export declare function connect(ipc: import('streamx').Duplex, spec: Spec, opts?: ClientOpts): Promise<Client>;
 /**
  * Symmetric client entry. Mirrors the main `cero`, but `cero(ipc, spec)` connects to a
  * server (via `connect`) instead of opening a local store.
  *
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Context>}
  */
-declare function start(ipc: import('streamx').Duplex, spec: Spec, opts?: {
-    onerror?: (err: Error) => void;
-}): Promise<Context>;
-/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, t: typeof t, schema: typeof schema }} */
+declare function start(ipc: import('streamx').Duplex, spec: Spec, opts?: ClientOpts): Promise<Context>;
+/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, link: typeof link, t: typeof t, schema: typeof schema }} */
 export declare const cero: typeof start & typeof remote & {
     connect: typeof connect;
     restore: typeof restore;
+    link: typeof link;
     t: typeof t;
     schema: typeof schema;
 };

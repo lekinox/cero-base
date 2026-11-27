@@ -17,6 +17,8 @@ export declare function isRank(role: string): boolean;
 export declare function grants(a: string, b: string): boolean;
 /** @type {(a: string, b: string) => boolean} */
 export declare function outranks(a: string, b: string): boolean;
+/** @type {(value: unknown) => boolean} */
+export declare function isOptions(value: unknown): boolean;
 /**
  * Stream-of-snapshots primitive. Couples a `get` (returns the latest value) with a `watch`
  * (re-fires on change) and emits the newest snapshot every time `watch` ticks.
@@ -31,8 +33,7 @@ export declare function subscribe<T>({ get, watch }: {
     get: () => Promise<T> | T;
     watch: (fn: () => void) => (() => void) | void;
 }): import('streamx').Readable<T>;
-/** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
-export declare function searchHit(row: Record<string, unknown>, term: string, fields?: string[]): boolean;
+export declare function searchHit(row: any, term: any, fields: any): boolean;
 /**
  * The in-memory query grammar over rows: equality on any non-reserved field,
  * id ranges, `search`, then `reverse` and `limit`.

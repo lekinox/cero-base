@@ -68,10 +68,10 @@ it is `null`.
 
 ## The two that ship
 
-| Extension       | Does                                                                                                                                             |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every handle you are in, on open and on every change. |
-| `handleSync()`  | Copies a handle's own `profile` onto its row in your `handles` list, so a handle list shows names without opening the handles.                   |
+| Extension       | Does                                                                                                                                                                                                                                                 |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profileSync()` | Declares `profile: t.single({ name, avatar })` and copies it onto your row in `members` of every handle you are in, on open and on every change; a change reaches the handles closed on this device in the background, the most recently used first. |
+| `handleSync()`  | Copies a handle's own `profile` onto its row in your `handles` list, so a handle list shows names without opening the handles.                                                                                                                       |
 
 Both run when the build names no extensions, and neither writes when the row already matches.
 Drop one by naming a list without it, or both with `[]`.
@@ -97,7 +97,7 @@ profile: t.single({ name: t.string, avatar: t.string, phone: t.string })
 
 A copied field holds a plain value or a file. A `t.file` avatar,
 `profileSync({ fields: { avatar: t.file } })`, is copied with its file into each handle, where every
-member reads it.
+member reads it. A reader adds no file to a handle: her name is copied there, her file is not.
 
 `handleSync` needs the handle type to declare `profile: t.single({ name: t.string })`, and any other
 field of it must exist on `handles`, as `avatar` does by default. A `t.file` avatar,

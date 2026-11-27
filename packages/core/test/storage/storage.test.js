@@ -413,6 +413,11 @@ for (const backend of backends) {
 
     const { data: none } = await storage.get('drafts', { search: 'zzz' })
     t.is(none.length, 0, 'no match comes back empty')
+
+    // ids are random z32 strings: a term can occur in one, as CI showed once
+    await storage.put('drafts', { id: 'yzzzy', text: 'plain' })
+    const { data: byId } = await storage.get('drafts', { search: 'zzz' })
+    t.is(byId.length, 0, 'the id is not searched')
   })
 }
 

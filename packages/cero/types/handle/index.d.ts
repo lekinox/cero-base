@@ -31,7 +31,7 @@ export type HandleOpts = {
      */
     spec?: Spec;
     /**
-     * Root only, and required there: the device store for handle keypairs, joins and mail.
+     * Root only, and required there: the device store for handle keypairs and mail.
      */
     local?: Local;
     /**
@@ -123,7 +123,7 @@ export type Context = Handle & Record<string, import('../lib/refs.js').Ref>;
  * @property {Network} [network]               Shared swarm. Inherited from `parent` if omitted.
  * @property {import('corestore')} [store]    Pre-existing Corestore. Falls back to `parent.store.store`.
  * @property {Spec} [spec]                     Built cero spec.
- * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs, joins and mail.
+ * @property {Local} [local]                   Root only, and required there: the device store for handle keypairs and mail.
  * @property {import('hypercore-storage')} [storage]  Owned HypercoreStorage to close on shutdown.
  * @property {{ destroy(): Promise<void> }} [discovery]  Owned identity discovery to destroy on shutdown.
  * @property {string} [dir]                    Data directory (root handles only).
@@ -181,13 +181,25 @@ export declare class Handle extends ReadyResource {
     /** @private */
     _pending;
     /** @private */
+    _ending;
+    /** @private */
     _typeHooks;
     /** @private */
     _loading;
     /** @private */
     _joining;
     /** @private */
+    _taking;
+    /** @private */
+    _looks;
+    /** @private */
     _coreKeys;
+    /** @private */
+    _offJoins;
+    /** @private */
+    _departing;
+    /** @private */
+    _leaving;
     /** @private */
     _fileServer;
     /** @private */
@@ -198,6 +210,28 @@ export declare class Handle extends ReadyResource {
     _sus;
     /** @private */
     _owned;
+    /** @private */
+    _kept;
+    /** @private */
+    _arriving;
+    /** @private */
+    _refs;
+    /** @private */
+    _pruning;
+    /** @private */
+    _idle;
+    /** @private */
+    _tellings;
+    /** @private */
+    _waiting;
+    /** @private */
+    _waiters;
+    /** @private */
+    _telling;
+    /** @private @type {Array<{ stamp: () => Promise<string | null>, tell: (child: Handle) => Promise<void> }> | null} */
+    _tellers;
+    /** @private */
+    _retell;
     store: Database;
     /** @private */
     _pair;
@@ -209,6 +243,13 @@ export declare class Handle extends ReadyResource {
     _live;
     /** @private */
     _ac;
+    /** @private */
+    _offs;
+    _queued: {
+        root: boolean;
+        children: Set<any>;
+    };
+    _indexing: any;
     /** @param {HandleOpts} [opts] */
     constructor(opts?: HandleOpts);
     /**
@@ -219,6 +260,8 @@ export declare class Handle extends ReadyResource {
     get signal(): AbortSignal;
     /** The top-most handle in the parent chain — itself for a root handle. */
     get root(): this;
+    /** @private */
+    private _onclose;
     /**
      * Lazily-built file server for this identity. Root-only — child handles
      * reach it through `this.root.fileServer`.
@@ -254,9 +297,9 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _close;
     /**
-     * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this
-     * handle's lifecycle — it's destroyed automatically on close, so callers don't track
-     * cleanup.
+     * Tie a destroyable resource (a `watch` stream, a timer, any `{ destroy }`) to this handle, so callers
+     * don't track cleanup. Tied by a holder, it is destroyed once the last holder closes the handle; tied by
+     * a `handle` listener as it runs, an extension's watch, it follows the handle for as long as it is open.
      *
      * @template {{ destroy?: Function, once?: Function }} T
      * @param {T} resource
@@ -266,6 +309,8 @@ export declare class Handle extends ReadyResource {
         destroy?: Function;
         once?: Function;
     }>(resource: T): T;
+    /** @private */
+    private _disown;
     /** @private */
     private _link;
     /** @private */
@@ -277,11 +322,32 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _rotate;
     /** @private */
+    private _removed;
+    /** @private */
+    private _seat;
+    /** @private */
     private _tx;
     /** @private */
-    private _pairing;
-    /** @private */
     private _leave;
+    /** @private */
+    private _depart;
+    /** @private */
+    private _ousted;
+    /**
+     * One holder done with it: a child stays open for the others. With its last, what they tied to it ends and it
+     * stays open, idle, so a reopen finds it as it is; the root keeps `keepOpen` of them (16 by default) and one more
+     * closes the least recently used, on its own. The root closes at once, after any `cero.link` or `cero.restore` on
+     * it: one still waiting stops, one taking its place finishes first.
+     * @returns {Promise<void>}
+     */
+    close(): Promise<void>;
+    /** @private one more holder: an idle handle is kept */
+    private _hold;
+    /**
+     * Closed for every holder at once: pushed out past `keepOpen`, the parent closing, or the handle left for good.
+     * @private
+     */
+    private _end;
     /** @private */
     private _suspend;
     /** @private */
@@ -305,11 +371,31 @@ export declare class Handle extends ReadyResource {
     /** @private */
     private _onRadio;
     /** @private */
-    private _joins;
+    private _onTopics;
     /** @private */
-    private _onJoins;
+    private _topics;
+    /** @private */
+    private _index;
+    /** @private */
+    private _seal;
+    /** @private */
+    private _follow;
+    /** @private */
+    private _put;
+    /** @private */
+    private _drop;
+    /** @private */
+    private _topic;
+    /** @private */
+    private _row;
+    /** @private */
+    private _receive;
     /** @private */
     private _phrase;
+    /** @private */
+    private _send;
+    /** @private */
+    private _inbox;
     /**
      * @param {Uint8Array} coreKey
      * @param {object} info
@@ -362,9 +448,49 @@ export declare class Handle extends ReadyResource {
      */
     private _join;
     /** @private */
+    private _left;
+    /** @private */
+    private _landed;
+    /** @private */
+    private _asked;
+    /** @private */
     private _start;
     /** @private */
+    private _run;
+    /** @private */
+    private _apart;
+    /** @private */
+    private _take;
+    /** @private */
+    private _passes;
+    /** @private */
+    private _look;
+    /** @private */
+    private _watch;
+    /** @private */
+    private _delPass;
+    /** @private */
+    private _spent;
+    /** @private */
     private _cancel;
+    /** @private */
+    private _check;
+    /** @private */
+    private _takeBack;
+    /** @private */
+    private _retract;
+    /** @private */
+    private _announce;
+    /** @private */
+    private _forget;
+    /** @private */
+    private _stop;
+    /** @private */
+    private _ask;
+    /** @private */
+    private _stand;
+    /** @private */
+    private _over;
     /** @private */
     private _joined;
     /**
@@ -376,6 +502,8 @@ export declare class Handle extends ReadyResource {
      * @private
      */
     private _enter;
+    /** @private */
+    private _sweep;
     /** @private */
     private _carryOn;
     /**
@@ -406,6 +534,42 @@ export declare class Handle extends ReadyResource {
     private _wake;
     /** @private */
     private _adopt;
+    /** @private */
+    private _seats;
+    /** @private */
+    private _prune;
+    /** @private */
+    private _compare;
+    /** @private */
+    private _teach;
+    /** @private */
+    private _record;
+    /** @private */
+    private _mark;
+    /** @private */
+    private _unseat;
+    /** @private */
+    private _pruneAll;
+    /** @private */
+    private _tellClosed;
+    /** @private */
+    private _pass;
+    /** @private */
+    private _marked;
+    /** @private */
+    private _lists;
+    /** @private */
+    private _stamp;
+    /** @private */
+    private _tellOne;
+    /** @private */
+    private _wait;
+    /** @private */
+    private _turns;
+    /** @private */
+    private _tellRoom;
+    /** @private */
+    private _carry;
     /** @private */
     private _hookType;
     /** @private */

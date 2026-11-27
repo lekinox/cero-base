@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { Button, Input, Page } from './ui'
 
-export function Setup({ onCreate, onRecover }) {
+export function Setup({ onCreate, onRecover, onLink }) {
   const [name, setName] = useState('')
   const [phrase, setPhrase] = useState('')
+  const [invite, setInvite] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
@@ -57,6 +58,24 @@ export function Setup({ onCreate, onRecover }) {
           className='w-full'
         >
           {busy ? '…' : 'Use Existing Seed'}
+        </Button>
+      </div>
+
+      <div className='border-t border-border pt-4 space-y-2'>
+        <div className='text-sm text-muted'>Or link this device from one you have</div>
+        <Input
+          className='w-full'
+          placeholder='Device invite from your other device'
+          value={invite}
+          onChange={(e) => setInvite(e.target.value)}
+        />
+        <Button
+          onClick={() => run(() => onLink(invite.trim()))}
+          disabled={!invite.trim() || busy}
+          variant='secondary'
+          className='w-full'
+        >
+          {busy ? '…' : 'Link Device'}
         </Button>
       </div>
     </Page>

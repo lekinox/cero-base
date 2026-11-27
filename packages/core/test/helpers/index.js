@@ -1,6 +1,9 @@
 import createTestnet from '@hyperswarm/testnet'
 import Hyperswarm from 'hyperswarm'
 import BlindPeer from 'blind-peer'
+import BlindPushGateway from 'blind-push-gateway'
+import ProtomuxRpcRouter from 'protomux-rpc-router'
+import HyperDHT from 'hyperdht'
 import b4a from 'b4a'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
@@ -128,7 +131,14 @@ export async function makeTestnet(t, size = 3) {
 
 export async function makeNet(t, testnet, opts = {}) {
   const store = opts.store || (await makeStore(t)).store
-  const net = new Network({ bootstrap: testnet.bootstrap, ...opts, store })
+  // tight reconnect tiers: the default escalates to ~10min after a few local
+  // connection resets and strands tests long past their own timeout
+  const net = new Network({
+    bootstrap: testnet.bootstrap,
+    backoffs: [300, 800, 1500, 3000],
+    ...opts,
+    store
+  })
   await net.ready()
   t.teardown(() => net.close().catch(() => {}), { order: 1 })
   return net
@@ -144,8 +154,9 @@ export async function connectPair(t, a, b, topic = randomTopic()) {
   const da = a.join(topic)
   const db = b.join(topic)
   await Promise.all([da.flush(), db.flush()])
-  // both announced: look up now instead of waiting out the 1-3 s re-lookup
-  await Promise.all([da.activate(), db.activate()])
+  // both announced: look up now instead of waiting out discovery's 1-3 s re-lookup
+  await da.activate()
+  await db.activate()
   await Promise.all([waitForConnection(a), waitForConnection(b)])
   t.teardown(() => Promise.all([da.destroy(), db.destroy()]).catch(() => {}), { order: 2 })
   return { da, db, topic }
@@ -219,14 +230,14 @@ export function replay(batches) {
 
 // ─── blind-peer mirror (real, in-process) ─────────────────────────────────
 
-export async function makeMirror(t, testnet) {
-  return (await makeBlindPeer(t, testnet)).publicKey
+export async function makeMirror(t, testnet, opts) {
+  return (await makeBlindPeer(t, testnet, opts)).publicKey
 }
 
-export async function makeBlindPeer(t, testnet) {
+export async function makeBlindPeer(t, testnet, opts = {}) {
   const swarm = new Hyperswarm({ bootstrap: testnet.bootstrap })
   const dir = await t.tmp()
-  const mirror = new BlindPeer(dir, { swarm })
+  const mirror = new BlindPeer(dir, { swarm, ...opts })
   await mirror.listen()
   t.teardown(
     async () => {
@@ -240,6 +251,27 @@ export async function makeBlindPeer(t, testnet) {
     { order: 80 }
   )
   return mirror
+}
+
+// a push gateway whose push service only records what it would send
+export async function makeGateway(t, testnet) {
+  const dht = new HyperDHT({ bootstrap: testnet.bootstrap })
+  const router = new ProtomuxRpcRouter()
+  const sent = []
+  const gateway = new BlindPushGateway(dht, router, { send: async (message) => sent.push(message) })
+  await gateway.ready()
+  t.teardown(
+    async () => {
+      try {
+        await gateway.close()
+      } catch {}
+      try {
+        await dht.destroy()
+      } catch {}
+    },
+    { order: 80 }
+  )
+  return { key: gateway.publicKey, sent }
 }
 
 // the mirror holds every block of what joiners need: the writer core, the bootstrap core and each view
@@ -330,10 +362,20 @@ export async function withRole(t, role, { members = [], after = {}, ...opts } = 
 export async function admit(a, b, role = 'member') {
   const invite = Invite.create({ key: a.key, address: a.address })
   const id = b4a.toHex(invite.id)
-  await a.call('add-invite', { id, role, createdAt: Date.now() })
+  const stamp = await a.write([['add-invite', { id, role, createdAt: Date.now() }]])
   await waitFor(async () => (await b.get('invites', id)).data)
   const payload = sealJoin(invite, b.identity, b.writerKey, crypto.randomBytes(32))
   const op = b.spec.dispatch.encode(`@${b.ns}/join`, payload)
-  await b.bee.append(wrap(b.version, op), { optimistic: true })
+  await b.bee.append(wrap(stamp, op), { optimistic: true })
   await waitFor(async () => (await a.get('members', b.identity.id)).data)
+}
+
+// a modified peer: what it writes skips the dry run and reaches the log as it is
+export function unchecked(db) {
+  db._dryRun = async (ops) => ({
+    changed: true,
+    wrapped: ops.map(([op, payload]) =>
+      wrap(db.version, db.spec.dispatch.encode(`@${db.ns}/${op}`, payload))
+    )
+  })
 }

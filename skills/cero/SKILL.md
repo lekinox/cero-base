@@ -26,6 +26,8 @@ file for each task.
 - `me = await cero(dir, spec)` is the root: the user, their devices, their handles.
 - A handle is a space shared with other people: `cero.open(me.room, { name })` creates one,
   `cero.open(me.room, invite)` joins one, `cero.open(me.room, { id })` reopens one.
+  `cero.get(me.room)` lists the rooms you are in; name a `state` (`asking`, `joining`, `leaving`,
+  `removed`, `denied`, `expired`) to list the others. A room read by its id comes whatever its state.
 - `me` and every handle are contexts: plain state, no methods. Refs hang off them: `me.notes`,
   `room.messages`, and the builtins `members`, `devices`, `invites`, `requests`, `handles`,
   `files`, `status` on every context, `joins` and `nearby` on `me`.
@@ -89,7 +91,10 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
    `INVALID`. `setup(me)` runs before the root opens and may write, so hooks registered there see
    every op; a hook on a type ref (`me.room.notes`) reaches every handle of the type.
 4. **Add fields at the end.** Removing a field or changing its type fails the build; reordering two
-   fields of the same type swaps their data.
+   fields of the same type swaps their data. To ship something before handles use it, mark it
+   `t.later(...)`: handles stay at the previous version, so older devices keep writing, until a
+   release drops the mark and an owner's device moves them. Ask `await cero.supports(room.notes,
+'due')` before showing it; writing it before then throws `UNSUPPORTED`.
 5. **`put` writes a whole row, `set` merges.** `put` creates a row, or replaces it whole when you
    pass an existing `id`. `set` merges your fields over the stored row on this device and writes it:
    of two devices setting one row at once, the one applied last wins. On a single, always `set`.
@@ -100,11 +105,22 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 8. **Invites come from handles.** `cero.invite(room, { role })` admits a member at that rank
    (`owner`, `admin`, `member`, `reader`; `member` by default). A `confirm` invite holds each join in
    `room.requests` until `cero.accept(room, request)` or `cero.deny(room, request, reason)`.
-   `cero.del(room.members, id)` removes a member and re-keys the handle shortly after;
-   `await cero.rotate(room)` re-keys at once.
+   `cero.del(room.members, id)` removes a member and rotates the handle's key in the same step;
+   `await cero.rotate(room)` rotates it at any other time. `cero.revoke(room, invite)` takes the code
+   or the `id` of its `room.invites` row. `cero.invite(room, { to, from, ttl })` lets in `to`, a member
+   of `from`, a handle you both are in, by member id: the room appears in their list with nothing
+   called on their side, and revoking the invite it returns takes it back.
+   A join waiting for approval is ended from any device with `cero.cancel(me, invite)`; the latest
+   ask stands, so asking again under another invite takes the older request back. A leave deletes
+   the room's row; a row that ended otherwise (`denied`, `expired`, `removed`, `cancelled`) stays
+   30 days at most, and `cero.del(me.room, id)` deletes an ended row sooner.
 9. **A phrase recovers, it never creates.** `cero(dir, spec)` with no phrase makes a new identity;
    show `await cero.phrase(me)` to the user once. With a phrase, Cero finds one of the user's devices
-   (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT`.
+   (same `channel` and `mirrors`) and recovers, or rejects with `TIMEOUT` past `recoveryTimeout`
+   (30 s by default, `0` waits as long as it takes). `await cero.peek(dir, spec)` reads `null` on a
+   first run, `'ready'`, or `'recovering'` / `'linking'` while a recovery or a link waits for another
+   device. `cero.set(me.devices, { id, name })` names a device; `cero.del(me.devices, id)` removes a
+   lost one: it loses its seat everywhere and every room rotates its key.
 10. **Bare has no Node globals.** Import `fs`, `path`, `crypto` plainly, no `node:` prefix, and map
     them in your package.json `imports` (`"fs": { "bare": "bare-fs", "default": "fs" }`), as Cero
     does for its own.
@@ -117,7 +133,7 @@ A friend with the same `spec/` joins with `cero.open(me.room, invite)`. Another 
 ```js
 const { data, total } = await cero.get(me.notes, { title: 'first', reverse: true, limit: 20 })
 cero.watch(me.notes, {}).on('data', ({ data }) => console.log(data))
-const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, nearby }
+const { data: status } = await cero.get(room.status) // { role, writable, epoch, suspended, behind, version, nearby, topic, owed }
 ```
 
 - `get(ref)` lists, `get(ref, id)` fetches one, `get(ref, { field })` filters. Queries: equality on
@@ -128,7 +144,8 @@ const { data: status } = await cero.get(room.status) // { role, writable, epoch,
   that changed since the item before, and `reset` on the first.
 - `status` is this device's view of a context: `writable` and `role` turn `false` / `null` when you
   are removed, `suspended` follows `cero.suspend(me)` / `cero.resume(me)` (the app's background and
-  foreground), `behind` asks for an app update. `cero.activate(room)` ranks the handle on screen first
+  foreground), `behind` asks for an app update (a device behind in its root is behind in every
+  handle), `version` is the app version the handle is at. `cero.activate(room)` ranks the handle on screen first
   on the swarm.
 - Bluetooth is only a transport, always there with the radio off: `cero.nearby(me, true)` turns it on
   from the app's own setting at every start, `cero.nearby(me, true, { topic })` narrows it to a
@@ -148,6 +165,8 @@ import { cero } from '@cero-base/cero/client'
 const me = await cero(ipc, spec, { onerror: console.error })
 ```
 
+On a new store the worker opens nothing until the UI connects: `cero(ipc, spec, { phrase })` recovers,
+`{ invite, onrequest }` links, neither creates, as `cero(dir, spec, opts)` does for a new device.
 The UI gets every verb over the wire but `before`, `after` and `tx`, which take functions and run
 only in the worker. Match errors on `err.code`: the code and message cross, and a denied join's reason. Electron uses a
 Bare worker, Expo a Bare worklet, tests a duplex pair.

@@ -6,6 +6,7 @@ import { t, schema } from './lib/spec.js';
 export { Handle, Ref, Local };
 export * from './lib/operators.js';
 export { peek } from './lib/peek.js';
+export { address } from './lib/mail.js';
 export { t, schema } from './lib/spec.js';
 export type Context = import('./handle/index.js').Context;
 export type CeroOpts = {
@@ -13,6 +14,14 @@ export type CeroOpts = {
      * The identity's BIP-39 phrase, as `cero.phrase(me)` gives it: on a new `dir` it recovers that identity.
      */
     phrase?: string;
+    /**
+     * A device invite, as `cero.invite(me)` gives it on another device of yours: on a new `dir` this device joins that identity once a device of it accepts, with no phrase.
+     */
+    invite?: string;
+    /**
+     * With `invite`: called with the request's id as it is sent, the same id `me.requests` shows on the accepting device.
+     */
+    onrequest?: (id: string) => void;
     /**
      * Mnemonic length when generating a fresh identity.
      */
@@ -32,6 +41,14 @@ export type CeroOpts = {
         host: string;
         port: number;
     }>;
+    /**
+     * Blind relay public keys. Two devices that cannot connect direct, as on mobile carriers, connect through one; the relay forwards encrypted bytes and reads nothing. Direct connections stay direct.
+     */
+    relayThrough?: Array<string | Uint8Array>;
+    /**
+     * Incoming-connection filter: `true` refuses the connection.
+     */
+    firewall?: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     /**
      * Swarm reconnect backoff tiers in ms (testing/tuning).
      */
@@ -56,6 +73,10 @@ export type CeroOpts = {
      * Where background errors go; the console without one.
      */
     onerror?: (err: Error) => void;
+    /**
+     * How many handles stay open after their last close, for a reopen; one more closes the least recently used, 0 closes at once. Defaults to 16.
+     */
+    keepOpen?: number;
     /**
      * Max wait to find another device and be admitted, in ms. Defaults to 30000.
      */
@@ -86,15 +107,20 @@ export type CeroOpts = {
 /**
  * @typedef {object} CeroOpts
  * @property {string} [phrase]                         The identity's BIP-39 phrase, as `cero.phrase(me)` gives it: on a new `dir` it recovers that identity.
+ * @property {string} [invite]                         A device invite, as `cero.invite(me)` gives it on another device of yours: on a new `dir` this device joins that identity once a device of it accepts, with no phrase.
+ * @property {(id: string) => void} [onrequest]         With `invite`: called with the request's id as it is sent, the same id `me.requests` shows on the accepting device.
  * @property {12 | 24} [words]                         Mnemonic length when generating a fresh identity.
  * @property {string | null} [name]                    Friendly device name persisted on the identity claim.
  * @property {boolean} [isMobile]                      Marks this device as mobile.
  * @property {Array<{ host: string, port: number }>} [bootstrap]  Custom DHT bootstrap nodes.
+ * @property {Array<string | Uint8Array>} [relayThrough]  Blind relay public keys. Two devices that cannot connect direct, as on mobile carriers, connect through one; the relay forwards encrypted bytes and reads nothing. Direct connections stay direct.
+ * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter: `true` refuses the connection.
  * @property {number[]} [backoffs]                     Swarm reconnect backoff tiers in ms (testing/tuning).
  * @property {string} [channel]                        Optional network-isolation label; only same-channel peers connect.
  * @property {Array<string | Uint8Array>} [mirrors]    Blind-peer public keys. Handles and files are mirrored through them so peers sync even when never online at the same time. Mirrors hold only encrypted blocks — they never read your data.
  * @property {{ active?: number, announced?: number, idle?: number }} [presence]  How many handles search, how many only announce, and the idle ms before the rest leave the swarm.
  * @property {(err: Error) => void} [onerror]            Where background errors go; the console without one.
+ * @property {number} [keepOpen]                     How many handles stay open after their last close, for a reopen; one more closes the least recently used, 0 closes at once. Defaults to 16.
  * @property {number} [recoveryTimeout]                Max wait to find another device and be admitted, in ms. Defaults to 30000.
  * @property {Uint8Array} [storageKey]                 32-byte key encrypting local key material (master seed, device keypairs) at rest. Source it from the OS keychain — cero never stores it.
  * @property {import('./extensions/index.js').Extension[]} [extensions]  The extensions this instance runs, instead of the ones the spec carries. Build with the same list.
@@ -110,17 +136,33 @@ export type CeroOpts = {
  */
 declare function start(dir: string, spec: import('./lib/spec.js').Spec, opts?: CeroOpts): Promise<Context>;
 /**
- * Restore a cero instance from a recovery phrase.
+ * Switch this device to the identity of a recovery phrase. That identity opens beside `me` and
+ * recovers from a device of it; once it has opened, `me` closes and its data is deleted. A failure
+ * leaves `me` as it was, and the phrase of `me`'s own identity resolves `me`.
  *
  * @param {Context} me  The root to restore.
  * @param {string} phrase  The identity's BIP-39 phrase, as `cero.phrase(me)` gives it.
  * @returns {Promise<Handle>}  Freshly restored root handle.
  */
 export declare function restore(me: Context, phrase: string): Promise<Handle>;
-/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore }} */
+/**
+ * Link this device to the identity behind a device invite, as a new device of it with no phrase on
+ * it. It opens beside `me`; once accepted, `me` closes and its data is deleted. A denial or a failure
+ * leaves `me` as it was.
+ *
+ * @param {Context} me  The root to replace.
+ * @param {string} invite  A device invite, as `cero.invite(me)` gives it on a device of that identity.
+ * @param {{ onrequest?: (id: string) => void }} [opts]  `onrequest`: the request's id as it is sent, the one the accepting device sees in `me.requests`.
+ * @returns {Promise<Handle>}  The linked root handle.
+ */
+export declare function link(me: Context, invite: string, { onrequest }?: {
+    onrequest?: (id: string) => void;
+}): Promise<Handle>;
+/** @type {typeof start & typeof verbs & { t: typeof t, schema: typeof schema, peek: typeof peek, restore: typeof restore, link: typeof link }} */
 export declare const cero: typeof start & typeof verbs & {
     t: typeof t;
     schema: typeof schema;
     peek: typeof peek;
     restore: typeof restore;
+    link: typeof link;
 };

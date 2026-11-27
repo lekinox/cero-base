@@ -13,7 +13,7 @@ Stay on Cero for an app. Drop to Core for a tool that speaks the same protocol w
 
 ## Identity
 
-A keypair from a seed. It signs, verifies, seals to another identity, and names a swarm topic.
+A user identity, as one of its devices holds it. The seed writes the identity key, which attests this device once and is dropped: the device key signs everything after, under a proof chaining it to the identity, and is what boxes are sealed to.
 
 ```js
 import b4a from 'b4a'
@@ -21,30 +21,34 @@ import { Identity } from '@cero-base/core'
 
 const identity = await Identity.create() // 12 words; { words: 24 } for 24
 const phrase = identity.toPhrase() // show it once, the user writes it down
-const same = await Identity.create({ seed: Identity.toSeed(phrase) }) // on any device
+const same = await Identity.create({ seed: Identity.toSeed(phrase) }) // another device: same id, its own key
 
 const message = b4a.from('hi')
-const signature = identity.sign(message)
-Identity.verify(same.publicKey, message, signature) // true
+const proof = identity.sign(message)
+Identity.verify(proof, message, same.publicKey) // { identity, device }
 ```
 
-| Member                                                           | Does                                                                                       |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `Identity.create({ seed, words })`                               | The identity a 16- or 32-byte `seed` writes, or a fresh one: `words` 12 (default) or 24.   |
-| `Identity.toSeed(phrase)`, `Identity.toPhrase(seed)`             | Phrase to seed and back. `INVALID` for a phrase that is not BIP-39.                        |
-| `identity.toPhrase()`                                            | Its phrase.                                                                                |
-| `id`, `publicKey`, `secretKey`, `seed`, `encryptionKey`, `topic` | Its z32 id, keys and seed; a symmetric key from the seed; the swarm topic it announces on. |
-| `identity.sign(message)`, `identity.verify(message, signature)`  | Sign; check a signature against this identity.                                             |
-| `Identity.verify(publicKey, message, signature)`                 | Check a signature against any public key.                                                  |
-| `Identity.seal(publicKey, message)`, `identity.unseal(box)`      | A box only that identity opens; its bytes, or `null` when it does not open.                |
-| `Identity.randomKeyPair()`                                       | A fresh `{ publicKey, secretKey, id }`, for a device's writer.                             |
-| `Identity.randomBytes(n)`                                        | `n` random bytes, 32 by default.                                                           |
+| Member                                                                 | Does                                                                                                                                                                 |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Identity.create({ seed, words, device })`                             | The identity a 16- or 32-byte `seed` writes, or a fresh one: `words` 12 (default) or 24. `device` is this device's keypair, a fresh one by default.                  |
+| `Identity.from({ publicKey, encryptionKey, device, proof, seed })`     | The identity as a stored or linked device holds it. `INVALID` unless `proof` chains `device` to it.                                                                  |
+| `Identity.toSeed(phrase)`, `Identity.toPhrase(seed)`                   | Phrase to seed and back. `INVALID` for a phrase that is not BIP-39.                                                                                                  |
+| `identity.toPhrase()`                                                  | Its phrase. `INVALID` on a linked device, which never has the seed.                                                                                                  |
+| `id`, `publicKey`, `seed`, `encryptionKey`, `topic`, `device`, `proof` | Its z32 id and public key; the seed, `null` on a linked device; a symmetric key from the seed; the swarm topic it announces on; this device's keypair and proof.     |
+| `identity.sign(data)`                                                  | A proof over `data`: this device's signature, under its chain to the identity.                                                                                       |
+| `Identity.verify(proof, data, publicKey)`                              | `{ identity, device }`: whom the proof chains to and who signed, or `null`. `data` `null` checks the chain alone; `publicKey` is the identity expected, any without. |
+| `identity.link(publicKey)`                                             | A proof for a new device of the identity, attested by this one.                                                                                                      |
+| `Identity.bare(device)`                                                | A device with no identity yet: its own key stands for the identity until one attests it. A fresh keypair by default.                                                 |
+| `Identity.chain(proof)`                                                | The keys a proof chains through, the identity first; empty when it is not a proof.                                                                                   |
+| `Identity.seal(publicKey, message)`, `identity.unseal(box)`            | A box only that device opens; its bytes, or `null` when it does not open.                                                                                            |
+| `Identity.randomKeyPair()`                                             | A fresh `{ publicKey, secretKey, id }`, for a device or a writer.                                                                                                    |
+| `Identity.randomBytes(n)`                                              | `n` random bytes, 32 by default.                                                                                                                                     |
 
-An identity is frozen, and `JSON.stringify` shows only its `id`. A device's writer is never the identity keypair: every device authors its own.
+An identity is frozen, and `JSON.stringify` shows only its `id`. The identity's secret key is never kept. A device's writer is never its device keypair: every device authors its own.
 
 ## Network
 
-The Holepunch replicator plus wakeup, with one discovery session per topic. Every connection, replicator or injected, replicates the network's store, so every core in it rides every peer.
+Hyperswarm plus wakeup, with managed discovery sessions. Every connection, swarm or injected, replicates the network's store, so every core in it rides every peer.
 
 ```js
 import { Network } from '@cero-base/core'
@@ -52,37 +56,37 @@ import { Network } from '@cero-base/core'
 // store: a Corestore; topic: 32 bytes; core: a hypercore in the store
 const net = new Network({ store, channel: 'my-app' })
 await net.ready()
-const discovery = net.join(topic) // pinned: announce and look up now
+const discovery = net.join(topic) // announce and look up
 await net.flush({ timeout: 2000 }) // wait for the DHT, 2 s at most
 net.attach(core) // keep it on the mirrors too
 ```
 
-| Option         | Meaning                                                                                                                                                         |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                                                                                        |
-| `identity`     | The peer keypair. One derived from the store without.                                                                                                           |
-| `channel`      | Only peers on the same channel meet.                                                                                                                            |
-| `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                                                                                                 |
-| `bootstrap`    | `[{ host, port }]` DHT nodes.                                                                                                                                   |
-| `firewall`     | `(remotePublicKey, payload) => boolean`: `true` refuses the connection.                                                                                         |
-| `relayThrough` | Relay keys to tunnel through.                                                                                                                                   |
-| `presence`     | `{ active, idle }`, the budget for topics in the rotation: how many announce at once, 8, and the ms one keeps its slot before a touched one may take it, 30000. |
-| `onerror`      | Background errors. The console without one.                                                                                                                     |
+| Option         | Meaning                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| `store`        | A Corestore. `REQUIRED`. Every connection replicates it.                                   |
+| `channel`      | Only peers on the same channel meet.                                                       |
+| `mirrors`      | Mirror keys, strings or bytes: attached cores are kept on them.                            |
+| `bootstrap`    | `[{ host, port }]` DHT nodes.                                                              |
+| `backoffs`     | Reconnect backoff steps in ms.                                                             |
+| `firewall`     | `(remotePublicKey, payload) => boolean`: `true` refuses the connection.                    |
+| `relayThrough` | Blind relay keys, strings or bytes: a connection uses one only when a direct one fails.    |
+| `presence`     | `{ active, announced, idle }`, the swarm budget for attached databases: 8, 8 and 30000 ms. |
+| `onerror`      | Background errors. The console without one.                                                |
 
-| Member                                                                         | Does                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `net.join(topic, { pin })`                                                     | A `Discovery`. Pinned by default: it announces and looks up until destroyed, outside the budget; `pin: false` puts it in the rotation. It has `state`, `active`, `activate()` to pin and look up now, `deactivate()` to unpin, `touch()` and `release()` to rank it first or last, `flush()`, which waits for the current query with no bound, and `destroy()`. A topic joined twice is one session, left on the last destroy. |
-| `net.state(topic)`                                                             | `'pinned'`, `'autostarted'`, `'discovering'` or `'inactive'`; `null` once left.                                                                                                                                                                                                                                                                                                                                                |
-| `net.flush({ timeout })`                                                       | Wait for pending announces, lookups and dials, `timeout` ms at most (500).                                                                                                                                                                                                                                                                                                                                                     |
-| `net.attach(core)`                                                             | Keep a core or a database's bee on the mirrors while its writers are offline. A mirror drops it once it closes.                                                                                                                                                                                                                                                                                                                |
-| `net.replicates(store)`                                                        | Whether `store` is this network's store or a session of it: only those cores ride its connections.                                                                                                                                                                                                                                                                                                                             |
-| `net.suspend()`, `net.resume()`                                                | Drop the sockets and keep the state; come back.                                                                                                                                                                                                                                                                                                                                                                                |
-| `net.inject(stream, { isInitiator })`                                          | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                                                                                                                                                                                                                          |
-| `net.peering()`                                                                | The mirror client, built on first use.                                                                                                                                                                                                                                                                                                                                                                                         |
-| `replicator`, `dht`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live replicator and its state.                                                                                                                                                                                                                                                                                                                                                                                             |
-| `'connection'` event                                                           | `(stream, info)` per connection.                                                                                                                                                                                                                                                                                                                                                                                               |
+| Member                                                             | Does                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `net.join(topic, { mode })`                                        | A `Discovery`. `'active'` (default) announces and looks up, `'passive'` only announces. It has `mode`, `activate()`, `deactivate()`, `destroy()`, and `flush()`, which waits for the current announce with no bound. |
+| `net.flush({ timeout })`                                           | Wait for pending announces and lookups, `timeout` ms at most (500).                                                                                                                                                  |
+| `net.attach(core)`                                                 | Keep a core or a database's bee on the mirrors while its writers are offline. A mirror drops it once it closes.                                                                                                      |
+| `net.replicates(store)`                                            | Whether `store` is this network's store or a session of it: only those cores ride its connections.                                                                                                                   |
+| `net.suspend()`, `net.resume()`                                    | Drop the sockets and keep the state; come back.                                                                                                                                                                      |
+| `net.inject(stream, { isInitiator })`                              | Feed in a connection you made yourself, a Bluetooth link or an in-process pipe. `isInitiator` picks the handshake side of a raw duplex. Returns the encrypted stream.                                                |
+| `net.peering()`                                                    | The mirror client, built on first use.                                                                                                                                                                               |
+| `net.closePeering()`                                               | Stop mirroring before the databases close; `peering()` throws `CLOSED` after.                                                                                                                                        |
+| `swarm`, `peers`, `connections`, `suspended`, `wakeup`, `presence` | The live swarm and its state.                                                                                                                                                                                        |
+| `'connection'` event                                               | `(stream, info)` per connection.                                                                                                                                                                                     |
 
-A join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s; one that drops is redialed, backing off from 2 s to 10 min. On `resume()`, the joined topics look up again, backing off from 5 s to 60 s, until a peer is back, and after a network change this peer announces where it is now reached. The rotation runs every second: the top `active` topics by their last touch announce, and a touched topic moves in once a slot has been held `idle` ms.
+An `'active'` join looks up again 1 to 3 s after its first announce, so two peers that join at once meet in seconds. A connection whose peer never answers is dropped after 3 s. After a connection drops, or on `resume()`, active topics look up again, backing off from 5 s to 60 s, until the lost peers are back, and after a network change this peer announces where it is now reached.
 
 `channelTopic(topic, channel)` is the topic a channel really joins.
 
@@ -118,55 +122,63 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 `spec` is one built scope, with `database`, `dispatch` and `meta`: the root database opens on the built `spec` itself, a handle on `spec.handles.<type>`.
 
-| Option          | Meaning                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------- |
-| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).    |
-| `identity`      | Who writes: it signs the admissions. `REQUIRED`.                                        |
-| `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                           |
-| `network`       | Replicates it. Without one it stays on the device.                                      |
-| `key`           | Open an existing database. A new one without.                                           |
-| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.           |
-| `epochs`        | The keys it rotated to, as a join delivers them.                                        |
-| `keyPair`       | This device's writer keypair, a fresh one by default. Never the identity's (`INVALID`). |
-| `namespace`     | The Corestore namespace, `'cero'`.                                                      |
-| `pinned`        | Always announce and look up, outside the network's presence budget.                     |
-| `onerror`       | Ops skipped or refused at apply, and the log's own errors.                              |
+| Option          | Meaning                                                                                                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `store`         | A Corestore. `REQUIRED`. With a `network`, its store or a session of it (`INVALID`).                                                                                                              |
+| `identity`      | Who writes: its device signs the admissions. `REQUIRED`.                                                                                                                                          |
+| `spec`          | The scope above. `INVALID` without `database` and `dispatch`.                                                                                                                                     |
+| `network`       | Replicates it. Without one it stays on the device.                                                                                                                                                |
+| `key`           | Open an existing database. A new one without.                                                                                                                                                     |
+| `encryptionKey` | Its encryption key. `REQUIRED`. A join hands it out, so never the identity's.                                                                                                                     |
+| `epochs`        | The keys it rotated to, as a join delivers them.                                                                                                                                                  |
+| `keyPair`       | This device's writer keypair, a fresh one by default. Never its device keypair (`INVALID`).                                                                                                       |
+| `namespace`     | The Corestore namespace, `'cero'`.                                                                                                                                                                |
+| `pinned`        | Always search and announce, outside the network's presence budget.                                                                                                                                |
+| `root`          | The identity's own database: a device key past a removed one stands while a device of the identity is seated on it. In a handle it stands once a device of the identity tells it.                 |
+| `push`          | Push a notification through the network's mirrors after a local write to a ref whose meta declares `push`, naming the ref; one in flight and the latest block once more after it. Off by default. |
+| `onerror`       | Ops skipped or refused at apply, and the log's own errors.                                                                                                                                        |
+| `parent`        | A database this one follows, as a handle follows its root: behind there, it is behind here too.                                                                                                   |
 
-| Method                                               | Does                                                                                                                                       |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `put(name, row)`                                     | `{ data }`: insert into a collection, or overwrite by id, keeping `createdAt`. It stamps the timestamps, ignoring any you pass.            |
-| `set(name, row, { upsert })`                         | `{ data }`, or `null` when `{ upsert: false }` finds no row. Merges, keeping `createdAt`.                                                  |
-| `get(name, idOrQuery)`                               | `{ data }`, or `{ data, total, size }` for a query, as Cero's `get`.                                                                       |
-| `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                           |
-| `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                 |
-| `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                           |
-| `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                        |
-| `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs. |
-| `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.      |
-| `rotate()`                                           | `{ epoch }`: a new key sealed to every member. `INVALID` inside `tx`.                                                                      |
-| `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                    |
-| `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives. A reader's device takes none. `TIMEOUT` after 30000 ms.                 |
-| `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                         |
-| `addWriter(publicKey)`, `removeWriter(publicKey)`    | Admit another device of your identity, or remove a device, by its writer keypair's public key.                                             |
-| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` ranks it last: a slot only while one is spare, until the next update.                   |
+| Method                                               | Does                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `put(name, row)`                                     | `{ data }`: insert into a collection, or overwrite by id, keeping `createdAt`. It stamps the timestamps, ignoring any you pass.                                                                                                                                                                 |
+| `set(name, row, { upsert })`                         | `{ data }`, or `null` when `{ upsert: false }` finds no row. Merges, keeping `createdAt`.                                                                                                                                                                                                       |
+| `get(name, idOrQuery)`                               | `{ data }`, or `{ data, total, size }` for a query, as Cero's `get`.                                                                                                                                                                                                                            |
+| `del(name, id)`                                      | Delete by id, or clear a single.                                                                                                                                                                                                                                                                |
+| `watch(name, query)`                                 | A stream of `get` results, one per change.                                                                                                                                                                                                                                                      |
+| `changes(name, query)`                               | A stream of `{ changes, reset }`, the `{ prev, next }` rows since the last item.                                                                                                                                                                                                                |
+| `since(name, mark)`                                  | `{ changes, reset, settle }`: rows changed since `settle()` last ran under `mark`, restarts included; all rows on `reset`. One caller.                                                                                                                                                          |
+| `call(name, data)`                                   | Run an action. `INVALID` when no `after` hook is registered for it.                                                                                                                                                                                                                             |
+| `tx(fn)`                                             | Writes `fn` makes through its argument land as one append. `fn` must take it. Atomic, not isolated: other writes can land while `fn` runs.                                                                                                                                                      |
+| `before(op, fn)`, `after(op, fn)`                    | Hooks on `'put'`, `'set'`, `'del'` or an action's name, for every ref, builtins included: check `ctx.name`. Each returns its remover.                                                                                                                                                           |
+| `rotate()`                                           | `{ epoch }`: a new key sealed to every device. `INVALID` inside `tx`.                                                                                                                                                                                                                           |
+| `bootstrap({ name, isMobile, recovering, timeout })` | Set this device up: the first writer and owner, or with `recovering: true` another device of an identity already in it.                                                                                                                                                                         |
+| `claim({ timeout })`                                 | Seat this device's writer once your identity's member row arrives, or the promise a join on an invite with its own address got: the claim then writes the member row. A member's reader device takes none. `TIMEOUT` after 30000 ms; `DENIED`, with the reason, when the promise was withdrawn. |
+| `whenWritable({ timeout })`                          | Resolves once this device can write. `TIMEOUT` after 30000 ms; `0` waits for good.                                                                                                                                                                                                              |
+| `learn(epochs)`                                      | Keep epochs handed over after the open: each once its announcement applied here and the secret meets the commitment it carries.                                                                                                                                                                 |
+| `removeWriter(publicKey)`                            | Remove a device, by its writer keypair's public key.                                                                                                                                                                                                                                            |
+| `setActive(on)`                                      | `true` ranks it as just used on the swarm, `false` leaves the swarm until the next update.                                                                                                                                                                                                      |
 
-It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view` and `behind`, and emits:
+It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view`, `behind` and `pushing`, and emits:
 
-| Event                    | Carries                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------- |
-| `update`                 | A `Set` of the ref names a batch touched, `'*'` for any.                      |
-| `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated. |
-| `writable`, `unwritable` | This device gained or lost write.                                             |
-| `behind`                 | The version of a newer app whose op was skipped.                              |
+| Event                    | Carries                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `update`                 | A `Set` of the ref names a batch changed, `'*'` for any. A batch that changes no row emits none.                              |
+| `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated.                                                 |
+| `writable`, `unwritable` | This device gained or lost write. `writable` fires once the view holds its admission, so a read on it sees this device's row. |
+| `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.                                                           |
+| `behind`                 | The database's version, once it is past this build's contract.                                                                |
+
+A database is at a version of the app, kept in its view. A new one starts at `spec.meta.target`, and an owner's device on a build whose target is higher moves it there with an `upgrade` op of its own once it opens it, or with its first write if that comes sooner, in the same batch. It never goes down. Every device writes as the database's version: a write naming what that version lacks throws `UNSUPPORTED`, and an op applies as the version it was written at, so what its author's version lacked stays as stored. Past this build's contract, `spec.meta.version`, the database is behind: `behind` holds the version, ops written past the contract wait until an update applies the log again, and every write throws `BEHIND` but a member's own leaving.
 
 Who writes:
 
 - **Another device of yours** opens the same key and runs `db.bootstrap({ recovering: true })`. It claims its seat, then records its device row.
 - **A member you invited** needs nothing: its join seats it, and `db.whenWritable()` resolves once that lands.
-- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer the identity signs from the device's own core, and resolves when it writes. A reader's device holds no seat.
-- Only the genesis batch names a member directly. Everyone after comes in through a join, and nobody seats a writer for another identity.
+- **A member's new device** opening a database it has the key of runs `db.claim()`. Once its identity's member row arrives it admits itself, an add-writer its device signs from its own core, and resolves when it writes. A reader's device holds no seat. A claim the database refused is made again once the member row or a promise is new. A device whose identity was let in through an invite with its own address runs it too: there is no member row until then, the claim writes it, and for a reader it resolves at that row.
+- Only the genesis batch names a member directly. Everyone after comes in through a join, and a device seats only itself: an add-writer for another core is ignored.
 
-Keys: `db.rotate()` opens a new key, and rotations on one device run one after another. A device that may remove also re-keys by itself when the members change, a database's first removal included. See [How it works](how-it-works.md).
+Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on one device run one after another. A removal by a device that may remove carries its rotation: it resolves with the new key in place, sealed to the devices that stay, and the device's other writes wait until both are in the log. Such a device also rotates the key by itself when the devices change any other way, a database's first removal included. A device joining later reads the epochs it is handed, `epochs`, never the envelopes sealed to others. See [How it works](how-it-works.md).
 
 ## Mailbox
 
@@ -182,6 +194,7 @@ await mailbox.ready()
 
 const secret = Identity.randomBytes(32) // yours to keep: whoever holds it receives
 const address = Mailbox.getAddress(secret) // share this
+const pair = Mailbox.keyPair(secret) // { publicKey, secretKey }: open what was encrypted to the address
 
 const inbox = mailbox.receive(secret, (message) => {
   console.log(b4a.toString(message))
@@ -192,9 +205,13 @@ await mailbox.send(address, b4a.from('hi'))
 await inbox.close() // stop receiving
 ```
 
-- **Nothing is lost.** The outbox keeps a message until someone reads it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, put, del }`, keep that across a restart. A message may arrive twice, never not at all.
+- **Kept until stored.** The outbox keeps a message until a device or a mirror stored it, the inbox until `onmessage` resolves. Persistent boxes, `new Mailbox(network, { inbox, outbox })`, each any `{ list, get, put, del }`, keep that across a restart. A message may arrive twice, never not at all; once handled, it is not handed over again, though a mirror still holds it. The inbox remembers what it handled at an address for 30 days: one a mirror still announces after that comes again.
+- **No message in the boxes.** The outbox keeps a message sealed to its address; the inbox keeps which core it came in, and reads it from there.
 - **A throwing `onmessage`** keeps the message and reports to `onerror`, the constructor option.
-- **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default.
+- **A slow `onmessage`.** Sixteen messages are read and handled at a time; one still being handled after 30 seconds stays in the inbox and makes room for the next. `receive(secret, onmessage, { timeout })` sets those 30 seconds, and how long an announced message has to arrive.
+- **An `onmessage` that resolves `false`** turns the message away: nothing of it stays on this device, as for one that does not open.
+- **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default. A mirror storing it counts as delivered, and a mirror hands over only the newest 32 messages waiting for one address: with more waiting while the owner is offline, the older ones are not delivered.
+- **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once a device or a mirror stored it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A message that was being read when the app was killed or its inbox closed is handed over at the next start and stays on the device, whatever `keep` says or `onmessage` resolves. A mirror keeps its copy either way.
 - **Anonymous.** A message carries no sender. One that needs a sender signs itself.
 
 ## Pairing
@@ -208,7 +225,7 @@ import { Identity, Network, Mailbox } from '@cero-base/core'
 
 // once per device: who you are, how you connect, where replies arrive. store: a Corestore
 const identity = await Identity.create()
-const network = new Network({ identity, store })
+const network = new Network({ store })
 const mailbox = new Mailbox(network)
 ```
 
@@ -243,22 +260,25 @@ await room.whenWritable() // skip for a reader: it never becomes writable
 
 The invite string carries:
 
-- `key`, the database's key, and `address`, the address its encryption key owns.
+- `key`, the database's key, and `address`, where its join is sealed to. An invite has an address of its own once the database's version keeps the secret behind it on the invite's record; until then it is the address the database's encryption key owns.
 - `seed`, whose keypair proves the join.
 - `link`, the node that added the invite's record. The join links it, so no member applies a join before its invite, even one minted on a device that was offline.
 - `expires`, and `data`, an optional payload the app reads before joining.
+- `stamp`, the version of the database its record was written at. The join is written at it too, and `Pairing.join` throws `BEHIND` on an app built below it: update the app, then join. Once the database is past the version it started at, a Cero release from before the stamp refuses the invite with `INVALID_INVITE`, as it does any invite with an address of its own.
 
-It names no mirrors: each side waits on its own network's, so give every device the same ones. The database keeps the invite's public id, role, expiry, and whether it is reusable or needs confirming, never its seed. `ttl` is ms or a duration like `'12h'`. A reusable invite grants member at most, so a higher rank is handed out once.
+It names no mirrors: each side waits on its own network's, so give every device the same ones. The database keeps the invite's public id, role, expiry, and whether it is reusable or needs confirming, never its seed. With an address of its own it also keeps that address's secret, so every device that has the record opens the invite's joins and proves their answers. `ttl` is ms or a duration like `'12h'`. A reusable invite grants member at most, so a higher rank is handed out once.
 
 How a join goes:
 
 1. **Write.** `Pairing.join` writes the join as the first block of the joiner's own writer core, in the network's store: open the database from that same store. It is sealed to the invite's address, so only members read who joins. It carries two signatures: the invite's over the writer, and the joiner's over the invite, the writer and the reply address.
 2. **Reach.** The core is announced to the database's peers and left on the mirrors. Any member device with the database open pulls it in.
-3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite.
-4. **Keys.** Every device of a member that can invite offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed.
+3. **Admit.** Apply checks both signatures and the invite's record, and turns away a member removed after the invite was minted. Then, in one step, it adds the member and the device, seats the writer when the role writes, and spends a single-use invite. Under an invite with its own address it adds nobody yet: it writes the join's row in `requests` as `admitted` and `promised`, at the role, and spends a single-use invite.
+4. **Keys.** Every device of a member that can invite, and is not behind, offers the keys to the joiner's reply address while it is online, directly and on the mirrors. The first one read settles it for everyone, and a member back online picks up what is still owed. A promised joiner is offered its keys until its invite expires, and a read settles nothing: the joiner opens the database with the keys and runs `db.claim()`, which adds the member at the promised role and seats the device. Any device of that identity holding the keys may run it. A member that can invite deletes the promised row once the joiner's device is seated. A rotation is sealed to promised devices too, while their invite lasts, so a joiner let in before one reads on after her claim. A device that is removed takes with it every request that stands on its key: its own promise, and a join, waiting or promised, whose chain passes through it. A promise is withdrawn by `pairing.deny(id, reason)` from a member that can remove, by revoking its invite unless that join used it up, and at the invite's expiry when no device took the seat: the joiner gets `DENIED` and the reason, and so does a `db.claim()` on a device that holds the keys, waiting or made after. Under an invite with its own address an answer, the keys or a refusal, carries a tag only that invite's secret and the joiner's reply address make, and `Pairing.join` ignores any other.
 5. **Expiry.** Apply has no clock: past an invite's expiry, a member that can remove drops the invite and any joiner still without keys.
 
-A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again.
+A join resumed with the same `writer` still hears its reply. `Pairing.join` takes a `timeout` (30000 ms; `0` waits until the invite expires, or for good when it never does) and a `signal`; closing the mailbox stops it too. Pass `keep` to save the answer, the keys or the `DENIED`, before the join settles: the reply stays in the mailbox until it resolves, so a join resumed after a crash gets it again. An answer being kept when the invite expires still settles the join; one `keep` fails on past the expiry ends it with `EXPIRED`.
+
+`Pairing.cancel(mailbox, invite, { spec, writer })` takes a waiting join back: the same `writer` says so after its join, and the database drops its request unless a member let it in first. Nobody is turned away, and the request is gone from `requests` on every device. It resolves once a peer or a mirror holds the cancel, and rejects `CLOSED` if the mailbox closes first; called again with the same `writer`, it announces the cancel it wrote.
 
 ### Accepting or rejecting a join
 
@@ -279,11 +299,36 @@ for await (const { data: requests } of room.watch('requests', { admitted: false 
 
 - Requests are rows of `requests`, by the joiner's writer id, with the `role` they ask for: they survive a restart and the first member to answer settles it for all. The rows also hold admitted joins until their keys are read (`admitted: true`), hence the filter.
 - `pairing.accept(id)` admits the joiner at the invite's role. `pairing.accept(id, { role })` can grant a lower one: `INVALID` for a role that is not a rank or is above the invite's, `REFUSED` above your own. It throws `EXPIRED` once the invite has expired.
+- `pairing.accept(id, { proof })` admits the joiner as a device of your own identity, not as a member: `proof` is `identity.link(request.key)`, your device attesting theirs. Apply checks the chain ends at the request's key under your identity (`REFUSED` otherwise), seats the writer under your member with the proof on its device row, and the reply carries that `proof`. A joiner with no identity yet joins as `Identity.bare(device)` and becomes `Identity.from({ publicKey, encryptionKey, device, proof })` from the reply.
 - `pairing.deny(id, reason)` turns the joiner away; their `Pairing.join` rejects with `DENIED` and your reason.
 - Both throw `UNKNOWN` for an id nothing waits under: answered already, here or on another device, or not seen yet.
-- `pairing.revoke(invite)` needs the remove permission and turns the invite's waiting requests away too.
-- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer.
+- `pairing.revoke(invite)` takes the code or the id of its `invites` row, needs the remove permission and turns the invite's waiting requests away too.
+- A join the database turns away with an invite it knows is answered like an admission: `Pairing.join` rejects `DENIED` with `err.reason` `'revoked'`, `'spent'` or `'removed'`. A join with an invite it never held gets no answer. An invite that is spent or revoked answers the newest join made with it: an earlier one nobody had answered yet ends at its timeout. A live invite answers a removed identity the same way, the newest of her joins. `'removed'` also answers a device whose chain holds a removed device key: a removal keeps the key beside the removed members, for good.
 - `Invite.parse(invite).discoveryKey` tells you which database an invite opens.
+
+## Push
+
+The receiving end of a blind push: a proof of one block of a writer's core, encrypted with the
+database key, that a mirror built and the platform delivered. Verified against the device's own
+storage, so it holds only for a writer the device already stores, and only for one of the handle's
+`writers`, the writer keys that may write to the database now.
+
+```js
+import { topic, verify, decrypt } from '@cero-base/core/push'
+
+const id = topic(payload) // the topic the push names, the database's discovery key in hex, or null
+// storage: the corestore's, `store.storage`, live or opened read-only; handles: [{ id, key, writers }]
+const hit = await verify(storage, payload, handles) // { id, key, length, newer, ref, block } or null
+const op = await decrypt(storage, hit, { encryptionKey, epochs }) // the op's bytes, or null
+```
+
+`topic` reads which database a push is about before anything is verified. `newer` is whether the
+device is behind the proved length, `ref` the ref the write was on, as the sender's meta names it,
+`block` the written block when it fit the push. `decrypt` opens that block as the writer's core
+would, with the database's encryption key and the rotation epochs it has learned (`keyring.all()`),
+and strips the envelope: the op bytes, for the spec's dispatch to decode. Null without a block, for
+an epoch not among `epochs`, or another key. A database opened with `push: true` sends one through
+its network's mirrors after a local write to a ref whose meta entry declares `push`.
 
 ## Storage
 
@@ -301,11 +346,11 @@ await local.put('drafts', { text: 'hi' })
 const { data } = await local.get('drafts', { limit: 10 })
 ```
 
-| Member                                                | Does                                                                                                      |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `Storage.bee(dir, { spec, root, store, storageKey })` | A Hyperbee in its own Corestore under `dir`, or in `store`. `storageKey`, 32 bytes, encrypts it at rest.  |
-| `Storage.rocks(dir, { spec, root })`                  | A RocksDB column family in `dir`'s storage. No `storageKey`.                                              |
-| `put`, `set`, `get`, `del`, `watch`                   | As on a `Database`, with the same queries; `total` is always counted. No hooks, actions, `tx` or indexes. |
+| Member                                                | Does                                                                                                                                                            |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Storage.bee(dir, { spec, root, store, storageKey })` | A Hyperbee in its own Corestore under `dir`, or in `store`. `storageKey`, 32 bytes, encrypts it at rest.                                                        |
+| `Storage.rocks(dir, { spec, root })`                  | A RocksDB column family in `dir`'s storage. No `storageKey`.                                                                                                    |
+| `put`, `set`, `get`, `del`, `watch`                   | As on a `Database`, with the same queries; `total` can be `null` when `limit` filled the page, and `total: true` counts it. No hooks, actions, `tx` or indexes. |
 
 From a Cero build, its `spec` is `{ database: spec.local.database, meta: spec.meta.local }`. In Cero, the device's local `Storage` is a bee in the same Corestore under `dir/main`, holding the seed, the handle writer keypairs, pending joins, mail, the channel and the `local` scope.
 

@@ -1,6 +1,7 @@
 import ReadyResource from 'ready-resource';
 import { Invite } from './invite.js';
 import { Mailbox } from '../mailbox/index.js';
+export { Pass } from './pass.js';
 export type KeyPair = {
     publicKey: Uint8Array;
     secretKey: Uint8Array;
@@ -36,12 +37,24 @@ export type InviteOpts = {
      * The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
      */
     data?: Uint8Array | null;
+    /**
+     * The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
+     */
+    to?: string | null;
+    /**
+     * The device keys of the member it is made `to`, handed the room's keys with it: a rotation before she comes is sealed to them.
+     */
+    keys?: Uint8Array[];
 };
 export type AcceptOpts = {
     /**
      * Role granted: the invite's by default, at most the invite's.
      */
     role?: string;
+    /**
+     * The joiner's chain to your identity, from `identity.link`: it joins as a device of yours, not as a member.
+     */
+    proof?: Uint8Array | null;
 };
 export type JoinOpts = {
     /**
@@ -58,6 +71,8 @@ export type JoinOpts = {
         meta?: {
             ns?: string;
             version?: number;
+            start?: number;
+            encoding?: Record<string, number>;
         };
     };
     /**
@@ -89,6 +104,10 @@ export type JoinResult = {
      * The writer the join admitted: open the database with it.
      */
     writer: KeyPair;
+    /**
+     * A device's chain to the identity it was linked under, null for a member.
+     */
+    proof: Uint8Array | null;
 };
 /**
  * @typedef {{ publicKey: Uint8Array, secretKey: Uint8Array }} KeyPair
@@ -103,13 +122,16 @@ export type JoinResult = {
  * @property {boolean} [reuse]                      Admit more than one joiner. Otherwise spent by the first.
  * @property {boolean} [confirm]                    Its joins wait for a member to accept them, as requests.
  * @property {Uint8Array | null} [data]             The app's payload in the invite, readable before joining: `Invite.parse(invite).data`.
+ * @property {string | null} [to]                   The id of the one member it is made for: nobody else joins with it. Single-use, never `confirm`.
+ * @property {Uint8Array[]} [keys]                  The device keys of the member it is made `to`, handed the room's keys with it: a rotation before she comes is sealed to them.
  *
  * @typedef {object} AcceptOpts
  * @property {string} [role]                        Role granted: the invite's by default, at most the invite's.
+ * @property {Uint8Array | null} [proof]            The joiner's chain to your identity, from `identity.link`: it joins as a device of yours, not as a member.
  *
  * @typedef {object} JoinOpts
  * @property {import('../identity/index.js').Identity} identity  Who joins: the member they become, and who signs the join.
- * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number } }} spec  The database's spec: the join is one of its ops.
+ * @property {{ dispatch: { encode: Function }, meta?: { ns?: string, version?: number, start?: number, encoding?: Record<string, number> } }} spec  The database's spec: the join is one of its ops.
  * @property {KeyPair} [writer]                     Their writer keypair in the database, a fresh one by default. The join is its first block and its secret key owns the reply address: pass the same one to resume a join after a restart.
  * @property {number} [timeout]                     Deadline for the reply, in ms; `0` waits until the invite expires, or for good. Defaults to 30000.
  * @property {AbortSignal} [signal]                 Stops the join, rejecting it with `CLOSED`, as closing the mailbox does.
@@ -120,15 +142,23 @@ export type JoinResult = {
  * @property {Uint8Array | null} encryptionKey
  * @property {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} epochs
  * @property {KeyPair} writer                       The writer the join admitted: open the database with it.
+ * @property {Uint8Array | null} proof              A device's chain to the identity it was linked under, null for a member.
  */
 /**
  * Invites into a database. An invite is a record in the database; a joiner writes one signed
  * `join` op into its own writer core and announces it to the database's peers, and apply admits
  * it. The admission stays in the database until the joiner has its keys: every device of a member
- * that may invite offers them while online, and the first one read settles it for all. A join
+ * that may invite offers them while online, and the first one read settles it for all. Under an
+ * invite with an address of its own, being let in is a promise: no member and no seat until a device
+ * of the joiner, holding the keys, claims its seat. Its keys are offered until a member that may
+ * invite sees that device seated and settles the promise, or until the invite expires, whoever
+ * reads them. A join
  * turned away with an invite the database knows, spent, revoked or older than the joiner's
  * removal, is answered the same way with `DENIED` and the reason. A `confirm` invite's joins wait
  * as rows of `requests` until a member accepts or denies one by its id.
+ * Where the database's version keeps an invite's secret on its record, the invite has an address
+ * of its own: its joins are sealed to it, and its answers follow the tag only that secret and the
+ * joiner's reply address make. Elsewhere an invite carries the database's address.
  * `Pairing.join` is the other side: write the join, wait for the reply.
  */
 export declare class Pairing extends ReadyResource {
@@ -141,9 +171,15 @@ export declare class Pairing extends ReadyResource {
     /** @private */
     _denials;
     /** @private */
+    _keys;
+    /** @private */
+    _inbox;
+    /** @private */
     _expiry;
     /** @private */
     _onupdate;
+    /** @private */
+    _onepoch;
     /** @param {PairingOpts} [opts] */
     constructor({ mailbox, db }?: PairingOpts);
     /** @private */
@@ -156,11 +192,15 @@ export declare class Pairing extends ReadyResource {
      * @param {InviteOpts} [opts]
      * @returns {Promise<string>}
      */
-    invite({ role, ttl, reuse, confirm, data }?: InviteOpts): Promise<string>;
+    invite(opts?: InviteOpts): Promise<string>;
+    /** @private */
+    private _secret;
+    /** @private */
+    private _has;
     /**
      * Revoke an invite, for every member. Needs the remove permission.
      *
-     * @param {string} invite
+     * @param {string} invite  The code, or the id its `invites` row holds.
      * @returns {Promise<boolean>}  Whether it was live.
      */
     revoke(invite: string): Promise<boolean>;
@@ -172,9 +212,11 @@ export declare class Pairing extends ReadyResource {
      * @param {AcceptOpts} [opts]
      * @returns {Promise<void>}
      */
-    accept(id: string, { role }?: AcceptOpts): Promise<void>;
+    accept(id: string, { role, proof }?: AcceptOpts): Promise<void>;
     /**
      * Refuse a join waiting on a `confirm` invite, by its id in `requests`, with an optional reason.
+     * On a join already let in by a promise, it withdraws the promise: that needs the remove
+     * permission.
      *
      * @param {string} id
      * @param {string} [reason]
@@ -186,9 +228,19 @@ export declare class Pairing extends ReadyResource {
     /** @private */
     private _sync;
     /** @private */
+    private _done;
+    /** @private */
     private _arm;
     /** @private */
     private _answer;
+    /** @private */
+    private _deliver;
+    /** @private */
+    private _seat;
+    /** @private */
+    private _seats;
+    /** @private */
+    private _onkeys;
     /** @private */
     private _offer;
     /** @private */
@@ -209,17 +261,49 @@ export declare class Pairing extends ReadyResource {
      * @returns {Promise<JoinResult>}
      */
     static join(mailbox: Mailbox, invite: string, { identity, spec, writer, timeout, signal, keep }?: JoinOpts): Promise<JoinResult>;
+    /**
+     * Write the join into the writer's own core and stop there: nothing is announced and no reply
+     * is waited for. A device that holds the database's keys opens it with this writer and applies
+     * its own join; `Pairing.join` with the same writer goes on from it and writes nothing more.
+     *
+     * @param {Mailbox} mailbox
+     * @param {string} invite
+     * @param {{ identity: JoinOpts['identity'], spec: JoinOpts['spec'], writer: KeyPair }} opts
+     * @returns {Promise<void>}
+     */
+    static write(mailbox: Mailbox, invite: string, { identity, spec, writer }?: {
+        identity: JoinOpts['identity'];
+        spec: JoinOpts['spec'];
+        writer: KeyPair;
+    }): Promise<void>;
+    /**
+     * Take back a join that waits for a member: the writer's own core says so after its join, and
+     * the database drops the request unless a member let it in first. Announced as the join was.
+     * Called again with the same writer, it announces the cancel already written.
+     *
+     * @param {Mailbox} mailbox
+     * @param {string} invite
+     * @param {{ spec: JoinOpts['spec'], writer: KeyPair }} opts  The writer that joined.
+     * @returns {Promise<void>}  Resolves once a peer or a mirror holds it, rejects `CLOSED` when the mailbox closes first.
+     */
+    static cancel(mailbox: Mailbox, invite: string, { spec, writer }: {
+        spec: JoinOpts['spec'];
+        writer: KeyPair;
+    }): Promise<void>;
 }
 /**
- * A join's payload: sealed to the database's address, so only its members read who joins; proven
- * by the invite over the writer; signed by the joiner's identity for this writer and reply address.
+ * A join's payload: sealed to the invite's address, so only those who hold its row read who joins,
+ * every member for an invite that carries the database's address; proven by the invite over the
+ * writer; signed by the joiner's device, under its chain to the identity, for this writer and reply
+ * address. An invite with an address of its own is named in the clear, so apply finds its secret.
  *
  * @param {Invite} invite
  * @param {import('../identity/index.js').Identity} identity
  * @param {Uint8Array} writer
  * @param {Uint8Array} reply
- * @returns {{ box: Uint8Array }}
+ * @returns {{ box: Uint8Array, invite?: Uint8Array }}
  */
 export declare function sealJoin(invite: Invite, identity: import('../identity/index.js').Identity, writer: Uint8Array, reply: Uint8Array): {
     box: Uint8Array;
+    invite?: Uint8Array;
 };

@@ -8,9 +8,12 @@ import createTestnet from '@hyperswarm/testnet'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const CLI = join(here, '..', 'index.js')
+// hyperdht's NAT check samples 3 nodes before a same-host connect; a peer of a 3-node testnet
+// knows 2, the check fails and the host drops the connection the LAN shortcut already won
+const NODES = 4
 
 test('two terminal instances pair + exchange messages', { timeout: 120000 }, async (t) => {
-  const net = await createTestnet(3)
+  const net = await createTestnet(NODES)
   t.teardown(() => net.destroy(), { order: 100 })
   const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
 
@@ -47,6 +50,86 @@ test('two terminal instances pair + exchange messages', { timeout: 120000 }, asy
   guest.stdin.write('hi back\n')
   await waitFor(host, (line) => line.includes('hi back'))
   t.pass('host saw guest message')
+})
+
+test(
+  'a second machine links as a device of the first, by invite, approved there',
+  { timeout: 120000 },
+  async (t) => {
+    const net = await createTestnet(NODES)
+    t.teardown(() => net.destroy(), { order: 100 })
+    const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+    const host = launch(t, ['--name', 'host', '--storage', tmp(), '--bootstrap', bootstrap])
+    const you = await waitFor(host, (line) => line.startsWith('# you:'))
+    const roomInvite = await waitFor(host, (line) => /^[a-z0-9]{60,}$/.test(line))
+    host.stdin.write('/link\n')
+    const invite = await waitFor(
+      host,
+      (line) => /^[a-z0-9]{60,}$/.test(line) && line !== roomInvite
+    )
+
+    const device = launch(t, ['--link', invite, '--storage', tmp(), '--bootstrap', bootstrap])
+    const asked = await waitFor(device, (line) => line.startsWith('# device request '))
+    const id = asked.split(' ')[3].replace(':', '')
+    await waitFor(host, (line) => line.startsWith(`# device request ${id}:`))
+    t.pass('the host shows the same request id')
+
+    host.stdin.write(`/approve ${id}\n`)
+    await waitFor(host, (line) => line === `# device request ${id} approved`)
+    const linked = await waitFor(device, (line) => line.startsWith('# you:'))
+    t.is(
+      linked.slice(linked.indexOf('(')),
+      you.slice(you.indexOf('(')),
+      'the same identity on both machines'
+    )
+  }
+)
+
+test("a peer's name and text print without their control bytes", { timeout: 120000 }, async (t) => {
+  const net = await createTestnet(NODES)
+  t.teardown(() => net.destroy(), { order: 100 })
+  const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+  const host = launch(t, ['--name', 'ho\x1b[2Jst', '--storage', tmp(), '--bootstrap', bootstrap])
+  const inv = await waitFor(host, (line) => /^[a-z0-9]{60,}$/.test(line))
+  const guest = launch(t, ['--join', inv, '--storage', tmp(), '--bootstrap', bootstrap])
+  await waitFor(guest, (line) => line.startsWith('# room:'))
+
+  host.stdin.write('\x1b]0;owned\x07hello\n')
+  const line = await waitFor(guest, (line) => line.includes('hello'))
+  t.absent(/\p{Cc}/u.test(line), 'no control bytes reach the terminal')
+})
+
+test('the phrase is read from stdin, not from the command line', { timeout: 120000 }, async (t) => {
+  const net = await createTestnet(NODES)
+  t.teardown(() => net.destroy(), { order: 100 })
+  const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+  const host = launch(t, ['--name', 'host', '--storage', tmp(), '--bootstrap', bootstrap])
+  const you = await waitFor(host, (line) => line.startsWith('# you:'))
+  const shown = await waitFor(host, (line) => line.startsWith('# phrase'))
+  const phrase = shown.slice(shown.indexOf(': ') + 2)
+
+  const device = launch(t, ['--phrase', '--storage', tmp(), '--bootstrap', bootstrap])
+  device.stdin.write(phrase + '\n')
+  const recovered = await waitFor(device, (line) => line.startsWith('# you:'))
+  t.is(recovered.slice(recovered.indexOf('(')), you.slice(you.indexOf('(')), 'the same identity')
+})
+
+test('an empty line for the phrase creates no identity', { timeout: 120000 }, async (t) => {
+  const net = await createTestnet(NODES)
+  t.teardown(() => net.destroy(), { order: 100 })
+  const bootstrap = net.bootstrap.map((b) => `${b.host}:${b.port}`).join(',')
+
+  const device = launch(t, ['--phrase', '--storage', tmp(), '--bootstrap', bootstrap])
+  const exited = new Promise((resolve) => device.on('exit', resolve))
+  device.stdin.write('\n')
+  t.is(await exited, 1, 'refused')
+  t.absent(
+    device.lines.some((line) => line.startsWith('# you:')),
+    'no identity'
+  )
 })
 
 function tmp() {

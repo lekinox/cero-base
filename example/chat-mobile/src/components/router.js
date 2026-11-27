@@ -1,12 +1,9 @@
 import { useState } from 'react'
 import { View, Text } from 'react-native'
 import { cero } from '@cero-base/cero/client'
-import { restore } from 'chat-backend/client'
 import { useCero } from '../hooks/use-cero'
-import { useQuery } from '../hooks/use-query'
 import { RoomContext } from '../context'
 import { Header } from './ui'
-import { Setup } from './setup'
 import { Settings } from './settings'
 import { Rooms } from './rooms'
 import { Room as RoomView } from './room'
@@ -14,19 +11,9 @@ import { styles, colors } from '../styles'
 
 export function Router() {
   const me = useCero()
-  const { data: profile } = useQuery(me.profile)
   const [view, setView] = useState('rooms')
   const [roomId, setRoomId] = useState(null)
   const [room, setRoom] = useState(null)
-
-  if (!profile?.name) {
-    return (
-      <Setup
-        onCreate={(name) => cero.set(me.profile, { name })}
-        onRecover={(phrase) => cero.restore(me, phrase)}
-      />
-    )
-  }
 
   if (roomId) {
     if (!room || room.id !== roomId) {

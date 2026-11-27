@@ -22,6 +22,7 @@ import {
 } from '../../src/index.js'
 import { build } from '../../src/build/index.js'
 import { profileSync, handleSync, bundled } from '../../src/extensions/index.js'
+import { mirror } from '../../src/extensions/mirror.js'
 import { makeTestnet, waitUntil, waitForConnection, fetch } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
@@ -38,6 +39,12 @@ const base = schema({
     audits: t.collection({ text: t.string }),
     banned: t.collection({ reason: t.string })
   }
+})
+
+// an app's own profile with none of profileSync's fields: its avatar reads back undefined, the room's null
+const nameOnly = schema({
+  profile: t.single({ name: t.string }),
+  room: { messages: t.collection({ text: t.string }) }
 })
 
 // Defined at module level — inside a brittle `(t) =>` callback, `t` is the test
@@ -340,7 +347,7 @@ test('before(ref): an operator called inside a hook throws INVALID', async (t) =
 // ─── me.on('handle') ────────────────────────────────────────────────────────
 
 test('me.on("handle"): fires on create and on re-open', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'handle-evt'))
+  const me = await openCero(t, await buildSpec(t, 'handle-evt'), { keepOpen: 0 })
   const seen = []
   me.on('handle', (room) => seen.push(room))
 
@@ -373,7 +380,7 @@ test('me.on("handle"): re-loading an already-open handle is idempotent — no re
 })
 
 test('me.on("handle"): concurrent open() of the same id loads once', async (t) => {
-  const me = await openCero(t, await buildSpec(t, 'concurrent-open'))
+  const me = await openCero(t, await buildSpec(t, 'concurrent-open'), { keepOpen: 0 })
   const room = await open(me.room)
   const { id } = room
   await room.close() // drop it from me.children so the reopen goes through _load
@@ -439,6 +446,39 @@ test('hooks: a hook on a type ref covers rooms already open, and off() lifts it'
   off()
   t.ok((await put(room.messages, { text: 'nope' })).data, 'lifted on the open room')
   t.ok((await put(later.messages, { text: 'nope' })).data, 'and on the later one')
+})
+
+test('hooks: a type hook registered while a handle opens runs on its ops', async (t) => {
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending'), { keepOpen: 0 })
+  const first = await open(me.room, { name: 'clinic' })
+  const { id } = first
+  await first.close()
+
+  const opening = open(me.room, { id })
+  await waitUntil(() => me._pending.size > 0, 10000, 1)
+  const off = before(me.room.messages, ({ row }) => row.text !== 'nope')
+  const room = await opening
+  await t.exception(
+    put(room.messages, { text: 'nope' }),
+    /REFUSED/,
+    'the opening room got the hook'
+  )
+  off()
+  t.ok((await put(room.messages, { text: 'nope' })).data, 'and off() lifts it')
+})
+
+test('hooks: a type hook lifted while a handle opens never runs on it', async (t) => {
+  const me = await openCero(t, await buildSpec(t, 'type-hook-pending-off'), { keepOpen: 0 })
+  const first = await open(me.room, { name: 'clinic' })
+  const { id } = first
+  await first.close()
+
+  const opening = open(me.room, { id })
+  await waitUntil(() => me._pending.size > 0, 10000, 1)
+  const off = before(me.room.messages, ({ row }) => row.text !== 'nope')
+  off()
+  const room = await opening
+  t.ok((await put(room.messages, { text: 'nope' })).data, 'the write lands')
 })
 
 // a spec built from a module path carries its list; `source` is the module's body
@@ -753,6 +793,29 @@ test('profileSync: a joiner profile is visible on the host member list', async (
   t.is(m.avatar, 'g.png', 'joiner avatar visible to host')
 })
 
+test("profileSync: a reader's name and avatar reach the room, though she writes nothing else", async (t) => {
+  const exts = [profileSync()]
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'ps-reader', appExtendSchema, exts))
+
+  const room = await open(host.room)
+  const invite = await cero.invite(room, { role: 'reader', ttl: 60_000 })
+
+  const joined = await open(joiner.room, invite)
+  await waitForConnection(host.network)
+  await waitForConnection(joiner.network)
+  t.absent(joined.store.writable, 'a reader has no seat')
+  await set(joined.members, { id: joiner.identity.id, tag: 'mine' })
+  await set(joiner.profile, { name: 'reader', avatar: 'r.png' })
+
+  const m = await waitUntil(async () => {
+    const { data } = await get(room.members, joiner.identity.id)
+    return data?.avatar === 'r.png' ? data : null
+  })
+  t.is(m.name, 'reader', 'her name reaches the host')
+  t.is(m.role, 'reader', 'at her rank')
+  t.absent(m.tag, 'and nothing else of her row')
+})
+
 test('profileSync: a room opened before the profile syncs once it is set', async (t) => {
   const exts = [profileSync()]
   const me = await openCero(t, await buildSpec(t, 'ps-late', base, exts))
@@ -871,6 +934,43 @@ test('profileSync: a t.file avatar lands in the room and resolves there for ever
   t.alike(onJoiner, avatar, 'and for another member of it')
 })
 
+test("profileSync: a reader's name reaches the room when her avatar is a file", async (t) => {
+  const { host, joiner } = await openTwo(
+    t,
+    await buildSpec(t, 'ps-reader-file', fileSchema, fileSync)
+  )
+  const room = await open(host.room)
+  await open(joiner.room, await cero.invite(room, { role: 'reader', ttl: 60_000 }))
+  await waitForConnection(host.network)
+  await waitForConnection(joiner.network)
+
+  const { data: file } = await put(joiner.files, { data: b4a.from('avatar'), type: 'image/png' })
+  await set(joiner.profile, { name: 'reader', avatar: file.id })
+
+  const m = await waitUntil(async () => {
+    const { data } = await get(room.members, joiner.identity.id)
+    return data?.name === 'reader' ? data : null
+  })
+  t.is(m.avatar, null, 'a file is a write she has no seat for')
+})
+
+test('profileSync: a file avatar set to null is cleared in the room for every member', async (t) => {
+  const { host, joiner } = await openTwo(t, await buildSpec(t, 'ps-clear', fileSchema, fileSync))
+  const room = await open(host.room)
+  const joined = await open(joiner.room, await cero.invite(room, { role: 'member' }))
+  const { data: file } = await put(host.files, { data: b4a.from('avatar'), type: 'image/png' })
+  await set(host.profile, { name: 'jb', avatar: file.id })
+  await waitUntil(async () => (await get(joined.members, host.identity.id)).data?.avatar)
+
+  await set(host.profile, { avatar: null })
+  const m = await waitUntil(async () => {
+    const { data } = await get(joined.members, host.identity.id)
+    return data.avatar === null ? data : null
+  })
+  t.is(m.name, 'jb', 'her name stays')
+  t.is((await get(host.profile)).data.avatar, null, 'and her profile has none')
+})
+
 // ─── handleSync ─────────────────────────────────────────────────────────
 
 test('handleSync: extends the handle builtin with avatar', async (t) => {
@@ -986,6 +1086,29 @@ test('handleSync: an avatar edit re-syncs onto the handles row', async (t) => {
   t.is(row.avatar, 'b.png', 'edit re-synced to the handles row')
 })
 
+test('handleSync: a handle closed and opened again still syncs onto the handles row', async (t) => {
+  const exts = [handleSync()]
+  const me = await openCero(t, await buildSpec(t, 'his-reopen', handleSchema, exts))
+
+  const room = await open(me.room)
+  const avatarOf = (want) =>
+    waitUntil(async () => {
+      const { data } = await get(me.room)
+      const r = data.find((h) => h.id === room.id)
+      return r?.avatar === want ? r : null
+    })
+
+  await set(room.profile, { name: 'general', avatar: 'a.png' })
+  await avatarOf('a.png')
+
+  await room.close()
+  const again = await open(me.room, { id: room.id })
+  t.is(again, room, 'kept open meanwhile')
+  await set(again.profile, { name: 'general', avatar: 'b.png' })
+  const row = await avatarOf('b.png')
+  t.is(row.avatar, 'b.png', 'an edit after the reopen synced to the handles row')
+})
+
 test('handleSync: a t.file room avatar lands in the handles list and resolves there', async (t) => {
   const me = await openCero(t, await buildSpec(t, 'his-file', fileSchema, fileSync))
   const room = await open(me.room)
@@ -1046,6 +1169,20 @@ async function openManual(t, { spec, extensions }) {
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return me
 }
+
+// a field the profile never set reads back null from the room: the same profile again is no change, and writes
+// nothing, as every open and every replicated edit mirrors it
+test('profileSync: the same profile mirrored again writes nothing, a field it never set included', async (t) => {
+  const exts = [profileSync()]
+  const me = await openCero(t, await buildSpec(t, 'ps-same', nameOnly, exts))
+  await set(me.profile, { name: 'jb' })
+  const room = await open(me.room)
+  await waitUntil(async () => (await get(room.members, me.identity.id)).data?.name === 'jb')
+  const { data: profile } = await get(me.profile)
+  const before = room.store.bee.local.length
+  await mirror(me.profile, profile, { avatar: t.string }, room.members, me.identity.id)
+  t.is(room.store.bee.local.length, before, 'no op appended')
+})
 
 test('profileSync: detaches its handle listener on close', async (t) => {
   const exts = [profileSync()]

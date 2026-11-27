@@ -103,6 +103,14 @@ export class CeroError extends Error {
     return new CeroError('NOT_WRITABLE', `${resource} is not writable`)
   }
   /**
+   * This device skipped writes from a newer app version: it reads, but writes wait for the update.
+   *
+   * @param {number} version
+   */
+  static BEHIND(version) {
+    return new CeroError('BEHIND', `behind app version ${version}: update to write`)
+  }
+  /**
    * Async operation exceeded its deadline.
    *
    * @param {string} what
@@ -143,6 +151,14 @@ export class CeroError extends Error {
    */
   static DENIED(reason = null, msg = 'pairing denied') {
     return new CeroError('DENIED', msg, { reason })
+  }
+  /**
+   * A join given up with `cancel` before it was answered.
+   *
+   * @param {string} [msg]
+   */
+  static CANCELLED(msg = 'join cancelled') {
+    return new CeroError('CANCELLED', msg)
   }
   /**
    * An apply-time rule refused the op. Every peer reaches this verdict from the same node

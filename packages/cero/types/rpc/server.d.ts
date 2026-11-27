@@ -68,9 +68,9 @@ export type GetResult = {
  * @typedef {{ data: import('../lib/spec.js').Row | import('../lib/spec.js').Row[] | null, total?: number, size?: number }} GetResult  Single-ref get omits `total`/`size`; list/handle refs include them.
  */
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
- * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
- * exposes data ops, pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: a store that holds an identity
+ * boots its root via `cero()` as soon as it opens, so the network is up while the UI still loads; a new one waits
+ * for the client to say how, by init, restore or link. Then it exposes data ops, pairing, and handle lifecycle.
  */
 export declare class Server extends RPCServer {
     storage: string;
@@ -82,14 +82,22 @@ export declare class Server extends RPCServer {
     };
     /** @type {Set<object>} open error streams, one per connected client */
     _errors: Set<object>;
+    /** @private */
+    _reported;
     /** @type {Context | null} */
     me: Context | null;
     /** @type {Map<string, Context>} */
     handles: Map<string, Context>;
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     _watchStreams: Map<string, Set<object>>;
+    /** @type {Map<string, number>} handle id → the opens the page holds on it, let go when it reloads */
+    _held: Map<string, number>;
     /** @private */
     _booting;
+    /** @private */
+    _adopting;
+    /** @private */
+    _stop;
     /**
      * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
      * @param {Spec} spec
@@ -110,10 +118,20 @@ export declare class Server extends RPCServer {
     get identity(): import('@cero-base/core/identity').Identity | undefined;
     /** @private */
     private _open;
+    /**
+     * Open the root, as `how` says on a new store: a phrase recovers, an invite links, neither creates.
+     * @private
+     */
+    private _start;
     /** @private */
     private _boot;
     /** @private */
     private _close;
+    /**
+     * The root a restore or a link resolves with is the one served from here on; with the server closing it closes.
+     * @private
+     */
+    private _adopt;
     /**
      * End every watch stream bound to a handle (e.g. when it closes or leaves).
      * @private
@@ -132,6 +150,11 @@ export declare class Server extends RPCServer {
      */
     private _wireRestore;
     /**
+     * Wire the `link` handler: a stream, the request's id as it is sent, the identity once linked.
+     * @private
+     */
+    private _wireLink;
+    /**
      * Register the row-level RPC handlers (put/set/get/del/watch/call).
      * @private
      */
@@ -141,11 +164,22 @@ export declare class Server extends RPCServer {
      * @private
      */
     private _wireHandles;
+    /** @private one open the page holds on `id` */
+    private _hold;
+    /** @private one of the page's opens on `id` let go: the handle drops off the wire once nobody here holds it */
+    private _release;
+    /** @private every open the page holds let go: a reload, whose old page closes nothing */
+    private _letGo;
     /**
      * Register the `verb` handler: the operator by its name, on the handle, as in the worker.
      * @private
      */
     private _wireVerbs;
+    /**
+     * Register a request handler whose error fails only its call.
+     * @private
+     */
+    private _on;
     /**
      * Look up a live handle by id, throwing if unknown. Binds the handle's
      * codec on first use.

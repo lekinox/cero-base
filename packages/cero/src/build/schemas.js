@@ -10,7 +10,8 @@ export const main = {
   writer: {
     master: required(bytes),
     writer: required(bytes),
-    sig: required(bytes),
+    // the device's proof over the admission, chained to `master`
+    proof: required(bytes),
     isIndexer: bool,
     ts: int,
     // the paired add-member decides the rank in the same transaction; `role` here is unread
@@ -37,7 +38,13 @@ export const main = {
     isMobile: bool,
     createdAt: int,
     updatedAt: int,
-    index: uint
+    index: uint,
+    // the device key its admission proved: rotation seals to it
+    key: bytes,
+    // the chain to the identity, when a device of the member linked it here
+    proof: bytes,
+    // the device keys of the chain its seat was verified with, 32 bytes each, back to back
+    chain: bytes
   },
   invite: {
     id: required(string),
@@ -47,7 +54,14 @@ export const main = {
     createdAt: int,
     index: uint,
     // its joins wait for a member to accept them
-    confirm: bool
+    confirm: bool,
+    // the secret behind its own address: every device that has the row opens its joins and proves
+    // their answers
+    secret: bytes,
+    // the member it was made for: nobody else joins with it
+    to: string,
+    // her device keys, 32 bytes each, back to back: a rotation before she comes is sealed to them
+    keys: bytes
   },
   handle: {
     id: required(string),
@@ -57,7 +71,17 @@ export const main = {
     name: string,
     createdAt: int,
     updatedAt: int,
-    index: uint
+    index: uint,
+    // its rotation epochs, for a device of the identity opening it later
+    epochs: bytes,
+    // where the identity stands in it, none for `in`, why and by whom once it is over, and the
+    // invite it asked with
+    state: string,
+    reason: string,
+    by: string,
+    invite: string,
+    // the writer of the latest ask, the one request of the identity that stands
+    writer: string
   },
   file: {
     id: required(string),
@@ -75,18 +99,25 @@ export const main = {
     wrapped: required(bytes),
     createdAt: int,
     commit: bytes,
-    stamp: uint
+    stamp: uint,
+    // by a signer who may not remove: kept so what was written under it reads, never the key
+    aside: bool
   },
-  // appended by the joiner's own writer core, sealed to the database's address
+  // appended by the joiner's own writer core, sealed to the database's address, or to its
+  // invite's own, which it then names
   join: {
-    box: required(bytes)
+    box: required(bytes),
+    invite: bytes
   },
   accept: {
     id: required(string),
-    role: string
+    role: string,
+    // the accepter's own device attests the joiner's: a device of the member, not a member
+    proof: bytes
   },
   // a join from its arrival until the joiner has its keys: waiting for a member on a confirm
-  // invite, then admitted and owed its reply. `id` is the joiner's writer
+  // invite, then admitted and owed its reply, or promised and offered its keys until a device of
+  // the identity seats itself. `id` is the joiner's writer
   request: {
     id: required(string),
     identity: required(bytes),
@@ -97,12 +128,30 @@ export const main = {
     admitted: bool,
     expires: int,
     // what the join asks for, the invite's role; once admitted, the role granted
-    role: string
+    role: string,
+    // the device key the join's proof ends at
+    key: bytes,
+    // let in through an invite with an address of its own: no member until a device of the
+    // identity seats itself
+    promised: bool,
+    // the chain its join proved; once a member linked its device, the chain that link wrote, which
+    // the device's seat keeps
+    proof: bytes,
+    // a promise a member's accept made: a removal leaves it for a member to settle
+    accepted: bool
   },
   // a removed member comes back only through an invite minted after `index`
   removal: {
     id: required(string),
-    index: required(uint)
+    index: required(uint),
+    // the member whose device wrote it: herself when she left
+    by: string,
+    // what an identity's devices told of its device keys, 32 bytes each, back to back: those
+    // removed, and those that stand whatever linked them
+    removed: bytes,
+    standing: bytes,
+    // the open invites were spent when it was written
+    spent: bool
   },
   // this device's live view of a context: computed on read, never stored
   status: {
@@ -112,14 +161,12 @@ export const main = {
     suspended: bool,
     // an app version this one cannot read ops from, 0 when current
     behind: uint,
+    // the app version the context's data is at, what `supports` answers from
+    version: uint,
     // the Bluetooth radio: 'on', 'off', 'waiting', 'unauthorized', 'unsupported', null without it
-    nearby: string
-  },
-  // a join this device still waits on, without its keys
-  joining: {
-    id: required(string),
-    type: required(string),
-    invite: required(string)
+    nearby: string,
+    // this device asked for keys it lacks, and waits for them
+    owed: bool
   },
   // a person linked over Bluetooth, by the identity that signed their device's key, with the name
   // and device type that device told
@@ -134,23 +181,74 @@ export const main = {
     id: required(string),
     reply: required(bytes),
     reason: required(string),
-    expires: int
+    expires: int,
+    // the invite it joined with, whose secret proves the answer
+    invite: string,
+    // turned away by a spent invite, which keeps one: its next join takes this one's place
+    spent: bool,
+    // who joined, turned away as removed by a live invite, which keeps one for each of them
+    identity: bytes
   },
   // an invite spent or revoked, kept until it expires so a join with it hears why
   spent: {
     id: required(string),
     reason: required(string),
-    expires: int
+    expires: int,
+    // kept from its invite, so a join with it is still opened and answered
+    secret: bytes,
+    // its invite waited for an accept: a promise made under it is one a member let in
+    confirm: bool
+  },
+  // a device that asked for the keys it lacks, until its own op closes it. `id` is its writer
+  owed: {
+    id: required(string),
+    // the address its keys are sent to
+    reply: required(bytes)
   },
   deny: {
     id: required(string),
     reason: string
+  },
+  // a handle's push topic: what a device subscribes to for pushes about it
+  topic: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    name: string
+  },
+  // an owner raises the database's version to this; a lower one changes nothing
+  upgrade: {
+    version: required(uint)
+  },
+  // a device tells the room of its identity's device keys, 32 bytes each, back to back: those
+  // removed, and those that stand. One with no row there signs `proof` over its core
+  revoke: {
+    removed: bytes,
+    standing: bytes,
+    proof: bytes
+  },
+  // an invite into another room and that room's keys, sealed to the devices of the member it is
+  // `to`, waiting here until one of them takes it. `by` is the member who wrote it
+  pass: {
+    id: required(string),
+    to: required(string),
+    by: string,
+    pass: required(bytes),
+    createdAt: uint
   }
 }
 
 export const local = {
   master: {
     seed: required(bytes)
+  },
+  // this device's key and its proof, with the identity it chains to and the root encryption key
+  device: {
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    proof: required(bytes),
+    identity: required(bytes),
+    encryptionKey: required(bytes)
   },
   keypair: {
     publicKey: required(bytes),
@@ -162,7 +260,17 @@ export const local = {
     id: required(string),
     publicKey: required(bytes),
     secretKey: required(bytes),
-    encryptionKey: bytes
+    encryptionKey: bytes,
+    // the invite this writer asks with, while its join is this device's to carry
+    invite: string,
+    // when an open last took it: the closed rooms are told the most recently used first
+    used: int,
+    // a digest of the device keys last told to the room, removed and standing
+    told: bytes,
+    // the extensions' stamp last told to the room
+    stamp: bytes,
+    // the device keys the room waits to be told, once its wait for a peer was reported
+    waited: bytes
   },
   // a handle with invites, reopened at boot so its joins are answered
   serving: {
@@ -180,20 +288,67 @@ export const local = {
     // the reply, once it landed: the join then opens the handle without joining again
     key: bytes,
     encryptionKey: bytes,
-    epochs: bytes
+    epochs: bytes,
+    // the root's join: this device's secret key, bare until the reply brings its proof
+    device: bytes,
+    proof: bytes
   },
-  // mail the device's mailbox keeps: received until handled, sent until read. `mirrors` are
+  // mail the device's mailbox keeps: received until handled, sent until stored. `mirrors` are
   // 32-byte keys back to back
   mail: {
     id: required(string),
     address: required(bytes),
     message: required(bytes),
-    mirrors: bytes
+    mirrors: bytes,
+    // sent: the core it travels in, and whether it goes once it is stored
+    name: string,
+    erase: bool,
+    // received: the inbox fetched the core, so it may erase it once handled
+    fetched: bool,
+    // received and handled, when: the row stays so a mirror announcing it again is ignored
+    handled: uint,
+    // sent: the message is sealed to the address; absent, it is in the clear and sealed to go out
+    sealed: bool
   },
   environment: {
     channel: required(string)
+  },
+  // the handles rows a cold push process can read without the root: topic → handle, its keys and
+  // the epochs it learned, so a push's block opens there too. `writers`, 32-byte keys back to back,
+  // are who may write to it as this device last had it open: a push from any other core is refused
+  subscription: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    key: required(bytes),
+    name: string,
+    encryptionKey: bytes,
+    epochs: bytes,
+    writers: bytes
+  },
+  // the root's device lists, 32-byte keys back to back, and a digest of the extensions' stamp and
+  // the build, last told to the rooms: a launch with the same opens none of them
+  told: {
+    removed: bytes,
+    standing: bytes,
+    stamp: bytes
+  },
+  // a request this device's writer made: it stays until its row says how it ended, or the room
+  // holds it taken back
+  ask: {
+    id: required(string),
+    handle: required(string),
+    type: required(string),
+    invite: required(string),
+    publicKey: required(bytes),
+    secretKey: required(bytes),
+    createdAt: int
   }
 }
+
+// what a write means to apply. A release that changes it without changing what is stored bumps
+// this, so an app's next build raises its contract and devices on the old release skip the new writes
+export const contract = { version: 6 }
 
 export const rpc = {
   'req-empty': {
@@ -201,6 +356,9 @@ export const rpc = {
   },
   'req-restore': {
     phrase: required(string)
+  },
+  'req-link': {
+    invite: required(string)
   },
   'req-row': {
     handle: required(string),
@@ -275,6 +433,15 @@ export const rpc = {
     fileBase: string,
     fileToken: string,
     deviceName: string
+  },
+  // a link's frames: the request's id as it is sent, then the identity once linked
+  'res-link': {
+    request: string,
+    id: string,
+    deviceId: string,
+    deviceName: string,
+    fileBase: string,
+    fileToken: string
   },
   'res-ok': {
     ok: bool

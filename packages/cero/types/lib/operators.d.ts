@@ -50,6 +50,12 @@ export declare function call(ref: Ref, d?: Row): Promise<void>;
  * opens; register in an extension's `setup` to see every op the root applies too. The imported
  * operators throw inside a hook; use the ones on `ctx`. Not available over RPC.
  *
+ * On `members`, removing someone or changing her rank is the rank's call by default: the writer
+ * outranks whom she acts on, and `ctx.ranked` says whether she does. A rule there may return
+ * `'grant'` to allow what rank alone refuses (a bare `true` grants nothing), or `false` to refuse
+ * what it allows, and only a writer's grant counts. It is decided before anything moves. The
+ * last owner is never removed nor demoted.
+ *
  * @param {Ref} ref
  * @param {(ctx: HookContext) => unknown} fn
  * @param {{ signal?: AbortSignal }} [opts]
@@ -81,6 +87,16 @@ export declare function after(ref: Ref, fn: (ctx: HookContext) => unknown, opts?
  */
 export declare function get(ref: Ref, q?: string | Record<string, unknown>): Promise<SingleResult | ListResult>;
 /**
+ * Whether a handle has turned on a collection, a single or an action, or a field of one with
+ * `field`. What a release holds back with `t.later` turns on once the handle's `status.version`
+ * reaches the release that brought it; until then a write naming it fails with `UNSUPPORTED`.
+ *
+ * @param {Ref} ref  A ref of the root or of an open handle (`room.notes`).
+ * @param {string} [field]
+ * @returns {Promise<boolean>}
+ */
+export declare function supports(ref: Ref, field?: string): Promise<boolean>;
+/**
  * Read a ref as it changes. Each item is what `get(ref, query)` returns now; a slow reader gets
  * only the newest. With `changes: true` in the query each item also carries `changes`, the
  * `{ prev, next }` rows that changed since the item before, so a slow reader gets fewer items,
@@ -110,25 +126,31 @@ export declare function open(ref: Ref, arg?: string | {
     name?: string;
 } | undefined): Promise<Context>;
 /**
- * Mint an invite code into a handle.
+ * Mint an invite code into a handle. With `from`, a handle you and the member it is made `to` are
+ * both in, nobody passes the code on: her devices find it in `from` while they have it open, join
+ * on their own, and the handle shows up in her list. Taken back with `revoke`. With `from` it
+ * rejects `DENIED` when you cannot write in `from`, `UNKNOWN` when she or none of her devices is in
+ * `from`, `INVALID` when she is a member already or has one waiting.
  *
  * @param {Context} ctx
- * @param {import('@cero-base/core/pairing').InviteOpts} [opts]
+ * @param {import('@cero-base/core/pairing').InviteOpts & { from?: Context }} [opts]
  * @returns {Promise<string>}
  */
-export declare function invite(ctx: Context, opts?: import('@cero-base/core/pairing').InviteOpts): Promise<string>;
+export declare function invite(ctx: Context, opts?: import('@cero-base/core/pairing').InviteOpts & {
+    from?: Context;
+}): Promise<string>;
 /**
  * Kill an invite, for every member.
  *
  * @param {Context} ctx
- * @param {string} code
+ * @param {string} code  The code `invite` returned, or the id its `invites` row holds.
  * @returns {Promise<boolean>}  Whether it was live.
  */
 export declare function revoke(ctx: Context, code: string): Promise<boolean>;
 /**
- * Re-key a handle now: a new epoch sealed to its members, so one removed before it reads nothing
- * written after. Needs the remove permission. A removal also re-keys on its own shortly after it
- * lands; this is the one to await.
+ * Rotate a handle's key now: a new epoch sealed to its members, so one removed before it reads
+ * nothing written after. Needs the remove permission. A removal by an admin or the owner rotates
+ * it as it resolves; this is for any other time.
  *
  * @param {Context} ctx
  * @returns {Promise<{ epoch: number }>}
@@ -172,7 +194,17 @@ export declare function deny(ctx: Context, request: {
     id: string;
 }, reason?: string): Promise<void>;
 /**
- * Quit a handle for good: it leaves your list and closes on this device.
+ * Whether a member is out of a handle for good, as this device has seen it: `'removed'` by another
+ * member, `'left'` on her own, or null while she is a member, never was one, or her going has not
+ * reached this device. Someone let in again after is a member: null.
+ *
+ * @param {Context} ctx
+ * @param {string} id  The member's id.
+ * @returns {Promise<'removed' | 'left' | null>}
+ */
+export declare function removed(ctx: Context, id: string): Promise<'removed' | 'left' | null>;
+/**
+ * Quit a handle for good: its row reads `leaving`, then `left` once the handle holds it, and it closes.
  *
  * @param {Context} ctx
  * @returns {Promise<void>}
@@ -223,6 +255,55 @@ export declare function activate(ctx: Context): Promise<void>;
  * @returns {Promise<void>}
  */
 export declare function deactivate(ctx: Context): Promise<void>;
+/**
+ * A push the platform delivered, as bytes: the handle it is about and the ref the write was on,
+ * verified against this device's own data, or `null` for a forged one or one about no handle here.
+ *
+ * @param {Context} me
+ * @param {Uint8Array} payload
+ * @returns {Promise<{ id: string, type: string, name: string | null, newer: boolean, ref: string | null, row: object | null } | null>}
+ */
+export declare function receive(me: Context, payload: Uint8Array): Promise<{
+    id: string;
+    type: string;
+    name: string | null;
+    newer: boolean;
+    ref: string | null;
+    row: object | null;
+} | null>;
+/**
+ * Send a value to an address, signed by this identity. Resolves once the outbox keeps it; it is
+ * delivered in the background, from a mirror too when the owner is offline. `keep: false` erases
+ * this device's copy once a device or a mirror stored it.
+ *
+ * @param {Context} me
+ * @param {string} address  As `cero.address(secret)` gives it.
+ * @param {unknown} data
+ * @param {{ keep?: boolean }} [opts]
+ * @returns {Promise<void>}
+ */
+export declare function send(me: Context, address: string, data: unknown, opts?: {
+    keep?: boolean;
+}): Promise<void>;
+/**
+ * Receive what is sent to the address `secret` owns, with its id and who sent it. A message stays
+ * until `fn` resolves, and one it did not finish comes again on the next start, under the same id;
+ * anything unsigned or signed for another address is dropped. `keep: false` erases each message
+ * from this device once handled. Where cero runs only, not over RPC.
+ *
+ * @param {Context} me
+ * @param {Uint8Array} secret
+ * @param {(data: unknown, mail: { id: string, from: string, device: string }) => unknown} fn
+ * @param {{ keep?: boolean }} [opts]
+ * @returns {() => Promise<void>}  Stops receiving.
+ */
+export declare function inbox(me: Context, secret: Uint8Array, fn: (data: unknown, mail: {
+    id: string;
+    from: string;
+    device: string;
+}) => unknown, opts?: {
+    keep?: boolean;
+}): () => Promise<void>;
 /**
  * Reveal the recovery phrase.
  *

@@ -1,7 +1,7 @@
 import b4a from 'b4a'
 
 const DEFAULT_DENY =
-  /^(seed|secret|secretkey|password|passphrase|token|private|privatekey|encryptionkey|mnemonic)$/i
+  /^(seed|secret|secretkey|password|passphrase|token|private|privatekey|encryptionkey|mnemonic|epochs)$/i
 
 /**
  * Build a row masker for devtools. A field is masked when its dotted path is in `fields`,

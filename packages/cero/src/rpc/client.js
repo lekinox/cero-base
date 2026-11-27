@@ -5,9 +5,10 @@ import { CeroError } from '@cero-base/core/errors'
 import { checkFields, checkRequired } from '@cero-base/core/utils'
 import c from 'compact-encoding'
 import z32 from 'z32'
-import { decodeId } from '@cero-base/core/blobs/codec'
+import { decodeId, servedType } from '@cero-base/core/blobs/codec'
 
 import { Ref } from '../lib/refs.js'
+import { follow } from './push.js'
 import * as verbs from '../lib/operators.js'
 import { t, schema } from '../lib/spec.js'
 
@@ -21,6 +22,7 @@ export const {
   del,
   watch,
   call,
+  supports,
   open,
   invite,
   revoke,
@@ -28,6 +30,7 @@ export const {
   accept,
   deny,
   leave,
+  removed,
   close,
   cancel,
   suspend,
@@ -54,6 +57,13 @@ export { t, schema }
  * @property {string|null} name
  *
  * @typedef {(Client | Handle) & Record<string, Ref>} Context  A UI's root or handle: the verbs take it like an in-process one.
+ *
+ * @typedef {object} ClientOpts
+ * @property {(err: Error) => void} [onerror]  Where the worker's background errors go, the console without one.
+ * @property {import('./push.js').Messaging} [push]  The platform's messaging service, to follow the handles' push topics.
+ * @property {string} [phrase]  On a worker whose store is new, it recovers the identity of this phrase, as `cero(dir, spec, { phrase })`.
+ * @property {string} [invite]  On a worker whose store is new, it links to the identity of this device invite, as `cero(dir, spec, { invite })`.
+ * @property {(id: string) => void} [onrequest]  With `invite`: the request's id as it is sent.
  */
 
 const blobIdEnc = {
@@ -112,11 +122,11 @@ const operators = {
     const base = root._fileBase || ''
     const token = root._fileToken || ''
     const { coreKey, blobId, type } = decodeId(id)
+    const served = servedType(type)
     const key = z32.encode(coreKey)
     const blob = z32.encode(c.encode(blobIdEnc, blobId))
-    const tp = type ? `&type=${encodeURIComponent(type)}` : ''
     const tok = token ? `&token=${token}` : ''
-    return `${base}/?key=${key}&blob=${blob}${tp}${tok}`
+    return `${base}/?key=${key}&blob=${blob}&type=${encodeURIComponent(served)}${tok}`
   },
 
   /**
@@ -339,9 +349,10 @@ const operators = {
 
   // the verbs in lib/operators.js land here, and cross to the worker, which runs the same operator
 
+  // the handle it is delivered `from` crosses as its id
   /** @private */
   _invite(opts) {
-    return this._verb('invite', opts)
+    return this._verb('invite', { ...opts, from: opts.from?.id ?? opts.from })
   },
 
   /** @private */
@@ -362,6 +373,11 @@ const operators = {
   /** @private */
   async _leave() {
     await this.rpc.leave({ handle: this.id })
+  },
+
+  /** @private */
+  _removed(id) {
+    return this._verb('removed', id)
   },
 
   /** @private */
@@ -390,8 +406,23 @@ const operators = {
   },
 
   /** @private */
+  _receive(payload) {
+    return this._verb('receive', payload)
+  },
+
+  /** @private */
   _nearby(on, opts) {
     return this._verb('nearby', on, opts)
+  },
+
+  /** @private */
+  _send(address, data, opts) {
+    return this._verb('send', address, data, opts)
+  },
+
+  /** @private */
+  _inbox() {
+    throw CeroError.INVALID('inbox runs where cero runs, not over RPC')
   },
 
   /** @private */
@@ -406,8 +437,8 @@ const operators = {
 }
 
 /**
- * Re-initialize a `Client` from a recovery phrase. Closes the existing
- * local state and reseeds identity from the phrase.
+ * Switch the app to the identity of a recovery phrase, as `cero.restore` does in the worker: the
+ * client is then that identity.
  *
  * @param {Client} me
  * @param {string} phrase
@@ -416,6 +447,28 @@ const operators = {
 export async function restore(me, phrase) {
   me._identify(await me.rpc.restore({ phrase }))
   return me
+}
+
+/**
+ * Link the app to the identity behind a device invite, as `cero.link` does in the worker: the
+ * client is then that identity. `onrequest` gets the request's id as it is sent.
+ *
+ * @param {Client} me
+ * @param {string} invite
+ * @param {{ onrequest?: (id: string) => void }} [opts]
+ * @returns {Promise<Client>}
+ */
+export function link(me, invite, { onrequest } = {}) {
+  return new Promise((resolve, reject) => {
+    const wire = me.rpc.link({ invite })
+    wire.on('data', (frame) => {
+      if (frame.request) onrequest?.(frame.request)
+      else me._identify(frame)
+    })
+    wire.on('error', reject)
+    wire.on('end', () => resolve(me))
+    wire.on('close', () => reject(CeroError.INVALID('link: the worker closed the stream')))
+  })
 }
 
 /**
@@ -459,10 +512,14 @@ export class Client extends RPCClient {
   /**
    * @param {import('streamx').Duplex} ipc  Framed IPC stream (must be writable).
    * @param {Spec} spec  Compiled cero spec (schema + rpc + handles).
-   * @param {{ onerror?: (err: Error) => void }} [opts]  Where the worker's background errors go; the console without one.
+   * @param {ClientOpts} [opts]
    */
-  constructor(ipc, spec, { onerror } = {}) {
+  constructor(ipc, spec, { onerror, push, phrase, invite, onrequest } = {}) {
     super(ipc, spec)
+    /** @private */
+    this._how = { phrase, invite, onrequest }
+    /** @private */
+    this._push = push || null
     if (spec.local?.schema && !spec.local.codec) bindCodec(spec.local)
     Object.assign(this, operators)
     /** @private */
@@ -499,10 +556,21 @@ export class Client extends RPCClient {
   /** @private */
   async _open() {
     await super._open()
-    this._identify(await this.rpc.init({}))
+    const { phrase, invite, onrequest } = this._how
+    // a worker on a new store opens as these say; on one with an identity they switch to another
+    if (phrase) await restore(this, phrase)
+    else if (invite) await link(this, invite, { onrequest })
+    else this._identify(await this.rpc.init({}))
     Ref.attach(this, /** @type {Spec} */ (this.spec).meta.refs)
     if (/** @type {Spec} */ (this.spec).meta.local?.refs) this.local = new LocalRefs(this)
     this._pumpErrors()
+    if (this._push) this._unfollow = follow(this, this._push)
+  }
+
+  /** @private */
+  async _close() {
+    if (this._unfollow) this._unfollow()
+    await super._close()
   }
   // the worker's answer to init and to restore: who this UI is, and where its files are served
   /** @private */
@@ -599,7 +667,7 @@ class Handle {
  *
  * @param {import('streamx').Duplex} ipc
  * @param {Spec} spec
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Client>}
  */
 export async function connect(ipc, spec, opts) {
@@ -614,15 +682,15 @@ export async function connect(ipc, spec, opts) {
  *
  * @param {import('streamx').Duplex} ipc  Framed IPC duplex stream.
  * @param {Spec} spec  Built cero spec.
- * @param {{ onerror?: (err: Error) => void }} [opts]
+ * @param {ClientOpts} [opts]
  * @returns {Promise<Context>}
  */
 function start(ipc, spec, opts) {
   return /** @type {Promise<Context>} */ (connect(ipc, spec, opts))
 }
 
-/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, t: typeof t, schema: typeof schema }} */
-export const cero = Object.assign(start, remote, { connect, restore, t, schema })
+/** @type {typeof start & typeof remote & { connect: typeof connect, restore: typeof restore, link: typeof link, t: typeof t, schema: typeof schema }} */
+export const cero = Object.assign(start, remote, { connect, restore, link, t, schema })
 
 // the same shape a local root has
 function device({ deviceId, deviceName }) {

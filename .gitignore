@@ -14,10 +14,16 @@ example/chat-mobile/android/
 example/chat-mobile/.expo/
 packages/*/test/fixtures/spec/
 packages/cero/test/fixtures/.build-*/
+packages/cero/test/fixtures/.compat/
 
 # one lockfile, at the root
 packages/*/package-lock.json
 example/*/package-lock.json
+
+# secrets the services read
+services/mirror/gateway/service-account.json
+services/mirror/gateway/config.json
+services/relay/key
 
 # local notes and tooling
 .claude
@@ -26,3 +32,5 @@ example/*/package-lock.json
 # claude-mem stubs, the root file is the only one
 **/CLAUDE.md
 !/CLAUDE.md
+e2e/test-results/
+e2e/playwright-report/

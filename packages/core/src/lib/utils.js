@@ -38,23 +38,31 @@ export function can(role, perm) {
   if (!PERMS.has(perm)) {
     throw CeroError.INVALID(`'${perm}' is not a permission: write, invite, assign or remove`)
   }
-  const perms = ROLE_PERMS[role]
+  // an own key only: a role named after an object's own keys (constructor, __proto__) is none
+  const perms = Object.hasOwn(ROLE_PERMS, role) ? ROLE_PERMS[role] : null
   return !!perms && (perms.includes('*') || perms.includes(perm))
 }
 
 // an unknown role grants nothing; callers taking a role from an app must check it
 /** @type {(role: string) => boolean} */
 export function isRank(role) {
-  return RANK[role] != null
+  return typeof role === 'string' && Object.hasOwn(RANK, role)
 }
 
 /** @type {(a: string, b: string) => boolean} */
 export function grants(a, b) {
-  return RANK[a] != null && RANK[b] != null && RANK[a] >= RANK[b]
+  return isRank(a) && isRank(b) && RANK[a] >= RANK[b]
 }
 /** @type {(a: string, b: string) => boolean} */
 export function outranks(a, b) {
-  return RANK[a] != null && RANK[b] != null && RANK[a] > RANK[b]
+  return isRank(a) && isRank(b) && RANK[a] > RANK[b]
+}
+
+/** @type {(value: unknown) => boolean} */
+export function isOptions(value) {
+  if (typeof value !== 'object' || value === null) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
 }
 
 /**
@@ -121,12 +129,22 @@ const fold = (s) =>
 
 // every term must be a substring of a searched field
 /** @param {Record<string, unknown>} row @param {string} term @param {string[]} [fields] @returns {boolean} */
+const IDS = new Set(['id', 'memberId'])
+
 export function searchHit(row, term, fields) {
-  const terms = String(term).split(/\s+/).map(fold).filter(Boolean)
-  // memberId is a random z32, it would produce spurious hits
-  const keys = fields && fields.length ? fields : Object.keys(row).filter((k) => k !== 'memberId')
+  return hits(row, terms(term), fields)
+}
+
+function terms(term) {
+  return String(term).split(/\s+/).map(fold).filter(Boolean)
+}
+
+/** @param {Record<string, unknown>} row @param {string[]} folded @param {string[]} [fields] */
+function hits(row, folded, fields) {
+  // ids are random z32: any term can occur in one
+  const keys = fields && fields.length ? fields : Object.keys(row).filter((k) => !IDS.has(k))
   const hay = keys.map((k) => (typeof row[k] === 'string' ? fold(row[k]) : '')).join(' ')
-  return terms.every((t) => hay.includes(t))
+  return folded.every((t) => hay.includes(t))
 }
 
 /**
@@ -140,6 +158,9 @@ export function searchHit(row, term, fields) {
  */
 export function filter(rows, query) {
   if (!query) return rows
+  if (query.fields !== undefined && !Array.isArray(query.fields)) {
+    throw CeroError.INVALID('fields is a list of field names')
+  }
   let out = rows
   for (const key of Object.keys(query)) {
     if (QUERY_RESERVED.has(key)) continue
@@ -149,7 +170,10 @@ export function filter(rows, query) {
   if (query.gte !== undefined) out = out.filter((r) => r.id >= query.gte)
   if (query.lt !== undefined) out = out.filter((r) => r.id < query.lt)
   if (query.lte !== undefined) out = out.filter((r) => r.id <= query.lte)
-  if (query.search) out = out.filter((r) => searchHit(r, query.search, query.fields))
+  if (query.search) {
+    const folded = terms(query.search)
+    out = out.filter((r) => hits(r, folded, query.fields))
+  }
   if (query.reverse) out = [...out].reverse()
   if (query.limit !== undefined) out = out.slice(0, query.limit)
   return out

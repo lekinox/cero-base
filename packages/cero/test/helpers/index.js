@@ -1,11 +1,16 @@
 import ReadyResource from 'ready-resource'
 import b4a from 'b4a'
+import hid from 'hypercore-id-encoding'
 import HypercoreStorage from 'hypercore-storage'
 import Corestore from 'corestore'
 import createTestnet from '@hyperswarm/testnet'
 import BlindPeer from 'blind-peer'
+import BlindPushGateway from 'blind-push-gateway'
+import ProtomuxRpcRouter from 'protomux-rpc-router'
+import HyperDHT from 'hyperdht'
 
 import { Network } from '@cero-base/core/network'
+import { Database } from '@cero-base/core/database'
 import { Identity } from '@cero-base/core/identity'
 
 import { cero, get } from '../../src/index.js'
@@ -51,11 +56,32 @@ export async function makeNet(t, testnet, identity = null, store = null) {
 }
 
 // a real blind-peer mirror, in process
-export async function makeMirror(t, testnet) {
-  const mirror = new BlindPeer(await t.tmp(), { bootstrap: testnet.bootstrap })
+export async function makeMirror(t, testnet, opts = {}) {
+  const mirror = new BlindPeer(await t.tmp(), { bootstrap: testnet.bootstrap, ...opts })
   await mirror.listen()
   t.teardown(() => mirror.close().catch(() => {}), { order: 80 })
   return mirror
+}
+
+// a push gateway whose push service only records what it would send
+export async function makeGateway(t, testnet) {
+  const dht = new HyperDHT({ bootstrap: testnet.bootstrap })
+  const router = new ProtomuxRpcRouter()
+  const sent = []
+  const gateway = new BlindPushGateway(dht, router, { send: async (message) => sent.push(message) })
+  await gateway.ready()
+  t.teardown(
+    async () => {
+      try {
+        await gateway.close()
+      } catch {}
+      try {
+        await dht.destroy()
+      } catch {}
+    },
+    { order: 80 }
+  )
+  return { key: gateway.publicKey, sent }
 }
 
 // resolves once the mirror stores the whole core posted to `referrer`
@@ -83,10 +109,11 @@ export async function waitForConnection(net, timeout = 30000) {
   throw new Error('timeout waiting for connection')
 }
 
-// the invites of the joins a device still waits on
+// the invites of the joins not settled yet, as the rows of `me.team` list them
 export async function joinsOf(me) {
-  const { data } = await get(me.joins)
-  return data.map((join) => join.invite)
+  const rows = []
+  for (const state of ['asking', 'joining']) rows.push(...(await get(me.team, { state })).data)
+  return rows.map((row) => row.invite)
 }
 
 // a join waiting on the room's confirm invites, read the way an app reads it; `after` skips one
@@ -95,6 +122,23 @@ export function nextRequest(room, after = null) {
     const { data } = await get(room.requests, { admitted: false })
     return data.find((r) => r.id !== after?.id) || null
   })
+}
+
+// a join through `invite` by `root`, where it runs, whose device opens the room with its keys and
+// claims its seat only once `first` ran and its own view shows its writer refused; `team` is the
+// ref as the app holds it
+export async function refusedAtClaim(t, root, team, invite, first) {
+  const { claim } = Database.prototype
+  t.teardown(() => void (Database.prototype.claim = claim))
+  Database.prototype.claim = async function (opts) {
+    if (this.identity.id === root.id) {
+      await first()
+      const id = hid.encode(this.writerKey)
+      await waitUntil(() => this.view.get(`@${this.ns}/refusals`, { id }))
+    }
+    return claim.call(this, opts)
+  }
+  return cero.open(team, invite).catch((err) => err)
 }
 
 export async function waitUntil(fn, timeout = 30000, step = 50) {
@@ -184,6 +228,29 @@ export async function ceroOpen(t, opts = {}) {
   const me = await cero(dir, spec, { bootstrap: testnet.bootstrap, ...opts })
   t.teardown(() => me.close().catch(() => {}), { order: 5 })
   return { me, dir, testnet }
+}
+
+// `count` handles rows added to a root in one transaction, rooms it holds and never opened: their ids
+export async function addHandles(me, count, from = 0, type = 'team') {
+  const ids = []
+  const ts = Date.now()
+  await me.store.tx(async (tx) => {
+    for (let i = from; i < from + count; i++) {
+      const key = Identity.randomBytes(32)
+      const id = hid.encode(key)
+      ids.push(id)
+      await tx.call('add-handle', {
+        id,
+        type,
+        key,
+        encryptionKey: Identity.randomBytes(32),
+        name: `room ${i}`,
+        createdAt: ts + i,
+        updatedAt: ts + i
+      })
+    }
+  })
+  return ids
 }
 
 // a bare root handle and its device store on their own network, bootstrapped unless it opens a key

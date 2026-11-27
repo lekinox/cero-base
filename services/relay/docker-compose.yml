@@ -1,0 +1,14 @@
+services:
+  blind-relay:
+    build: .
+    restart: unless-stopped
+    ports:
+      # unfirewalled UDP: peers reach the relay directly, no holepunching
+      - '49738:49738/udp'
+    volumes:
+      # persistent — the relay's public key is the seed stored here.
+      # never wipe this or the key (and every app's relay entry) changes.
+      - blind-relay-data:/data
+
+volumes:
+  blind-relay-data:

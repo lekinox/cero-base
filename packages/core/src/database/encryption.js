@@ -45,6 +45,23 @@ AutobeeEncryption.prototype.encrypt = function (index, block, fork, ctx) {
   return baseEncrypt.call(current, index, block, fork, ctx)
 }
 
+// a block in plain (padding type 0) was written without the key: apply lets it carry a join only
+const baseDecrypt = AutobeeEncryption.prototype.decrypt
+
+AutobeeEncryption.prototype.decrypt = function (index, block, ctx) {
+  if (!this.isCompat(ctx, index) && block[0] === 0) this.auto.plain?.add(plainId(ctx.key, index))
+  return baseDecrypt.call(this, index, block, ctx)
+}
+
+/**
+ * @param {Uint8Array} key  The writer core's key.
+ * @param {number} index
+ * @returns {string}
+ */
+export function plainId(key, index) {
+  return `${b4a.toHex(key)}:${index}`
+}
+
 /**
  * Prime a keyring from a local core's persisted epoch stash.
  *
@@ -63,25 +80,28 @@ export async function loadEpochs(keyring, local) {
 }
 
 /**
- * Wire codec for a rotation announcement's envelope list — one sealed box
- * per remaining member, addressed by member id.
+ * A rotation announcement's envelope list — one box per device row, sealed to its device key and
+ * addressed by its writer id.
  *
- * @param {Array<{ id: string }>} members
+ * @param {Array<{ id: string, key: Uint8Array }>} devices
  * @param {Uint8Array} secret
  * @returns {Array<{ id: string, box: Uint8Array }>}
  */
-export function seal(members, secret) {
-  return members.map((m) => ({ id: m.id, box: Identity.seal(hid.decode(m.id), secret) }))
+export function seal(devices, secret) {
+  return devices.map((d) => ({ id: d.id, box: Identity.seal(d.key, secret) }))
 }
 
 /**
- * @param {import('../identity/index.js').Identity} identity
+ * @param {import('../identity/index.js').Identity} identity  Whose device key opens the box.
+ * @param {string} id  This device's writer id in the database.
  * @param {Uint8Array} wrapped
  * @returns {Generator<Uint8Array, void, unknown>}
  */
-export function* opened(identity, wrapped) {
+export function* opened(identity, id, wrapped) {
+  // one sealed before this device had a writer is addressed by its device key
+  const device = hid.encode(identity.device.publicKey)
   for (const w of c.decode(wraps, wrapped)) {
-    if (w.id !== identity.id) continue
+    if (w.id !== id && w.id !== device) continue
     const secret = identity.unseal(w.box)
     if (secret) yield secret
   }
@@ -136,14 +156,14 @@ export class Keyring {
     this.entropies = new Map()
     /** @type {Map<number, number>} stamp → apply-order sequence */
     this.seqs = new Map()
-    /** stamp used for new blocks — the adopted epoch with the highest seq */
+    /** stamp used for new blocks, picked from the epoch rows (rotation.js) */
     this.current = 0
-    /** highest adopted apply-order sequence (0 = base era) */
+    /** sequence of the current epoch (0 = base era) */
     this.seq = 0
-    /** bumped on every add/remove — cheap change detection */
-    this.version = 0
     /** @type {(() => void) | null} called when an epoch is learned or dropped */
     this.onchange = null
+    /** @type {((stamp: number) => Uint8Array | null) | null} asked for a key a block needs and it lacks */
+    this.onmiss = null
   }
 
   /** @returns {Array<{ epoch: number, stamp: number, entropy: Uint8Array }>} ascending by seq */
@@ -156,7 +176,7 @@ export class Keyring {
   /**
    * @param {number} stamp
    * @param {Uint8Array} entropy
-   * @param {number} [seq]  Apply-order sequence; drives `current` selection.
+   * @param {number} [seq]  Apply-order sequence.
    */
   add(stamp, entropy, seq = 0) {
     if (!Number.isInteger(stamp) || stamp <= 0 || stamp > 0xffffffff) {
@@ -167,12 +187,6 @@ export class Keyring {
     }
     this.entropies.set(stamp, entropy)
     if (seq) this.seqs.set(stamp, seq)
-    const effective = this.seqs.get(stamp) || 0
-    if (this.current === 0 || (effective > 0 && effective >= this.seq)) {
-      this.seq = effective
-      this.current = stamp
-    }
-    this.version++
     this.onchange?.()
   }
 
@@ -192,15 +206,6 @@ export class Keyring {
   remove(stamp) {
     this.entropies.delete(stamp)
     this.seqs.delete(stamp)
-    this.current = 0
-    this.seq = 0
-    for (const [s, q] of this.seqs) {
-      if (q >= this.seq) {
-        this.seq = q
-        this.current = s
-      }
-    }
-    this.version++
     this.onchange?.()
   }
 }
@@ -220,6 +225,8 @@ export class EpochAutobee extends Autobee {
     super(store, key, handlers)
     /** @type {Keyring | null} */
     this.keyring = handlers.keyring || null
+    /** @type {Set<string>} the writer blocks read in plain, by `plainId` */
+    this.plain = new Set()
     // a block from an unknown epoch parks what read it until the keyring learns something
     if (this.keyring) this.keyring.onchange = () => this._scheduleEpochWake()
     /** @private */
@@ -239,7 +246,7 @@ export class EpochAutobee extends Autobee {
   // learning an epoch wakes it
   /** @param {number} id @param {{ key?: Uint8Array }} [ctx] @returns {Promise<Uint8Array>} */
   async getEntropy(id, ctx) {
-    const entropy = this.keyring && this.keyring.entropy(id)
+    const entropy = this.keyring && (this.keyring.entropy(id) || this.keyring.onmiss?.(id))
     if (entropy) return entropy
     if (ctx?.key) this._epochStalled.add(b4a.toHex(ctx.key))
     throw CeroError.UNKNOWN_EPOCH(id)

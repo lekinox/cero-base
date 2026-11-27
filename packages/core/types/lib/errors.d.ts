@@ -74,6 +74,12 @@ export declare class CeroError extends Error {
      */
     static NOT_WRITABLE(resource: string): CeroError;
     /**
+     * This device skipped writes from a newer app version: it reads, but writes wait for the update.
+     *
+     * @param {number} version
+     */
+    static BEHIND(version: number): CeroError;
+    /**
      * Async operation exceeded its deadline.
      *
      * @param {string} what
@@ -104,6 +110,12 @@ export declare class CeroError extends Error {
      * @param {string} [msg]
      */
     static DENIED(reason?: string | null, msg?: string): CeroError;
+    /**
+     * A join given up with `cancel` before it was answered.
+     *
+     * @param {string} [msg]
+     */
+    static CANCELLED(msg?: string): CeroError;
     /**
      * An apply-time rule refused the op. Every peer reaches this verdict from the same node
      * and the same view, so it aborts the writer's whole batch — which is what makes a

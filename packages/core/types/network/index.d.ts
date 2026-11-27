@@ -1,12 +1,9 @@
 import ReadyResource from 'ready-resource';
 import { Discovery } from './discovery.js';
+import { Presence } from './presence.js';
 /** @type {(topic: Uint8Array, channel: string | null) => Uint8Array} */
 export declare function channelTopic(topic: Uint8Array<ArrayBufferLike>, channel: string): Uint8Array<ArrayBufferLike>;
 export type NetworkOpts = {
-    /**
-     * Long-lived keypair used as the peer identity.
-     */
-    identity?: import('../identity/index.js').Identity;
     /**
      * Custom DHT bootstrap nodes.
      */
@@ -19,9 +16,13 @@ export type NetworkOpts = {
      */
     firewall?: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
     /**
-     * Relay public keys to tunnel through.
+     * Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
      */
-    relayThrough?: Uint8Array[];
+    relayThrough?: Array<string | Uint8Array>;
+    /**
+     * Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
+     */
+    backoffs?: number[];
     /**
      * Optional network-isolation label; only same-channel peers meet.
      */
@@ -39,106 +40,69 @@ export type NetworkOpts = {
      */
     onerror?: (err: Error) => void;
     /**
-     * The budget for topics in the rotation: how many announce at once, and the ms one keeps its slot before a touched one may take it.
+     * Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
      */
     presence?: {
         active?: number;
+        announced?: number;
         idle?: number;
     };
 };
-export type Entry = {
-    id: string;
-    /**
-     * The topic as joined, channelled.
-     */
-    key: Uint8Array;
-    /**
-     * Null while the last one leaves.
-     */
-    session: import('./discovery.js').Session | null;
-    store: import('corestore') | null;
-    refs: number;
-    pin: boolean;
-    priority: number;
-    /**
-     * The previous session's leave, while a join waits on it.
-     */
-    closing: Promise<void> | null;
-};
 /**
  * @typedef {object} NetworkOpts
- * @property {import('../identity/index.js').Identity} [identity]  Long-lived keypair used as the peer identity.
  * @property {Array<{ host: string, port: number }>} [bootstrap]    Custom DHT bootstrap nodes.
  * @property {(remotePublicKey: Uint8Array, payload: unknown) => boolean} [firewall]  Incoming-connection filter.
- * @property {Uint8Array[]} [relayThrough]                          Relay public keys to tunnel through.
+ * @property {Array<string | Uint8Array>} [relayThrough]           Blind relay public keys; a connection goes through one only when a direct one fails or this device sits behind a randomizing NAT.
+ * @property {number[]} [backoffs]                                  Reconnect backoff tiers in ms; the default escalates to ~10min, far too slow for local nets.
  * @property {string} [channel]                                     Optional network-isolation label; only same-channel peers meet.
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, idle?: number }} [presence]        The budget for topics in the rotation: how many announce at once, and the ms one keeps its slot before a touched one may take it.
- *
- * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
- * @property {string} id
- * @property {Uint8Array} key  The topic as joined, channelled.
- * @property {import('./discovery.js').Session | null} session  Null while the last one leaves.
- * @property {import('corestore') | null} store
- * @property {number} refs
- * @property {boolean} pin
- * @property {number} priority
- * @property {Promise<void> | null} closing  The previous session's leave, while a join waits on it.
+ * @property {{ active?: number, announced?: number, idle?: number }} [presence]  Swarm budget for attached databases: how many search, how many only announce, and the idle ms before the rest leave.
  */
 /**
- * Peer discovery and connections on the Holepunch replicator, plus a shared wakeup channel.
- * Every connection, replicator or injected, replicates the store.
+ * Hyperswarm peer discovery plus a shared wakeup channel. Every connection, swarm or injected,
+ * replicates the store.
  */
 export declare class Network extends ReadyResource {
-    identity: import("../index.js").Identity;
     bootstrap: {
         host: string;
         port: number;
     }[];
     firewall: (remotePublicKey: Uint8Array, payload: unknown) => boolean;
-    relayThrough: Uint8Array<ArrayBufferLike>[];
+    relayThrough: any[];
+    backoffs: number[];
     channel: string;
     /** @type {import('corestore')} */
     store: import('corestore');
     /** @type {Uint8Array[]} */
     mirrors: Uint8Array[];
-    presence: {
-        active: number;
-        idle: number;
-    };
     /** @private */
-    _replicator;
-    /** @private */
-    _dht;
+    _swarm;
     /** @type {import('protomux-wakeup')} */
     wakeup: import('protomux-wakeup');
-    /** @private @type {Map<string, Entry>} */
-    _sessions;
-    /** @private @type {Set<Discovery>} */
+    presence: Presence;
+    /** @private */
     _discoveries;
     /** @private */
     _injected;
     /** @private */
     _blindPeering;
     /** @private */
-    _refreshing;
+    _peeringClosed;
+    /** @private */
+    _lost;
     /** @private */
     _relookup;
     /** @private */
-    _resuming;
-    /** @private */
     _onerror;
     /** @param {NetworkOpts} opts */
-    constructor({ identity, bootstrap, firewall, relayThrough, channel, store, mirrors, presence, onerror }?: NetworkOpts);
-    /** @returns {import('@holepunchto/replicator') | null} The underlying replicator, or null before ready / after close. */
-    get replicator(): import('@holepunchto/replicator') | null;
-    /** @returns {import('hyperdht') | null} The DHT the replicator and the mirrors share. */
-    get dht(): import('hyperdht') | null;
-    /** @returns {Map<string, object>} Known peers keyed by public-key hex. */
+    constructor({ bootstrap, firewall, relayThrough, backoffs, channel, store, mirrors, presence, onerror }?: NetworkOpts);
+    /** @returns {import('hyperswarm') | null} The underlying hyperswarm, or null before ready / after close. */
+    get swarm(): import('hyperswarm') | null;
+    /** @returns {Map<string, object>} Known peers keyed by public-key string. */
     get peers(): Map<string, object>;
-    /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — replicator and injected. */
+    /** @returns {Set<import('@hyperswarm/secret-stream')>} Live connection streams — swarm and injected. */
     get connections(): Set<import('@hyperswarm/secret-stream')>;
     /** @returns {boolean} */
     get suspended(): boolean;
@@ -160,6 +124,14 @@ export declare class Network extends ReadyResource {
     /** @private */
     private _add;
     /**
+     * Stop mirroring, before the databases close: blind peering reads storage for every database it
+     * mirrors, so once it is closed none of its work outlives storage. `peering()` throws CLOSED
+     * after it; closing the network does it too.
+     *
+     * @returns {Promise<void>}
+     */
+    closePeering(): Promise<void>;
+    /**
      * The blind-peering client, built on first use: a mailbox post names mirrors this network
      * may not have been given.
      *
@@ -167,7 +139,7 @@ export declare class Network extends ReadyResource {
      */
     peering(): import('blind-peering');
     /**
-     * Wait for pending DHT announces, lookups and dials to settle, bounded by timeout.
+     * Wait for pending DHT announces and lookups to settle, bounded by timeout.
      *
      * @param {{ timeout?: number }} [opts]
      * @returns {Promise<void>}
@@ -176,35 +148,27 @@ export declare class Network extends ReadyResource {
         timeout?: number;
     }): Promise<void>;
     /**
-     * Pause the network — keeps state, drops sockets. Idempotent.
+     * Pause the swarm — keeps state, drops sockets. Idempotent.
      *
      * @returns {Promise<void>}
      */
     suspend(): Promise<void>;
     /**
-     * Resume a suspended network. Idempotent.
+     * Resume a suspended swarm. Idempotent.
      *
      * @returns {Promise<void>}
      */
     resume(): Promise<void>;
     /**
-     * Join a 32-byte topic and return a Discovery handle. Pinned by default: it announces and
-     * looks up now; `pin: false` leaves it to the rotation.
+     * Announce/lookup on a 32-byte topic and return a Discovery handle.
      *
      * @param {Uint8Array} topic
-     * @param {{ pin?: boolean }} [opts]
+     * @param {{ mode?: 'active' | 'passive' }} [opts]  `active` = client+server, `passive` = server-only
      * @returns {Discovery}
      */
-    join(topic: Uint8Array, { pin }?: {
-        pin?: boolean;
+    join(topic: Uint8Array, { mode }?: {
+        mode?: 'active' | 'passive';
     }): Discovery;
-    /**
-     * Where a topic stands on this network.
-     *
-     * @param {Uint8Array} topic
-     * @returns {'inactive' | 'pinned' | 'autostarted' | 'discovering' | 'destroyed' | null} Its session's state, null once left.
-     */
-    state(topic: Uint8Array): 'inactive' | 'pinned' | 'autostarted' | 'discovering' | 'destroyed' | null;
     /**
      * Whether `store` replicates on this network's connections: the network's store or a session of it.
      *
@@ -223,13 +187,7 @@ export declare class Network extends ReadyResource {
     /** @private */
     private _mirror;
     /** @private */
-    private _start;
-    /** @private */
-    private _leave;
-    /** @private */
-    private _refresh;
+    private _lose;
     /** @private */
     private _relook;
-    /** @private */
-    private _lookup;
 }

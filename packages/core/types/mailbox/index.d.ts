@@ -5,17 +5,44 @@ export type Mail = {
      */
     id: string;
     /**
+     * The core it travels in, so a restart sends it on the same core.
+     */
+    name?: string;
+    /**
      * Where it goes, or where it arrived.
      */
     address: Uint8Array;
+    /**
+     * Sent: as `sealed` says. Received: empty, it stays in its core.
+     */
     message: Uint8Array;
     /**
      * Where a sent message waits for an owner who is offline.
      */
     mirrors?: Uint8Array[];
+    /**
+     * False erases the sender's copy once a device or a mirror stored it.
+     */
+    keep?: boolean;
+    /**
+     * The inbox fetched the core it arrived in, so it may erase it; on a handled row, it still has to.
+     */
+    fetched?: boolean;
+    /**
+     * When it was handled: the id is remembered for a while.
+     */
+    handled?: number;
+    /**
+     * Sent: `message` is sealed to the address, not in the clear.
+     */
+    sealed?: boolean;
 };
 export type Box = {
     list: () => Promise<Mail[]>;
+    /**
+     * The one row under an id, null when there is none.
+     */
+    get: (id: string) => Promise<Mail | null>;
     put: (mail: Mail) => Promise<unknown>;
     del: (id: string) => Promise<unknown>;
 };
@@ -25,7 +52,7 @@ export type MailboxOpts = {
      */
     inbox?: Box;
     /**
-     * Keeps a sent message until someone read it.
+     * Keeps a sent message until a device or a mirror stored it.
      */
     outbox?: Box;
     /**
@@ -36,26 +63,32 @@ export type MailboxOpts = {
 /**
  * @typedef {object} Mail
  * @property {string} id                 Unique per message, hex.
+ * @property {string} [name]             The core it travels in, so a restart sends it on the same core.
  * @property {Uint8Array} address        Where it goes, or where it arrived.
- * @property {Uint8Array} message
+ * @property {Uint8Array} message      Sent: as `sealed` says. Received: empty, it stays in its core.
  * @property {Uint8Array[]} [mirrors]    Where a sent message waits for an owner who is offline.
+ * @property {boolean} [keep]            False erases the sender's copy once a device or a mirror stored it.
+ * @property {boolean} [fetched]         The inbox fetched the core it arrived in, so it may erase it; on a handled row, it still has to.
+ * @property {number} [handled]          When it was handled: the id is remembered for a while.
+ * @property {boolean} [sealed]          Sent: `message` is sealed to the address, not in the clear.
  *
  * @typedef {object} Box                 Where mail is kept; memory unless given a persistent one.
  * @property {() => Promise<Mail[]>} list
+ * @property {(id: string) => Promise<Mail | null>} get   The one row under an id, null when there is none.
  * @property {(mail: Mail) => Promise<unknown>} put
  * @property {(id: string) => Promise<unknown>} del
  *
  * @typedef {object} MailboxOpts
  * @property {Box} [inbox]                   Keeps a received message until it was handled.
- * @property {Box} [outbox]                  Keeps a sent message until someone read it.
+ * @property {Box} [outbox]                  Keeps a sent message until a device or a mirror stored it.
  * @property {(err: Error) => void} [onerror] Called when a message fails to be handled or sent.
  */
 /**
  * A device's mailbox. It receives at the addresses it holds the secret of, and sends to any
- * address. Both ends keep their mail until it is done with: the outbox until someone read it,
- * the inbox until it was handled. Give it persistent boxes and that survives a restart: it
- * sends again what was not read and hands over again what was not handled, so a message may
- * arrive twice, never not at all.
+ * address. Both ends keep their mail until it is done with: the outbox until a device or a
+ * mirror stored it, the inbox until it was handled. Give it persistent boxes and that survives a
+ * restart: it sends again what was not stored and hands over again what was not handled, so a
+ * message may arrive twice, never not at all.
  */
 export declare class Mailbox extends ReadyResource {
     network: import("../index.js").Network;
@@ -76,6 +109,17 @@ export declare class Mailbox extends ReadyResource {
      * @returns {Uint8Array}
      */
     static getAddress(secret: Uint8Array): Uint8Array;
+    /**
+     * The key pair behind the address: seal to `publicKey` with `crypto.encrypt`, open with
+     * `crypto.decrypt(sealed, pair)`.
+     *
+     * @param {Uint8Array} secret
+     * @returns {{ publicKey: Uint8Array, secretKey: Uint8Array }}
+     */
+    static keyPair(secret: Uint8Array): {
+        publicKey: Uint8Array;
+        secretKey: Uint8Array;
+    };
     /** @private */
     private _open;
     /** @private */
@@ -83,29 +127,41 @@ export declare class Mailbox extends ReadyResource {
     /**
      * Receive the messages sent to the address `secret` owns, until the returned inbox closes.
      * A message stays in the inbox until `onmessage` resolves; one it did not finish is handed
-     * over again the next time this address is received.
+     * over again the next time this address is received. One it resolves `false` on was not for
+     * this address: it is erased as one that does not open. A message that was being read when the
+     * app was killed or its inbox closed is handed over at the next start and stays on the device,
+     * whatever `keep` says or `onmessage` resolves.
      *
      * @param {Uint8Array} secret
      * @param {(message: Uint8Array) => unknown} onmessage
+     * @param {{ keep?: boolean, timeout?: number }} [opts]  `keep`: false erases each message from this device once handled. `timeout`: ms a message has to arrive once announced, and again to be handled, 30 s by default.
      * @returns {{ close: () => Promise<void> }}
      */
-    receive(secret: Uint8Array, onmessage: (message: Uint8Array) => unknown): {
+    receive(secret: Uint8Array, onmessage: (message: Uint8Array) => unknown, { keep, timeout }?: {
+        keep?: boolean;
+        timeout?: number;
+    }): {
         close: () => Promise<void>;
     };
     /**
      * Send a message to an address. Resolves once the outbox keeps it; it is delivered in the
-     * background, and dropped from the outbox once someone read it.
+     * background, and dropped from the outbox once the owner or a mirror stored it.
      *
      * @param {Uint8Array} address
      * @param {Uint8Array} message
-     * @param {{ mirrors?: Uint8Array[] }} [opts]  Where it waits for an owner who is offline; the network's by default.
+     * @param {{ mirrors?: Uint8Array[], keep?: boolean }} [opts]  `mirrors`: where it waits for an owner who is offline, the network's by default. `keep`: false erases it from this device once a device or a mirror stored it.
      * @returns {Promise<void>}
      */
-    send(address: Uint8Array, message: Uint8Array, { mirrors }?: {
+    send(address: Uint8Array, message: Uint8Array, { mirrors, keep }?: {
         mirrors?: Uint8Array[];
+        keep?: boolean;
     }): Promise<void>;
     /** @private */
     private _deliver;
+    /** @private */
+    private _erase;
+    /** @private */
+    private _owed;
     /** @private */
     private _track;
 }

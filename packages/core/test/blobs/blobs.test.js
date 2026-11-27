@@ -2,7 +2,9 @@ import test from 'brittle'
 import b4a from 'b4a'
 import z32 from 'z32'
 
+import c from 'compact-encoding'
 import { Blobs, encodeId, decodeId } from '../../src/blobs/index.js'
+import { getEncoding } from '../../src/lib/spec/index.js'
 import { Identity } from '../../src/identity/index.js'
 import { Network } from '../../src/network/index.js'
 import {
@@ -86,6 +88,25 @@ test('close is idempotent', async (t) => {
   await blobs.close()
   await blobs.close()
   t.is(blobs.closed, true)
+})
+
+test('close releases the namespace session', async (t) => {
+  const { store } = await makeStore(t)
+  await store.ready()
+  const sessions = store.corestores.size
+  const encryptionKey = Identity.randomBytes(32)
+  const first = new Blobs({ store, encryptionKey })
+  await first.ready()
+  const id = await first.put(b4a.from('x'))
+  await first.close()
+  t.is(store.corestores.size, sessions, 'a Blobs that wrote')
+
+  // as a handle reads a file of an older epoch: open by key, get, close
+  const again = new Blobs({ store, key: first.key, encryptionKey })
+  await again.ready()
+  t.alike(await again.get(id), b4a.from('x'))
+  await again.close()
+  t.is(store.corestores.size, sessions, 'and one opened by key')
 })
 
 test('id, key, discoveryKey are null before ready', async (t) => {
@@ -238,6 +259,7 @@ test('open existing blob store by key on a separate store', async (t) => {
 
 // ─── id codec (coreKey + raw blobId + type) ──────────────────────────────
 
+const BlobId = getEncoding('@cero/blob-id')
 const sampleKey = () => b4a.alloc(32, 0xab)
 const sampleBlobId = () => ({ blockOffset: 3, blockLength: 1, byteOffset: 4096, byteLength: 128 })
 
@@ -282,6 +304,34 @@ test('decodeId rejects a non-string id', (t) => {
 
 test('decodeId rejects an id that is not valid z32', (t) => {
   t.exception.all(() => decodeId('!!!not-valid-z32!!!'), /valid z32/)
+})
+
+test('decodeId reads an id whatever type it was stored with', (t) => {
+  t.is(decodeId(encodeId(sampleKey(), sampleBlobId(), 'image')).type, 'image')
+  // as earlier builds, which checked no type, stored them
+  for (const type of ['png', 'image/jpeg ', 'text/plain; name="résumé.txt"', 'image/png\r\n']) {
+    const raw = { coreKey: sampleKey(), ...sampleBlobId(), type }
+    t.is(decodeId(z32.encode(c.encode(BlobId, raw))).type, type, JSON.stringify(type))
+  }
+})
+
+test('encodeId refuses a type that is no printable text', (t) => {
+  for (const type of [
+    undefined,
+    null,
+    1,
+    'image/png\r\n',
+    'image/png\nX-Evil: 1',
+    'a\tb',
+    'imagé/png'
+  ]) {
+    t.exception.all(
+      () => encodeId(sampleKey(), sampleBlobId(), type),
+      /INVALID/,
+      JSON.stringify(type)
+    )
+  }
+  t.ok(encodeId(sampleKey(), sampleBlobId(), ''), 'an empty one is no type')
 })
 
 test('decodeId rejects a truncated payload', (t) => {
@@ -347,8 +397,8 @@ test('replication: stream blob read from peer', async (t) => {
 
 test('replication: rides the connections a network already has, joining no topic of its own', async (t) => {
   const { blobsA, blobsB, netA, netB } = await makeReplicationPair(t, { topic: randomTopic() })
-  t.absent(netA.state(blobsA.discoveryKey), 'the writer joined no blob topic')
-  t.absent(netB.state(blobsB.discoveryKey), 'nor the reader')
+  t.absent(netA.swarm.status(blobsA.discoveryKey), 'the writer joined no blob topic')
+  t.absent(netB.swarm.status(blobsB.discoveryKey), 'nor the reader')
   const payload = b4a.from('over the room link')
   const blobId = await blobsA.put(payload)
   t.alike(await blobsB.get(blobId), payload)

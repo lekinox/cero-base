@@ -87,29 +87,114 @@ powerMonitor.on('resume', () => win.webContents.send('lifecycle', 'resume'))
 window.bridge.onLifecycle((event) => (event === 'suspend' ? cero.suspend(me) : cero.resume(me)))
 ```
 
+## Push while the app is dead
+
+A member's phone learns of new data while the app is not running, through the platform's push
+service, without any server reading the data.
+
+Declare `push` on the refs that should notify, in the
+[schema](schema.md#push-a-notification-on-a-write):
+
+```js
+const schema = cero.schema({
+  room: {
+    profile: t.single({ name: t.string }),
+    messages: t.collection({ text: t.string }, { push: true })
+  }
+})
+```
+
+Every write to such a ref pushes to every member's device, with their app running or dead:
+
+```js
+await cero.put(room.messages, { text: 'dinner at 8?' })
+```
+
+### What to run
+
+Next to the mirror, run the push gateway with the app's Firebase credentials: `services/mirror`
+ships both, and its README has the setup. The mirror tells the gateway a handle has new data and
+the gateway asks Firebase to wake the members' devices. Neither reads the data: they hold it
+encrypted, and Firebase only sees which devices listen for which handle.
+
+### The app while it runs
+
+Hand `connect` the platform's messaging service:
+
+```js
+import messaging from '@react-native-firebase/messaging'
+import { firebase } from '@cero-base/cero/push/firebase'
+
+const me = await connect(ipc, spec, { push: firebase(messaging()) })
+```
+
+That is the app's whole part while it runs. Cero subscribes the device to pushes for each handle it
+belongs to, stops when the handle is left, and when a push arrives syncs that handle first. Many
+writes in a row are one push.
+
+### The app while it is dead: the show handler
+
+While the app is dead the OS runs a small worklet instead. Cero verifies the push and opens the row
+it carries; the show handler, the function the app gives `push`, says what the notification reads.
+The worklet's whole code:
+
+```js
+// worklets/push.js, the bare-kit push entry; spec as the worker imports it
+import { push } from '@cero-base/cero/push'
+import { spec } from './spec.js'
+
+push(spec, ({ name, ref, row }) => {
+  if (ref !== 'messages') return // only messages notify
+  return { title: name, body: row?.text ?? 'New message' }
+})
+```
+
+The show handler gets `{ id, type, name, newer, ref, row }`, what `cero.receive` gives the running
+app: the handle, its name, the ref the write hit and `row`, the row the write put, `null` when it
+was too big to ride along. It answers one of three ways:
+
+| It returns        | The device              |
+| ----------------- | ----------------------- |
+| `{ title, body }` | shows that notification |
+| nothing           | shows nothing           |
+| throws            | shows nothing           |
+
+A forged push, one about a handle this device is not in, or one from a device that may not write to
+the handle, a removed member's or a reader's, never reaches the handler. Who may write is what this
+device saw the last time it had the handle open, so a handle never opened here shows no push. After
+the app upgrades from a release of Cero that did not check who may write, every handle shows no push
+until the user has opened it once on the upgraded app. The handler is the app's: its strings live
+with the app's other strings and translate with them. Without a handler `push` throws `INVALID`.
+
+For a push flow of your own: `status.topic` on a handle is the string to subscribe, `me.topics`
+lists them all, `cero.receive(me, payload)` verifies a push's bytes into
+`{ id, type, name, newer, ref, row }` or `null`, and `receive(dir, spec, payload)` from
+`@cero-base/cero/push` does the same from a closed app's storage. A messaging service is any object
+with `subscribe(topic)`, `unsubscribe(topic)` and `on('push', fn)`.
+
 ## Many handles
 
 ```js
 // room: any room you have open
 await cero.activate(room) // the room on screen: ranked first
-await cero.deactivate(room) // ranked last: on the swarm only while a slot is spare
+await cero.deactivate(room) // off the swarm after about 30 s idle, until something lands in it
 ```
 
-Handles are ranked by their last update, from anyone, and opening one counts: the latest 8 search
-and announce, the rest wait their turn. A handle moves up the moment something lands in it, and
-takes a slot as soon as one has been held 30 s, so handles at the edge do not churn the DHT. Your
-own data, on `me`, always searches.
+Handles are ranked by their last update, from anyone: the latest 8 search and announce, the next 8
+only announce, the rest leave the swarm. A handle moves up the moment something lands in it and down
+only after 30 s idle, so handles at the edge do not churn the DHT. Your own data, on `me`, always
+searches.
 
 A handle off the swarm still reads, writes and watches. It still syncs over the connections other
 handles bring in and through your mirrors. `cero.activate` has nothing to do with `cero.suspend`: a
 suspended app keeps its ranks.
 
 ```js
-const me = await cero('./data', spec, { presence: { active: 8, idle: 30000 } })
+const me = await cero('./data', spec, { presence: { active: 8, announced: 8, idle: 30000 } })
 ```
 
-Those are the defaults: `active` handles search and announce at once, and `idle` is the ms a handle
-keeps its slot before a higher-ranked one may take it.
+Those are the defaults. `active` handles search and announce, `announced` handles only announce, and
+`idle` is the ms before a handle drops a tier.
 
 ## Sync nearby over Bluetooth
 
@@ -170,11 +255,16 @@ range.
 for await (const { data } of cero.watch(room.status)) if (data.behind) showUpdatePrompt()
 ```
 
-Every write carries your app's contract version, kept by `build` in `spec/contract.json`
-([Schema](schema.md#change-a-schema-that-shipped)). Peers on different versions keep
-working together: writes from a newer version are skipped, not errors, and `status.behind` holds the
-highest version seen. Once the app upgrades, the next open catches up on them. `status.behind` is per
-context, so watch `room.status` for each open handle as well as `me.status`.
+Devices on different releases of the app keep working together. Each handle, and the root, is at a
+version of the app, `status.version`, and every device writes as that version: a device on a newer
+release leaves out what the handle has not turned on, and an owner's device moves the handle to the
+version its release asks for ([Schema](schema.md#a-handles-version)). A device on a release below
+that version is behind: it reads and syncs, `status.behind` holds the version, and `put`, `set`,
+`del`, `call`, `tx`, `invite`, `accept`, `deny`, `revoke` and `rotate` throw `BEHIND` until the
+update, since a write from a view missing the newer rows would overwrite them for everyone. Only
+`leave` goes through, unless the root is behind. Once the app upgrades, the next open applies what
+it skipped. A device behind in its root is behind in every handle, so watch `me.status` as well as
+`room.status` for each open handle.
 
 ## Next
 

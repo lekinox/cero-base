@@ -42,7 +42,7 @@ await build('./spec', schema)
 node build.js
 ```
 
-This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Every device in a handle needs the same `spec/`: one on an older build skips the newer writes and shows `behind` in its `room.status`.
+This writes `spec/`, the compiled schema your app imports. Run it again after every schema change. Once a handle uses what a build adds, a device on an older build shows `behind` in its `room.status` and must update to write there.
 
 ## Write the chat
 
@@ -162,7 +162,7 @@ $ node device.js alice-laptop "<alice's twelve words>"
 
 Her handles arrive as they sync, which is why this watches `me.room` instead of reading it once. Stop it, and `node chat.js alice-laptop` opens the same handle as alice, from her second device.
 
-A phrase recovers only in a fresh directory, with the same `channel` and `mirrors` options as your other devices, while one of them is online. Otherwise `cero()` rejects with `TIMEOUT` after 30 seconds and creates nothing. The seed sits unencrypted in the data directory unless you pass `storageKey`. [Your devices](identity.md) has the full story.
+A phrase recovers only in a fresh directory, with the same `channel` and `mirrors` options as your other devices, while one of them is online. Otherwise `cero()` rejects with `TIMEOUT` after 30 seconds. The seed is stored before that wait, so a retry is plain `cero(dir, spec)`, and it recovers once one of your devices is reachable. The seed sits unencrypted in the data directory unless you pass `storageKey`. [Your devices](identity.md) has the full story.
 
 ## What you built
 

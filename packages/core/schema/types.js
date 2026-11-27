@@ -13,7 +13,8 @@ export const types = [
       { name: 'length', type: 'uint', required: true }
     ]
   },
-  // Pairing invite, z32-encoded as the wire form: the room, its address and the seed that proves it.
+  // Pairing invite, z32-encoded as the wire form: the room, its address and the seed that proves it,
+  // and the stamp its record was written with, which its joins take.
   {
     name: 'invite',
     compact: false,
@@ -24,20 +25,22 @@ export const types = [
       { name: 'address', type: 'fixed32', required: true },
       { name: 'seed', type: 'fixed32', required: true },
       { name: 'link', type: '@cero/link', required: true },
-      { name: 'data', type: 'buffer', required: false }
+      { name: 'data', type: 'buffer', required: false },
+      { name: 'stamp', type: 'uint', required: false },
+      // the address is the invite's own, not the room's: its join names it, its answers are tagged
+      { name: 'own', type: 'bool', required: false }
     ]
   },
-  // Pairing join — sealed to the room's address, in the joiner's own writer core. `proof` is the
-  // invite's signature over that writer, `signature` the joiner identity's over the join.
+  // Pairing join — sealed to the room's address, in the joiner's own writer core. `signature` is
+  // the invite's over that writer, `proof` the joiner device's over the join, chained to its identity.
   {
     name: 'join',
     compact: false,
     fields: [
       { name: 'invite', type: 'fixed32', required: true },
       { name: 'reply', type: 'fixed32', required: true },
-      { name: 'proof', type: 'fixed64', required: true },
-      { name: 'identity', type: 'fixed32', required: true },
       { name: 'signature', type: 'fixed64', required: true },
+      { name: 'proof', type: 'buffer', required: true },
       { name: 'ts', type: 'uint', required: false }
     ]
   },
@@ -60,7 +63,22 @@ export const types = [
       { name: 'reason', type: 'string', required: false },
       { name: 'key', type: 'fixed32', required: false },
       { name: 'encryptionKey', type: 'buffer', required: false },
-      { name: 'epochs', type: '@cero/epoch', required: false, array: true }
+      { name: 'epochs', type: '@cero/epoch', required: false, array: true },
+      // a device admitted under a member: its chain to the identity, as the accepter wrote it
+      { name: 'proof', type: 'buffer', required: false }
+    ]
+  },
+  // What a pass seals to each device it is for: an invite into a room and the keys that read it,
+  // so the device joins with them in hand. `data` is the sealer's own.
+  {
+    name: 'pass',
+    compact: false,
+    fields: [
+      { name: 'invite', type: 'string', required: true },
+      { name: 'key', type: 'fixed32', required: true },
+      { name: 'encryptionKey', type: 'fixed32', required: true },
+      { name: 'epochs', type: '@cero/epoch', required: false, array: true },
+      { name: 'data', type: 'buffer', required: false }
     ]
   },
 

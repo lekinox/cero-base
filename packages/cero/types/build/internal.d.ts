@@ -1,3 +1,6 @@
+export declare const contract: {
+    version: number;
+};
 export declare const defs: {
     main: {
         members: {
@@ -11,6 +14,10 @@ export declare const defs: {
         };
         handles: {
             type: string;
+            indexes: {
+                state: string[];
+                type: string[];
+            };
         };
         files: {
             type: string;
@@ -21,6 +28,10 @@ export declare const defs: {
     };
     local: {
         master: {
+            type: string;
+            kind: string;
+        };
+        device: {
             type: string;
             kind: string;
         };
@@ -47,8 +58,23 @@ export declare const defs: {
         serving: {
             type: string;
         };
+        topics: {
+            type: string;
+        };
+        told: {
+            type: string;
+            kind: string;
+        };
+        asks: {
+            type: string;
+        };
     };
 };
+export declare const base: {
+    name: string;
+    type: string;
+    required: boolean;
+}[];
 export type RefInfo = import('../lib/spec.js').RefInfo;
 export type FieldType = {
     prim: string;
@@ -115,12 +141,53 @@ export declare function collections(ns: string, scope: 'main' | 'local'): Array<
 }>;
 /**
  * @param {string} ns
+ * @returns {Array<{ name: string, schema: string, key: string[] }>}
+ */
+export declare function added(ns: string): Array<{
+    name: string;
+    schema: string;
+    key: string[];
+}>;
+/**
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @returns {Array<{ name: string, collection: string, key: string[] }>}
+ */
+export declare function indexes(ns: string, scope: 'main' | 'local'): Array<{
+    name: string;
+    collection: string;
+    key: string[];
+}>;
+/**
+ * @param {string} ns
  * @returns {Array<{ name: string, requestType: string }>}
  */
 export declare function dispatches(ns: string): Array<{
     name: string;
     requestType: string;
 }>;
+/**
+ * @param {string} ns
+ * @returns {Array<{ name: string, requestType: string }>}
+ */
+export declare function appended(ns: string): Array<{
+    name: string;
+    requestType: string;
+}>;
+/**
+ * The names Cero takes in a scope, which an app ref would shadow: its refs and collections, its
+ * types and its routes.
+ *
+ * @param {string} ns
+ * @param {'main' | 'local'} scope
+ * @param {boolean} root
+ * @returns {{ refs: Set<string>, types: Set<string>, routes: Set<string> }}
+ */
+export declare function reserved(ns: string, scope: 'main' | 'local', root: boolean): {
+    refs: Set<string>;
+    types: Set<string>;
+    routes: Set<string>;
+};
 /**
  * @param {string} ns
  * @returns {Array<{ name: string, request: { name: string }, response: { name: string, stream?: boolean } }>}

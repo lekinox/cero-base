@@ -46,10 +46,12 @@ const invite = await cero.invite(room, { role: 'reader', ttl: '1d' })
 | `reuse`   | single use | `true` admits more than one joiner, at most as `member`.            |
 | `confirm` | `false`    | `true` makes each join wait for a member to accept it.              |
 | `data`    | `null`     | Bytes the joiner reads before joining. Unsigned: a hint, not proof. |
+| `to`      | anyone     | The id of the one member it lets in. Single use, never `confirm`.   |
+| `from`    | none       | A handle you share with `to`: the invite reaches them there.        |
 
-A role that is not a rank, a `ttl` that is not a duration, or `reuse` above `member` throws
-`INVALID`; a role above your own throws `DENIED`. Only handles have invites: `cero.invite(me)` throws
-`INVALID`.
+Options that are not a plain object, a role that is not a rank, a `ttl` that is not a duration, or
+`reuse` above `member` throw `INVALID`; a role above your own throws `DENIED`. On `me`, `cero.invite(me)`
+mints a device invite: see [Link a device](identity.md#link-a-device).
 
 ```js
 import b4a from 'b4a'
@@ -67,12 +69,56 @@ need not have the handle open.
 
 ```js
 await cero.revoke(room, code) // true the first time, false afterwards
+await cero.revoke(room, row.id) // or the id of its row in room.invites
 ```
 
-Keep the invite string: `cero.revoke` takes it, and the rows in `room.invites` keep only a hex id.
 Revoking needs the remove permission (admin or owner), `DENIED` otherwise, and turns away the joins
 still waiting on a `confirm` invite. An invite outlives its minter: it works until revoked, expired
 or spent.
+
+## Invite someone you know
+
+Someone you already share a handle with needs no invite sent to them: name them with `to`, and
+the handle you share with `from`.
+
+```js
+// plans and general are handles you are in; ben is his row in general.members
+await cero.invite(plans, { to: ben.id, from: general, ttl: '7d' })
+```
+
+Nothing is called on Ben's side: `plans` shows up in his `me.room` on its own, the next time his
+device has `general` open. The call returns the invite as always: only Ben joins with it, so
+sending it to him works too.
+
+| option | default    | meaning                                                 |
+| ------ | ---------- | ------------------------------------------------------- |
+| `to`   | required   | Their member id.                                        |
+| `from` | required   | The handle you share with them, where you can write.    |
+| `role` | `'member'` | The role they get, at most your own.                    |
+| `ttl`  | never      | How long the invite stays open: ms, or `'12h'`, `'2d'`. |
+
+It needs the invite permission in `plans`. It rejects `DENIED` for a role above your own or when
+you cannot write in `from`, `UNKNOWN` when they are not a member of `from` or none of their
+devices is there, `INVALID` when they are already a member of `plans` or already have an invite
+there, with `data`, or on `me`, and `UNSUPPORTED` when `plans` or `general` is at an older version
+of the app.
+
+```js
+const { data: waiting } = await cero.get(plans.invites, { to: ben.id })
+await cero.revoke(plans, waiting[0].id) // before Ben came: he never sees plans
+```
+
+The invite is a row of `plans.invites` whose `to` is Ben's member id, and `cero.revoke` takes it
+back, with the remove permission. It lets in only Ben: a join by anyone else with it rejects
+`DENIED` with `err.reason` `'denied'`.
+
+- `plans` appears on his list without his app deciding. `cero.leave` removes it.
+- A removal in `plans` by an admin or the owner ends these invites, as it spends the ones that let
+  people in without `confirm`. Invite again.
+- Without a mirror, his device and one device of `plans` must be online together once.
+- Give it a `ttl`: until Ben comes, it stays open to the devices he had when it was made, one he
+  removed since included.
+- With `to` alone the invite lets in only Ben, and you send it to him like any other.
 
 ## Join a handle
 
@@ -88,16 +134,22 @@ try {
 
 `cero.open` waits a fixed 30 s, then rejects `TIMEOUT`. The join goes on, across restarts: once a
 member answers, the handle appears in `me.room`, so watch that list. An expired invite rejects
-`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`.
+`EXPIRED` at once, a string that is not an invite `INVALID_INVITE`. The latest ask stands: a join
+with another invite on another device of yours asks again, and the device that asked first takes
+its request back once it is online, its waiting `open` rejecting `CANCELLED`. A cancel, with any
+invite to the room, or a row the app deletes, takes the request back the same way, and so does a
+new ask under the same invite after either.
 
 ```js
-const { data: joins } = await cero.get(me.joins) // [{ id, type, invite }], still waiting
+const { data: waiting } = await cero.get(me.room, { state: 'asking' }) // still waiting for an answer
 await cero.cancel(me, invite) // give up for good: true when it cancelled one
+const { data: row } = await cero.get(me.room, id) // state: 'asking', 'joining', 'in', or how it ended
 ```
 
 A join the handle turns away rejects `DENIED` once a member who can invite is online, with
-`err.reason` saying why: `'revoked'`, `'spent'` for a single-use invite someone already used, or
-`'removed'` for an invite minted before your removal. An invite to a handle you already have returns
+`err.reason` saying why: `'revoked'`, `'spent'` for a single-use invite someone already used,
+`'removed'` for an invite minted before your removal or spent by one, or `'denied'` for an invite
+made `to` someone else. An invite to a handle you already have returns
 that handle; a newer invite to the same handle takes over. Once nobody waits on a join, a denial or
 expiry reaches `onerror`.
 
@@ -162,7 +214,10 @@ await cero.set(room.members, { id: memberId, role: 'admin' })
 The ranks run owner, admin, member, reader. Changing a role needs assign, a new role within your own
 and a rank above the member's current one, `REFUSED` otherwise. `can(role, 'invite')` from
 `@cero-base/core/utils` checks a rank in your UI; it knows the four names in the table, and any
-other is `INVALID`.
+other is `INVALID`. Every member sets the `name` and `avatar` of her own row in `room.members`, a
+reader too, which is how `profileSync` shows her profile; a reader sets nothing else of it. In a
+handle at a version from before readers wrote, a reader's write to her row is `REFUSED`, and
+`profileSync` leaves her row as it is.
 
 ## Remove a member
 
@@ -175,46 +230,87 @@ Removing needs the remove permission and a higher rank: removing an equal or hig
 `REFUSED`. Anyone may remove themselves, a reader too, except the last owner of a handle others are
 in: `INVALID`. The removed member's `room.status` shows `role: null`, and
 they come back only through an invite minted after the removal: an older one rejects `DENIED` with
-`err.reason` `'removed'`.
+`err.reason` `'removed'`. A removal by an admin or the owner, of a member, of a device, or of someone
+who already left, also spends the invites that let people in without `confirm`, since the one
+removed may hold one: a join with one rejects `DENIED` with `err.reason` `'removed'`, and a join one
+had let in that has not taken its seat yet ends the same, unless a member accepted it. Invites with
+`confirm` stay. Mint a new
+invite for anyone still expected.
 
-## Remove and re-key
+### Removed
 
 ```js
-await cero.del(room.members, memberId)
-await cero.rotate(room) // { epoch }: the room has a new key
+await cero.removed(room, memberId) // 'removed', 'left' or null
 ```
 
-A removal re-keys the handle shortly after on its own, on a device that can remove, so the removed
-member reads nothing written after it. `cero.rotate` re-keys at once: await it before writing
-something they must not see. It needs the remove permission, `REFUSED` otherwise, and cannot run
+Whether a member is out for good, from the record the handle keeps of it: `'removed'` when another
+member took her out, `'left'` when she left. It is `null` while she is a member, once she is let in
+again, for someone who never was one, and while her going has not reached this device. A missing
+`members` row is not that record: on a device still catching up it only means not yet. Read it to
+end what the handle gave her elsewhere, a seat in another handle say.
+
+## Remove and rotate the key
+
+```js
+await cero.del(room.members, memberId) // removed, and the room has a new key
+await cero.rotate(room) // { epoch }: a new key at any other time
+```
+
+A removal by an admin or the owner rotates the handle's key in the same step: when `cero.del`
+resolves the key is in place, and the removed member reads nothing written after it. `cero.rotate`
+rotates it at any other time. It needs the remove permission, `REFUSED` otherwise, and cannot run
 inside a transaction: `cero.rotate(tx)` throws `INVALID`. [How it works](how-it-works.md) has the
 mechanism.
 
 ## Leave a handle
 
 ```js
-await cero.leave(room) // out of its members, out of your list on every device, closed here
+await cero.leave(room) // its row reads leaving, then is gone on every device
 ```
 
-`cero.leave` removes you from the handle's members, at any role, then the handle from your list. The
-last owner of a handle others are in gets `INVALID`: make another member an owner first, with
-`cero.set(room.members, { id, role: 'owner' })`. `cero.close(room)` stops a handle on this device and
-keeps it in your list, to reopen by id. `cero.close(me)` closes everything.
+`cero.leave` writes `leaving` on the handle's row. Every device of yours seated in the handle
+carries it: it takes you out of the handle's members, at any role, waits until another device or a
+mirror holds that, then deletes the row, keeps none of the handle's keys and closes it. An app
+closed on the way goes on at its next launch. Removed by someone else, the row reads `removed`, with
+the remover's id in `by`. A seat taken with an invite that had already ended, where this device
+could not see it yet, reads `removed` too, with no `by` and the `reason` its join would have been
+turned away with. A removal, and a join that ended `denied` or `expired`, stays 30 days so
+the app can show why, then goes at a launch; a cancelled join goes at a launch of the device that asked once the room holds the cancel, 30 days at most, and a leave
+leaves no row. The app deletes an ended row whenever it likes, with `cero.del(me.room, id)`, and a
+new code joins again; a row still `in`, `leaving`, `asking` or `joining` is `REFUSED`. The last
+owner of a handle others are in gets `INVALID` from `cero.leave`, and nothing is written: make
+another member an owner first, with `cero.set(room.members, { id, role: 'owner' })`. Leaving is yours, not a removal: a code minted
+after you left brings you back; an older one, or the handle's reusable one, puts you in
+`room.requests` until a member accepts or denies you, so leaving first never dodges a removal. The
+handle still rotates its key, sealing you out. Removed by someone else, only a code minted after the removal does.
+
+`cero.close(room)` lets go of a handle on this device and keeps it in your list, to reopen by id.
+A device opens a handle once and counts who holds it: every `open`
+(by id, name or code) holds it once and every `cero.close` lets go once. The last close ends every
+`watch` its holders started, and it stays open, so a reopen gets it as it is. A watch a `'handle'`
+listener starts as it runs, as an extension's does, follows the handle for as long as it is open. A
+device keeps `keepOpen` of them, 16 by default; one more closes the least recently used. Leaving, a
+removal and `cero.close(me)` close it at once. Over RPC, the page's holds end when it reloads.
 
 ## List your handles
 
 ```js
-const { data: rooms } = await cero.get(me.room)
-// [{ id, type: 'room', name, key, encryptionKey, createdAt, updatedAt }]
+const { data: rooms } = await cero.get(me.room) // the rooms you are in
+// [{ id, type: 'room', name, key, encryptionKey, state: 'in', createdAt, updatedAt }]
+const { data: denied } = await cero.get(me.room, { state: 'denied' }) // joins turned away
+const { data: row } = await cero.get(me.room, id) // one room, whatever its state
 
 await cero.activate(room) // the room on screen syncs first
 ```
 
-`encryptionKey` is the handle's secret: never log it or send it anywhere. `cero.watch(me.room)` follows
-the list, joined handles included. [Network](network.md) covers `cero.activate`.
+A list of rooms is the rooms you are in. Name a `state` to list the others: `asking` and `joining`
+for joins on their way, `leaving`, `removed`, `denied` or `expired`. A room read by its id comes
+whatever its state.
+`encryptionKey` is the handle's secret: never log it or send it anywhere. `cero.watch(me.room)`
+follows the list, a joined handle once you are in. [Network](network.md) covers `cero.activate`.
 
 ## Next
 
 - [Your devices](identity.md) to be the same member on every device.
 - [Network](network.md) to sync through mirrors, over Bluetooth, and across many handles.
-- [How it works](how-it-works.md) for what happens on join, removal and re-key.
+- [How it works](how-it-works.md) for what happens on join, removal and rotation.

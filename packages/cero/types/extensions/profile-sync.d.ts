@@ -1,5 +1,5 @@
 /**
- * Mirror your `profile` onto your `member` row in every handle you're in.
+ * Mirror your `profile` onto your `member` row in every handle you're in, open or closed here.
  *
  * @param {{ fields?: Record<string, object> }} [opts]  Extra fields, as `t` types.
  * @returns {import('./index.js').Extension}

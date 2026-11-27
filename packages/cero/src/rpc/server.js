@@ -1,10 +1,12 @@
 import c from 'compact-encoding'
 import safetyCatch from 'safety-catch'
+import AbortController from 'bare-abort-controller'
 
 import { RPCServer, bindCodec } from '@cero-base/core/rpc'
 import { CeroError } from '@cero-base/core/errors'
 
-import { cero, restore } from '../index.js'
+import { cero, restore, link } from '../index.js'
+import { peek } from '../lib/peek.js'
 import {
   put,
   set,
@@ -15,6 +17,7 @@ import {
   invite,
   revoke,
   rotate,
+  removed,
   accept,
   deny,
   cancel,
@@ -24,7 +27,9 @@ import {
   activate,
   deactivate,
   phrase,
-  nearby
+  nearby,
+  receive,
+  send
 } from '../lib/operators.js'
 
 // what a UI reaches by name: these operators, never close or a handle's privates
@@ -33,6 +38,7 @@ const VERBS = new Map(
     invite,
     revoke,
     rotate,
+    removed,
     accept,
     deny,
     cancel,
@@ -41,7 +47,9 @@ const VERBS = new Map(
     activate,
     deactivate,
     phrase,
-    nearby
+    nearby,
+    receive,
+    send
   })
 )
 
@@ -69,9 +77,9 @@ const VERBS = new Map(
  */
 
 /**
- * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: boots the
- * root via `cero()` as soon as it opens, so the network is up while the UI still loads, then
- * exposes data ops, pairing, and handle lifecycle.
+ * IPC-side RPC server for cero. Bridges an `hrpc` channel to a live `Handle` tree: a store that holds an identity
+ * boots its root via `cero()` as soon as it opens, so the network is up while the UI still loads; a new one waits
+ * for the client to say how, by init, restore or link. Then it exposes data ops, pairing, and handle lifecycle.
  */
 export class Server extends RPCServer {
   /**
@@ -91,15 +99,25 @@ export class Server extends RPCServer {
     this.opts = { ...opts, onerror: (err) => this._onerror(err) }
     /** @type {Set<object>} open error streams, one per connected client */
     this._errors = new Set()
+    /** @private */
+    this._reported = new WeakSet()
     /** @type {Context | null} */
     this.me = null
     /** @type {Map<string, Context>} */
     this.handles = new Map()
     /** @type {Map<string, Set<object>>} handle id → its open watch streams */
     this._watchStreams = new Map()
+    /** @type {Map<string, number>} handle id → the opens the page holds on it, let go when it reloads */
+    this._held = new Map()
     /** @private */
     this._booting = null
+    /** @private */
+    this._adopting = null
+    /** @private */
+    this._stop = new AbortController()
     this._wireInit()
+    this._wireRestore()
+    this._wireLink()
   }
 
   /**
@@ -123,31 +141,76 @@ export class Server extends RPCServer {
   /** @private */
   async _open() {
     await super._open()
-    this._booting = this._boot()
-    // it surfaces on init
-    this._booting.catch(() => {})
+    // its error is the app's even with no request waiting on it, unless the close stopped it
+    if (await peek(this.storage, this.spec, this.opts)) {
+      this._start().catch((err) => this.closing || this._onerror(err))
+    }
+  }
+
+  /**
+   * Open the root, as `how` says on a new store: a phrase recovers, an invite links, neither creates.
+   * @private
+   */
+  _start(how = {}) {
+    const booting = this._boot(how)
+    this._booting = booting
+    // it surfaces on the request that waits for it; the next one starts over
+    booting.catch(() => {
+      if (this._booting === booting) this._booting = null
+    })
+    return booting
   }
 
   /** @private */
-  async _boot() {
-    this.me = await cero(this.storage, this.spec, this.opts)
+  async _boot(how) {
+    // a close stops a recovery or a link still waiting for a device: the next open goes on with it
+    const opts = { ...this.opts, ...how, signal: this._stop.signal }
+    this.me = await cero(this.storage, this.spec, opts)
+    try {
+      await this.me.fileServer.listen()
+      this._wireData()
+      this._wireHandles()
+      this._wireVerbs()
+    } catch (err) {
+      // the next start opens the same store, whose lock a root left open here still holds
+      const me = this.me
+      this.me = null
+      await me.close().catch(this.opts.onerror)
+      throw err
+    }
     this.handles.set(this.me.id, this.me)
-    await this.me.fileServer.listen()
-    this._wireData()
-    this._wireHandles()
-    this._wireVerbs()
-    this._wireRestore()
   }
 
   /** @private */
   async _close() {
+    this._stop.abort()
     await this._booting?.catch(() => {})
     if (this.me) {
       try {
         await this.me.close()
       } catch {}
     }
+    // a link or a restore past its commit resolves with an open root, closed before this ends
+    await this._adopting
     await super._close()
+  }
+
+  /**
+   * The root a restore or a link resolves with is the one served from here on; with the server closing it closes.
+   * @private
+   */
+  _adopt(swapping) {
+    const adopted = swapping.then(async (me) => {
+      if (this.closing) {
+        await me.close()
+        throw CeroError.CLOSED('Server')
+      }
+      this.me = me
+      this.handles = new Map([[me.id, me]])
+      this._held.clear()
+    })
+    this._adopting = adopted.catch(() => {})
+    return adopted
   }
 
   /**
@@ -163,6 +226,9 @@ export class Server extends RPCServer {
 
   /** @private */
   _onerror(err) {
+    // a failed start rejects every request that waits on it, and reaches onerror once
+    if (this._reported.has(err)) return
+    if (err instanceof Error) this._reported.add(err)
     if (!this._errors.size) return this._report(err)
     const frame = {
       message: err?.message || String(err),
@@ -179,14 +245,18 @@ export class Server extends RPCServer {
    */
   _wireInit() {
     this.rpc.onErrors((stream) => {
+      closeWithWire(stream)
       this._errors.add(stream)
       stream.on('error', safetyCatch)
       stream.on('close', () => this._errors.delete(stream))
     })
-    this.rpc.onInit(async () => {
-      await this._booting
-      // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end
+    this._on('onInit', async () => {
+      await this.ready()
+      await (this._booting ?? this._start())
+      // a reloaded UI is a new client on the same worker: it re-attaches, its old streams end, and every open the old
+      // page held is let go for it, as it never closes them
       for (const handle of this._watchStreams.keys()) this._endWatches(handle)
+      await this._letGo()
       return this._identity()
     })
   }
@@ -196,11 +266,43 @@ export class Server extends RPCServer {
    * @private
    */
   _wireRestore() {
-    this.rpc.onRestore(async ({ phrase }) => {
-      if (!this.me) throw CeroError.NOT_READY('Server', 'server')
-      this.me = await restore(this.me, phrase)
-      this.handles = new Map([[this.me.id, this.me]])
+    this._on('onRestore', async ({ phrase }) => {
+      await this.ready()
+      if (!this._booting) await this._start({ phrase })
+      else {
+        await this._booting
+        await this._adopt(restore(this.me, phrase))
+      }
       return this._identity()
+    })
+  }
+
+  /**
+   * Wire the `link` handler: a stream, the request's id as it is sent, the identity once linked.
+   * @private
+   */
+  _wireLink() {
+    this.rpc.onLink((stream) => {
+      closeWithWire(stream)
+      stream.on('error', safetyCatch)
+      const run = async () => {
+        await this.ready()
+        const { invite } = stream.data
+        const onrequest = (id) => stream.write({ request: id })
+        // as link() waits: the invite's lifetime, a denial ends it
+        if (!this._booting) await this._start({ invite, onrequest, recoveryTimeout: 0 })
+        else {
+          await this._booting
+          await this._adopt(link(this.me, invite, { onrequest }))
+        }
+        stream.write({ request: '', ...this._identity() })
+        stream.end()
+      }
+      run().catch((err) => {
+        stream.once('error', () => {})
+        stream.writeStream.destroy(err)
+        stream.destroy()
+      })
     })
   }
 
@@ -209,42 +311,42 @@ export class Server extends RPCServer {
    * @private
    */
   _wireData() {
-    this.rpc.onAddFile(async ({ handle, data, name, type }) => {
+    this._on('onAddFile', async ({ handle, data, name, type }) => {
       const h = this._resolve(handle)
       const { data: file } = await put(h.files, { data, type: type || '', name: name || null })
       const { data: row } = await get(h.files, file.id)
       return { data: h.spec.codec.encodeRow(h.files.schema, row) }
     })
 
-    this.rpc.onAddRow(async ({ handle, ref, data, local }) => {
+    this._on('onAddRow', async ({ handle, ref, data, local }) => {
       const { ref: r, codec, info } = this._refOf(handle, ref, local)
       const { data: row } = await put(r, received(codec.decodeRow(r.schema, data), info))
       return { data: codec.encodeRow(r.schema, row) }
     })
 
-    this.rpc.onSet(async ({ handle, ref, data, fields, local, noUpsert }) => {
+    this._on('onSet', async ({ handle, ref, data, fields, local, noUpsert }) => {
       const { ref: r, codec, info } = this._refOf(handle, ref, local)
       const row = received(codec.decodeRow(r.schema, data), info, fields)
       const result = await set(r, row, { upsert: !noUpsert })
       return { data: result ? codec.encodeRow(r.schema, result.data) : null }
     })
 
-    this.rpc.onGet(async ({ handle, ref, query, local }) => {
+    this._on('onGet', async ({ handle, ref, query, local }) => {
       const { ref: r, codec } = this._refOf(handle, ref, local)
       const q = fromWire(query)
       return encodeGet(r, codec, q, await get(r, q))
     })
 
-    this.rpc.onDel(async ({ handle, ref, id, local }) => {
+    this._on('onDel', async ({ handle, ref, id, local }) => {
       await del(this._refOf(handle, ref, local).ref, id)
       return {}
     })
 
     this.rpc.onWatch((stream) => {
       const { handle, ref, local } = stream.data
-      const query = fromWire(stream.data.query)
-      let r, codec, live
+      let query, r, codec, live
       try {
+        query = fromWire(stream.data.query)
         ;({ ref: r, codec } = this._refOf(handle, ref, local))
         live = watch(r, query)
       } catch (err) {
@@ -280,6 +382,7 @@ export class Server extends RPCServer {
       // a watch ending with its handle ends the client's
       live.once('close', () => stream.destroy())
       // channel teardown destroys the stream with CHANNEL_CLOSED; 'close' cleans up
+      closeWithWire(stream)
       stream.on('error', safetyCatch)
       stream.on('close', () => {
         live.off('data', onData)
@@ -288,7 +391,7 @@ export class Server extends RPCServer {
       })
     })
 
-    this.rpc.onCall(async ({ handle, op, data }) => {
+    this._on('onCall', async ({ handle, op, data }) => {
       const h = this._resolve(handle)
       const r = h[op]
       if (!r) throw CeroError.UNKNOWN('ref', op)
@@ -302,7 +405,7 @@ export class Server extends RPCServer {
    * @private
    */
   _wireHandles() {
-    this.rpc.onAddHandle(async ({ handle, ref, data }) => {
+    this._on('onAddHandle', async ({ handle, ref, data }) => {
       const parent = this._resolve(handle)
       const info = parent.spec.meta.refs?.[ref] || parent.spec.handles?.[ref]
       if (!info) throw CeroError.UNKNOWN('handle type', ref)
@@ -310,20 +413,20 @@ export class Server extends RPCServer {
       const opts = { name: wire.name }
       const child = await this.me._create(ref, opts)
       const id = child.id
-      this.handles.set(id, child)
+      this._hold(id, child)
       return { id, type: ref, name: opts.name || '' }
     })
 
-    this.rpc.onOpenHandle(async ({ parent, row, type }) => {
+    this._on('onOpenHandle', async ({ parent, row, type }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       const { data } = await this.me.store.get('handles', row)
-      if (!data) throw CeroError.UNKNOWN('handle', row)
+      if (!data?.encryptionKey) throw CeroError.UNKNOWN('handle', row)
       const child = await this.me._load(type, row)
-      this.handles.set(row, child)
+      this._hold(row, child)
       return { id: row, type: data.type, name: data.name || '' }
     })
 
-    this.rpc.onJoin(async ({ parent, ref, invite }) => {
+    this._on('onJoin', async ({ parent, ref, invite }) => {
       if (this._resolve(parent) !== this.me) throw CeroError.UNSUPPORTED('nested handles')
       let child
       try {
@@ -333,25 +436,51 @@ export class Server extends RPCServer {
         return { id: '', type: ref, denied: true, reason: err.reason || '' }
       }
       const id = child.id
-      this.handles.set(id, child)
+      this._hold(id, child)
       return { id, type: ref, name: '' }
     })
 
-    this.rpc.onCloseHandle(async ({ handle }) => {
+    this._on('onCloseHandle', async ({ handle }) => {
       const h = this.handles.get(handle)
       if (!h || h === this.me) return {}
-      this._endWatches(handle)
-      this.handles.delete(handle)
-      await h.close()
+      await this._release(handle, h)
       return {}
     })
 
-    this.rpc.onLeave(async ({ handle }) => {
+    this._on('onLeave', async ({ handle }) => {
       await leave(this._resolve(handle))
+      this._held.delete(handle)
       this._endWatches(handle)
       this.handles.delete(handle)
       return {}
     })
+  }
+
+  /** @private one open the page holds on `id` */
+  _hold(id, h) {
+    this.handles.set(id, h)
+    this._held.set(id, (this._held.get(id) ?? 0) + 1)
+  }
+
+  /** @private one of the page's opens on `id` let go: the handle drops off the wire once nobody here holds it */
+  async _release(id, h) {
+    const n = (this._held.get(id) ?? 1) - 1
+    if (n > 0) this._held.set(id, n)
+    else this._held.delete(id)
+    await h.close()
+    // another holder on this device keeps it, with its watches; a reopen while it is idle registers it again
+    if (h._refs > 0) return
+    this._endWatches(id)
+    this.handles.delete(id)
+  }
+
+  /** @private every open the page holds let go: a reload, whose old page closes nothing */
+  async _letGo() {
+    for (const [id, n] of [...this._held]) {
+      const h = this.handles.get(id)
+      for (let i = 0; i < n && h; i++) await this._release(id, h).catch(safetyCatch)
+    }
+    this._held.clear()
   }
 
   /**
@@ -359,17 +488,27 @@ export class Server extends RPCServer {
    * @private
    */
   _wireVerbs() {
-    this.rpc.onVerb(async ({ handle, verb, args }) => {
+    this._on('onVerb', async ({ handle, verb, args }) => {
       const run = VERBS.get(verb)
       if (!run) throw CeroError.UNKNOWN('verb', verb)
-      let data
-      try {
-        data = await run(this._resolve(handle), ...c.decode(c.any, args))
-      } catch (err) {
-        // bare-rpc rethrows a TypeError and ends the worker: a bad argument fails only the call
-        throw Object.assign(new Error(err.message), { code: err.code })
-      }
+      const data = await run(this._resolve(handle), ...c.decode(c.any, args))
       return { data: data === undefined ? null : c.encode(c.any, data) }
+    })
+  }
+
+  /**
+   * Register a request handler whose error fails only its call.
+   * @private
+   */
+  _on(name, fn) {
+    this.rpc[name](async (req) => {
+      try {
+        return await fn(req)
+      } catch (err) {
+        if (!CeroError.isCeroError(err)) this._onerror(err)
+        // bare-rpc rethrows a TypeError or a RangeError and ends the worker
+        throw Object.assign(new Error(err.message), { code: err.code, reason: err.reason })
+      }
     })
   }
 
@@ -404,9 +543,9 @@ export class Server extends RPCServer {
       return { ref: this.me.local[name], codec: this.spec.local.codec, info }
     }
     const h = this._resolve(id)
-    const r = h[name]
-    if (!r) throw CeroError.UNKNOWN('ref', name)
-    return { ref: r, codec: h.spec.codec, info: h.spec.meta?.refs?.[name] }
+    const info = h.spec.meta.refs?.[name]
+    if (!info) throw CeroError.UNKNOWN('ref', name)
+    return { ref: h[name], codec: h.spec.codec, info }
   }
 
   /**
@@ -439,6 +578,11 @@ export async function serve(ipc, spec, opts) {
   const server = new Server(ipc, spec, opts)
   await server.ready()
   return server
+}
+
+// hrpc destroys only the wire's stream when the client drops it, never the one a handler holds
+function closeWithWire(stream) {
+  stream.writeStream.once('close', () => stream.destroy())
 }
 
 // a query crosses as the client wrote it; no bytes is no query

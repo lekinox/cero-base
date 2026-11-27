@@ -5,6 +5,19 @@ export type RawBlobId = {
     byteLength: number;
 };
 /**
+ * Refuse a type a new file id cannot carry: one that is not printable text.
+ *
+ * @param {unknown} type
+ */
+export declare function checkType(type: unknown): void;
+/**
+ * The type to serve a file with: one an earlier build stored that a header cannot carry is left out.
+ *
+ * @param {string} type
+ * @returns {string}
+ */
+export declare function servedType(type: string): string;
+/**
  * Encode a coreKey + raw hyperblobs blobId + type into a durable string id.
  *
  * @param {Uint8Array} coreKey

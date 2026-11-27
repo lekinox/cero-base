@@ -22,12 +22,14 @@ import {
   waitFor,
   waitForConnection,
   randomTopic,
-  once
+  once,
+  admit
 } from '../helpers/index.js'
 
 test.configure({ timeout: 60000 })
 
 const PEER = new URL('../fixtures/peer.js', import.meta.url).pathname
+const CLOSE = new URL('../fixtures/close.js', import.meta.url).pathname
 
 // ─── channel ──────────────────────────────────────────────────────────────
 
@@ -67,6 +69,16 @@ test('channel: different channels stay isolated on the same topic', async (t) =>
 
 // ─── lifecycle ────────────────────────────────────────────────────────────
 
+test('relayThrough: relays only when forced or behind a randomized NAT', async (t) => {
+  const testnet = await makeTestnet(t)
+  const key = b4a.alloc(32, 7)
+  const net = await makeNet(t, testnet, { relayThrough: [b4a.toHex(key)] })
+  const relay = net.swarm.relayThrough
+  t.is(relay(false, { dht: { randomized: false } }), null, 'a reachable peer connects direct')
+  t.alike(relay(true, { dht: { randomized: false } }), [key], 'a failed direct try relays')
+  t.alike(relay(false, { dht: { randomized: true } }), [key], 'a randomized NAT relays')
+})
+
 test('new Network: a store is required', (t) => {
   t.exception.all(() => new Network(), /store is required/)
   t.exception.all(() => new Network({ bootstrap: [] }), /store is required/)
@@ -76,15 +88,15 @@ test('new Network({ store }) + ready() + close() lifecycle', async (t) => {
   const testnet = await makeTestnet(t)
   const { store } = await makeStore(t)
   const net = new Network({ bootstrap: testnet.bootstrap, store })
-  t.is(net.replicator, null, 'replicator not created until ready')
+  t.is(net.swarm, null, 'swarm not created until ready')
   t.ok(net.wakeup, 'wakeup created in constructor')
 
   await net.ready()
-  t.ok(net.replicator, 'replicator created after ready')
+  t.ok(net.swarm, 'swarm created after ready')
   t.ok(net.wakeup, 'wakeup still present')
 
   await net.close()
-  t.is(net.replicator, null, 'replicator cleared after close')
+  t.is(net.swarm, null, 'swarm cleared after close')
 })
 
 test('ready() is idempotent', async (t) => {
@@ -105,76 +117,63 @@ test('close() is idempotent', async (t) => {
   t.pass('multiple close() calls succeed')
 })
 
-// ─── identity opt ─────────────────────────────────────────────────────────
-
-test('identity opt: the replicator keyPair matches identity publicKey', async (t) => {
+// ms the process lives on after close resolved
+async function outlives(t, mode) {
   const testnet = await makeTestnet(t)
-  const id = await Identity.create()
-  const { store } = await makeStore(t)
-  const net = new Network({ identity: id, bootstrap: testnet.bootstrap, store })
-  await net.ready()
-  t.alike(b4a.toBuffer(net.replicator.keyPair.publicKey), b4a.toBuffer(id.publicKey))
-  await net.close()
+  const args = [CLOSE, await t.tmp(), JSON.stringify(testnet.bootstrap), mode]
+  const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] })
+  let closed = 0
+  child.stdout.on('data', (data) => b4a.toString(data).includes('closed') && (closed = Date.now()))
+  await new Promise((resolve) => child.on('exit', resolve))
+  t.ok(closed, 'closed')
+  return Date.now() - closed
+}
+
+test('close(): the process exits as soon as close resolves', async (t) => {
+  const ms = await outlives(t, 'close')
+  t.ok(ms < 300, `exited ${ms} ms after close`)
 })
 
-test('no identity opt: the replicator derives its own keypair', async (t) => {
+test('flush(): a flush that settles leaves no timer to keep the process alive', async (t) => {
+  const ms = await outlives(t, 'flush')
+  t.ok(ms < 300, `exited ${ms} ms after close`)
+})
+
+// ─── swarm keypair ────────────────────────────────────────────────────────
+
+test('the swarm generates its own keypair', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
-  t.is(net.replicator.keyPair.publicKey.length, 32)
+  t.is(net.swarm.keyPair.publicKey.length, 32)
 })
 
-// ─── join: pinned by default, or in the rotation ──────────────────────────
+// ─── join: defaults to active ─────────────────────────────────────────────
 
-test('join(topic) pins the topic: it announces and looks up at once', async (t) => {
+test('join(topic) defaults to mode active', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   const topic = randomTopic()
   const discovery = net.join(topic)
-  t.is(discovery.state, 'pinned')
-  t.is(net.state(topic), 'pinned')
-  await discovery.destroy()
-  t.is(net.state(topic), null, 'left')
-})
-
-test('join(topic, { pin: false }) leaves the topic to the rotation, which has a free slot', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  const topic = randomTopic()
-  const discovery = net.join(topic, { pin: false })
-  t.is(discovery.state, 'inactive', 'nothing until the rotation runs')
-  await waitFor(() => discovery.state === 'autostarted')
-  t.pass('took a free slot')
+  t.is(discovery.mode, 'active')
   await discovery.destroy()
 })
 
-test('join: a topic joined again while its last session leaves comes back', async (t) => {
+test('join(topic, { mode: passive }) honors mode', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   const topic = randomTopic()
-  const first = net.join(topic)
-  await first.flush()
-  first.destroy() // not awaited: the unannounce is in flight
-  const again = net.join(topic)
-  t.is(net.state(topic), 'inactive', 'waiting on the leave')
-  await again.flush()
-  t.is(again.state, 'pinned', 'joined once the old session left')
-  await again.destroy()
-  t.is(net.state(topic), null)
+  const discovery = net.join(topic, { mode: 'passive' })
+  t.is(discovery.mode, 'passive')
+  await discovery.destroy()
 })
 
-test('join: the same topic twice is one session, held until the last destroy', async (t) => {
+test('join: invalid mode throws', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   const topic = randomTopic()
-  const a = net.join(topic)
-  const b = net.join(topic)
-  t.is(net.replicator.sessions.size, 1, 'one session')
-  await a.destroy()
-  t.is(net.state(topic), 'pinned', 'b still holds it')
-  t.absent(b.destroyed)
-  await b.destroy()
-  t.is(net.state(topic), null)
-  t.is(net.replicator.sessions.size, 0)
+  t.exception.all(() => net.join(topic, { mode: 'weird' }), /mode must be/)
+  t.exception.all(() => net.join(topic, { mode: '' }), /mode must be/)
+  t.exception.all(() => net.join(topic, { mode: null }), /mode must be/)
 })
 
 test('join: invalid topic throws', async (t) => {
@@ -204,17 +203,18 @@ test('join: two peers joining a topic in the same tick meet within seconds', asy
 
 // ─── discovery: activate / deactivate / flush / destroy ───────────────────
 
-test('discovery.activate() pins, deactivate() releases to the rotation', async (t) => {
+test('discovery.activate() / deactivate() change mode', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   const topic = randomTopic()
-  const discovery = net.join(topic, { pin: false })
+  const discovery = net.join(topic, { mode: 'passive' })
+  t.is(discovery.mode, 'passive')
 
   await discovery.activate()
-  t.is(discovery.state, 'pinned')
+  t.is(discovery.mode, 'active')
 
   await discovery.deactivate()
-  t.is(discovery.state, 'autostarted', 'released, and the rotation had a slot')
+  t.is(discovery.mode, 'passive')
 
   await discovery.destroy()
 })
@@ -259,25 +259,25 @@ test('two active networks on the same topic discover each other', async (t) => {
   t.pass('peers connected')
 })
 
-test('a topic in the rotation announces: a pinned peer reaches it', async (t) => {
+test('passive peer is reachable by an active peer', async (t) => {
   const testnet = await makeTestnet(t)
-  const rotated = await makeNet(t, testnet)
-  const pinned = await makeNet(t, testnet)
+  const passive = await makeNet(t, testnet)
+  const active = await makeNet(t, testnet)
   const topic = randomTopic()
-  const inbound = once(rotated, 'connection', 30000)
+  const passiveConn = once(passive, 'connection', 30000)
 
-  const dr = rotated.join(topic, { pin: false })
-  await waitFor(() => dr.state === 'autostarted')
-  await dr.flush()
-
-  const dp = pinned.join(topic)
+  const dp = passive.join(topic, { mode: 'passive' })
   await dp.flush()
 
-  await inbound
-  t.pass('reached')
+  const da = active.join(topic)
+  await da.flush()
+  await da.activate()
 
-  await dr.destroy()
+  await passiveConn
+  t.pass('passive peer was reached by active peer')
+
   await dp.destroy()
+  await da.destroy()
 })
 
 // ─── events ───────────────────────────────────────────────────────────────
@@ -316,9 +316,9 @@ test('channel: leaving a topic removes its swarm discovery — no announce leak'
   const testnet = await makeTestnet(t)
   const a = await makeNet(t, testnet, { channel: 'leak-check' })
   const disc = a.join(randomTopic())
-  t.is(a.replicator.sessions.size, 1, 'joined')
+  t.is(a.swarm._discovery.size, 1, 'joined')
   await disc.destroy()
-  t.is(a.replicator.sessions.size, 0, 'left — the session is gone, topic unannounced')
+  t.is(a.swarm._discovery.size, 0, 'left — the discovery entry is gone, topic unannounced')
 })
 
 test('peering(): built once, refused on a closed network', async (t) => {
@@ -363,13 +363,12 @@ test('close while joined: destroys discoveries', async (t) => {
 
 // ─── exposed escape hatches ───────────────────────────────────────────────
 
-test('replicator, dht and wakeup are exposed as public properties', async (t) => {
+test('swarm and wakeup are exposed as public properties', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
-  t.ok(net.replicator, 'replicator exposed')
-  t.ok(net.dht, 'dht exposed')
+  t.ok(net.swarm, 'swarm exposed')
   t.ok(net.wakeup, 'wakeup exposed')
-  t.is(typeof net.replicator.join, 'function')
+  t.is(typeof net.swarm.join, 'function')
   t.is(typeof net.wakeup.addStream, 'function')
 })
 
@@ -388,6 +387,29 @@ test('replication: active + active discover each other', async (t) => {
   t.ok(a.connections.size >= 1, 'a has a peer')
   t.ok(b.connections.size >= 1, 'b has a peer')
   await Promise.all([da.destroy(), db.destroy()])
+})
+
+test('replication: passive announces, active connects in', async (t) => {
+  const testnet = await makeTestnet(t)
+  const passive = await makeNet(t, testnet)
+  const active = await makeNet(t, testnet)
+  const topic = randomTopic()
+
+  const inbound = once(passive, 'connection', 30000)
+
+  const dp = passive.join(topic, { mode: 'passive' })
+  await dp.flush()
+
+  const da = active.join(topic)
+  await da.flush()
+  await da.activate()
+
+  const [stream] = await Promise.all([inbound])
+  t.ok(stream, 'passive received an inbound stream')
+  t.is(passive.connections.size, 1, 'passive has one connection')
+
+  await dp.destroy()
+  await da.destroy()
 })
 
 // a core in a's store, and its copy in b's
@@ -450,6 +472,31 @@ test('replication: wakeup propagates appends to peers', async (t) => {
   t.alike(await reader.get(1), b4a.from('woke-up'))
 })
 
+test('replication: passive discovery upgraded via activate() connects to peers', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await makeNet(t, testnet)
+  const b = await makeNet(t, testnet)
+  const topic = randomTopic()
+
+  const da = a.join(topic, { mode: 'passive' })
+  const db = b.join(topic)
+  await Promise.all([da.flush(), db.flush()])
+  await db.activate()
+
+  // a is passive — it doesn't actively dial b. No guarantee of connection.
+  t.is(da.mode, 'passive')
+
+  // upgrade a to active
+  await da.activate()
+  t.is(da.mode, 'active')
+
+  await Promise.all([waitForConnection(a), waitForConnection(b)])
+  t.ok(a.connections.size >= 1, 'a connected after activate()')
+
+  await da.destroy()
+  await db.destroy()
+})
+
 test('replication: deactivated discovery keeps existing peers', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b } = await makePair(t, testnet)
@@ -457,7 +504,7 @@ test('replication: deactivated discovery keeps existing peers', async (t) => {
   t.ok(a.connections.size >= 1, 'connected before deactivate')
 
   await da.deactivate()
-  t.not(da.state, 'pinned')
+  t.is(da.mode, 'passive')
 
   // existing connection must remain
   t.ok(a.connections.size >= 1, 'existing connection preserved')
@@ -495,19 +542,19 @@ test('replication: multiple topics on one network do not cross-talk', async (t) 
 
 // ─── suspend / resume ─────────────────────────────────────────────────────
 
-test('suspend()/resume(): flips replicator.suspended', async (t) => {
+test('suspend()/resume(): flips swarm.suspended', async (t) => {
   const testnet = await makeTestnet(t)
   const net = await makeNet(t, testnet)
   t.absent(net.suspended, 'starts not suspended')
-  t.absent(net.replicator.suspended, 'replicator not suspended')
+  t.absent(net.swarm.suspended, 'swarm not suspended')
 
   await net.suspend()
   t.ok(net.suspended, 'Network reports suspended')
-  t.ok(net.replicator.suspended, 'replicator.suspended is true')
+  t.ok(net.swarm.suspended, 'swarm.suspended is true')
 
   await net.resume()
   t.absent(net.suspended, 'Network reports not suspended')
-  t.absent(net.replicator.suspended, 'replicator.suspended is false')
+  t.absent(net.swarm.suspended, 'swarm.suspended is false')
 })
 
 test('suspend(): idempotent — second call is a no-op', async (t) => {
@@ -560,120 +607,12 @@ test('suspend() drops live connections; resume() reconnects', async (t) => {
   await db.destroy()
 })
 
-// ─── rotation ─────────────────────────────────────────────────────────────
-
-test('rotation: the budget caps what announces, a touch ranks in, a pin never leaves', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet, { presence: { active: 2, idle: 0 } })
-  const rep = net.replicator
-  const pinned = net.join(randomTopic())
-  const rotated = [1, 2, 3, 4].map(() => net.join(randomTopic(), { pin: false }))
-  await waitFor(() => rep.activeSessions.length === 3)
-  t.alike(
-    rotated.map((d) => d.state),
-    ['inactive', 'inactive', 'autostarted', 'autostarted'],
-    'two slots, the last joined rank first'
-  )
-  t.is(pinned.state, 'pinned', 'outside the budget')
-
-  rotated[0].touch()
-  await waitFor(() => rotated[0].state === 'autostarted')
-  t.is(rep.activeSessions.length, 3, 'still two slots and the pin')
-  t.is(pinned.state, 'pinned')
-
-  await net.flush({ timeout: 10000 })
-  t.ok(rep.announcedSessions.length <= 3, `${rep.announcedSessions.length} announced`)
-})
-
-test('rotation: release() ranks a topic last, the next one takes its slot', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet, { presence: { active: 1, idle: 0 } })
-  const a = net.join(randomTopic(), { pin: false })
-  const b = net.join(randomTopic(), { pin: false })
-  await waitFor(() => b.state === 'autostarted')
-  t.is(a.state, 'inactive', 'the last joined holds the slot')
-
-  b.release()
-  await waitFor(() => a.state === 'autostarted')
-  t.is(b.state, 'inactive', 'released')
-
-  b.touch()
-  await waitFor(() => b.state === 'autostarted')
-  t.is(a.state, 'inactive', 'ranked back in')
-})
-
-// ─── offline: a DHT that went away ────────────────────────────────────────
-
-test('close() settles when the DHT is gone', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  await net.join(randomTopic()).flush()
-  await testnet.destroy()
-  const start = Date.now()
-  await net.close()
-  t.ok(Date.now() - start < 3000, `closed in ${Date.now() - start} ms`)
-})
-
-test('resume() and flush() settle when the DHT is gone', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  await net.join(randomTopic()).flush()
-  await net.suspend()
-  await testnet.destroy()
-  const start = Date.now()
-  await net.resume()
-  await net.flush({ timeout: 10000 })
-  t.absent(net.suspended, `resumed in ${Date.now() - start} ms`)
-})
-
-test('a topic leaving while offline does not break the resume re-lookup', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  const keep = net.join(randomTopic())
-  const leaving = net.join(randomTopic())
-  await Promise.all([keep.flush(), leaving.flush()])
-  leaving.destroy() // not awaited: its session is gone from the entry while the unannounce runs
-  t.execution(() => net._lookup(), 'the re-lookup skips a topic that is leaving')
-})
-
-test('resume() with a leave in flight resumes the network', async (t) => {
-  const testnet = await makeTestnet(t)
-  const net = await makeNet(t, testnet)
-  const keep = net.join(randomTopic())
-  const leaving = net.join(randomTopic())
-  await Promise.all([keep.flush(), leaving.flush()])
-  // offline, so the suspend-time unannounce fails and the leave has one to run at resume
-  await Promise.all(testnet.nodes.map((node) => node.suspend()))
-  await net.suspend()
-  leaving.destroy()
-  await net.resume()
-  await Promise.all(testnet.nodes.map((node) => node.resume()))
-  t.absent(net.suspended, 'resumed')
-  t.ok(net.replicator._refreshInterval, 'the rotation runs again')
-  await net.flush({ timeout: 5000 })
-  t.is(keep.state, 'pinned', 'the kept topic is back')
-})
-
-test('ten quick suspend/resume rounds end connected, nobody banned', async (t) => {
-  const testnet = await makeTestnet(t)
-  const { a, b } = await makePair(t, testnet)
-  await connectPair(t, a, b)
-  const start = Date.now()
-  for (let i = 0; i < 10; i++) {
-    await a.suspend()
-    await a.resume()
-    await Promise.all([waitForConnection(a), waitForConnection(b)])
-  }
-  t.is(a.replicator.stats.bannedPeers, 0, `a banned nobody, ${Date.now() - start} ms`)
-  t.is(b.replicator.stats.bannedPeers, 0, 'b banned nobody')
-})
-
 // ─── dead connections, silent nodes, lost peers ───────────────────────────
 
 test('a connection the remote never answers on is dropped within seconds', async (t) => {
   const testnet = await makeTestnet(t)
   const topic = randomTopic()
-  const args = [PEER, await t.tmp(), JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
+  const args = [PEER, JSON.stringify(testnet.bootstrap), b4a.toString(topic, 'hex')]
   const peer = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'inherit'] })
   t.teardown(() => process.kill(peer.pid, 'SIGKILL'))
   await new Promise((resolve) => {
@@ -681,7 +620,7 @@ test('a connection the remote never answers on is dropped within seconds', async
   })
 
   const net = await makeNet(t, testnet)
-  // frozen the moment we connect: our header goes out, nothing ever comes back
+  // frozen the moment we connect: whatever the handshake put on the stream, nothing more comes
   const opened = new Promise((resolve) => {
     net.once('connection', (conn) => {
       process.kill(peer.pid, 'SIGSTOP')
@@ -690,6 +629,7 @@ test('a connection the remote never answers on is dropped within seconds', async
   })
   net.join(topic)
   const conn = await opened
+  t.comment(`${conn.rawStream.bytesReceived} bytes on the stream at connect`)
   const start = Date.now()
   const dropped = await waitFor(() => conn.destroyed, { timeout: 9000 }).catch(() => false)
   t.ok(dropped, `dropped in ${Date.now() - start} ms`)
@@ -705,16 +645,6 @@ test('a DHT node that stops answering costs a lookup about a second', async (t) 
   t.ok(Date.now() - start < 2000, `looked up in ${Date.now() - start} ms`)
 })
 
-// one dial by key: the stream once it opens, false while the peer is not announced yet
-function dial(dht, key) {
-  const conn = dht.connect(key)
-  conn.on('error', () => {})
-  return new Promise((resolve) => {
-    conn.once('open', () => resolve(conn))
-    conn.once('close', () => resolve(false))
-  })
-}
-
 test(
   'back online after an outage, a device is reachable by its key within seconds',
   { timeout: 150000 },
@@ -728,36 +658,43 @@ test(
     const joins = setInterval(() => a.join(randomTopic()), 1000)
     t.teardown(() => clearInterval(joins))
     // setup, not what is tested: under load the dht takes longer to count itself offline
-    const offline = await waitFor(() => !a.dht.online, { timeout: 90000 }).catch(() => false)
+    const offline = await waitFor(() => !a.swarm.dht.online, { timeout: 90000 }).catch(() => false)
     t.ok(offline, 'offline')
 
     // the router is back: fresh nodes at the same bootstrap address, holding nothing about a
     const back = await createTestnet(3, { port, teardown: (fn, opts) => t.teardown(fn, opts) })
-    const online = await waitFor(() => a.dht.online, { timeout: 30000 }).catch(() => false)
+    const online = await waitFor(() => a.swarm.dht.online, { timeout: 30000 }).catch(() => false)
     t.ok(online, 'online again')
     clearInterval(joins)
 
     const b = await makeNet(t, back)
     const start = Date.now()
-    const conn = await waitFor(() => dial(b.dht, a.replicator.keyPair.publicKey), {
-      timeout: 15000
-    }).catch(() => null)
-    t.ok(conn, `reached in ${Date.now() - start} ms`)
-    conn?.destroy()
+    b.swarm.joinPeer(a.swarm.keyPair.publicKey)
+    const reached = await waitFor(() => b.connections.size > 0, { timeout: 15000 }).catch(
+      () => false
+    )
+    t.ok(reached, `reached in ${Date.now() - start} ms`)
   }
 )
 
-test('a dropped connection is redialed within seconds', async (t) => {
+test('peers that stopped redialing each other are found again within seconds', async (t) => {
   const testnet = await makeTestnet(t)
   const { a, b } = await makePair(t, testnet)
   await connectPair(t, a, b)
-  const [conn] = a.connections
-  conn.destroy()
+  // every short-lived connection that drops is a failed attempt: after a few, hyperswarm stops redialing
+  for (;;) {
+    const [conn] = a.connections
+    conn.destroy()
+    const back = await waitFor(() => a.connections.size > 0 && !a.connections.has(conn), {
+      timeout: 3000
+    }).catch(() => false)
+    if (!back) break
+  }
   const start = Date.now()
-  const back = await waitFor(() => a.connections.size > 0 && !a.connections.has(conn), {
-    timeout: 10000
+  const found = await waitFor(() => a.connections.size > 0 && b.connections.size > 0, {
+    timeout: 15000
   }).catch(() => false)
-  t.ok(back, `back in ${Date.now() - start} ms`)
+  t.ok(found, `found again in ${Date.now() - start} ms`)
 })
 
 test('a lookup that failed at resume is retried within seconds', async (t) => {
@@ -765,9 +702,11 @@ test('a lookup that failed at resume is retried within seconds', async (t) => {
   const a = await makeNet(t, testnet)
   const b = await makeNet(t, testnet)
   const topic = randomTopic()
-  const da = a.join(topic)
+  // joined passive first, like a room joined long ago: no first re-lookup is still pending
+  const da = a.join(topic, { mode: 'passive' })
   const db = b.join(topic)
   await Promise.all([da.flush(), db.flush()])
+  await da.activate()
   await Promise.all([waitForConnection(a), waitForConnection(b)])
   await a.suspend()
   // the device resumes before the network is back: its first lookup and announce fail
@@ -862,7 +801,7 @@ test('inject: replication + writer admission over an injected duplex, no shared 
 
   t.is(b.writable, false, 'B is not a writer yet — guards intact')
 
-  await a.addWriter(b.keyPair.publicKey)
+  await admit(a, b)
   await waitFor(() => b.writable)
   t.ok(b.writable, 'admission replicated over the injected stream (wakeup working)')
 
