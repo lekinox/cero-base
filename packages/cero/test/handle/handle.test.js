@@ -2714,7 +2714,8 @@ test('leave: the row reads leaving, then is gone on every device of the identity
   for (const me of [a.me, b.me]) {
     await waitUntil(async () => !(await get(me.team, room.id)).data)
   }
-  for (const s of seen) t.alike(s, ['leaving'], 'leaving, then gone')
+  // an update that lands before the leaving reads the row as it stood
+  for (const s of seen) t.alike(s.slice(s[0] === 'in' ? 1 : 0), ['leaving'], 'leaving, then gone')
   t.is(await room.store.removed(a.identity.id), 'left', 'the room holds her leaving')
 })
 
