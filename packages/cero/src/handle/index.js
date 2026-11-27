@@ -2307,9 +2307,9 @@ export class Handle extends ReadyResource {
       if (row?.epochs) await child.store.learn(c.decode(epochEntries, row.epochs))
     }
     const touches = (name) => (touched) => touched.has('*') || touched.has(name)
-    const onepoch = () => save().catch(this._onerror)
-    // a room that closed under the read says nothing
+    // a store that closed under the read or the write says nothing: the next open carries them
     const report = (err) => err.code === 'CLOSED' || this._onerror(err)
+    const onepoch = () => save().catch(report)
     const onroot = (touched) => touches('handles')(touched) && read().catch(report)
     const onchild = (touched) => touches('epochs')(touched) && read().catch(report)
     child.store.on('epoch', onepoch)
@@ -2323,7 +2323,7 @@ export class Handle extends ReadyResource {
       this.store.off('epoch', onepoch)
     })
     // one that rotated before it is carried, as a room made while the root owes a rotation
-    if (child.store.keyring.seq > 0) read().then(save).catch(this._onerror)
+    if (child.store.keyring.seq > 0) read().then(save).catch(report)
   }
 
   // before(me.room.notes, fn): on every handle open now and every one opened later

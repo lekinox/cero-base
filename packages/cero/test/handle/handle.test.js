@@ -1812,6 +1812,44 @@ test('devices: a phone removed in the root is told to each open room once, with 
   }
 })
 
+test('devices: an app closed as a rotation is carried to the root reports nothing', async (t) => {
+  const errors = []
+  const a = await ceroOpen(t, { onerror: (err) => errors.push(err) })
+  const room = await open(a.me.team, { name: 'clinic' })
+  const phone = await linkTo(t, a)
+  await seats(a.me, 2)
+  // the app closes between the last read of the carry and its write
+  const { store } = a.me
+  const rotated = store.rotated.bind(store)
+  let closing = null
+  store.rotated = async () => {
+    const yes = await rotated()
+    closing ||= a.me.close()
+    await closing
+    return yes
+  }
+  await del(a.me.devices, phone.me.device.id)
+  await waitUntil(() => closing !== null)
+  await closing
+  const reported = await waitUntil(() => errors.length > 0, 500).then(
+    () => true,
+    () => false
+  )
+  t.absent(reported, 'nothing reported')
+
+  const carried = async (me) => {
+    const { epochs } = (await me.store.get('handles', room.id)).data
+    return epochs ? c.decode(epochEntries, epochs).length : 0
+  }
+  const again = await cero(a.dir, spec, { bootstrap: a.testnet.bootstrap })
+  t.teardown(() => again.close().catch(() => {}), { order: 1 })
+  const reopened = await open(again.team, { id: room.id })
+  await again._pruneAll()
+  await waitUntil(() => reopened.store.keyring.seq > 0)
+  await waitUntil(async () => (await carried(again)) === reopened.store.keyring.all().length)
+  t.pass('at the next open the room rotates and its key is carried to the root')
+})
+
 test('devices: a device the removed phone had linked keeps its seat, and opens a room it never sat in', async (t) => {
   const a = await ceroOpen(t)
   const sat = await open(a.me.team, { name: 'clinic' })
