@@ -55,8 +55,8 @@ async function makeMailbox(t, testnet, opts = {}) {
 }
 
 // a member: the owner of a fresh database, answering its joins
-async function makeHost(t, testnet, { mirrors, spec: built = spec } = {}) {
-  const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
+async function makeHost(t, testnet, { mirrors, firewall, spec: built = spec } = {}) {
+  const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors, firewall })
   const db = new Database({
     store: net.store,
     identity,
@@ -73,8 +73,8 @@ async function makeHost(t, testnet, { mirrors, spec: built = spec } = {}) {
   return { pairing, mailbox, net, db, identity }
 }
 
-async function makeJoiner(t, testnet, { mirrors, spec: built = spec } = {}) {
-  const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors })
+async function makeJoiner(t, testnet, { mirrors, firewall, spec: built = spec } = {}) {
+  const { mailbox, net, identity } = await makeMailbox(t, testnet, { mirrors, firewall })
   const join = (invite, opts = {}) =>
     Pairing.join(mailbox, invite, { identity, spec: built, ...opts })
   return { mailbox, net, identity, join }
@@ -891,6 +891,8 @@ test('offline: an old denial a mirror still announces does not settle the same w
   const deposited = new Promise((resolve) => {
     const onadd = (record) => {
       if (!record.referrer || !b4a.equals(record.referrer, reply)) return
+      // the joiner's inbox put the core of the address there first
+      if (b4a.equals(record.key, reply)) return
       mirror.off('add-core', onadd)
       resolve(record.key)
     }
@@ -1534,6 +1536,19 @@ test('offline: member and joiner are never online together, the mirror carries b
 
   await joiner.net.resume()
   t.alike((await joining).key, host.db.key)
+})
+
+test('mirror: member and joiner both online and never connected, the mirror carries both ways', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeBlindPeer(t, testnet)
+  // neither accepts the other: the mirror is the only way between them
+  const opts = { mirrors: [mirror.publicKey], firewall: () => true }
+  const host = await makeHost(t, testnet, opts)
+  const joiner = await makeJoiner(t, testnet, opts)
+
+  const joined = await joiner.join(await host.pairing.invite(), { timeout: 20000 })
+  t.alike(joined.key, host.db.key)
+  t.is(host.net.connections.size + joiner.net.connections.size, 0, 'no connection between the two')
 })
 
 test('offline: a refused joiner hears it through the mirror, never online with a member', async (t) => {
@@ -2326,7 +2341,8 @@ test('withdrawn: a promise under an invite a removal spent ends its claim DENIED
   await waitFor(async () => (await promises(host.db)).length === 0)
   const invite = await host.pairing.invite({ reuse: true })
   const reply = await joiner.join(invite)
-  t.is((await promises(host.db)).length, 1, 'promised, and not claimed yet')
+  // whichever member answered, once the host has its promise: not claimed yet
+  await waitFor(async () => (await promises(host.db)).length === 1)
 
   await host.db.del('members', member.db.identity.id)
   t.is((await promises(host.db)).length, 0, 'the removal withdraws it with its invite')

@@ -139,6 +139,8 @@ export class Inbox extends ReadyResource {
     this._session = null
     /** @private */
     this._discovery = null
+    /** @private */
+    this._core = null
   }
 
   /** @private */
@@ -168,6 +170,8 @@ export class Inbox extends ReadyResource {
     handled.sort((a, b) => a.handled - b.handled)
     for (const mail of handled) this._handled.set(mail.id, mail.handled)
     await this._prune()
+    const { mirrors } = this.network
+    const peering = mirrors.length ? this.network.peering() : null
     this._session = this.network.wakeup.session(this.address, {
       discoveryKey: crypto.discoveryKey(this.address),
       onannounce: (entries, peer) => this._onannounce(entries, peer),
@@ -175,6 +179,13 @@ export class Inbox extends ReadyResource {
     })
     // active on both ends: whichever side comes second is the one that looks the other up
     this._discovery = this.network.join(crypto.discoveryKey(this.address))
+    if (peering) {
+      // a mirror tells of an address only a peer that put a core under it, and the network stays
+      // connected to one only while it has a core there: the core of the address itself, empty
+      this._core = this.network.store.get({ key: this.address })
+      const opts = { keys: mirrors, pick: mirrors.length, referrer: this.address }
+      peering.addCoreBackground(this._core, opts)
+    }
   }
 
   /** @private */
@@ -184,7 +195,7 @@ export class Inbox extends ReadyResource {
     this._discovery?.destroy().catch(safetyCatch)
     // nothing more is fetched: its sender counts a message delivered once its block is stored
     for (const core of this._waiting) core.close().catch(safetyCatch)
-    await Promise.allSettled([...this._landing.keys(), ...this._erasing])
+    await Promise.allSettled([...this._landing.keys(), ...this._erasing, this._core?.close()])
   }
 
   /**
@@ -214,6 +225,8 @@ export class Inbox extends ReadyResource {
   _onannounce(entries, peer) {
     const ids = this._turns.get(peer) || new Set()
     for (const { key } of entries) {
+      // a mirror lists the core of the address with the mail under it
+      if (b4a.equals(key, this.address)) continue
       const id = b4a.toHex(key)
       if (ids.has(id) || this._handled.has(id)) continue
       if (ids.size >= QUEUED) {

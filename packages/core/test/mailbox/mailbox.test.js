@@ -5,7 +5,7 @@ import Hypercore from 'hypercore'
 
 import { Network } from '../../src/network/index.js'
 import { Mailbox } from '../../src/mailbox/index.js'
-import { Inbox } from '../../src/mailbox/inbox.js'
+import { Inbox, erase } from '../../src/mailbox/inbox.js'
 import { Post } from '../../src/mailbox/post.js'
 import { makeStore, makeTestnet, makeNet, makeMirror, waitFor } from '../helpers/index.js'
 
@@ -195,12 +195,8 @@ test('Post → Inbox: through a mirror while the owner is offline', async (t) =>
   await post.close()
   await a.close()
 
-  // the owner comes online only now, the sender is gone; a room it mirrors keeps it on the mirror
+  // the owner comes online only now, the sender is gone
   const b = await peer(t, testnet, { mirrors: [mirror] })
-  const room = b.store.get({ name: 'room' })
-  await room.ready()
-  await room.append(b4a.from('x'))
-  b.attach(room)
   const got = []
   const inbox = new Inbox(b, secret, {
     box: kept(),
@@ -212,7 +208,37 @@ test('Post → Inbox: through a mirror while the owner is offline', async (t) =>
 
   await waitFor(() => got.length > 0, { timeout: 30000 })
   t.alike(got, [b4a.from('while you were out')])
-  await room.close()
+})
+
+test('Post → Inbox: through a mirror to an inbox already open, the two never connected', async (t) => {
+  const testnet = await makeTestnet(t)
+  const mirror = await makeMirror(t, testnet)
+  const secret = crypto.randomBytes(32)
+
+  // neither accepts the other: the mirror is the only way between them
+  const b = await peer(t, testnet, { mirrors: [mirror], firewall: () => true })
+  const got = []
+  const box = kept()
+  const inbox = new Inbox(b, secret, {
+    box,
+    onmessage: (message) => got.push(message),
+    onerror: () => {}
+  })
+  t.teardown(() => inbox.close())
+  await inbox.ready()
+
+  const a = await peer(t, testnet, { firewall: () => true })
+  const post = new Post(a, inbox.address, b4a.from('both online'), { mirrors: [mirror] })
+  t.teardown(() => post.close())
+  await post.ready()
+
+  await waitFor(() => got.length > 0, { timeout: 15000 })
+  t.alike(got, [b4a.from('both online')])
+  t.absent(box.mail.has(b4a.toHex(inbox.address)), 'the core of its address is not read as mail')
+  t.is(a.connections.size + b.connections.size, 0, 'no connection between the two')
+
+  await inbox.close()
+  t.ok(await erase(b.store, inbox.address), 'closed, it holds the core of its address no more')
 })
 
 test('Mailbox: sends before it was opened', async (t) => {
@@ -381,11 +407,6 @@ test('Mailbox: sends through the network mirrors while the owner is offline', as
   await sender.network.close()
 
   const net = await peer(t, testnet, { mirrors: [mirror] })
-  const room = net.store.get({ name: 'room' })
-  await room.ready()
-  await room.append(b4a.from('x'))
-  net.attach(room)
-  t.teardown(() => room.close())
   const owner = new Mailbox(net)
   t.teardown(() => owner.close())
   const got = await new Promise((resolve) => owner.receive(secret, resolve))
@@ -568,11 +589,6 @@ test('Mailbox: keep false still reaches an offline owner through a mirror', asyn
   await sender.network.close()
 
   const net = await peer(t, testnet, { mirrors: [mirror] })
-  const room = net.store.get({ name: 'room' })
-  await room.ready()
-  await room.append(b4a.from('x'))
-  net.attach(room)
-  t.teardown(() => room.close())
   const owner = new Mailbox(net)
   t.teardown(() => owner.close())
   const got = await new Promise((resolve) => owner.receive(secret, resolve, { keep: false }))
@@ -1849,11 +1865,6 @@ async function handledThenRestarted(t, keep, { flood = 0, newer = 0 } = {}) {
   await a.close()
 
   const b = await peer(t, testnet, { mirrors: [mirror] })
-  const room = b.store.get({ name: 'room' })
-  await room.ready()
-  await room.append(b4a.from('x'))
-  b.attach(room)
-  t.teardown(() => room.close())
   const box = kept()
   let calls = 0
   const start = () =>

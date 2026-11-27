@@ -182,7 +182,7 @@ Keys: `db.rotate()` opens a new key sealed to every device row, and rotations on
 
 ## Mailbox
 
-A device's mailbox: it receives at the addresses it holds the secret of, and sends to any address. An address is 32 bytes you can share; anyone can send to it, only its secret opens what arrives. A message is delivered directly when its owner is online, and otherwise waits on a mirror until they come back.
+A device's mailbox: it receives at the addresses it holds the secret of, and sends to any address. An address is 32 bytes you can share; anyone can send to it, only its secret opens what arrives. A message is delivered directly when the two devices connect, and otherwise through a mirror: at once to an owner who is receiving, or when they come back.
 
 ```js
 import b4a from 'b4a'
@@ -210,7 +210,7 @@ await inbox.close() // stop receiving
 - **A throwing `onmessage`** keeps the message and reports to `onerror`, the constructor option.
 - **A slow `onmessage`.** Sixteen messages are read and handled at a time; one still being handled after 30 seconds stays in the inbox and makes room for the next. `receive(secret, onmessage, { timeout })` sets those 30 seconds, and how long an announced message has to arrive.
 - **An `onmessage` that resolves `false`** turns the message away: nothing of it stays on this device, as for one that does not open.
-- **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default. A mirror storing it counts as delivered, and a mirror hands over only the newest 32 messages waiting for one address: with more waiting while the owner is offline, the older ones are not delivered.
+- **Mirrors.** `send(address, message, { mirrors })` picks where a message waits, the network's mirrors by default. An open inbox hears of it from its own network's mirrors the moment one stores it, so the two sides need a mirror in common. A mirror storing it counts as delivered, and a mirror hands over only the newest 32 messages waiting for one address: with more waiting while the owner is offline, the older ones are not delivered.
 - **Kept by default.** Each message travels in a core of its own, which both ends keep. `send(address, message, { keep: false })` erases the sender's copy once a device or a mirror stored it; `receive(secret, onmessage, { keep: false })` erases each message from the receiving device once handled. A message that was being read when the app was killed or its inbox closed is handed over at the next start and stays on the device, whatever `keep` says or `onmessage` resolves. A mirror keeps its copy either way.
 - **Anonymous.** A message carries no sender. One that needs a sender signs itself.
 

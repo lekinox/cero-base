@@ -562,9 +562,13 @@ test('replication: multiple topics on one network do not cross-talk', async (t) 
 
   await Promise.all([waitForConnection(peer1), waitForConnection(peer2)])
 
-  // peer1 must only have one connection (to hub), not to peer2
-  t.is(peer1.connections.size, 1, 'peer1 connected only to hub')
-  t.is(peer2.connections.size, 1, 'peer2 connected only to hub')
+  // by peer: two that dial each other at once hold two connections until the replicator drops one
+  const remotes = (net) => [
+    ...new Set([...net.connections].map((c) => b4a.toHex(c.remotePublicKey)))
+  ]
+  const key = b4a.toHex(hub.replicator.keyPair.publicKey)
+  t.alike(remotes(peer1), [key], 'peer1 connected only to hub')
+  t.alike(remotes(peer2), [key], 'peer2 connected only to hub')
   t.ok(hub.connections.size >= 2, 'hub connected to both peers')
 
   await Promise.all([dhub1.destroy(), dhub2.destroy(), d1.destroy(), d2.destroy()])
