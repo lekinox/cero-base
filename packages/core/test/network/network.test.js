@@ -265,6 +265,8 @@ test('join: two peers joining a topic in the same tick meet within seconds', asy
   for (let round = 0; round < 5; round++) {
     const a = await makeNet(t, testnet)
     const b = await makeNet(t, testnet)
+    // both listen already: their announces go out together
+    await Promise.all([a.flush({ timeout: 5000 }), b.flush({ timeout: 5000 })])
     const start = Date.now()
     const topic = randomTopic()
     a.join(topic)
@@ -862,26 +864,110 @@ test('a dropped connection is redialed within seconds', async (t) => {
   t.ok(back, `back in ${Date.now() - start} ms`)
 })
 
-test('a lookup that failed at resume is retried within seconds', async (t) => {
+// queries of a network that failed, over its topics
+function failed(net) {
+  let n = 0
+  for (const session of net.replicator.sessions.values()) n += session.discovery?.stats.errors ?? 0
+  return n
+}
+
+test('resume(): a query that failed before the network was back runs again within seconds', async (t) => {
   const testnet = await makeTestnet(t)
   const a = await makeNet(t, testnet)
-  const b = await makeNet(t, testnet)
+  const other = await makeNet(t, testnet)
+  // a link that stays up through the suspend: the device has a peer, and its queries fail all the same
+  const [s1, s2] = duplexPair()
+  a.inject(s1, { isInitiator: true })
+  other.inject(s2, { isInitiator: false })
   const topic = randomTopic()
-  const da = a.join(topic)
-  const db = b.join(topic)
-  await Promise.all([da.flush(), db.flush()])
-  await Promise.all([waitForConnection(a), waitForConnection(b)])
+  await a.join(topic).flush()
   await a.suspend()
-  // the device resumes before the network is back: its first lookup and announce fail
   await Promise.all(testnet.nodes.map((node) => node.suspend()))
   await a.resume()
-  await a.flush({ timeout: 10000 })
+  await waitFor(() => failed(a) > 0, { timeout: 10000 })
   await Promise.all(testnet.nodes.map((node) => node.resume()))
   const start = Date.now()
-  const found = await waitFor(() => a.connections.size > 0 && b.connections.size > 0, {
-    timeout: 15000
-  }).catch(() => false)
-  t.ok(found, `found again in ${Date.now() - start} ms`)
+  const b = await makeNet(t, testnet)
+  b.join(topic)
+  const found = await waitFor(() => b.connections.size > 0, { timeout: 3000 }).catch(() => false)
+  t.ok(found, `a peer new to the topic found it in ${Date.now() - start} ms`)
+  const idle = await waitFor(() => a._relookup === null, { timeout: 3000 }).then(
+    () => true,
+    () => false
+  )
+  t.ok(idle, 'once it went through, no try waits')
+})
+
+test('resume(): queries that went through are not run again', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await makeNet(t, testnet)
+  await a.join(randomTopic()).flush()
+  await a.suspend()
+  await a.resume()
+  await a.flush()
+  const { dht } = a.replicator.stats
+  const { announce } = dht
+  const again = await waitFor(() => dht.announce > announce, { timeout: 3000 }).catch(() => false)
+  t.absent(again, 'alone on its topic, it announced once')
+})
+
+test('a topic joined while the network is away is found once it is back', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await makeNet(t, testnet)
+  await a.flush({ timeout: 5000 })
+  await Promise.all(testnet.nodes.map((node) => node.suspend()))
+  const topic = randomTopic()
+  a.join(topic)
+  await waitFor(() => failed(a) === 1, { timeout: 10000 })
+  await Promise.all(testnet.nodes.map((node) => node.resume()))
+  const start = Date.now()
+  const b = await makeNet(t, testnet)
+  b.join(topic)
+  const found = await waitFor(() => b.connections.size > 0, { timeout: 3000 }).catch(() => false)
+  t.ok(found, `a peer new to the topic found it in ${Date.now() - start} ms`)
+})
+
+test('a query that keeps failing runs again further apart, and at once on a network event', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await makeNet(t, testnet)
+  const topic = randomTopic()
+  await a.join(topic).flush()
+  await a.suspend()
+  await Promise.all(testnet.nodes.map((node) => node.suspend()))
+  const { dht } = a.replicator.stats
+  const { announce } = dht
+  await a.resume()
+  await waitFor(() => failed(a) === 2, { timeout: 10000 })
+  t.is(dht.announce, announce + 2, 'it failed at resume and again a second later')
+
+  a.dht.emit('network-update')
+  await waitFor(() => failed(a) === 3, { timeout: 3000 })
+  t.is(dht.announce, announce + 3, 'a network event runs it at once')
+  const fourth = await waitFor(() => dht.announce > announce + 3, { timeout: 2500 }).catch(
+    () => false
+  )
+  t.absent(fourth, 'the event started no try of its own: the next is five seconds after the second')
+
+  await a.suspend()
+  await a.resume()
+  await waitFor(() => failed(a) === 4, { timeout: 10000 })
+  await Promise.all(testnet.nodes.map((node) => node.resume()))
+  const start = Date.now()
+  const b = await makeNet(t, testnet)
+  b.join(topic)
+  const found = await waitFor(() => b.connections.size > 0, { timeout: 3000 }).catch(() => false)
+  t.ok(
+    found,
+    `suspended while a try waited, it starts over at the resume: found in ${Date.now() - start} ms`
+  )
+})
+
+test('a network event while a topic opens runs no query', async (t) => {
+  const testnet = await makeTestnet(t)
+  const a = await makeNet(t, testnet)
+  const discovery = a.join(randomTopic())
+  t.execution(() => a.dht.emit('network-update'))
+  await discovery.flush()
 })
 
 // ─── inject: externally-established connections (design: bluetooth P1) ──────

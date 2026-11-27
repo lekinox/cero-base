@@ -15,10 +15,8 @@ import { Discovery } from './discovery.js'
 
 // a live remote answers our header in milliseconds; udx gives up on a silent one only after ~13 s
 const SILENT_TIMEOUT = 3000
-// the replicator re-queries a topic every 10 min on its own: too slow for a device that resumed before its network was back
-const RELOOKUPS = [5000, 20000, 60000]
-// peers joining at once look up before either announce lands, and the replicator looks again only in 10 min
-const REQUERY = [1000, 3000]
+// the replicator runs a failed query again only in 10 min: after these, then the last over and over, while it keeps failing
+const RELOOKUPS = [1000, 5000, 20000, 60000]
 
 function toKey(k) {
   return typeof k === 'string' ? decodeKey(k) : k
@@ -155,8 +153,11 @@ export class Network extends ReadyResource {
     const rep = (this._replicator = new Replicator(this.store, opts))
     // back online after a NAT rebind or a router restart, peers may hold a stale address for us
     dht.on('network-update', () => {
+      if (!dht.online) return
+      // the queries sent while it was away failed
+      this._watch(this._lookup()).catch(safetyCatch)
       // a tick later: the dht's own wake-up in this event would clear a refresh made now
-      if (dht.online) setTimeout(() => this.closing || rep.server.refresh(), 0)
+      setTimeout(() => this.closing || rep.server.refresh(), 0)
     })
     rep.on('connected', ({ stream, info }) => {
       if (this.closing || this.closed) {
@@ -308,6 +309,7 @@ export class Network extends ReadyResource {
     await this._replicator?.suspend()
     await this._dht?.suspend()
     clearTimeout(this._relookup)
+    this._relookup = null
   }
 
   /**
@@ -324,8 +326,8 @@ export class Network extends ReadyResource {
       this._resuming = null
     }
     await this._blindPeering?.resume()
-    // the queries the replicator runs at resume can go out before the network is back
-    this._relook(0)
+    // the queries the replicator runs at resume fail when they go out before the network is back
+    this._watch(this._active()).catch(safetyCatch)
     this.emit('resume')
   }
 
@@ -359,7 +361,6 @@ export class Network extends ReadyResource {
       // a store session per topic: the root store collects no listener per topic
       const store = this.store.session()
       const session = this._replicator.join(store, key, { deferSwarming: false })
-      session.on('activate', requery)
       entry = { id, session, store, refs: 0, pins: 0 }
       this._sessions.set(id, entry)
     }
@@ -463,28 +464,60 @@ export class Network extends ReadyResource {
   // a topic leaving mid-rotation rejects it; the others had their state applied
   /** @private */
   async _rotate() {
+    const errors = this._errors()
     await this._replicator?.refresh().catch(safetyCatch)
+    // a topic that starts announcing while the network is away
+    this._watch(this._active(), errors).catch(safetyCatch)
   }
 
   /** @private */
-  _relook(i) {
-    clearTimeout(this._relookup)
-    this._relookup = setTimeout(() => {
-      if (!this._replicator || this.connections.size) return
-      for (const { session } of this._sessions.values()) lookup(session)
-      if (i + 1 < RELOOKUPS.length) this._relook(i + 1)
+  _active() {
+    const sessions = []
+    for (const { session } of this._sessions.values()) {
+      // a topic still opening has run no query
+      if (session.active && session.discovery) sessions.push(session)
+    }
+    return sessions
+  }
+
+  /** @private */
+  _lookup() {
+    const sessions = this._active()
+    for (const session of sessions) session.discovery.refresh()
+    return sessions
+  }
+
+  // once the queries of these sessions settle: if one failed and no try waits, they are tried again
+  /** @private */
+  async _watch(sessions, errors = this._errors()) {
+    await settled(sessions)
+    if (this._errors() > errors && this._relookup === null) this._retry(0)
+  }
+
+  // every active topic again, further apart each time, until they go through
+  /** @private */
+  _retry(i) {
+    this._relookup = setTimeout(async () => {
+      const errors = this._errors()
+      await settled(this._lookup())
+      if (this._errors() > errors) this._retry(Math.min(i + 1, RELOOKUPS.length - 1))
+      else this._relookup = null
     }, RELOOKUPS[i])
     this._relookup.unref()
   }
+
+  /** @private */
+  _errors() {
+    let errors = 0
+    for (const { session } of this._sessions.values()) {
+      errors += session.discovery?.stats.errors ?? 0
+    }
+    return errors
+  }
 }
 
-function lookup(session) {
-  if (session.active) session.discovery.refresh()
-}
-
-function requery(session) {
-  const delay = REQUERY[0] + Math.random() * (REQUERY[1] - REQUERY[0])
-  setTimeout(() => lookup(session), delay).unref()
+function settled(sessions) {
+  return Promise.all(sessions.map((session) => session.discovery.flush()))
 }
 
 // data, not packets: a peer that acked our opener and froze has answered nothing

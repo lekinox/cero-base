@@ -147,8 +147,6 @@ export async function connectPair(t, a, b, topic = randomTopic()) {
   const da = a.join(topic)
   const db = b.join(topic)
   await Promise.all([da.flush(), db.flush()])
-  // both announced: look up now instead of waiting out the 1-3 s re-lookup
-  await Promise.all([da.activate(), db.activate()])
   await Promise.all([waitForConnection(a), waitForConnection(b)])
   t.teardown(() => Promise.all([da.destroy(), db.destroy()]).catch(() => {}), { order: 2 })
   return { da, db, topic }

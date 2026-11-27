@@ -236,5 +236,13 @@ export declare class Network extends ReadyResource {
     /** @private */
     private _rotate;
     /** @private */
-    private _relook;
+    private _active;
+    /** @private */
+    private _lookup;
+    /** @private */
+    private _watch;
+    /** @private */
+    private _retry;
+    /** @private */
+    private _errors;
 }

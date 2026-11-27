@@ -1155,7 +1155,8 @@ test('Inbox: a peer reconnecting in a loop holds no more cores open than once', 
   const keys = Array.from({ length: 200 }, () => crypto.randomBytes(32))
   announce(t, flood, Mailbox.getAddress(secret), keys)
   await waitFor(() => inbox._reading > 0, { timeout: 30000 })
-  for (let i = 0; i < 4; i++) {
+  // three times: a peer that keeps dropping is redialed after 2, 6, 15, then 37 s
+  for (let i = 0; i < 3; i++) {
     const before = [...inbox._turns.keys()]
     for (const conn of flood.connections) conn.destroy()
     const back = () => [...inbox._turns.keys()].some((peer) => !before.includes(peer))
