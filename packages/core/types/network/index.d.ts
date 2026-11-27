@@ -35,11 +35,12 @@ export type NetworkOpts = {
      */
     onerror?: (err: Error) => void;
     /**
-     * The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot.
+     * The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none.
      */
     presence?: {
         active?: number;
         idle?: number;
+        known?: number;
     };
 };
 export type Entry = {
@@ -65,6 +66,10 @@ export type Entry = {
      * Set while a touch keeps it announcing.
      */
     held: ReturnType<typeof setTimeout> | null;
+    /**
+     * Network keys of devices that held the topic before.
+     */
+    known: Uint8Array[];
 };
 /**
  * @typedef {object} NetworkOpts
@@ -75,7 +80,7 @@ export type Entry = {
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, idle?: number }} [presence]        The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot.
+ * @property {{ active?: number, idle?: number, known?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none.
  *
  * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
  * @property {string} id
@@ -85,6 +90,7 @@ export type Entry = {
  * @property {number} pins  Joins pinning it.
  * @property {number} used  When it was last touched.
  * @property {ReturnType<typeof setTimeout> | null} held  Set while a touch keeps it announcing.
+ * @property {Uint8Array[]} known  Network keys of devices that held the topic before.
  */
 /**
  * Peer discovery and connections on hyperjoin, plus a shared wakeup channel. Every connection,
@@ -102,10 +108,11 @@ export declare class Network extends ReadyResource {
     store: import('corestore');
     /** @type {Uint8Array[]} */
     mirrors: Uint8Array[];
-    /** @type {{ active: number, idle: number }} */
+    /** @type {{ active: number, idle: number, known: number }} */
     presence: {
         active: number;
         idle: number;
+        known: number;
     };
     /** @private */
     _replicator;
@@ -245,6 +252,8 @@ export declare class Network extends ReadyResource {
     private _hold;
     /** @private */
     private _apply;
+    /** @private */
+    private _dial;
     /** @private */
     private _settle;
     /** @private */

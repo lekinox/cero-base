@@ -314,6 +314,12 @@ export declare class Database extends ReadyResource {
     };
     /** @private */
     _discovery;
+    /** @private @type {Uint8Array[]} */
+    _known;
+    /** @private */
+    _saved;
+    /** @private */
+    _meeting;
     /** @private */
     _pushing;
     /** @private */
@@ -352,6 +358,8 @@ export declare class Database extends ReadyResource {
     get writerKey(): Uint8Array | null;
     /** @returns {number | null} the database's version, or its parent's, while it is past this build's contract */
     get behind(): number | null;
+    /** @returns {Uint8Array[]} the network keys of the devices this database last replicated with, the latest first */
+    get known(): Uint8Array[];
     /** @returns {boolean} whether the bee accepts local writes */
     get writable(): boolean;
     /** @returns {number} number of ops in the local writer */
@@ -676,6 +684,14 @@ export declare class Database extends ReadyResource {
     private _update;
     /** @private */
     private _joinSwarm;
+    /** @private */
+    private _recall;
+    /** @private */
+    private _met;
+    /** @private */
+    private _keep;
+    /** @private */
+    private _forget;
     /** @private */
     private _holdRoom;
     /** @private */

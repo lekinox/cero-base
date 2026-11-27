@@ -705,6 +705,39 @@ test('rotation: release() ranks a topic last, the next one takes its slot', asyn
   t.is(a.state, 'inactive', 'ranked back in')
 })
 
+test('known: a device a topic knows is dialed by its key once the topic is on the network, announced there or not', async (t) => {
+  const testnet = await makeTestnet(t)
+  const quiet = await makeNet(t, testnet, { presence: { active: 1 } })
+  const caller = await makeNet(t, testnet, { presence: { active: 1 } })
+  for (const net of [quiet, caller]) {
+    const other = net.join(randomTopic(), { pin: false })
+    await waitFor(() => other.state === 'autostarted')
+  }
+  const topic = randomTopic()
+  const far = quiet.join(topic, { pin: false })
+  const near = caller.join(topic, { pin: false })
+  await Promise.all([quiet.flush(), caller.flush()])
+  t.is(far.state, 'inactive', 'its one slot is held by another topic')
+  t.is(near.state, 'inactive')
+
+  near.know([quiet.replicator.keyPair.publicKey])
+  t.is(caller.peers.size, 0, 'off the network, the topic dials nobody')
+
+  near.touch()
+  await waitFor(() => quiet.connections.size === 1 && caller.connections.size === 1, {
+    timeout: 5000
+  })
+  t.is(far.state, 'inactive', 'the device reached never announced the topic')
+
+  const late = await makeNet(t, testnet)
+  const pinned = late.join(randomTopic())
+  await pinned.flush()
+  t.is(late.connections.size, 0, 'the topic alone finds nobody')
+  pinned.know([quiet.replicator.keyPair.publicKey])
+  await waitFor(() => late.connections.size === 1, { timeout: 5000 })
+  t.pass('on the network already, the topic dials the moment it is told')
+})
+
 // ─── offline: a DHT that went away ────────────────────────────────────────
 
 test('close() settles when the DHT is gone', async (t) => {

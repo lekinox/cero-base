@@ -36,7 +36,7 @@ export function channelTopic(topic, channel) {
  * @property {import('corestore')} store                            Corestore; every connection replicates it, so every core it holds rides every peer.
  * @property {Array<string | Uint8Array>} [mirrors]                Blind-peer public keys; each attached database/blob core is mirrored through them for offline sync.
  * @property {(err: Error) => void} [onerror]                      Background-task error handler.
- * @property {{ active?: number, idle?: number }} [presence]        The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot.
+ * @property {{ active?: number, idle?: number, known?: number }} [presence]  The budget for topics in the rotation: how many announce at once besides the ones in use, and the ms a topic keeps announcing after its last use, or keeps a slot. `known` is how many devices a database remembers to dial by their keys, 0 for none.
  *
  * @typedef {object} Entry  One replicator session per topic, shared by every join of it.
  * @property {string} id
@@ -46,6 +46,7 @@ export function channelTopic(topic, channel) {
  * @property {number} pins  Joins pinning it.
  * @property {number} used  When it was last touched.
  * @property {ReturnType<typeof setTimeout> | null} held  Set while a touch keeps it announcing.
+ * @property {Uint8Array[]} known  Network keys of devices that held the topic before.
  */
 
 /**
@@ -74,8 +75,8 @@ export class Network extends ReadyResource {
     this.store = store
     /** @type {Uint8Array[]} */
     this.mirrors = (mirrors || []).map(toKey)
-    /** @type {{ active: number, idle: number }} */
-    this.presence = { active: 8, idle: 30_000, ...presence }
+    /** @type {{ active: number, idle: number, known: number }} */
+    this.presence = { active: 8, idle: 30_000, known: 8, ...presence }
 
     /** @private */
     this._replicator = null
@@ -363,7 +364,17 @@ export class Network extends ReadyResource {
       // a store session per topic: the root store collects no listener per topic
       const store = this.store.session()
       const session = this._replicator.join(store, key, { deferSwarming: false })
-      entry = { id, session, store, refs: 0, pins: 0, used: 0, held: null }
+      const made = (entry = {
+        id,
+        session,
+        store,
+        refs: 0,
+        pins: 0,
+        used: 0,
+        held: null,
+        known: []
+      })
+      session.on('activate', () => this._dial(made))
       this._sessions.set(id, entry)
     }
     entry.refs++
@@ -476,6 +487,16 @@ export class Network extends ReadyResource {
     if (pinned) entry.session.pin()
     else entry.session.unpin()
     this._refresh()
+  }
+
+  // a device that held the topic before is dialed by its key: its own slots may all be on other topics, so a
+  // lookup of this one finds nobody. The replicator has no public way to dial a key
+  /** @private */
+  _dial(entry) {
+    const dialer = this._replicator?.dialer
+    if (!dialer || !entry.session.active) return
+    const now = Date.now()
+    for (const publicKey of entry.known) dialer.seen({ publicKey }, entry.session.topic, now, true)
   }
 
   // an announce starts when the rotation runs, and only once the server listens

@@ -169,6 +169,12 @@ export class Database extends ReadyResource {
     this.dispatcher = null
     /** @private */
     this._discovery = null
+    /** @private @type {Uint8Array[]} */
+    this._known = []
+    /** @private */
+    this._saved = ''
+    /** @private */
+    this._meeting = null
     /** @private */
     this._pushing = null
     /** @private */
@@ -224,6 +230,11 @@ export class Database extends ReadyResource {
   /** @returns {number | null} the database's version, or its parent's, while it is past this build's contract */
   get behind() {
     return this._behind ?? this.parent?.behind ?? null
+  }
+
+  /** @returns {Uint8Array[]} the network keys of the devices this database last replicated with, the latest first */
+  get known() {
+    return this._known
   }
 
   /** @returns {boolean} whether the bee accepts local writes */
@@ -291,6 +302,7 @@ export class Database extends ReadyResource {
 
     // a fresh db has no key until boot mints it
     if (this.network && !known) this._joinSwarm(this.bee, this.bee.discoveryKey)
+    if (this.network) await this._recall()
   }
 
   /** @private */
@@ -299,6 +311,7 @@ export class Database extends ReadyResource {
     // falling edge: apps freeze the UI the moment access ends
     this.bee.on('unwritable', () => {
       this._writable = false
+      this._forget()
       this.emit('unwritable')
     })
     // without a listener autobee escalates apply/view errors to a process crash
@@ -329,6 +342,8 @@ export class Database extends ReadyResource {
   async _close() {
     this.rotation.close()
     this.network?.off('resume', this._onResume)
+    this._meeting?.destroy()
+    this._meeting = null
     this._discovery?.destroy().catch(safetyCatch)
     this._discovery = null
     const held = [...this._held.values()]
@@ -1263,6 +1278,54 @@ export class Database extends ReadyResource {
     this._discovery ??= this.network.join(discoveryKey, { pin: this.pinned })
   }
 
+  // a device on the database's wakeup channel proved it holds the key. The latest are kept on this device's
+  // writer core and dialed by their own keys: a device with many databases announces only a few of them
+  /** @private */
+  async _recall() {
+    const stored = await this.bee.local.getUserData(KNOWN)
+    if (stored) this._known = c.decode(keys, stored)
+    this._saved = signature(this._known)
+    const { key, discoveryKey } = this.bee.wakeupCapability
+    const onpeeradd = (peer) => this._keep(this._met(this._known, [peer]))
+    this._meeting = this.network.wakeup.session(key, { discoveryKey, active: false, onpeeradd })
+    this._keep(this._met(this._known, this._meeting.peers))
+    // a rotation follows a removal, and no key here says whose device it is: the list starts over from the
+    // devices connected now
+    this.on('epoch', () => this._meeting && this._keep(this._met([], this._meeting.peers)))
+  }
+
+  // the devices of these peers ahead of the ones known, the latest first; a mirror is reached as a mirror
+  /** @private */
+  _met(known, peers) {
+    for (const { stream } of peers) {
+      const key = stream.remotePublicKey
+      if (this.network.mirrors.some((mirror) => b4a.equals(mirror, key))) continue
+      known = [key, ...known.filter((k) => !b4a.equals(k, key))]
+    }
+    return known.slice(0, this.network.presence.known)
+  }
+
+  // written when a device enters or leaves the list, never for its order: a reconnect writes nothing
+  /** @private */
+  _keep(known) {
+    this._known = known
+    this._discovery?.know(known)
+    const saved = signature(known)
+    if (saved === this._saved || this.closing || !this.bee) return
+    this._saved = saved
+    const value = known.length ? c.encode(keys, known) : null
+    this.bee.local.setUserData(KNOWN, value).catch((err) => this.closing || this._onerror(err))
+  }
+
+  // a device that lost its seat keeps no key of the others
+  /** @private */
+  _forget() {
+    if (!this._meeting) return
+    this._meeting.destroy()
+    this._meeting = null
+    this._keep([])
+  }
+
   // every writer the database ever had and every core its views read; only the system bee, an autobee
   // internal, lists all the writers
   /** @private */
@@ -1761,6 +1824,8 @@ async function rows(snap, col, from) {
 }
 
 const NO_HOOKS = []
+const KNOWN = 'cero/known'
+const keys = c.array(c.fixed32)
 const PUSH_RETRY = 5000
 
 // the refs whose writes push, by the verb their ops carry
@@ -1808,6 +1873,13 @@ function seatless(ops, id) {
 }
 
 const RANGE = new Set(['gt', 'gte', 'lt', 'lte'])
+
+function signature(known) {
+  return known
+    .map((key) => b4a.toHex(key))
+    .sort()
+    .join()
+}
 
 const byIndex = (a, b) => (a.index ?? 0) - (b.index ?? 0)
 

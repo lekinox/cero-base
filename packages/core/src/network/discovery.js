@@ -96,6 +96,17 @@ export class Discovery {
     this.network._use(this.entry)
   }
 
+  /**
+   * The devices that held the topic before, by their network keys: each is dialed by its key whenever the
+   * topic is on the network, whether it announces the topic or not.
+   *
+   * @param {Uint8Array[]} keys
+   */
+  know(keys) {
+    this.entry.known = keys
+    this.network._dial(this.entry)
+  }
+
   /** Rank the topic last: it keeps a slot only while one is spare. */
   release() {
     this._rank(0)
