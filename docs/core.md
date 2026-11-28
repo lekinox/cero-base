@@ -161,13 +161,13 @@ const { data } = await db.get('messages', { limit: 10, reverse: true })
 
 It also has `key`, `discoveryKey`, `writerKey`, `writable`, `encryptionKey`, `address` (where joins are sealed to), `keyPair`, `length`, `view`, `behind`, `pushing` and `known` (the network keys of the devices it last replicated with, the latest first, kept on this device's writer core), and emits:
 
-| Event                    | Carries                                                                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `update`                 | A `Set` of the ref names a batch changed, `'*'` for any. A batch that changes no row emits none.                              |
-| `apply`                  | `{ op, name, row, writerKey, seq }` for each applied op, local or replicated.                                                 |
-| `writable`, `unwritable` | This device gained or lost write. `writable` fires once the view holds its admission, so a read on it sees this device's row. |
-| `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.                                                           |
-| `behind`                 | The database's version, once it is past this build's contract.                                                                |
+| Event                    | Carries                                                                                                                                                                                |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update`                 | A `Set` of the ref names a batch changed, `'*'` for any. A batch that changes no row emits none.                                                                                       |
+| `apply`                  | `{ op, name, row, writerKey, seq, length }` for each applied op, local or replicated. `length` is the writer's length at the op: an op applied again after a reorder carries the same. |
+| `writable`, `unwritable` | This device gained or lost write. `writable` fires once the view holds its admission, so a read on it sees this device's row.                                                          |
+| `epoch`                  | The keyring learned an epoch, from an envelope or its own rotation.                                                                                                                    |
+| `behind`                 | The database's version, once it is past this build's contract.                                                                                                                         |
 
 A database is at a version of the app, kept in its view. A new one starts at `spec.meta.target`, and an owner's device on a build whose target is higher moves it there with an `upgrade` op of its own once it opens it, or with its first write if that comes sooner, in the same batch. It never goes down. Every device writes as the database's version: a write naming what that version lacks throws `UNSUPPORTED`, and an op applies as the version it was written at, so what its author's version lacked stays as stored. Past this build's contract, `spec.meta.version`, the database is behind: `behind` holds the version, ops written past the contract wait until an update applies the log again, and every write throws `BEHIND` but a member's own leaving.
 

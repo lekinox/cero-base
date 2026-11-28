@@ -1,0 +1,14 @@
+services:
+  pulse:
+    build: .
+    restart: unless-stopped
+    ports:
+      # unfirewalled UDP: devices reach the service directly, no holepunching
+      - '49739:49739/udp'
+    volumes:
+      # persistent: the service's key and the times it keeps live here.
+      # never wipe this or the key (and every app's pulse key) changes.
+      - pulse-data:/data
+
+volumes:
+  pulse-data:

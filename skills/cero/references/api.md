@@ -390,7 +390,7 @@ const me = await cero(ipc, spec, { onerror: (err) => console.error(err.code) })
 ## @cero-base/cero/extensions
 
 ```js
-import { cero, profileSync, handleSync } from '@cero-base/cero/extensions'
+import { cero, profileSync, handleSync, pulse } from '@cero-base/cero/extensions'
 ```
 
 A light `cero` facade, `t`, `schema` and the 24 operators without the runtime, for an extension module or your own [operators](operators.md): the spec bundles them into the UI. The operators are named exports too, with `bundled`, the default two, and `extensionsOf(spec, list)`, the list a spec runs.
@@ -399,6 +399,7 @@ A light `cero` facade, `t`, `schema` and the 24 operators without the runtime, f
 | ------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `profileSync({ fields })` | a root `profile` single, `{ name, ...fields }`, and `fields` on `members` | Mirrors your `profile` onto your member row in every handle you are in, on open and on every change; a change reaches the handles closed on this device in the background, the most recently used first. |
 | `handleSync({ fields })`  | `fields` on `handles`                                                     | Mirrors a handle's own `profile` onto its row in `me.handles`, and writes a new handle's name into it. The handle type must declare its own `profile` single with `name` and the `fields`.               |
+| `pulse(key)`              | `local.pulses`, `{ heard }` by handle id, with its own fields             | Tells the service at `key` of the device's writes, and wakes a handle closed here so it syncs as another device writes in it. See [Network](network.md#bring-closed-handles-up-to-date).                 |
 
 `fields` defaults to `{ avatar: t.string }` in both. A `t.file` field is copied with its file into the handle or `handles` row it lands on, and resolves there: `profileSync({ fields: { avatar: t.file } })`.
 

@@ -8,6 +8,7 @@ import BlindPeer from 'blind-peer'
 import BlindPushGateway from 'blind-push-gateway'
 import ProtomuxRpcRouter from 'protomux-rpc-router'
 import HyperDHT from 'hyperdht'
+import PulseServer from 'hypertracker/server'
 
 import { Network } from '@cero-base/core/network'
 import { Database } from '@cero-base/core/database'
@@ -82,6 +83,29 @@ export async function makeGateway(t, testnet) {
     { order: 80 }
   )
   return { key: gateway.publicKey, sent }
+}
+
+// a pulse service, in process: started again on its storage, it keeps its key
+export async function makePulse(t, testnet) {
+  const storage = await t.tmp()
+  const service = {
+    key: null,
+    server: null,
+    dht: null,
+    async start() {
+      service.dht = new HyperDHT({ bootstrap: testnet.bootstrap })
+      service.server = new PulseServer(storage, { dht: service.dht })
+      await service.server.ready()
+      service.key = service.server.publicKey
+    },
+    async stop() {
+      await service.server.close()
+      await service.dht.destroy()
+    }
+  }
+  await service.start()
+  t.teardown(() => service.stop().catch(() => {}), { order: 80 })
+  return service
 }
 
 // resolves once the mirror stores the whole core posted to `referrer`

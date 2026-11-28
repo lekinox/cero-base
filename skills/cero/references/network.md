@@ -1,7 +1,7 @@
 # Network
 
-Sync while devices are offline through a mirror, sync nearby over Bluetooth, background the app and
-keep many handles cheap.
+Sync while devices are offline through a mirror, sync nearby over Bluetooth, background the app,
+keep many handles cheap and bring the closed ones up to date.
 
 ```js
 // spec from the quickstart, mirrorKey from your mirror below
@@ -209,6 +209,74 @@ devices a handle keeps, 0 for none.
 told to try later, and the ones connected keep their place. Raise it on a device many others reach
 directly at the same moment, such as one that shares each of its handles with a different device;
 with a mirror, those devices sync through the mirror's one connection.
+
+## Bring closed handles up to date
+
+A handle closed on this device syncs once it opens again. With a pulse service, a device hears
+when another device writes in a handle it is in, open or closed, and brings that handle up to date
+in the background, with no open by the app. Run the service, then add the `pulse` extension:
+
+```js
+// extensions.js; pulseKey from your service below
+import { profileSync, handleSync, pulse } from '@cero-base/cero/extensions'
+
+export const extensions = [profileSync(), handleSync(), pulse(pulseKey)]
+```
+
+```js
+// build.js
+await build('./spec', schema, { extensions: '../extensions.js' })
+```
+
+`pulse` declares a local collection, so the spec is built with it: `cero()` with a spec built
+without it throws `INVALID`. The build needs no key, so a list in memory works too, naming the same
+extensions at build and at open:
+
+```js
+await build('./spec', schema, { extensions: [profileSync(), handleSync(), pulse()] })
+
+const me = await cero('./data', spec, {
+  extensions: [profileSync(), handleSync(), pulse(pulseKey)]
+})
+```
+
+On every device that runs it:
+
+- A write made on the device is told to the service, at most once every 100 ms per handle. One
+  made while the service is down, or while the device is offline, is told once it can be, after a
+  restart too.
+- A write another device made in a handle closed here wakes that handle: it opens in the
+  background until a write from another device lands in it, or 10 s pass, then is let go of, as
+  `cero.close` does, at most 4 handles at a time. A handle open here is ranked first, as
+  `cero.activate` does. A notice no device serves within those 10 s is given up: the handle syncs
+  when it is next written in, or opened.
+- A device that was offline, or whose app was not running, hears of the last write in each of its
+  handles as it connects again, and wakes up to 32 of them. The others sync when they are next
+  written in, or opened.
+- Writes, opens and closes never wait for the service. It pauses with `cero.suspend` and picks up
+  again with `cero.resume`.
+
+It is a notice, a best effort: one may come late or twice, and a handle's data comes from its sync
+as always.
+
+`me.local.pulses` keeps a row per handle id, on this device only. Its `heard` is the time a write
+from another device last landed in that handle on this device, 0 before the first; the other
+fields are the extension's own. A UI shows what changed in a handle it keeps closed by reading
+`heard` against its own mark of what was read:
+
+```js
+for await (const { changes } of cero.watch(me.local.pulses, { changes: true })) {
+  for (const { next } of changes) if (next) badge(next.id, next.heard > lastRead(next.id))
+}
+```
+
+The service keeps one time per handle, under a key every member derives from the handle's newest
+key: it sees no data, handle id, topic or member, and a device that is not in a handle cannot tell
+it of a write there. After a rotation the handle has a new key on the service, so a member removed
+before it cannot wake its devices. It sees which keys one connection follows, so it can tell that
+two handles are followed from the same device. It refuses a time more than a minute ahead of its
+own: a device whose clock runs that far ahead is not heard. `services/pulse` in this repo runs one
+in a container; its README has the setup.
 
 ## Sync nearby over Bluetooth
 

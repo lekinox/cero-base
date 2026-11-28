@@ -1,0 +1,13 @@
+{
+  "name": "cero-pulse",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pulse service for cero apps",
+  "main": "pulse.js",
+  "dependencies": {
+    "hyperdht": "6.37.0",
+    "hypertracker": "2.4.4",
+    "z32": "1.1.0"
+  }
+}
