@@ -104,6 +104,11 @@
     "child_process": {
       "bare": "bare-subprocess",
       "default": "child_process"
+    },
+    "#pulse": {
+      "bare": "./src/lib/pulse.js",
+      "node": "./src/lib/pulse.js",
+      "default": "./src/lib/pulse-ui.js"
     }
   },
   "scripts": {

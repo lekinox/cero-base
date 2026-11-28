@@ -25,8 +25,8 @@ export function pulse(key) {
       }
     },
     async setup(me) {
-      // the client and its DHT stay off the UI's module graph
-      const { follow } = await import('../lib/pulse.js')
+      // the worker's runtime; a UI bundle resolves a stand-in, so the client and its DHT stay out of it
+      const { follow } = await import('#pulse')
       return follow(me, key)
     }
   }
