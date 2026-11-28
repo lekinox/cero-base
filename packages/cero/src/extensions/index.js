@@ -7,6 +7,7 @@ import * as operators from '../lib/operators.js'
 
 export * from './profile-sync.js'
 export * from './handle-sync.js'
+export * from './pulse.js'
 
 // everything an extension module needs, light enough for the UI bundle the spec pulls it into
 export { t, schema }

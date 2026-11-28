@@ -1446,6 +1446,8 @@ export class Database extends ReadyResource {
         name: op.name,
         row: op.value,
         writerKey: node.key,
+        // the writer's length at the op: a reorder that applies it again names the same
+        length: node.length,
         seq: this._seq++
       })
     }

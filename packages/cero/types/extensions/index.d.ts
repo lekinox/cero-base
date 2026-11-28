@@ -2,6 +2,7 @@ import { t, schema } from '../lib/spec.js';
 import * as operators from '../lib/operators.js';
 export * from './profile-sync.js';
 export * from './handle-sync.js';
+export * from './pulse.js';
 export { t, schema };
 export * from '../lib/operators.js';
 export declare const cero: {

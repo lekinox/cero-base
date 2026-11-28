@@ -838,6 +838,8 @@ test('apply event: fires per applied op with op/name/row/writerKey, and unsubscr
   t.ok(e, 'carries the ref name + decoded row')
   t.is(e.op, 'add', 'op is the dispatch verb prefix')
   t.ok(e.writerKey, 'carries the writerKey (works for local + replicated)')
+  const next = seen.find((x) => x.name === 'messages' && x.row?.text === 'b')
+  t.is(next.length, e.length + 1, "carries the writer's length at the op")
   t.is(typeof e.seq, 'number', 'carries a monotonic seq')
   off()
   const n = seen.length

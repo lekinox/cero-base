@@ -76,6 +76,10 @@ it is `null`.
 Both run when the build names no extensions, and neither writes when the row already matches.
 Drop one by naming a list without it, or both with `[]`.
 
+A third ships for an app to name: `pulse(key)` brings the handles closed on a device up to date as
+other devices write in them, through a service you run. See
+[Network](network.md#bring-closed-handles-up-to-date).
+
 ```js
 // extensions.js
 import { profileSync, handleSync, t } from '@cero-base/cero/extensions'
